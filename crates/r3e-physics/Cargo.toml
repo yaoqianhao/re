@@ -1,0 +1,16 @@
+[package]
+name = "r3e-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# 预留：接真实物理后端时启用
+rapier = []
+
+[dependencies]
+r3e-core.workspace = true
+glam.workspace = true
+log.workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "r3e-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "r3e"
+path = "src/main.rs"
+
+[dependencies]
+r3e-core.workspace = true
+r3e-render.workspace = true
+r3e-physics.workspace = true
+r3e-script.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+glam.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true

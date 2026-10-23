@@ -1,0 +1,14 @@
+[package]
+name = "r3e-script"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde_json.workspace = true
+r3e-core.workspace = true
+r3e-physics.workspace = true
+rhai.workspace = true
+log.workspace = true
