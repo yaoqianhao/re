@@ -25,12 +25,16 @@ D:\rust3d-engine
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
 │   ├─ input_demo.rhai        # 鼠标 / 手柄演示
 │   └─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
-└─ crates/
-    ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照
-    ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
-    ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
-    ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
-    └─ r3e-app/               # 主循环、窗口事件、终端指令
+├─ crates/
+│   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照
+│   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
+│   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
+│   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
+│   └─ r3e-app/               # 主循环、窗口事件、终端指令
+└─ docs/
+    ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
+    ├─ PHYSICS.md             # 物理子系统：三层开关、场景字段、脚本 API、内置规则
+    └─ ASSETS.md              # 下一步规划：FBX 资产加载（模型 / 贴图 / 材质 / 动画）
 ```
 
 各 crate 单向依赖：`app → render / script / physics → core`，核心层不认识 wgpu。
@@ -328,7 +332,28 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 ## 7. 已知边界
 
 - 单方向光 + 环境光，Blinn-Phong 着色；无阴影、无后处理、无 PBR 贴图。
-- 网格为程序化生成（立方体 / 球 / 平面 / 圆柱），未接 glTF 导入。
+- 网格为程序化生成（立方体 / 球 / 平面 / 圆柱），**尚未接入外部 3D 资产文件**；
+  贴图、材质、骨骼动画亦未支持。下一步计划（FBX 资产加载）见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
 - 物理：物件互不碰撞、无旋转、无地形碰撞、高速可能穿地（无 CCD）；默认关闭。
+
+---
+
+## 8. 下一步计划：FBX 资产加载
+
+目标：让引擎能直接加载 `.fbx` 格式的 3D 资产（模型 / 贴图 / 材质 / 动画）并放入场景，
+同时保持"场景与行为全部由文本描述"的既有设计——资产只提供几何与材质数据，
+摆放与逻辑仍然写在 `scene.json` / `.rhai` 里。
+
+完整方案（选型、crate 落点、数据结构改动、场景与脚本 API、阶段拆分、风险与验收）见
+[`docs/ASSETS.md`](docs/ASSETS.md)，要点：
+
+- 解析器选 **ufbx**（单文件 C 库，静态链接，本机已用 4 个样本实测）；
+- 新增 `r3e-asset` crate，`Vertex` / `MeshData` 从 `r3e-render` 下沉到 `r3e-core` 避免反向依赖；
+- `MeshKind` 从枚举改为句柄（`MeshKind::Asset("models/robot.fbx#Mesh0")`），渲染分组键随之改成
+  `(mesh_key, material_key)`；
+- 贴图走 wgpu 纹理数组 + 材质表，`.fbx` 内嵌或同级目录的图片按相对路径解析；
+- 动画按节点级动画栈（TRS 曲线采样）实现播放 / 循环 / 速度控制；
+- 分阶段落地：P0 几何导入 → P1 贴图材质 → P2 动画播放 → P3 缓存与性能。
+

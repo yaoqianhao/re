@@ -72,7 +72,9 @@ rust3d-engine/
 │  ├─ main.rhai                # 默认行为脚本
 │  └─ example_swarm.rhai       # 群体动画示例
 ├─ docs/
-│  └─ ARCHITECTURE.md          # 本文档
+│  ├─ ARCHITECTURE.md          # 本文档
+│  ├─ PHYSICS.md               # 物理子系统完整说明
+│  └─ ASSETS.md                # 下一步：FBX 资产加载规划（未实现）
 └─ crates/
    ├─ r3e-core/                # 内核：数学、变换、节点、场景图、相机、光照
    ├─ r3e-render/              # 渲染：wgpu 设备、管线、程序化网格、WGSL
@@ -933,15 +935,15 @@ physics_backend()
 
 | 维度 | 现状 | 影响 |
 | --- | --- | --- |
-| 几何 | 只有 4 种内置程序化网格 | 无法表达复杂模型；无 UV、无顶点色属性以外的顶点数据 |
-| 材质 | 每物件一个 RGBA 纯色 | 无贴图、无金属度/粗糙度、无法线贴图 |
+| 几何 | 只有 4 种内置程序化网格 | 无法表达复杂模型；无 UV、无顶点色属性以外的顶点数据；**外部模型加载见 [`ASSETS.md`](ASSETS.md)（规划中）** |
+| 材质 | 每物件一个 RGBA 纯色 | 无贴图、无金属度/粗糙度、无法线贴图；**FBX 材质与贴图为下一阶段目标** |
 | 光照 | 1 方向光 + 环境光，Blinn-Phong | 无阴影、无点光、无全局光照 |
 | 后处理 | 无 | 无 bloom / tonemapping / FXAA |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 无视锥剔除、无遮挡剔除 | 屏幕外的物件照样上传和绘制（GPU 会做顶点裁剪，但 CPU 仍付代价） |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
 | 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
-| 动画 | 只有脚本每帧改 transform | 无骨骼动画、无关键帧插值、无动画混合 |
+| 动画 | 只有脚本每帧改 transform | 无骨骼动画、无关键帧插值、无动画混合；**FBX 节点级动画为下一阶段目标** |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 | 无分屏、无阴影相机、无后视镜 |
 
@@ -974,10 +976,22 @@ physics_backend()
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
 | 三 | 视锥剔除 + AABB | `mesh.rs` 加 `aabb()`，`prepare_instances` 加平面测试 | 无 |
 | 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
-| 五 | GLTF 加载 | 新增 `r3e-asset` crate，`MeshKind` 扩展为句柄 | **需改 `MeshKind` 语义**（枚举 → 资源句柄） |
-| 六 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
+| **五（下一步）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
+| 六 | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
+| 七 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
 
-其中**第五阶段是唯一的结构性改造**：一旦引入外部模型，`MeshKind` 这个"值类型枚举"必须变成"引用类型句柄"，渲染器的网格缓存键、物理碰撞体推导、场景 JSON 的 `mesh` 字段语义都要跟着改。在决定支持 GLTF 之前，`MeshKind` 枚举是刻意保持简单的。
+两条与顺序相关的说明：
+
+- **阶段五吸收阶段二的纹理与 UV**：引入外部模型必然同时带 UV 与贴图，单独先做「程序化网格加 UV」等于写两遍顶点布局。
+  因此阶段二的内容并入阶段五的 P2（材质与贴图）一起落，届时内置 4 种网格也一并补上 UV。
+- **阶段五是唯一的结构性改造**：一旦引入外部模型，`MeshKind` 这个"值类型枚举"必须变成"引用类型句柄"，
+  渲染器的网格缓存键、物理碰撞体推导、场景 JSON 的 `mesh` 字段语义都要跟着改。
+  在此之前 `MeshKind` 枚举是刻意保持简单的——这也是为什么它被排在物理、剔除、阴影之后才做。
+
+阶段五的完整设计（目标、依赖选型、数据结构、P0–P3 拆分与验收标准）见 [`docs/ASSETS.md`](ASSETS.md)。
+核心取舍：FBX 用 `ufbx` 解析（单文件 C 库，覆盖模型/材质/贴图/动画四类信息），
+第一步只做「解析并打印统计」以验证 C 工具链与数据正确性，不碰渲染器；
+坐标与单位在解析期统一换算为「Y-up、单位米」，引擎内部不感知 DCC 差异。
 
 ---
 
@@ -1048,4 +1062,6 @@ cargo build --release
 | `crates/r3e-script/src/api.rs` | 全部 Rhai API 绑定、`Clock`、`ScriptContext`、xorshift 随机 |
 | `crates/r3e-app/src/app.rs` | `EngineApp`、帧循环、输入、文件监视、REPL 通道 |
 | `crates/r3e-app/src/main.rs` | 参数解析、项目根三级兜底、事件循环启动 |
+| `docs/PHYSICS.md` | 物理子系统完整说明：三层开关、场景字段、脚本 API、内置规则、实测与限制 |
+| `docs/ASSETS.md` | 下一步规划：FBX 资产加载（模型 / 贴图 / 材质 / 节点级动画）的改动面与阶段拆分 |
 *（内容由AI生成，仅供参考）*
