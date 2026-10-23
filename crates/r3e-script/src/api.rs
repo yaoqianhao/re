@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use glam::{Vec3, Vec4};
 use r3e_core::input::{parse_mouse_button, parse_pad_axis, parse_pad_button};
-use r3e_core::{InputState, MeshKind, ObjectDesc, Scene};
+use r3e_core::{InputState, MeshRef, ObjectDesc, Scene};
 use r3e_physics::{BodyDesc, BodyHandle, BodyKind, PhysicsKind, Physics};
 use rhai::{Array, Dynamic, Engine};
 
@@ -248,7 +248,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("set_mesh", move |name: &str, mesh: &str| -> bool {
-        match MeshKind::parse(mesh) {
+        match MeshRef::parse(mesh) {
             Some(kind) => edit(&c.scene, name, |n| n.mesh = kind),
             None => {
                 println!("[script] 未知网格类型 `{mesh}`");
@@ -640,7 +640,7 @@ fn serde_json_lite(json: &str) -> Result<ObjectDesc, String> {
     let first = scene.iter().next().ok_or("空物件")?;
     let mut desc = ObjectDesc {
         name: first.name.clone(),
-        mesh: Some(first.mesh.as_str().to_string()),
+        mesh: Some(first.mesh.as_string()),
         position: Some(first.transform.position.to_array()),
         scale: Some(first.transform.scale.to_array()),
         color: Some(first.color.to_array()),

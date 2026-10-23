@@ -1684,6 +1684,7 @@ dependencies = [
  "glam",
  "log",
  "pollster",
+ "r3e-asset",
  "r3e-core",
  "r3e-physics",
  "r3e-render",
@@ -1693,9 +1694,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-asset"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "r3e-core",
+ "thiserror 2.0.21",
+ "ufbx",
+]
+
+[[package]]
 name = "r3e-core"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "glam",
  "log",
  "serde",
@@ -2265,6 +2277,15 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+
+[[package]]
+name = "ufbx"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260522f1eb74139f0e78b29dd82a58e5437d728c5498024a39e5af7282694240"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "unicode-ident"

@@ -5,6 +5,7 @@
 pub mod camera;
 pub mod input;
 pub mod light;
+pub mod mesh;
 pub mod node;
 pub mod scene;
 pub mod transform;
@@ -13,6 +14,7 @@ pub use camera::Camera;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use input::{ButtonEdge, InputState, PadState};
 pub use light::Light;
-pub use node::{MeshKind, Node, NodeId};
+pub use mesh::{MeshData, Vertex};
+pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use scene::{ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile};
 pub use transform::Transform;

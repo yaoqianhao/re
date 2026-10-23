@@ -12,6 +12,10 @@
 //! * `--gravity x,y,z`：重力加速度，例如 `--gravity 0,-9.81,0`
 //! * `--ground y`：地面平面高度，例如 `--ground 0`
 //!
+//! 资产选项（M1 静态网格）：
+//! * `--asset <fbx>`：导入 FBX 并按资产内节点路径 spawn（可重复）
+//! * `--dump-asset <fbx>`：只导入并打印资产报告，不创建窗口
+//!
 //! 操作：
 //! * WASD / 方向键：水平移动相机
 //! * Q / E：升降相机
@@ -83,6 +87,10 @@ r3e —— Rust 3D Engine
   --physics-backend NAME    物理后端: builtin | null | rapier(预留)
   --gravity x,y,z           重力加速度，默认 0,-9.81,0
   --ground Y                地面平面高度，默认 0
+
+资产选项（M1 静态网格）:
+  --asset PATH              导入 FBX 并按资产内节点路径 spawn（可重复）
+  --dump-asset PATH         导入 FBX 打印资产报告后退出（不建窗口）
   -h, --help                显示本帮助
 ";
 
@@ -147,6 +155,22 @@ fn main() -> anyhow::Result<()> {
                 }
                 continue;
             }
+            "--asset" => {
+                if let Some(v) = take_value("--asset", &mut i) {
+                    if v.trim().is_empty() {
+                        log::error!("--asset 需要非空的 FBX 路径");
+                    } else {
+                        cli.assets.push(PathBuf::from(v));
+                    }
+                }
+                continue;
+            }
+            "--dump-asset" => {
+                if let Some(v) = take_value("--dump-asset", &mut i) {
+                    cli.dump_asset = Some(PathBuf::from(v));
+                }
+                continue;
+            }
             other if other.starts_with("--") => {
                 log::warn!("未知选项 `{arg}`，已忽略（--help 查看用法）");
                 i += 1;
@@ -166,6 +190,21 @@ fn main() -> anyhow::Result<()> {
         .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("scripts/main.rhai"));
+
+    // --dump-asset：无窗口路径，导入后打印报告直接退出
+    if let Some(path) = cli.dump_asset.clone() {
+        log::info!("资产导入: {}", path.display());
+        match r3e_asset::dump_fbx(&path) {
+            Ok(report) => {
+                println!("{report}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("资产导入失败: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     log::info!("项目根目录: {}", root.display());
     log::info!("场景: {}", scene_path.display());

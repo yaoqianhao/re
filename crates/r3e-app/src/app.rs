@@ -14,7 +14,8 @@ use r3e_core::input::{
     PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT, PAD_RIGHT_X, PAD_RIGHT_Y, PAD_RT,
     PAD_START,
 };
-use r3e_core::{NodeId, Scene};
+use r3e_asset::AssetLibrary;
+use r3e_core::{NodeId, ObjectDesc, Scene};
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -76,6 +77,10 @@ pub struct CliOptions {
     pub backend: Option<String>,
     pub gravity: Option<[f32; 3]>,
     pub ground: Option<f32>,
+    /// `--asset <fbx>`（可重复）：启动时导入并 spawn 的静态资产。
+    pub assets: Vec<PathBuf>,
+    /// `--dump-asset <fbx>`：只做导入并打印报告，不创建窗口。
+    pub dump_asset: Option<PathBuf>,
 }
 
 impl CliOptions {
@@ -102,6 +107,7 @@ impl CliOptions {
             && self.gravity.is_none()
             && self.ground.is_none()
     }
+
 }
 
 pub struct EngineApp {
@@ -132,10 +138,36 @@ pub struct EngineApp {
     scene_mtime: Option<SystemTime>,
     /// 上次完成「场景声明刚体」绑定的物理世代号。
     physics_gen: u64,
+    /// 已导入的外部资产（渲染层通过 `Renderer::set_asset_library` 取得只读引用）。
+    assets: Arc<AssetLibrary>,
+    /// 从资产 spawn 出来的节点名（便于日志与后续热重载替换）。
+    asset_nodes: Vec<NodeId>,
 }
 
 impl EngineApp {
     pub fn new(scene_path: PathBuf, script_path: PathBuf, cli: CliOptions) -> Self {
+        // 资产先行：导入失败不阻断启动，只在日志里明确失败原因
+        let mut library = AssetLibrary::new();
+        for path in &cli.assets {
+            match library.load_fbx(path) {
+                Ok(id) => {
+                    let (meshes, tris) = library
+                        .get(id)
+                        .map(|e| (e.meshes.len(), e.triangle_total()))
+                        .unwrap_or((0, 0));
+                    log::info!(
+                        "资产已导入: {} (id {}) — {} 个网格 / {} 三角形",
+                        path.display(),
+                        id,
+                        meshes,
+                        tris
+                    );
+                }
+                Err(e) => log::error!("资产导入失败 {}: {e}", path.display()),
+            }
+        }
+        let assets = Arc::new(library);
+
         let scene_src = std::fs::read_to_string(&scene_path).unwrap_or_else(|e| {
             log::warn!(
                 "读取场景 {} 失败（{e}），使用内置兜底场景",
@@ -185,6 +217,15 @@ impl EngineApp {
             log::warn!("脚本 {} 不存在 (script not found)，跳过", script_path.display());
         }
 
+        // 资产节点：按资产内节点路径 spawn，重名自动加 `#N` 后缀
+        let mut asset_nodes: Vec<NodeId> = Vec::new();
+        if !assets.is_empty() {
+            let mut scene_mut = scene.borrow_mut();
+            let spawned = spawn_asset_nodes(&mut scene_mut, &assets, &cli.assets, &mut asset_nodes);
+            log::info!("资产节点已 spawn: {spawned} 个");
+            scene_mut.update_world_transforms();
+        }
+
         let scene_mtime = std::fs::metadata(&scene_path)
             .ok()
             .and_then(|m| m.modified().ok());
@@ -220,6 +261,8 @@ impl EngineApp {
             console: spawn_console(),
             scene_mtime,
             physics_gen: 0,
+            assets,
+            asset_nodes,
         }
     }
 
@@ -642,8 +685,16 @@ impl ApplicationHandler for EngineApp {
         };
 
         match Renderer::new(window.clone()) {
-            Ok(renderer) => {
+            Ok(mut renderer) => {
                 log::info!("渲染器就绪: {}x{}", renderer.size().0, renderer.size().1);
+                if !self.assets.is_empty() {
+                    renderer.set_asset_library(self.assets.clone());
+                    log::info!(
+                        "渲染层已接入资产库: {} 个资产 / {} 个资产节点",
+                        self.assets.len(),
+                        self.asset_nodes.len()
+                    );
+                }
                 self.renderer = Some(renderer);
             }
             Err(e) => {
@@ -727,4 +778,72 @@ fn spawn_console() -> mpsc::Receiver<String> {
         })
         .ok();
     rx
+}
+
+/// 按资产内节点路径把一个 FBX 的每个网格 spawn 成场景物件。
+///
+/// * 物件名默认取网格所属节点的路径（如 `RootNode/Arm/Hand`）；
+/// * 与已有物件或同批重名时追加 `#1`、`#2` 后缀；
+/// * `mesh` 字段写成 `asset:<路径>#<序号>`，渲染层据此从资产库取数据；
+/// * 顶点已是 `geometry_to_world` 后的世界空间坐标，因此物件变换保持单位阵。
+fn spawn_asset_nodes(
+    scene: &mut Scene,
+    library: &AssetLibrary,
+    paths: &[PathBuf],
+    out: &mut Vec<NodeId>,
+) -> usize {
+    let mut spawned = 0usize;
+    for path in paths {
+        let path_str = path.display().to_string();
+        let id = r3e_core::AssetId::from_path(&path_str);
+        let Some(entry) = library.get(id) else {
+            continue;
+        };
+        for (index, mesh) in entry.meshes.iter().enumerate() {
+            let base = if mesh.node_path.trim().is_empty() {
+                if mesh.name.trim().is_empty() {
+                    format!("asset_{index}")
+                } else {
+                    mesh.name.clone()
+                }
+            } else {
+                mesh.node_path.clone()
+            };
+
+            let mut name = base.clone();
+            let mut suffix = 0u32;
+            while scene.find_id(&name).is_some() {
+                suffix += 1;
+                name = format!("{base}#{suffix}");
+            }
+
+            let color = mesh
+                .material_parts
+                .first()
+                .and_then(|part| part.material_index)
+                .and_then(|mi| entry.materials.get(mi as usize))
+                .map(|m| m.base_color)
+                .unwrap_or([0.8, 0.8, 0.85, 1.0]);
+
+            let desc = ObjectDesc {
+                name: name.clone(),
+                mesh: Some(format!("asset:{}#{}", path_str, index)),
+                position: None,
+                rotation: None,
+                scale: None,
+                color: Some(color),
+                parent: None,
+                visible: Some(true),
+                physics: None,
+            };
+            match scene.spawn(desc) {
+                Ok(node_id) => {
+                    out.push(node_id);
+                    spawned += 1;
+                }
+                Err(e) => log::warn!("资产节点 `{name}` spawn 失败: {e}"),
+            }
+        }
+    }
+    spawned
 }

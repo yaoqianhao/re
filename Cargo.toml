@@ -5,6 +5,7 @@ members = [
     "crates/r3e-render",
     "crates/r3e-physics",
     "crates/r3e-script",
+    "crates/r3e-asset",
     "crates/r3e-app",
 ]
 
@@ -21,6 +22,7 @@ r3e-core = { path = "crates/r3e-core" }
 r3e-render = { path = "crates/r3e-render" }
 r3e-physics = { path = "crates/r3e-physics" }
 r3e-script = { path = "crates/r3e-script" }
+r3e-asset = { path = "crates/r3e-asset" }
 
 # 图形
 wgpu = "30.0"

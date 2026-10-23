@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_bbbaed85ced411f1acb8525400638852
+    ReservedCode1: pdkvi+EGIrTSJHMbkgwrPnfButCvCNJ5KdcVlGzNoM3AjUmgkoaHOiVqVUqmXfFjBF9KeScdJcQcPqCDEfc29q9oCY7LI+kS5Q915f6PZB/bp3SSm0AEvSPWLE6EO/TDJ1vSUrSvhC7PVw4+vSvp+OGcOdqXEmJwXNb8aJ8+wrCHRMpADJf+R5ywhYM=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_bbbaed85ced411f1acb8525400638852
+    ReservedCode2: pdkvi+EGIrTSJHMbkgwrPnfButCvCNJ5KdcVlGzNoM3AjUmgkoaHOiVqVUqmXfFjBF9KeScdJcQcPqCDEfc29q9oCY7LI+kS5Q915f6PZB/bp3SSm0AEvSPWLE6EO/TDJ1vSUrSvhC7PVw4+vSvp+OGcOdqXEmJwXNb8aJ8+wrCHRMpADJf+R5ywhYM=
+---
+
 # r3e 资产层规划：FBX 外部资产加载
 
 > 状态：**规划中，尚未实现**（本文档是下一步的工作定义，不是现状描述）
@@ -101,23 +112,37 @@ render ↛ asset    （render 只吃 core 里的网格/材质数据）
 这是**唯一的结构性改造**，也是文档里早就标注的坑（见 ARCHITECTURE 第 12 章）。
 
 ```rust
-// core/node.rs —— 现状
-pub enum MeshKind { Cube, Sphere, Plane, Cylinder }
+// crates/r3e-core/src/node.rs —— 已落地
+pub enum BuiltinMesh { Cube, Sphere, Plane, Cylinder }   // 原 MeshKind 的内置部分，语义不变
 
-// 计划
-pub enum MeshKind {
-    Cube, Sphere, Plane, Cylinder,   // 内置程序化网格，语义不变
-    Asset(AssetId),                  // 外部资产的一个子网格
+pub struct AssetId(pub u32);         // 由归一化路径的 FNV-1a 散列生成，跨会话稳定
+
+pub enum MeshRef {
+    Builtin(BuiltinMesh),
+    Asset { asset: AssetId, mesh: u32 },   // 资产内的第 mesh 个子网格
 }
 
-pub struct AssetId(pub u32);         // u32 而非 u64：资产数量远少于物件数量
+// crates/r3e-core/src/mesh.rs —— 已下沉
+pub struct Vertex { pub position: [f32; 3], pub normal: [f32; 3], pub uv: [f32; 2] }
+pub struct MeshData { pub vertices: Vec<Vertex>, pub indices: Vec<u32> }
+
+// crates/r3e-asset/src/lib.rs —— 资产层的富数据（比 MeshData 多材质分区与元信息）
 pub struct MeshAsset {
-    pub name: String,                // 便于日志与脚本反查
-    pub vertices: Vec<Vertex>,       // position / normal / uv
-    pub indices: Vec<u32>,
-    pub aabb: Aabb,                  // 局部包围盒，供后续视锥剔除与物理体推导
+    pub positions: Vec<[f32; 3]>,    // 已过 geometry_to_world（单位与轴向换算在此完成）
+    pub normals: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,          // 已按 v' = 1 - v 翻转
+    pub indices: Vec<u32>,           // 角点号已映射为顶点号
+    pub material_parts: Vec<MaterialPart>,
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+    pub node_local_matrix: [[f32; 4]; 4],
+    // name / node_path / source_path / source_{vertex,face,triangle}_count
 }
 ```
+
+> 命名差异说明：`MeshKind` 拆成 `BuiltinMesh`（内置四件套）+ `MeshRef`（引用），
+> 这样内置网格与资产网格在类型上不再混为一谈；`render` 侧按 `MeshRef` 建 `MeshCache`，
+> 而不是按「枚举 + 资产 id」两套键。
 
 连带的三个语义变化：
 
@@ -236,8 +261,9 @@ struct CachedAsset {
 
 | 参数 | 说明 |
 | --- | --- |
-| `--dump-asset <fbx>` | 只解析并打印统计后退出，不进窗口。P0 的验证手段，也是排查「模型加载了但看不见」的第一入口 |
-| `--assets-root <dir>` | 覆盖默认资产根目录（默认项目根 `assets/`） |
+| `--dump-asset <fbx>` | 只解析并打印统计后退出，不进窗口。P0/P1 的验证手段，也是排查「模型加载了但看不见」的第一入口 |
+| `--asset <fbx>` | 导入 FBX，并按资产内节点路径逐个 spawn 到场景（可重复传入多个文件），已落地 |
+| `--assets-root <dir>` | 覆盖默认资产根目录（默认项目根 `assets/`），尚未落地（P1 后续） |
 
 ---
 
@@ -245,7 +271,7 @@ struct CachedAsset {
 
 按「可独立验证、每阶段结束都能跑起来」切分，每阶段一个提交：
 
-### P0：管道打通（不含渲染）
+### P0：管道打通（不含渲染）—— ✅ 已完成
 
 - 新建 `r3e-asset` crate，接 `ufbx`，完成坐标/单位换算与三角化；
 - `--dump-asset` 打印：子网格数 / 顶点与三角形数 / 材质名 / 贴图（嵌入 or 外链 + 是否存在）/ 动画名与时长；
@@ -253,7 +279,7 @@ struct CachedAsset {
   统计数字全部正确，且 MinGW 下 `cargo build` 零 warning。
 - **不碰渲染器**，风险最低，先把「解析对不对」这件事单独坐实。
 
-### P1：静态网格进场景
+### P1：静态网格进场景 —— ✅ 已完成（2026-10-23）
 
 - `Vertex` / `MeshData` 下沉 core，加 `uv` 字段，`stride 24 → 32`；
 - `MeshKind::Asset(AssetId)` + `Scene::meshes` 表 + 场景 JSON `assets` 段；
@@ -339,3 +365,55 @@ struct CachedAsset {
 5. 改 `.fbx` 文件或改 `scene.json` 后 ≤0.4s 自动生效，无需重启；
 6. 没有 FBX 的默认场景行为与现在逐像素一致（回归不破）；
 7. `cargo build --release` 零 warning，`cargo test` 全绿。
+*（内容由AI生成，仅供参考）*
+
+---
+
+## 11. P1（M1 静态网格）实施现状
+
+### 11.1 落地的模块与职责
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/r3e-core/src/mesh.rs` | `Vertex`（pos/normal/uv，stride 32）+ `MeshData`（纯 CPU，无 wgpu/ufbx 依赖）+ `MeshProvider` trait |
+| `crates/r3e-core/src/node.rs` | `BuiltinMesh` / `AssetId` / `MeshRef`；`Node.mesh` 由 `MeshKind` 改为 `MeshRef` |
+| `crates/r3e-asset/src/lib.rs` | `ufbx` 解析、`AssetLibrary`、`AssetEntry`、`MeshAsset`、`MaterialPart`、`TextureInfo`/`MaterialInfo`、`dump_fbx` |
+| `crates/r3e-render/src/mesh.rs` | `MeshCache`：键 `MeshRef`，按 `MeshProvider` 取 `MeshData` 惰性上传 GPU |
+| `crates/r3e-render/src/renderer.rs` | 顶点布局 32 字节、`Arc<dyn MeshProvider>` 注入点（不再依赖 `r3e-asset`） |
+| `crates/r3e-app/src/main.rs` | `--asset` / `--dump-asset`、`spawn_asset_nodes`、启动时注入资产库 |
+
+**依赖边界（已核实）**：`cargo tree -p r3e-render` 中不存在 `r3e-asset` 与 `ufbx`；
+`r3e-core` 依旧不依赖 wgpu / ufbx；`r3e-asset` 不依赖 render。
+
+### 11.2 三个关键实现口径（踩过的坑，后续不得回退）
+
+1. **顶点必须按「角点」拆分**：`ufbx` 的 position / normal / uv 是三套独立索引空间
+   （`mesh.vertex_indices[c]`、`vertex_normal.indices[c]`、`vertex_uv.indices[c]`）。
+   以 `(pos_ix, nrm_ix, uv_ix)` 三元组哈希去重生成顶点，输出顶点数才会大于 ufbx 顶点数
+   （Npc1：ufbx 1271 → 输出 4708），这是 UV 接缝与硬边被正确拆开的标志。
+   **反例**：直接拿 ufbx 顶点号当索引，会得到越界索引（如 4707 > 1271），几何必然错乱。
+2. **索引必须二次映射**：`ufbx::triangulate_face_vec` 输出的是角点号，需经 `corner_to_vertex`
+   转成输出顶点号后再进索引缓冲。
+3. **AABB 与顶点位置统一走 `geometry_to_world`**：单位缩放与轴向转换由根节点矩阵承担，
+   与 M0 探针结论一致；`MeshData::aabb()`（局部顶点统计）与 `MeshAsset::aabb_*`（世界空间）不可混用。
+
+### 11.3 验收记录
+
+`cargo build --workspace` exit=0，零 warning（MinGW，x86_64-pc-windows-gnu）。
+
+| 样本 | ufbx 顶点/三角 | 输出顶点/三角 | AABB（世界） | UV |
+| --- | --- | --- | --- | --- |
+| Npc1/test.FBX | 1271 / 2140 | 4708 / 2140 | `(-0.683,-0.000,-0.472)~(0.683,1.564,0.330)` | 有效，u 0.003~0.997 |
+| tirger.fbx | 1018 / 1028 | 3084 / 1028 | `(-0.514,-0.016,-2.089)~(0.493,1.846,1.621)` | 有效 |
+| Weapon/Test/test.FBX | 1179 / 1084 | 3252 / 1084 | `(-0.228,-0.768,-0.653)~(0.228,3.811,0.653)` | 有效，u 0.004~0.983 |
+
+AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）三例完全一致；
+窗口化联调 3 个资产 spawn 成功、网格上传 GPU，人形造型完整无炸面。
+
+### 11.4 尚未做（留给 P2 及之后）
+
+- 贴图只收集元数据（filename / 嵌入判定 / uv_set），未解码、未上传纹理；
+- 材质只有 `base_color` 参与渲染着色，`metallic` / `roughness` 未进 uniform；
+- 场景 JSON 的 `assets` 段与 `--assets-root` 未接（当前只走 CLI `--asset`）；
+- 物理体推导仍只认内置网格，`MeshRef::Asset` 尚无 AABB 体；
+- 顶点未去重到「位号级」共享（角点级拆分是有意为之，压缩留到后续 LOD 阶段）。

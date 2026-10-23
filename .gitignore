@@ -2,3 +2,7 @@ target/
 *.log
 *.err
 run_*.txt
+
+# 临时探针工程与验证产物（不应进版本库）
+_probe/
+*.out

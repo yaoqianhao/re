@@ -14,7 +14,7 @@
 //! `body_count` 恒为 0，物件完全由脚本驱动（与旧行为一致）。
 
 use glam::Vec3;
-use r3e_core::{MeshKind, Node, NodeId, PhysicsSceneDesc, Scene};
+use r3e_core::{BuiltinMesh, Node, NodeId, PhysicsSceneDesc, Scene};
 
 /// 刚体句柄，由后端分配。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,8 +93,8 @@ impl BodyDesc {
     /// 用于脚本运行时创建、且没有物理描述的物件。
     pub fn infer(node: &Node) -> Self {
         let shape = match node.mesh {
-            MeshKind::Sphere => ColliderShape::Sphere,
-            MeshKind::Cylinder => ColliderShape::Cylinder,
+            r3e_core::MeshRef::Builtin(BuiltinMesh::Sphere) => ColliderShape::Sphere,
+            r3e_core::MeshRef::Builtin(BuiltinMesh::Cylinder) => ColliderShape::Cylinder,
             _ => ColliderShape::Box,
         };
         let scale = node.transform.scale.abs();
@@ -120,8 +120,8 @@ impl BodyDesc {
             .as_deref()
             .map(ColliderShape::parse)
             .unwrap_or(match node.mesh {
-                MeshKind::Sphere => ColliderShape::Sphere,
-                MeshKind::Cylinder => ColliderShape::Cylinder,
+                r3e_core::MeshRef::Builtin(BuiltinMesh::Sphere) => ColliderShape::Sphere,
+                r3e_core::MeshRef::Builtin(BuiltinMesh::Cylinder) => ColliderShape::Cylinder,
                 _ => ColliderShape::Box,
             });
         let scale = node.transform.scale.abs();

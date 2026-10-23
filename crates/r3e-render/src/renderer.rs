@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
-use r3e_core::{MeshKind, Scene};
+use r3e_core::mesh::{MeshData, MeshProvider, Vertex};
+use r3e_core::{MeshRef, Scene};
 use winit::window::Window;
 
-use crate::mesh::{InstanceRaw, MeshData, Vertex};
+use crate::mesh::{builtin_mesh, vertex_layout, InstanceRaw};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
@@ -40,10 +41,102 @@ impl Default for CameraUniform {
     }
 }
 
-struct GpuMesh {
+pub struct GpuMesh {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+}
+
+/// 网格缓存：按 `MeshRef` 惰性上传 GPU 网格。
+///
+/// * `MeshRef::Builtin` —— 由 `crate::mesh::builtin_mesh` 程序化生成；
+/// * `MeshRef::Asset` —— 数据来自注入的 `MeshProvider`（由 `r3e-asset` 实现，应用层注入）。
+///
+/// 渲染层不认识文件 IO：资产必须由应用层加载后通过 `Renderer::set_asset_library` 注入；
+/// 这里的 `dyn MeshProvider` 抽象定义在 `r3e-core`，因此渲染层的依赖图中不含 `ufbx`。
+pub struct MeshCache {
+    meshes: HashMap<MeshRef, GpuMesh>,
+    library: Option<Arc<dyn MeshProvider>>,
+}
+
+impl Default for MeshCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MeshCache {
+    pub fn new() -> Self {
+        Self {
+            meshes: HashMap::new(),
+            library: None,
+        }
+    }
+
+    pub fn with_library(library: Arc<dyn MeshProvider>) -> Self {
+        Self {
+            meshes: HashMap::new(),
+            library: Some(library),
+        }
+    }
+
+    /// 注入（或替换）资产库；替换时丢弃此前上传的资产网格，避免引用失效。
+    pub fn set_library(&mut self, library: Arc<dyn MeshProvider>) {
+        self.library = Some(library);
+        self.meshes
+            .retain(|key, _| matches!(key, MeshRef::Builtin(_)));
+    }
+
+    pub fn library(&self) -> Option<&Arc<dyn MeshProvider>> {
+        self.library.as_ref()
+    }
+
+    pub fn len(&self) -> usize {
+        self.meshes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.meshes.is_empty()
+    }
+
+    pub fn get(&self, key: MeshRef) -> Option<&GpuMesh> {
+        self.meshes.get(&key)
+    }
+
+    /// 确保某个网格已在 GPU 上；返回是否可用。
+    pub fn ensure(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: MeshRef) -> bool {
+        if self.meshes.contains_key(&key) {
+            return true;
+        }
+        let data = match key {
+            MeshRef::Builtin(kind) => builtin_mesh(kind),
+            MeshRef::Asset { asset, mesh } => {
+                let Some(library) = self.library.as_ref() else {
+                    log::warn!("资产 {} 未注册，网格 {} 跳过绘制", asset, mesh);
+                    return false;
+                };
+                match library.mesh_data(key) {
+                    Some(data) => data,
+                    None => {
+                        log::warn!("资产 {} 中不存在网格 {}，跳过绘制", asset, mesh);
+                        return false;
+                    }
+                }
+            }
+        };
+        let gpu = upload_mesh(device, queue, &data);
+        if let MeshRef::Asset { asset, mesh } = key {
+            log::info!(
+                "资产网格已上传 GPU: asset {} mesh {} — {} 顶点 / {} 三角",
+                asset,
+                mesh,
+                data.vertices.len(),
+                data.indices.len() / 3
+            );
+        }
+        self.meshes.insert(key, gpu);
+        true
+    }
 }
 
 /// 一帧的绘制统计，便于日志 / HUD 观测。
@@ -64,7 +157,7 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
-    meshes: HashMap<MeshKind, GpuMesh>,
+    mesh_cache: MeshCache,
     instance_buffer: wgpu::Buffer,
     instance_capacity: u64,
     stats: RenderStats,
@@ -163,7 +256,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[Some(Vertex::layout()), Some(InstanceRaw::layout())],
+                buffers: &[Some(vertex_layout()), Some(InstanceRaw::layout())],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -212,7 +305,7 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             depth_view,
-            meshes: HashMap::new(),
+            mesh_cache: MeshCache::new(),
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             stats: RenderStats::default(),
@@ -314,8 +407,8 @@ impl Renderer {
             let mut instances = 0u32;
             let stride = std::mem::size_of::<InstanceRaw>() as u64;
 
-            for (kind, range) in &groups {
-                let Some(gpu) = self.meshes.get(kind) else {
+            for (key, range) in &groups {
+                let Some(gpu) = self.mesh_cache.get(*key) else {
                     continue;
                 };
                 pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
@@ -341,8 +434,17 @@ impl Renderer {
         self.queue.present(frame);
     }
 
-    /// 把场景里可见的物件整理成按网格分组的实例区间，并上传到 GPU。
-    fn prepare_instances(&mut self, scene: &Scene) -> Vec<(MeshKind, std::ops::Range<u32>)> {
+    /// 注入资产库（由应用层加载 FBX 后调用）。渲染层本身不认识文件 IO。
+    pub fn set_asset_library(&mut self, library: Arc<dyn MeshProvider>) {
+        self.mesh_cache.set_library(library);
+    }
+
+    pub fn mesh_cache(&self) -> &MeshCache {
+        &self.mesh_cache
+    }
+
+    /// 把场景里可见的物件整理成按 `MeshRef` 分组的实例区间，并上传到 GPU。
+    fn prepare_instances(&mut self, scene: &Scene) -> Vec<(MeshRef, std::ops::Range<u32>)> {
         // 更新相机 / 光照 uniform
         let mut camera = scene.camera;
         camera.aspect = self.aspect();
@@ -367,20 +469,24 @@ impl Renderer {
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        // 按固定顺序分组，保证每帧绘制顺序稳定
-        let kinds = [
-            MeshKind::Cube,
-            MeshKind::Sphere,
-            MeshKind::Plane,
-            MeshKind::Cylinder,
-        ];
-        let mut all: Vec<InstanceRaw> = Vec::new();
-        let mut groups: Vec<(MeshKind, std::ops::Range<u32>)> = Vec::new();
+        // 分组键改为 MeshRef：内置网格与资产网格统一处理，按首次出现顺序稳定排列
+        let mut keys: Vec<MeshRef> = Vec::new();
+        for node in scene.iter() {
+            if !node.visible {
+                continue;
+            }
+            if !keys.contains(&node.mesh) {
+                keys.push(node.mesh);
+            }
+        }
 
-        for kind in kinds {
+        let mut all: Vec<InstanceRaw> = Vec::new();
+        let mut groups: Vec<(MeshRef, std::ops::Range<u32>)> = Vec::new();
+
+        for key in &keys {
             let start = all.len() as u32;
             for node in scene.iter() {
-                if !node.visible || node.mesh != kind {
+                if !node.visible || node.mesh != *key {
                     continue;
                 }
                 let color: Vec4 = node.color;
@@ -390,16 +496,20 @@ impl Renderer {
                 });
             }
             if all.len() as u32 > start {
-                groups.push((kind, start..all.len() as u32));
+                groups.push((*key, start..all.len() as u32));
             }
         }
 
-        // 确保内置网格已在 GPU 上
-        for kind in kinds {
-            if !self.meshes.contains_key(&kind) {
-                let gpu = self.upload_mesh(MeshData::for_kind(kind));
-                self.meshes.insert(kind, gpu);
+        // 确保用到的网格都已上传（内置即时生成，资产从注入的 MeshProvider 取）
+        let mut uploaded: Vec<MeshRef> = Vec::new();
+        for (key, _) in &groups {
+            if self.mesh_cache.ensure(&self.device, &self.queue, *key) {
+                uploaded.push(*key);
             }
+        }
+        // 上传失败的网格从绘制分组中剔除
+        if uploaded.len() != groups.len() {
+            groups.retain(|(key, _)| uploaded.contains(key));
         }
 
         if all.is_empty() {
@@ -426,31 +536,36 @@ impl Renderer {
 
         groups
     }
+}
 
-    fn upload_mesh(&self, data: MeshData) -> GpuMesh {
-        let vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("r3e-vertex-buffer"),
-            size: (data.vertices.len() * std::mem::size_of::<Vertex>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue
-            .write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&data.vertices));
+/// 上传一份 CPU 网格到 GPU。
+fn upload_mesh(device: &wgpu::Device, queue: &wgpu::Queue, data: &MeshData) -> GpuMesh {
+    let vertex_size = (data.vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+    let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("r3e-vertex-buffer"),
+        size: vertex_size,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    if !data.vertices.is_empty() {
+        queue.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&data.vertices));
+    }
 
-        let index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("r3e-index-buffer"),
-            size: (data.indices.len() * std::mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue
-            .write_buffer(&index_buffer, 0, bytemuck::cast_slice(&data.indices));
+    let index_size = (data.indices.len().max(1) * std::mem::size_of::<u32>()) as u64;
+    let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("r3e-index-buffer"),
+        size: index_size,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    if !data.indices.is_empty() {
+        queue.write_buffer(&index_buffer, 0, bytemuck::cast_slice(&data.indices));
+    }
 
-        GpuMesh {
-            vertex_buffer,
-            index_buffer,
-            index_count: data.indices.len() as u32,
-        }
+    GpuMesh {
+        vertex_buffer,
+        index_buffer,
+        index_count: data.indices.len() as u32,
     }
 }
 

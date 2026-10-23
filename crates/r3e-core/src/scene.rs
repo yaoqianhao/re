@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3, Vec4};
 use serde::Deserialize;
 
-use crate::{Camera, Light, MeshKind, Node, NodeId};
+use crate::{Camera, Light, MeshRef, Node, NodeId};
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -175,7 +175,7 @@ impl Scene {
         node.mesh = desc
             .mesh
             .as_deref()
-            .and_then(MeshKind::parse)
+            .and_then(MeshRef::parse)
             .unwrap_or_default();
         if let Some(p) = desc.position {
             node.transform.position = Vec3::from(p);

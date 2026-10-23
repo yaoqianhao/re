@@ -15,12 +15,15 @@ var<uniform> u_camera: Camera;
 struct VsIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    // M1 起顶点带 UV（uv 原点左上，v 已由资产层做 v' = 1 - v 翻转），
+    // 本阶段仅透传到片元着色器，尚未接入采样（贴图绑定在后续阶段）。
+    @location(2) uv: vec2<f32>,
     // 实例矩阵按列传入
-    @location(2) m0: vec4<f32>,
-    @location(3) m1: vec4<f32>,
-    @location(4) m2: vec4<f32>,
-    @location(5) m3: vec4<f32>,
-    @location(6) color: vec4<f32>,
+    @location(3) m0: vec4<f32>,
+    @location(4) m1: vec4<f32>,
+    @location(5) m2: vec4<f32>,
+    @location(6) m3: vec4<f32>,
+    @location(7) color: vec4<f32>,
 };
 
 struct VsOut {
@@ -28,6 +31,7 @@ struct VsOut {
     @location(0) world_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) uv: vec2<f32>,
 };
 
 @vertex
@@ -47,6 +51,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.world_position = world.xyz;
     out.world_normal = normalize(normal_matrix * in.normal);
     out.color = in.color;
+    out.uv = in.uv;
     return out;
 }
 
