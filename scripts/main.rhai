@@ -3,9 +3,15 @@
 
 fn on_start() {
     log("脚本已启动，场景物件数 = " + count());
-    // 物理后端当前是预留的空实现，这里提前挂上刚体，换后端后立刻参与模拟
-    attach_body("orbiter", "dynamic", 1.5);
-    log("物理后端 = " + physics_backend() + "，刚体数 = " + body_count());
+    // 物理开启时才真正创建刚体（关闭状态下 attach_body 返回 false）。
+    // 开启后 orbiter 改由物理驱动，脚本不再每帧强设位置。
+    if physics_enabled() {
+        attach_body("orbiter", "dynamic", 1.5);
+        body_impulse("orbiter", 2.2, 0.0, 0.0);
+    }
+    log("物理后端 = " + physics_backend()
+        + " / 开关 = " + physics_enabled()
+        + " / 刚体数 = " + body_count());
 }
 
 fn on_update(dt) {
@@ -16,11 +22,14 @@ fn on_update(dt) {
     set_pos("spinner", 0.0, 1.2 + (t * 1.6).sin() * 0.35, 0.0);
 
     // 2) 球体绕立方体公转，远近交替时缩放
-    let radius = 3.0;
-    let x = (t * 0.9).cos() * radius;
-    let z = (t * 0.9).sin() * radius;
-    set_pos("orbiter", x, 1.5 + (t * 2.4).sin() * 0.55, z);
-    set_scale_uniform("orbiter", 0.8 + (t * 3.0).sin() * 0.18);
+    //    物理开启时改为物理驱动（重力 + 落地反弹），避免脚本每帧抢位置
+    if !physics_enabled() {
+        let radius = 3.0;
+        let x = (t * 0.9).cos() * radius;
+        let z = (t * 0.9).sin() * radius;
+        set_pos("orbiter", x, 1.5 + (t * 2.4).sin() * 0.55, z);
+        set_scale_uniform("orbiter", 0.8 + (t * 3.0).sin() * 0.18);
+    }
 
     // 3) 顶部落下的方块随时间变色
     let hue = ((t * 0.7).sin() + 1.0) * 0.5;

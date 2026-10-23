@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use r3e_core::Scene;
-use r3e_physics::Physics;
+use r3e_core::{InputState, Scene};
+use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
 pub use api::Clock;
@@ -24,6 +24,7 @@ pub struct ScriptHost {
     clock: Rc<RefCell<Clock>>,
     scene: Rc<RefCell<Scene>>,
     physics: Rc<RefCell<Physics>>,
+    input: Rc<RefCell<InputState>>,
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: Option<PathBuf>,
@@ -34,11 +35,16 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
-    pub fn new(scene: Rc<RefCell<Scene>>, physics: Rc<RefCell<Physics>>) -> Self {
+    pub fn new(
+        scene: Rc<RefCell<Scene>>,
+        physics: Rc<RefCell<Physics>>,
+        input: Rc<RefCell<InputState>>,
+    ) -> Self {
         let clock = Rc::new(RefCell::new(Clock::default()));
         let ctx = api::ScriptContext {
             scene: scene.clone(),
             physics: physics.clone(),
+            input: input.clone(),
             clock: clock.clone(),
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
         };
@@ -52,6 +58,7 @@ impl ScriptHost {
             clock,
             scene,
             physics,
+            input,
             ast: None,
             scope: Scope::new(),
             script_path: None,
@@ -59,6 +66,11 @@ impl ScriptHost {
             base_scene_json: None,
             last_error: None,
         }
+    }
+
+    /// 输入状态句柄，供 app 层每帧填充后脚本读取。
+    pub fn input_handle(&self) -> Rc<RefCell<InputState>> {
+        self.input.clone()
     }
 
     pub fn scene_handle(&self) -> Rc<RefCell<Scene>> {
@@ -145,8 +157,15 @@ impl ScriptHost {
     pub fn rebuild_scene(&mut self, json: &str) -> Result<(), String> {
         let new_scene =
             Scene::from_json_str(json).map_err(|e| format!("场景解析失败: {e}"))?;
+        let phys_cfg = PhysicsConfig::from_scene(&new_scene.physics);
         *self.scene.borrow_mut() = new_scene;
-        self.physics.borrow_mut().clear_bodies();
+        {
+            let mut physics = self.physics.borrow_mut();
+            physics.clear_bodies();
+            if let Err(e) = physics.apply_config(phys_cfg) {
+                println!("[script] 物理配置应用失败: {e}");
+            }
+        }
         self.base_scene_json = Some(json.to_string());
 
         if let Some(ast) = self.ast.clone() {
@@ -179,15 +198,28 @@ impl ScriptHost {
         }
 
         // 重放基础场景，保证脚本重新执行时状态干净
+        let mut phys_cfg = None;
         if let Some(json) = &self.base_scene_json {
             match Scene::from_json_str(json) {
-                Ok(new_scene) => *self.scene.borrow_mut() = new_scene,
+                Ok(new_scene) => {
+                    phys_cfg = Some(PhysicsConfig::from_scene(&new_scene.physics));
+                    *self.scene.borrow_mut() = new_scene;
+                }
                 Err(e) => println!("[script] 基础场景重放失败: {e}"),
             }
         } else {
             self.scene.borrow_mut().clear_nodes();
         }
-        self.physics.borrow_mut().clear_bodies();
+        {
+            let mut physics = self.physics.borrow_mut();
+            physics.clear_bodies();
+            // 回到场景文件声明的物理配置（脚本里的运行时改动随之重置）
+            if let Some(cfg) = phys_cfg {
+                if let Err(e) = physics.apply_config(cfg) {
+                    println!("[script] 物理配置应用失败: {e}");
+                }
+            }
+        }
 
         if let Err(e) = self.load_file(&path) {
             println!("[script] 热重载失败: {e}");

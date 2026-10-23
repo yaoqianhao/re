@@ -1,8 +1,10 @@
-[source.crates-io]
-replace-with = "ustc"
+# 注意：ustc 镜像的 sparse 索引已返回 403（不可用），改用官方 sparse 索引。
+# 若日后镜像恢复，把下面三行注释解开、并注释掉 [source.crates-io] 的 replace-with 即可。
+# [source.ustc]
+# registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
 
-[source.ustc]
-registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+[source.crates-io]
+registry = "sparse+https://index.crates.io/"
 
 [build]
 target = "x86_64-pc-windows-gnu"

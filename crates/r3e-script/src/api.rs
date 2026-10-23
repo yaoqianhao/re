@@ -7,8 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use glam::{Vec3, Vec4};
-use r3e_core::{MeshKind, ObjectDesc, Scene};
-use r3e_physics::{BodyDesc, BodyKind, ColliderShape, Physics};
+use r3e_core::input::{parse_mouse_button, parse_pad_axis, parse_pad_button};
+use r3e_core::{InputState, MeshKind, ObjectDesc, Scene};
+use r3e_physics::{BodyDesc, BodyHandle, BodyKind, PhysicsKind, Physics};
 use rhai::{Array, Dynamic, Engine};
 
 /// 引擎递给脚本的运行时时钟。
@@ -24,6 +25,7 @@ pub struct Clock {
 pub struct ScriptContext {
     pub scene: Rc<RefCell<Scene>>,
     pub physics: Rc<RefCell<Physics>>,
+    pub input: Rc<RefCell<InputState>>,
     pub clock: Rc<RefCell<Clock>>,
     pub rng: Rc<Cell<u64>>,
 }
@@ -317,52 +319,316 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         min + xorshift(&c.rng) * (max - min)
     });
 
-    // ---------------- 物理（预留接口） ----------------
-    // 当前 `null` 后端只登记刚体、不参与模拟；换上真实后端后这些调用立刻生效。
+    // ---------------- 输入：鼠标 ----------------
+    // 读数均为"本逻辑帧"的快照：pressed / released 只在该帧为 true。
     let c = ctx.clone();
-    engine.register_fn(
-        "attach_body",
-        move |name: &str, kind: &str, mass: f64| -> bool {
+    engine.register_fn("mouse_x", move || -> f64 {
+        c.input.borrow().mouse_x as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_y", move || -> f64 {
+        c.input.borrow().mouse_y as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_pos", move || -> Array {
+        let i = c.input.borrow();
+        vec![
+            Dynamic::from(i.mouse_x as f64),
+            Dynamic::from(i.mouse_y as f64),
+        ]
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_dx", move || -> f64 {
+        c.input.borrow().mouse_dx as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_dy", move || -> f64 {
+        c.input.borrow().mouse_dy as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_moved", move || -> bool {
+        let i = c.input.borrow();
+        i.mouse_dx != 0.0 || i.mouse_dy != 0.0
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scroll", move || -> f64 { c.input.borrow().scroll as f64 });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_down", move |btn: &str| -> bool {
+        match parse_mouse_button(btn) {
+            Some(i) => c.input.borrow().mouse_down(i),
+            None => {
+                println!("[script] 未知鼠标按键 `{btn}`（可选 left/right/middle/back/forward）");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_down", move |idx: i64| -> bool {
+        c.input.borrow().mouse_down(idx.max(0) as usize)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_pressed", move |btn: &str| -> bool {
+        match parse_mouse_button(btn) {
+            Some(i) => c.input.borrow().mouse_pressed(i),
+            None => {
+                println!("[script] 未知鼠标按键 `{btn}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_pressed", move |idx: i64| -> bool {
+        c.input.borrow().mouse_pressed(idx.max(0) as usize)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_released", move |btn: &str| -> bool {
+        match parse_mouse_button(btn) {
+            Some(i) => c.input.borrow().mouse_released(i),
+            None => {
+                println!("[script] 未知鼠标按键 `{btn}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("mouse_released", move |idx: i64| -> bool {
+        c.input.borrow().mouse_released(idx.max(0) as usize)
+    });
+
+    // ---------------- 输入：手柄 ----------------
+    let c = ctx.clone();
+    engine.register_fn("gamepad_connected", move || -> bool {
+        c.input.borrow().pad.connected
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("gamepad_name", move || -> String {
+        c.input.borrow().pad.name.clone()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_down", move |btn: &str| -> bool {
+        match parse_pad_button(btn) {
+            Some(i) => c.input.borrow().pad_down(i),
+            None => {
+                println!("[script] 未知手柄按键 `{btn}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_down", move |idx: i64| -> bool {
+        c.input.borrow().pad_down(idx.max(0) as usize)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_pressed", move |btn: &str| -> bool {
+        match parse_pad_button(btn) {
+            Some(i) => c.input.borrow().pad_pressed(i),
+            None => {
+                println!("[script] 未知手柄按键 `{btn}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_pressed", move |idx: i64| -> bool {
+        c.input.borrow().pad_pressed(idx.max(0) as usize)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_released", move |btn: &str| -> bool {
+        match parse_pad_button(btn) {
+            Some(i) => c.input.borrow().pad_released(i),
+            None => {
+                println!("[script] 未知手柄按键 `{btn}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_released", move |idx: i64| -> bool {
+        c.input.borrow().pad_released(idx.max(0) as usize)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_axis", move |axis: &str| -> f64 {
+        match parse_pad_axis(axis) {
+            // 摇杆做死区处理，扳机（lt/rt 为 6、7 号之后的索引）保留原始值
+            Some(i) => {
+                let pad = &c.input.borrow().pad;
+                let v = if i <= r3e_core::input::PAD_RIGHT_Y {
+                    pad.axis_deadzone(i)
+                } else {
+                    pad.axis(i)
+                };
+                v as f64
+            }
+            None => {
+                println!("[script] 未知手柄轴 `{axis}`");
+                0.0
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("pad_axis", move |idx: i64| -> f64 {
+        c.input.borrow().pad.axis(idx.max(0) as usize) as f64
+    });
+
+    // ---------------- 物理 ----------------
+    // 物理默认关闭：null 后端只登记刚体。通过 `physics_set_enabled(true)` 或
+    // 场景 JSON / 命令行开启后，内置后端开始积分与地面碰撞。
+    let c = ctx.clone();
+    engine.register_fn("attach_body", move |name: &str, kind: &str, mass: f64| -> bool {
+        let scene = c.scene.borrow();
+        let Some(node) = scene.find(name) else {
+            println!("[script] attach_body: 物件 `{name}` 不存在");
+            return false;
+        };
+        let mut desc = BodyDesc::from_node(node).unwrap_or_else(|| BodyDesc::infer(node));
+        desc.kind = BodyKind::parse(kind);
+        desc.mass = if mass > 0.0 { f32_of(mass) } else { 1.0 };
+        desc.position = node.world_position();
+        let id = node.id;
+        // 重复 attach 时先回收旧刚体，避免同一节点挂两个
+        let old = node.body.map(BodyHandle);
+        drop(scene);
+        if let Some(h) = old {
+            c.physics.borrow_mut().destroy_body(h);
+        }
+
+        let handle = match c.physics.borrow_mut().try_create_body(id, desc) {
+            Some(h) => h,
+            None => {
+                println!("[script] attach_body: 物理未启用（physics_set_enabled(true) 或 --physics on）");
+                return false;
+            }
+        };
+        if let Some(n) = c.scene.borrow_mut().get_mut(id) {
+            n.body = Some(handle.0);
+        }
+        true
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("detach_body", move |name: &str| -> bool {
+        let id = {
             let scene = c.scene.borrow();
             let Some(node) = scene.find(name) else {
-                println!("[script] attach_body: 物件 `{name}` 不存在");
                 return false;
             };
-            let body_kind = BodyKind::parse(kind);
-            let shape = match node.mesh {
-                MeshKind::Sphere => ColliderShape::Sphere,
-                MeshKind::Cylinder => ColliderShape::Cylinder,
-                _ => ColliderShape::Box,
-            };
-            let desc = BodyDesc {
-                kind: body_kind,
-                shape,
-                half_extents: node.transform.scale * 0.5,
-                mass: f32_of(mass),
-                position: node.world_position(),
-                rotation: node.transform.rotation,
-                scale: node.transform.scale,
-                ..Default::default()
-            };
-            let id = node.id;
-            drop(scene);
-            let handle = c.physics.borrow_mut().create_body(id, desc);
-            let mut scene = c.scene.borrow_mut();
-            if let Some(n) = scene.get_mut(id) {
-                n.body = Some(handle.0);
-            }
+            node.id
+        };
+        let handle = c
+            .scene
+            .borrow_mut()
+            .get_mut(id)
+            .and_then(|n| n.body.take())
+            .map(BodyHandle);
+        if let Some(h) = handle {
+            c.physics.borrow_mut().destroy_body(h);
             true
-        },
-    );
+        } else {
+            false
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("body_impulse", move |name: &str, x: f64, y: f64, z: f64| -> bool {
+        let handle = {
+            let scene = c.scene.borrow();
+            match scene.find(name).and_then(|n| n.body) {
+                Some(h) => BodyHandle(h),
+                None => return false,
+            }
+        };
+        c.physics
+            .borrow_mut()
+            .apply_impulse(handle, Vec3::new(f32_of(x), f32_of(y), f32_of(z)));
+        true
+    });
 
     let c = ctx.clone();
     engine.register_fn("body_count", move || -> i64 {
         c.physics.borrow().body_count() as i64
     });
 
+    // ---- 物理开关 / 后端 / 环境参数 ----
+
+    let c = ctx.clone();
+    engine.register_fn("physics_enabled", move || -> bool {
+        c.physics.borrow().enabled()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_set_enabled", move |on: bool| -> bool {
+        let mut physics = c.physics.borrow_mut();
+        physics.set_enabled(on);
+        let now = physics.enabled();
+        println!("[script] 物理{}", if now { "已启用" } else { "已关闭" });
+        now
+    });
+
     let c = ctx.clone();
     engine.register_fn("physics_backend", move || -> String {
-        c.physics.borrow().backend_name().to_string()
+        c.physics.borrow().kind().name().to_string()
+    });
+
+    // 运行时切换后端；切换会清空已有刚体。`rapier` 在当前构建不可用时返回 false。
+    let c = ctx.clone();
+    engine.register_fn("physics_set_backend", move |name: &str| -> bool {
+        let Some(kind) = PhysicsKind::parse(name) else {
+            println!("[script] 未知物理后端 `{name}`（可用：builtin / null / rapier）");
+            return false;
+        };
+        match c.physics.borrow_mut().set_kind(kind) {
+            Ok(()) => {
+                println!("[script] 物理后端 -> {}", kind.name());
+                true
+            }
+            Err(e) => {
+                println!("[script] {e}");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_gravity", move || -> f64 {
+        c.physics.borrow().gravity.y as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_set_gravity", move |x: f64, y: f64, z: f64| {
+        c.physics
+            .borrow_mut()
+            .set_gravity(Vec3::new(f32_of(x), f32_of(y), f32_of(z)));
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_ground", move || -> f64 {
+        c.physics.borrow().ground() as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_set_ground", move |y: f64| {
+        c.physics.borrow_mut().set_ground(f32_of(y));
     });
 }
 

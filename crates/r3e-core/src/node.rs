@@ -51,6 +51,8 @@ pub struct Node {
     pub children: Vec<NodeId>,
     /// 物理后端的刚体句柄（预留）。
     pub body: Option<u64>,
+    /// 场景文件里为该物件声明的物理描述（未声明为 None）。
+    pub physics: Option<crate::scene::PhysicsDesc>,
     /// 每帧由 `Scene::update_world_transforms` 计算的缓存。
     pub world: Mat4,
     /// 世界法线矩阵缓存。
@@ -69,6 +71,7 @@ impl Node {
             parent: None,
             children: Vec::new(),
             body: None,
+            physics: None,
             world: Mat4::IDENTITY,
             world_normal: glam::Mat3::IDENTITY,
         }

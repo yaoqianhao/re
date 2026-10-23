@@ -50,6 +50,26 @@ pub struct PhysicsDesc {
     pub half_extents: Option<[f32; 3]>,
 }
 
+/// 场景级物理配置：对应场景 JSON 顶层 `physics` 字段。
+///
+/// 所有字段都是可选的，缺省值由 `r3e_physics::PhysicsConfig` 决定：
+/// 默认 enabled=false（物理关闭）、backend="builtin"、重力 -9.81、地面 y=0。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PhysicsSceneDesc {
+    /// 是否启用物理模拟。
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// "builtin"（内置最简物理）| "null"（空转，只登记刚体）| "rapier"（需构建时启用）
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// 重力加速度向量，缺省 [0.0, -9.81, 0.0]。
+    #[serde(default)]
+    pub gravity: Option<[f32; 3]>,
+    /// 地面平面高度，缺省 0.0。
+    #[serde(default)]
+    pub ground: Option<f32>,
+}
+
 fn default_body_kind() -> String {
     "dynamic".to_string()
 }
@@ -92,6 +112,8 @@ pub struct SceneFile {
     pub light: Option<LightDesc>,
     #[serde(default)]
     pub objects: Vec<ObjectDesc>,
+    #[serde(default)]
+    pub physics: Option<PhysicsSceneDesc>,
 }
 
 /// 场景：所有可渲染物件的唯一真源。
@@ -108,6 +130,8 @@ pub struct Scene {
     pub camera: Camera,
     pub light: Light,
     pub background: Vec4,
+    /// 场景级物理配置，随场景一起热重载。
+    pub physics: PhysicsSceneDesc,
 }
 
 impl Default for Scene {
@@ -129,6 +153,7 @@ impl Scene {
             camera: Camera::default(),
             light: Light::default(),
             background: Vec4::new(0.05, 0.06, 0.08, 1.0),
+            physics: PhysicsSceneDesc::default(),
         }
     }
 
@@ -165,6 +190,7 @@ impl Scene {
             node.color = Vec4::from(c);
         }
         node.visible = desc.visible.unwrap_or(true);
+        node.physics = desc.physics;
 
         if let Some(parent_name) = desc.parent {
             let pid = *self
@@ -317,6 +343,7 @@ impl Scene {
     pub fn from_file(file: SceneFile) -> Result<Self, String> {
         let mut scene = Scene::new();
         scene.name = file.name.unwrap_or_else(|| "untitled".to_string());
+        scene.physics = file.physics.unwrap_or_default();
 
         if let Some(bg) = file.background {
             scene.background = Vec4::from(bg);

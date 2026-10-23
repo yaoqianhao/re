@@ -8,12 +8,18 @@ use std::sync::{mpsc, Arc};
 use std::time::{Instant, SystemTime};
 
 use glam::Vec3;
-use r3e_core::Scene;
-use r3e_physics::Physics;
+use gilrs::{Axis, Button};
+use r3e_core::input::{
+    InputState, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT, PAD_AXIS_COUNT,
+    PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT, PAD_RIGHT_X, PAD_RIGHT_Y, PAD_RT,
+    PAD_START,
+};
+use r3e_core::{NodeId, Scene};
+use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -22,6 +28,81 @@ use winit::window::{Window, WindowId};
 const FALLBACK_SCENE: &str = include_str!("../../../assets/scene.json");
 
 const MOVE_SPEED: f32 = 6.0;
+/// 鼠标拖拽转视角的灵敏度（度 / 像素）。
+const MOUSE_ORBIT_SENS: f32 = 0.28;
+/// 鼠标右键拖拽平移的灵敏度系数（随相机距离缩放）。
+const MOUSE_PAN_SENS: f32 = 0.0016;
+/// 手柄右摇杆转视角（度 / 秒）。
+const PAD_ORBIT_SPEED: f32 = 150.0;
+/// 手柄扳机推拉速度（每秒缩放比例）。
+const PAD_ZOOM_SPEED: f32 = 1.6;
+
+/// 手柄按键索引 → gilrs 按键（与 r3e-core 的索引约定一一对应）。
+const PAD_BUTTON_MAP: [Option<Button>; PAD_BUTTON_COUNT] = [
+    Some(Button::South),
+    Some(Button::East),
+    Some(Button::West),
+    Some(Button::North),
+    Some(Button::LeftTrigger),
+    Some(Button::RightTrigger),
+    Some(Button::Select),
+    Some(Button::Start),
+    Some(Button::Mode),
+    Some(Button::LeftThumb),
+    Some(Button::RightThumb),
+    Some(Button::DPadUp),
+    Some(Button::DPadDown),
+    Some(Button::DPadLeft),
+    Some(Button::DPadRight),
+    None,
+];
+
+/// 手柄轴索引 → gilrs 轴。
+const PAD_AXIS_MAP: [Option<Axis>; PAD_AXIS_COUNT] = [
+    Some(Axis::LeftStickX),
+    Some(Axis::LeftStickY),
+    Some(Axis::RightStickX),
+    Some(Axis::RightStickY),
+    Some(Axis::LeftZ),
+    Some(Axis::RightZ),
+    None,
+    None,
+];
+
+/// 命令行物理选项。`None` 表示「该层不发言」，交由场景文件与默认值决定。
+#[derive(Debug, Clone, Default)]
+pub struct CliOptions {
+    pub physics: Option<bool>,
+    pub backend: Option<String>,
+    pub gravity: Option<[f32; 3]>,
+    pub ground: Option<f32>,
+}
+
+impl CliOptions {
+    /// 转成物理配置。后端名非法时只告警、不阻断启动。
+    pub fn to_config(&self) -> PhysicsConfig {
+        let kind = self.backend.as_deref().and_then(|name| {
+            let parsed = PhysicsKind::parse(name);
+            if parsed.is_none() {
+                log::warn!("未知物理后端 `{name}`，可用：builtin / null / rapier(预留)");
+            }
+            parsed
+        });
+        PhysicsConfig {
+            enabled: self.physics,
+            kind,
+            gravity: self.gravity.map(Vec3::from),
+            ground: self.ground,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.physics.is_none()
+            && self.backend.is_none()
+            && self.gravity.is_none()
+            && self.ground.is_none()
+    }
+}
 
 pub struct EngineApp {
     scene_path: PathBuf,
@@ -33,6 +114,12 @@ pub struct EngineApp {
     scene: Rc<RefCell<Scene>>,
     physics: Rc<RefCell<Physics>>,
     scripts: ScriptHost,
+    /// 输入快照：app 层写入，脚本层读取。
+    input: Rc<RefCell<InputState>>,
+    /// 手柄子系统；初始化失败时为 None（引擎其余功能不受影响）。
+    gilrs: Option<gilrs::Gilrs>,
+    /// 光标是否已有有效位置（首个 CursorMoved 之前不算位移）。
+    cursor_valid: bool,
 
     last_frame: Instant,
     last_watch: Instant,
@@ -43,10 +130,12 @@ pub struct EngineApp {
     last_dt_ms: f32,
     console: mpsc::Receiver<String>,
     scene_mtime: Option<SystemTime>,
+    /// 上次完成「场景声明刚体」绑定的物理世代号。
+    physics_gen: u64,
 }
 
 impl EngineApp {
-    pub fn new(scene_path: PathBuf, script_path: PathBuf) -> Self {
+    pub fn new(scene_path: PathBuf, script_path: PathBuf, cli: CliOptions) -> Self {
         let scene_src = std::fs::read_to_string(&scene_path).unwrap_or_else(|e| {
             log::warn!(
                 "读取场景 {} 失败（{e}），使用内置兜底场景",
@@ -64,9 +153,28 @@ impl EngineApp {
         };
         log::info!("场景 `{}` 载入完成：{} 个物件", scene.name, scene.len());
 
+        // 物理：默认关闭；场景文件 physics 段 -> 命令行覆盖（后者优先且会粘住热重载）
+        let mut physics = Physics::new();
+        if let Err(e) = physics.apply_config(PhysicsConfig::from_scene(&scene.physics)) {
+            log::warn!("场景物理配置未应用: {e}");
+        }
+        if !cli.is_empty() {
+            if let Err(e) = physics.apply_override(cli.to_config()) {
+                log::warn!("命令行物理选项未应用: {e}");
+            }
+        }
+        log::info!(
+            "物理: {} / 后端 {} / 重力 {:?} / 地面 {}",
+            if physics.enabled() { "启用" } else { "关闭" },
+            physics.kind().name(),
+            physics.gravity.to_array(),
+            physics.ground()
+        );
+
         let scene = Rc::new(RefCell::new(scene));
-        let physics = Rc::new(RefCell::new(Physics::new()));
-        let mut scripts = ScriptHost::new(scene.clone(), physics.clone());
+        let physics = Rc::new(RefCell::new(physics));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        let mut scripts = ScriptHost::new(scene.clone(), physics.clone(), input.clone());
         scripts.set_base_scene(scene_src);
 
         if script_path.exists() {
@@ -80,6 +188,16 @@ impl EngineApp {
         let scene_mtime = std::fs::metadata(&scene_path)
             .ok()
             .and_then(|m| m.modified().ok());
+        let gilrs = match gilrs::Gilrs::new() {
+            Ok(g) => {
+                log::info!("手柄子系统就绪 (gamepad ready)");
+                Some(g)
+            }
+            Err(e) => {
+                log::warn!("手柄子系统初始化失败（{e}），手柄输入不可用");
+                None
+            }
+        };
         let now = Instant::now();
         Self {
             scene_path,
@@ -89,6 +207,9 @@ impl EngineApp {
             scene,
             physics,
             scripts,
+            input,
+            gilrs,
+            cursor_valid: false,
             last_frame: now,
             last_watch: now,
             time: 0.0,
@@ -98,6 +219,7 @@ impl EngineApp {
             last_dt_ms: 0.0,
             console: spawn_console(),
             scene_mtime,
+            physics_gen: 0,
         }
     }
 
@@ -127,6 +249,7 @@ impl EngineApp {
 
     fn step_and_render(&mut self) {
         self.pump_console();
+        self.poll_gamepad();
 
         let now = Instant::now();
         let mut dt = (now - self.last_frame).as_secs_f32();
@@ -150,7 +273,8 @@ impl EngineApp {
                 scene.frame = self.frame_index;
             }
 
-            // 3) 物理（当前 null 后端，空实现；换后端后自动生效）
+            // 3) 物理：先把场景里声明了 physics 的物件绑成刚体，再推进模拟
+            self.sync_physics_bindings();
             {
                 let mut physics = self.physics.borrow_mut();
                 let mut scene = self.scene.borrow_mut();
@@ -164,22 +288,111 @@ impl EngineApp {
         if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
             renderer.render(&self.scene.borrow());
             let stats = renderer.stats();
+            let pad_tag = {
+                let i = self.input.borrow();
+                if i.pad.connected {
+                    format!("手柄 {}", i.pad.name)
+                } else {
+                    "手柄未连接".to_string()
+                }
+            };
+            let phys_tag = {
+                let p = self.physics.borrow();
+                if p.enabled() {
+                    format!("物理 {} / {} 刚体", p.kind().name(), p.body_count())
+                } else {
+                    "物理关".to_string()
+                }
+            };
             window.set_title(&format!(
-                "r3e — Rust 3D Engine  |  {} 物件 / {} draw / {:.1} ms  |  {}",
+                "r3e — Rust 3D Engine  |  {} 物件 / {} draw / {:.1} ms  |  {}  |  {}  |  {}",
                 stats.instances,
                 stats.draw_calls,
                 self.last_dt_ms,
-                if self.paused { "已暂停" } else { "运行中" }
+                if self.paused { "已暂停" } else { "运行中" },
+                pad_tag,
+                phys_tag
             ));
+        }
+
+        // 帧末清掉边沿与增量：下一帧的 pressed / released 只反映新事件
+        self.input.borrow_mut().end_frame();
+    }
+
+    /// 把场景里声明了 `physics` 段的物件绑成刚体。
+    ///
+    /// 物理开关 / 后端切换 / 刚体表清空都会让世代号自增，这里只在世代变化时重绑一次，
+    /// 因此脚本用 `attach_body` 手动绑的刚体不会被覆盖。
+    fn sync_physics_bindings(&mut self) {
+        let (gen, enabled) = {
+            let p = self.physics.borrow();
+            (p.generation(), p.enabled())
+        };
+        if !enabled || gen == self.physics_gen {
+            return;
+        }
+        self.physics_gen = gen;
+
+        let mut scene = self.scene.borrow_mut();
+        let ids: Vec<NodeId> = scene
+            .iter()
+            .filter(|n| n.physics.is_some())
+            .map(|n| n.id)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+
+        let mut physics = self.physics.borrow_mut();
+        let mut bound = 0usize;
+        for id in ids {
+            let Some(desc) = scene.get(id).and_then(BodyDesc::from_node) else {
+                continue;
+            };
+            if let Some(handle) = physics.try_create_body(id, desc) {
+                if let Some(node) = scene.get_mut(id) {
+                    node.body = Some(handle.0);
+                }
+                bound += 1;
+            }
+        }
+        if bound > 0 {
+            log::info!("物理已绑定 {bound} 个场景刚体");
         }
     }
 
     fn apply_camera_input(&mut self, dt: f32) {
-        if self.keys.is_empty() {
+        // 手柄摇杆 / 扳机快照（死区在此生效）
+        let (pad_connected, lx, ly, rx, ry, zoom) = {
+            let i = self.input.borrow();
+            (
+                i.pad.connected,
+                i.pad.axis_deadzone(PAD_LEFT_X),
+                i.pad.axis_deadzone(PAD_LEFT_Y),
+                i.pad.axis_deadzone(PAD_RIGHT_X),
+                i.pad.axis_deadzone(PAD_RIGHT_Y),
+                i.pad.axis(PAD_RT) - i.pad.axis(PAD_LT),
+            )
+        };
+        let pad_move = pad_connected && (lx != 0.0 || ly != 0.0);
+        if self.keys.is_empty() && !pad_move && zoom == 0.0 && rx == 0.0 && ry == 0.0 {
             return;
         }
+
         let mut scene = self.scene.borrow_mut();
         let camera = &mut scene.camera;
+
+        // 手柄右摇杆：环绕转视角
+        if rx != 0.0 || ry != 0.0 {
+            camera.orbit(-rx * PAD_ORBIT_SPEED * dt, ry * PAD_ORBIT_SPEED * dt);
+        }
+
+        // 手柄扳机：RT 拉近 / LT 推远
+        if zoom != 0.0 {
+            let offset = camera.position - camera.target;
+            let len = (offset.length() * (1.0 - zoom * PAD_ZOOM_SPEED * dt)).clamp(0.8, 80.0);
+            camera.position = camera.target + offset.normalize_or_zero() * len;
+        }
 
         let forward = (camera.target - camera.position).normalize_or_zero();
         let right = forward.cross(Vec3::Y).normalize_or_zero();
@@ -204,11 +417,151 @@ impl EngineApp {
             }
         }
 
-        if delta.length_squared() > 1e-6 {
-            let step = delta.normalize() * MOVE_SPEED * dt;
+        // 左摇杆：模拟量直接叠加（不归一化，保留推杆幅度）
+        let move_vec = delta.normalize_or_zero() + right * lx + forward * ly;
+        if move_vec.length_squared() > 1e-6 {
+            let mag = move_vec.length().min(1.0);
+            let step = move_vec.normalize() * MOVE_SPEED * mag * dt;
             camera.position += step;
             camera.target += step;
         }
+    }
+
+    /// 轮询手柄：先排空事件队列，再抓取当前状态快照写入输入层。
+    fn poll_gamepad(&mut self) {
+        let mut snapshot: Option<(String, [bool; PAD_BUTTON_COUNT], [f32; PAD_AXIS_COUNT])> = None;
+
+        if let Some(gilrs) = self.gilrs.as_mut() {
+            // 消费事件以刷新 gilrs 内部状态
+            while gilrs.next_event().is_some() {}
+            for (_id, pad) in gilrs.gamepads() {
+                if !pad.is_connected() {
+                    continue;
+                }
+                let mut buttons = [false; PAD_BUTTON_COUNT];
+                for (i, mapped) in PAD_BUTTON_MAP.iter().enumerate() {
+                    if let Some(b) = mapped {
+                        buttons[i] = pad.is_pressed(*b);
+                    }
+                }
+                let mut axes = [0.0f32; PAD_AXIS_COUNT];
+                for (i, mapped) in PAD_AXIS_MAP.iter().enumerate() {
+                    if let Some(a) = mapped {
+                        axes[i] = pad.value(*a);
+                    }
+                }
+                snapshot = Some((pad.name().to_string(), buttons, axes));
+                break;
+            }
+        }
+
+        let input = self.input.clone();
+        let mut toggle_pause = false;
+        let mut reload_script = false;
+
+        {
+            let mut st = input.borrow_mut();
+            match snapshot {
+                Some((name, buttons, axes)) => {
+                    let first = !st.pad.connected;
+                    st.pad.connected = true;
+                    if st.pad.name != name {
+                        st.pad.name = name.clone();
+                    }
+                    for i in 0..PAD_BUTTON_COUNT {
+                        st.pad.buttons[i].set(buttons[i]);
+                    }
+                    st.pad.axes = axes;
+                    toggle_pause = st.pad.buttons[PAD_START].pressed;
+                    reload_script = st.pad.buttons[PAD_BACK].pressed;
+                    drop(st);
+                    if first {
+                        log::info!("手柄已连接: {name}");
+                    }
+                }
+                None => {
+                    if st.pad.connected {
+                        st.pad.connected = false;
+                        st.pad.name.clear();
+                        st.pad.axes = [0.0; PAD_AXIS_COUNT];
+                        for b in &mut st.pad.buttons {
+                            b.set(false);
+                        }
+                        log::info!("手柄已断开");
+                    }
+                }
+            }
+        }
+
+        if toggle_pause {
+            self.paused = !self.paused;
+            log::info!(
+                "{}（手柄 Start）",
+                if self.paused { "已暂停" } else { "继续运行" }
+            );
+        }
+        if reload_script {
+            let path = self.script_path.clone();
+            match self.scripts.load_file(&path) {
+                Ok(()) => log::info!("脚本已重载（手柄 Back）"),
+                Err(e) => log::error!("重载失败: {e}"),
+            }
+        }
+    }
+
+    /// 鼠标移动：更新位置 / 位移快照，并直接驱动相机（左键转视角、右键平移）。
+    fn handle_cursor_moved(&mut self, x: f64, y: f64) {
+        let (dx, dy, left, right) = {
+            let mut i = self.input.borrow_mut();
+            let dx = if self.cursor_valid {
+                x as f32 - i.mouse_x
+            } else {
+                0.0
+            };
+            let dy = if self.cursor_valid { y as f32 - i.mouse_y } else { 0.0 };
+            i.mouse_x = x as f32;
+            i.mouse_y = y as f32;
+            i.mouse_dx += dx;
+            i.mouse_dy += dy;
+            (dx, dy, i.mouse_down(MOUSE_LEFT), i.mouse_down(MOUSE_RIGHT))
+        };
+        self.cursor_valid = true;
+
+        if !left && !right {
+            return;
+        }
+
+        let mut scene = self.scene.borrow_mut();
+        let cam = &mut scene.camera;
+        if left {
+            // 向右拖 -> 视角向右转
+            cam.orbit(-dx * MOUSE_ORBIT_SENS, dy * MOUSE_ORBIT_SENS);
+        }
+        if right {
+            // 抓取式平移：画面跟随光标
+            let forward = (cam.target - cam.position).normalize_or_zero();
+            let right_v = forward.cross(Vec3::Y).normalize_or_zero();
+            let up_v = right_v.cross(forward).normalize_or_zero();
+            let k = (cam.position - cam.target).length().max(0.5) * MOUSE_PAN_SENS;
+            let offset = -right_v * dx * k + up_v * dy * k;
+            cam.position += offset;
+            cam.target += offset;
+        }
+    }
+
+    fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        let idx = match button {
+            MouseButton::Left => MOUSE_LEFT,
+            MouseButton::Right => MOUSE_RIGHT,
+            MouseButton::Middle => MOUSE_MIDDLE,
+            MouseButton::Back => MOUSE_BACK,
+            MouseButton::Forward => MOUSE_FORWARD,
+            MouseButton::Other(_) => return,
+        };
+        self.input
+            .borrow_mut()
+            .set_mouse_button(idx, state == ElementState::Pressed);
+        log::trace!("鼠标 {button:?} {state:?}");
     }
 
     fn watch_files(&mut self) {
@@ -315,11 +668,23 @@ impl ApplicationHandler for EngineApp {
             WindowEvent::KeyboardInput { event, .. } => {
                 self.handle_key(event_loop, event.logical_key, event.state);
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(position.x, position.y);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.handle_mouse_button(button, state);
+            }
+            WindowEvent::Focused(false) => {
+                // 失焦后收不到松开事件，主动清掉持续按下状态，避免粘键
+                self.keys.clear();
+                self.input.borrow_mut().reset_held();
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 60.0,
                 };
+                self.input.borrow_mut().scroll += amount;
                 let mut scene = self.scene.borrow_mut();
                 let cam = &mut scene.camera;
                 let offset = cam.position - cam.target;

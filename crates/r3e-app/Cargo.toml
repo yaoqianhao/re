@@ -16,6 +16,7 @@ r3e-physics.workspace = true
 r3e-script.workspace = true
 winit.workspace = true
 wgpu.workspace = true
+gilrs.workspace = true
 pollster.workspace = true
 glam.workspace = true
 log.workspace = true

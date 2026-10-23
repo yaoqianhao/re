@@ -29,7 +29,7 @@ r3e 是一个用纯 Rust 实现的**最小可用 3D 游戏引擎**，核心命�
 | --- | --- | --- |
 | 零外部资源依赖 | 不需要任何 `.obj` / `.gltf` / 贴图文件即可跑起来 | `r3e-render/src/mesh.rs` 全程序化生成 4 种内置网格 |
 | 文本即接口 | 场景、行为、调试全部可由文本表达，且改动即时可见 | 场景 JSON + Rhai 脚本 + stdin REPL，三者写同一份 `Scene` |
-| 物理可插拔 | 物理是抽象层，不是硬依赖，先留契约后留实现 | `PhysicsBackend` trait + `NullBackend` |
+| 物理可插拔 | 物理是抽象层，不是硬依赖；有实现也可整体关掉 | `PhysicsBackend` trait + Null / Builtin 双实现 + 运行时开关 |
 
 这决定了引擎当前的技术形态：**单 pass 前向渲染 + 程序化几何 + 实例化绘制 + 脚本驱动状态**，而不是一个追求画面效果的完整渲染器。
 
@@ -43,6 +43,7 @@ r3e 是一个用纯 Rust 实现的**最小可用 3D 游戏引擎**，核心命�
 | --- | --- | --- | --- |
 | 图形 API | `wgpu` | 30.0 | 跨后端（DX12 / Vulkan / GLES），无需手写平台代码 |
 | 窗口与事件 | `winit` | 0.30 | `ApplicationHandler` 模型，与 `wgpu` surface 生命周期契合 |
+| 手柄 | `gilrs` | 0.11 | 跨平台手柄抽象（XInput / DirectInput / evdev），把各厂商按键与轴归一到统一枚举 |
 | 数学 | `glam` | 0.34（`bytemuck` feature） | SIMD 友好的 Vec/Mat/Quat，矩阵可直接零拷贝上传 GPU |
 | 脚本 | `rhai` | 1.27（`serde` feature） | 纯 Rust 脚本，无 C 依赖，编译期即可嵌入式集成 |
 | 序列化 | `serde` / `serde_json` | 1.0 | 场景文件解析，全部字段 `Option` + `default` 容错 |
@@ -75,7 +76,7 @@ rust3d-engine/
 └─ crates/
    ├─ r3e-core/                # 内核：数学、变换、节点、场景图、相机、光照
    ├─ r3e-render/              # 渲染：wgpu 设备、管线、程序化网格、WGSL
-   ├─ r3e-physics/             # 物理：后端契约 + Null 实现
+   ├─ r3e-physics/             # 物理：后端契约 + Null / 内置最简实现
    ├─ r3e-script/              # 脚本：Rhai 宿主 + 引擎 API 绑定
    └─ r3e-app/                 # 应用：窗口、事件循环、主循环、REPL、热重载
 ```
@@ -111,12 +112,12 @@ rust3d-engine/
 
 | crate | 主要文件 | 行数量级 |
 | --- | --- | --- |
-| r3e-core | `scene.rs`(360) / `transform.rs`(101) / `node.rs`(82) / `camera.rs`(74) / `light.rs`(24) | ~650 |
-| r3e-render | `renderer.rs`(474) / `mesh.rs`(234) / `shader.wgsl`(69) | ~780 |
-| r3e-physics | `lib.rs`(226) | ~230 |
-| r3e-script | `api.rs`(389) / `lib.rs`(213) | ~600 |
-| r3e-app | `app.rs`(366) / `main.rs`(72) | ~440 |
-| **合计** | | **约 2700 行 Rust + 69 行 WGSL** |
+| r3e-core | `scene.rs`(343) / `input.rs`(219) / `transform.rs`(86) / `node.rs`(76) / `camera.rs`(65) / `light.rs`(19) | ~824 |
+| r3e-render | `renderer.rs`(423) / `mesh.rs`(213) / `shader.wgsl`(55) | ~639 |
+| r3e-physics | `lib.rs`(858) | ~858 |
+| r3e-script | `api.rs`(577) / `lib.rs`(218) | ~795 |
+| r3e-app | `app.rs`(668) / `main.rs`(164) | ~832 |
+| **合计** | | **约 3950 行 Rust + 55 行 WGSL** |
 
 Release 二进制 21.8 MB（含 wgpu 后端静态链接与调试符号剥离前的体积）。
 
@@ -165,7 +166,7 @@ pub struct Node {
     pub visible: bool,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
-    pub body: Option<u64>,        // 物理刚体句柄（预留）
+    pub body: Option<u64>,        // 物理刚体句柄（物理关闭时恒为 None）
     pub world: Mat4,              // 每帧刷新的世界矩阵缓存
     pub world_normal: glam::Mat3, // 世界法线矩阵缓存
 }
@@ -431,9 +432,16 @@ pub struct RenderStats { pub draw_calls: u32, pub instances: u32, pub frame_inde
 
 ## 6. 物理层：r3e-physics
 
-### 6.1 设计目的
+> 完整用法、规则与实测数据见 [`docs/PHYSICS.md`](PHYSICS.md)。本节只讲架构。
 
-物理层的当前价值不在"能模拟"，而在**把接口先钉死**：让场景格式与脚本 API 里关于物理的表达（`physics` 字段、`attach_body` 函数）现在就能写，将来换后端时场景与脚本零改动。
+### 6.1 设计目的：契约先于实现
+
+物理层被切成**两层**，互不耦合：
+
+1. **契约层**：`PhysicsBackend` trait，让场景格式（`physics` 段）与脚本 API（`attach_body` 等）先能写。
+2. **实现层**：默认 `NullBackend`（空转）/ `BuiltinBackend`（自实现最简物理）/ 预留 `RapierBackend`（未编译进默认构建）。
+
+好处是「有没有物理」变成**运行时开关**，而不是编译期分叉：同一份场景与脚本，开物理会掉、关物理由脚本驱动。
 
 ### 6.2 后端契约
 
@@ -447,13 +455,18 @@ pub trait PhysicsBackend {
     fn step(&mut self, dt: f32);
     fn sync_to_scene(&mut self, scene: &mut Scene);
     fn body_count(&self) -> usize;
-    fn take_all_handles(&self) -> Option<Vec<BodyHandle>> { None }  // 有默认实现
+    // 可选（有默认实现，内置后端会覆盖）
+    fn set_ground(&mut self, ground: f32) {}
+    fn pull_from_scene(&mut self, scene: &Scene) {}
+    fn take_all_handles(&self) -> Option<Vec<BodyHandle>> { None }
 }
 ```
 
-职责边界写得很清楚：**后端负责积分与碰撞，并负责把结果写回 Scene**（`sync_to_scene`）。上层不关心物理怎么算，只在帧序里调 `step(dt, &mut scene)`。
+职责边界写得很清楚：**后端负责积分与碰撞，并负责把结果写回 Scene**（`sync_to_scene`）。
+上层不关心物理怎么算，只在帧序里调 `step(dt, &mut scene)`。
 
-数据契约：
+`set_ground` / `pull_from_scene` 之所以放进 trait 而不是内置后端私有，是为了让 Rapier 之类外部后端也能接：
+前者映射到地面体，后者映射到 `sync_back`/读回变换。
 
 | 类型 | 内容 |
 | --- | --- |
@@ -462,38 +475,69 @@ pub trait PhysicsBackend {
 | `ColliderShape` | `Box` / `Sphere` / `Capsule` / `Cylinder` |
 | `BodyDesc` | kind / shape / half_extents / mass / restitution(0.2) / friction(0.6) / position / rotation / scale |
 
-### 6.3 NullBackend
+`BodyDesc::infer(shape, scale)` 从网格与缩放推导碰撞体：球 → 半径 `scale.x/2`，柱/胶囊 → 半高 `scale.y/2`，
+其余 → 盒 `scale/2`。脚本 `attach_body(name, kind, mass)` 走这条路，所以 `create_node` 出来的物件可直接挂刚体。
 
-```rust
-pub struct NullBackend { next: u64, bodies: Vec<BodyHandle> }
-```
+### 6.3 三种后端
 
-- `create_body` 只分配自增句柄并登记，返回句柄。
-- `step` / `sync_to_scene` / `apply_impulse` / `set_gravity` 全为空实现。
-- `body_count` 返回登记数，因此脚本里 `body_count()` 能反映"挂了几个刚体"，可用来验证挂载逻辑是否正确。
-- `take_all_handles` 返回 `Some(列表)`，让 `Physics::clear_bodies` 能整体清空——热重载时不会留下幽灵句柄。
+| 后端 | 状态 | 行为 |
+| --- | --- | --- |
+| `NullBackend` | 默认 | 只分配句柄并登记，`step` / `sync_to_scene` 空转。用于「只想在脚本里表达物理意图、暂不模拟」 |
+| `BuiltinBackend` | 可用 | 半隐式欧拉 + 无限地面平面碰撞 + 弹性 + 摩擦 + 休眠，纯自实现零依赖，约 400 行 |
+| `RapierBackend` | 预留 | `physics_set_backend("rapier")` 会返回 false 并打印「未编译进本构建」，不静默降级 |
 
-### 6.4 Physics 门面
+`NullBackend` 的 `take_all_handles` 返回 `Some(列表)`，让 `Physics::clear_bodies` 能整体清空——热重载不留幽灵句柄。
+
+### 6.4 Physics 门面：开关 + 世代号
 
 ```rust
 pub struct Physics {
-    backend: Box<dyn PhysicsBackend>,  // 动态分发，运行时可换
-    pub gravity: Vec3,                 // 默认 (0, -9.81, 0)
+    backend: Box<dyn PhysicsBackend>,   // 动态分发，运行时可换
+    kind: PhysicsKind,                  // Null / Builtin / Rapier
+    enabled: bool,                      // 总开关
+    pub gravity: Vec3,                  // 默认 (0, -9.81, 0)
+    ground: f32,                        // 地面平面高度，默认 0
+    generation: u64,                    // 配置世代号
+    overrides: PhysicsOverrides,        // 命令行粘性覆盖
 }
 ```
 
-- `with_backend(Box<dyn PhysicsBackend>)` 允许注入真实后端，构造时立即 `set_gravity`。
-- `step(dt, scene)` 串联 `backend.step(dt)` + `backend.sync_to_scene(scene)`，保证调用方只有一个入口。
-- 手工实现 `Debug`（因为 `Box<dyn Trait>` 不自动实现），只打印后端名与重力。
+- **`enabled=false` 时**：`step` 立即返回、`create_body` 直接返回 `false`、`body_count()` 报 0。
+  上层无需到处写 `if`，开关语义收敛在门面里。
+- **`set_enabled(true)` 且后端仍是 `null`** → 自动升级到 `builtin`。避免「开了却没动」。
+- **`generation` 自增**于开关切换、后端重建、`clear_bodies`。`app` 只在世代变化时重绑场景刚体，
+  所以脚本手动 `attach_body` 的刚体不会被每帧覆盖。
+- **`overrides` 记命令行值**，热重载重放场景 JSON 后重新合并，实现「命令行粘性、场景层随文件变、脚本改动易失」。
+- `step(dt, scene)` 串联 `pull_from_scene` + `backend.step(dt)` + `backend.sync_to_scene(scene)`，
+  并统一 `update` 重力/地面到后端。调用方只有一个入口。
+- 手工实现 `Debug`（`Box<dyn Trait>` 不自动实现 Debug）。
 
-### 6.5 接入真实物理后端（Rapier）的路径
+三层配置（命令行 / 场景文件 / 内置默认）的合并逻辑放在 `PhysicsConfig::from_scene` + `apply_config` / `apply_override`，
+放在 `r3e-physics` 而不是 `app`，是为了让无窗口的测试也能覆盖优先级。
 
-需要改动的只有两处，其余代码不动：
+### 6.5 app 层：自动绑定
 
-1. 新建 `RapierBackend` 实现 `PhysicsBackend`：`BodyDesc.shape` → `SharedShape`，`BodyKind` → `RigidBodyType`，`step` 内 `pipeline.step(&gravity, ...)`，`sync_to_scene` 内把 `translation` / `rotation` 写回节点，并 `update_world_transforms`。
-2. `r3e-app` 的 `Physics::new()` 换成 `Physics::with_backend(Box::new(RapierBackend::new()))`。
+`app` 每帧在脚本之后、物理之前调 `sync_physics_bindings`：
 
-场景格式与脚本 API **无需任何改动**：`ObjectDesc.physics` / `attach_body(name, kind, mass)` 早已就位。
+1. 世代号没变 → 什么都不做（零成本）。
+2. 世代号变了（开关翻转 / 后端切换 / 热重载）→ 遍历场景，把**声明了 `physics` 段**的物件逐个 `attach_body` 式绑定。
+3. 纯装饰物件（无 `physics` 段）永远不由引擎自动绑，只能脚本显式 `attach_body`。
+
+这条规则让「场景是静态描述、脚本是行为」的分工成立：场景写 `"physics": {...}` 就该掉，
+没写就归脚本管。窗口标题实时显示 `物理 builtin / N 刚体` 或 `物理关`。
+
+### 6.6 接入外部后端（Rapier）的路径
+
+改动面固定在三处，其余零改动：
+
+1. 新建 `crates/r3e-physics/src/rapier_backend.rs` 实现 `PhysicsBackend`：`BodyDesc.shape` → `SharedShape`，
+   `BodyKind` → `RigidBodyType`，`step` 内 `pipeline.step(&gravity, ...)`，`sync_to_scene` 内把
+   `translation` / `rotation` 写回节点，`update_world_transforms` 由 `app` 统一调。
+2. `PhysicsKind::Rapier` 分支接上真实实例（`Physics::rebuild_backend` 里一行）。
+3. `Cargo.toml` 加 `rapier3d`（当前刻意零依赖）。
+
+场景格式、脚本 API、`app` 层、`core::Scene` **均无需改动**。
+唯一语义差异：外部后端做物件间碰撞与旋转动力学，内置后端不做——属能力升级，不是接口破坏。
 
 ---
 
@@ -630,13 +674,18 @@ pub fn reload_if_changed(&mut self) -> bool {
 
 随机数用自实现的 xorshift64（种子 `0x2545F4914F6CDD1D`）而非 `rand` crate，是为了不引入额外依赖并保证可复现——种子固定，每次启动的随机序列相同。
 
-**物理（预留）**
+**物理**
 
 | 函数 | 说明 |
 | --- | --- |
-| `attach_body(name, kind, mass)` | 按物件网格自动推导碰撞体形状，`half_extents = scale * 0.5` |
-| `body_count()` | 当前刚体数 |
-| `physics_backend()` | 后端名（当前 `"null"`） |
+| `attach_body(name, kind, mass)` | 按物件网格自动推导碰撞体形状，`half_extents = scale * 0.5`；物理关闭时返回 `false` |
+| `detach_body(name)` | 销毁刚体并清空 `Node::body` |
+| `body_impulse(name, x, y, z)` | 施加瞬时冲量，会唤醒休眠体 |
+| `body_count()` | 当前刚体数（物理关闭时恒为 0） |
+| `physics_enabled()` / `physics_set_enabled(on)` | 读 / 写总开关，写入返回操作后的状态 |
+| `physics_backend()` / `physics_set_backend(name)` | 读 / 换后端（`null` / `builtin` / 预留 `rapier`），换后端会清空已有刚体 |
+| `physics_gravity()` / `physics_set_gravity(x,y,z)` | 读 / 写重力 |
+| `physics_ground()` / `physics_set_ground(y)` | 读 / 写地面平面高度 |
 
 **命名变更说明**：`spawn` / `despawn` 原本更自然，但 `spawn` 在 Rhai 中是异步相关的保留字，`despawn` 也随之改为对称的 `remove_node`。这是实现约束导致的命名妥协，已写入 README 与脚本示例。
 
@@ -685,6 +734,9 @@ pub struct EngineApp {
     frame_index: u64,
     paused: bool,
     keys: HashSet<Key>,                  // 当前按下的键
+    input: Rc<RefCell<InputState>>,      // 鼠标/手柄帧级快照，与脚本层共用同一份
+    gilrs: Option<gilrs::Gilrs>,         // 手柄后端；初始化失败降级为 None
+    cursor_valid: bool,                  // 是否已收到过 CursorMoved（首帧不产生位移）
     last_dt_ms: f32,                     // 供 HUD 显示
     console: mpsc::Receiver<String>,     // REPL 输入通道
     scene_mtime: Option<SystemTime>,
@@ -701,17 +753,25 @@ pub struct EngineApp {
 
 ```
 1. pump_console()                      处理 REPL 输入（可能改变 paused 与场景）
+1.5 poll_gamepad()                     排空 gilrs 事件队列，取手柄状态写入 InputState
 2. dt = now - last_frame，clamp 到 [0, 0.1]   ← 防卡顿后一次跳跃过大（切窗口回来常见）
 3. if !paused:
    3.1 time += dt; frame_index += 1
    3.2 scripts.tick(dt, time, frame)    ← 脚本可能生成/销毁/移动物件
-   3.3 apply_camera_input(dt)           ← WASD/QE/方向键平移动相机
+   3.3 apply_camera_input(dt)           ← 键盘 + 手柄摇杆/扳机驱动相机
    3.4 scene.time / scene.frame ← 当前值
-   3.5 physics.step(dt, &mut scene)     ← 当前空实现；换后端后自动接上
+   3.45 sync_physics_bindings()          ← 物理世代号变了才重绑场景声明的刚体
+   3.5 physics.step(dt, &mut scene)     ← 开关关闭时内部直接返回
    3.6 scene.update_world_transforms()  ← 必须在脚本与物理之后！
 4. renderer.render(&scene)              ← 从 world 矩阵组装实例并绘制
-5. 更新窗口标题 HUD
+5. 更新窗口标题 HUD（含手柄连接状态）
+6. input.end_frame()                    ← 清边沿与增量，down 状态保留
 ```
+
+`poll_gamepad` 放在最前，是因为手柄状态要在本帧脚本与相机读取之前就绪；
+`end_frame` 放在最后，是因为脚本在 `scripts.tick` 里读的 `pressed` / `released`
+必须是本帧的值，清早了脚本就永远看不到边沿。暂停时两者都照跑——暂停只是冻结
+时间推进与脚本/相机，输入采集不能停，否则恢复时状态是脏的。
 
 **为什么 `update_world_transforms` 必须在最后**：脚本和物理改的都是 `transform`（局部），渲染读的是 `world`（世界）。如果顺序颠倒，画面会永远慢一帧——脚本改了位置，这一帧还画在旧位置上。
 
@@ -719,19 +779,45 @@ pub struct EngineApp {
 
 ### 8.4 输入
 
+输入分三层，职责单向依赖，设备层不认识脚本层：
+
+```
+core/input.rs   InputState / PadState / ButtonEdge   ← 纯数据 + 边沿语义，无 I/O
+   ↑ 写
+app/app.rs      winit 事件（键盘 / 鼠标）、gilrs 轮询（手柄）
+   ↑ 读
+script/api.rs   mouse_* / gamepad_* / pad_* 注入 Rhai
+```
+
+放 core 层的原因：脚本层要读输入，但脚本层不依赖窗口或设备 crate；
+设备侧写入由 app 层完成，其余层只读。
+
 | 输入 | 行为 |
 | --- | --- |
 | `W` / `A` / `S` / `D` | 相机沿前向/右向前后左右平移 |
 | `↑` `↓` `←` `→` | 同 WASD |
 | `Q` / `E` | 相机下降 / 上升 |
 | 鼠标滚轮 | 沿视线推拉，半径钳制 0.8 ~ 80 |
+| 鼠标左键拖拽 | 环绕转视角（`orbit`，绕 `camera.target`） |
+| 鼠标右键拖拽 | 抓取式平移，位移随相机距离缩放 |
+| 手柄左摇杆 | 相机水平移动，模拟量直接叠加（死区 0.15） |
+| 手柄右摇杆 | 环绕转视角 |
+| 手柄 `RT` / `LT` | 相机拉近 / 推远 |
+| 手柄 `Start` / `Back` | 暂停切换 / 重载脚本 |
 | `空格` | 暂停 / 继续 |
 | `F5` | 手动重新载入脚本 |
 | `Esc` | 退出 |
 
 相机移动是**整体平移**：`camera.position` 与 `camera.target` 同加位移，因此朝向不变（自由飞行视角，不是环绕轨道）。`MOVE_SPEED = 6.0` 单位/秒。
 
-按键状态用 `HashSet<Key>` 维护：按下插入、抬起移除，因此支持多键同时（斜着走更快会归一化，见 `delta.normalize()`）。
+按键状态用 `HashSet<Key>` 维护：按下插入、抬起移除，因此支持多键同时（斜着走更快会归一化）。手柄左摇杆走 `right * lx + forward * ly` 的模拟量路径，幅度由推杆深度决定，不参与归一化。
+
+**边沿语义**是这块的核心约定：`ButtonEdge` 同时记录 `down`（持续）、`pressed`（刚按下）、`released`（刚松开），后两者只在状态翻转的那个逻辑帧内为 true，由帧末的 `InputState::end_frame` 清掉。脚本侧因此可以安全地区分"按住"与"按一下"，不会漏事件也不会重复触发。
+
+**粘键防护**：窗口 `Focused(false)` 时立即 `keys.clear()` + `InputState::reset_held()`。
+否则在窗口外松开鼠标，引擎永远不知道该键已抬起，相机会一直朝一个方向飞。
+
+**手柄降级**：`gilrs::Gilrs::new()` 失败只是 `warn`，`gilrs` 字段为 `None`，鼠标键盘照常工作；运行中未连接手柄时 `pad.connected == false`，所有 `pad_*` API 返回 `false` / `0.0`，脚本无需分支判断设备是否存在。手柄热插拔由每帧轮询自然覆盖，标题栏显示连接状态与设备名。
 
 `Space` 与 `Esc`、`F5` 在处理后立即从 `keys` 移除并 `return`，避免被当作持续按键重复触发。
 
@@ -790,7 +876,7 @@ physics_backend()
             ▼                      ▼                       ▼
    ┌──────────────────────────────────────────────────────────────────┐
    │                         r3e-app 主循环                            │
-   │  dt → scripts.tick → camera input → physics.step → world 矩阵      │
+   │ dt → scripts.tick → camera → sync_bindings → physics.step → world  │
    └───────────────────────────┬──────────────────────────────────────┘
                                │ Rc<RefCell<Scene>>
                                ▼
@@ -802,7 +888,7 @@ physics_backend()
                    ▼                              ▼
    ┌──────────────────────────────┐   ┌──────────────────────────────┐
    │ r3e-render                   │   │ r3e-physics                  │
-   │ 分组实例 → 4 条 draw_indexed  │   │ NullBackend（当前空转）        │
+   │ 分组实例 → 4 条 draw_indexed  │   │ Null / Builtin（可关开关）     │
    └───────────────┬──────────────┘   └──────────────────────────────┘
                    │ wgpu
                    ▼
@@ -833,7 +919,7 @@ physics_backend()
 | 几何来源 | 程序化生成 | GLTF 加载 | 引擎要"零资源即可运行"，也给物理碰撞体提供了确定的半尺寸语义 |
 | 脚本引擎 | Rhai | Lua (mlua) / WASM | 纯 Rust 无 C 依赖，`cargo build` 即可，跨平台零配置 |
 | 脚本命名 | `create_node` / `remove_node` | `spawn` / `despawn` | `spawn` 是 Rhai 保留字，被迫妥协并保持对称 |
-| 物理 | trait + Null 实现 | 直接硬依赖 Rapier | 先钉契约后接实现，场景格式与脚本 API 不用二次改 |
+| 物理 | trait + Null/Builtin 双实现 + 运行时开关 | 直接硬依赖 Rapier | 契约先钉死；内置实现只做「刚体 vs 地面」，够用且零依赖；换成 Rapier 时场景与脚本零改动 |
 | 投影矩阵 | DirectX 风格（NDC 0..1） | OpenGL 风格（-1..1） | wgpu 的 NDC 定义如此，用错深度全错 |
 | 色彩 | sRGB surface + 线性光照计算 | 手写 gamma 校正 | 让 surface 格式自动完成编码，着色器保持简单 |
 | 热重载 | 重放基础场景 + 重跑脚本 | 增量应用脚本 diff | 脚本是命令式的，无法 diff；干净重建是唯一可靠做法 |
@@ -854,7 +940,7 @@ physics_backend()
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 无视锥剔除、无遮挡剔除 | 屏幕外的物件照样上传和绘制（GPU 会做顶点裁剪，但 CPU 仍付代价） |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
-| 物理 | NullBackend 空转 | 物件不会掉落、不会碰撞 |
+| 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
 | 动画 | 只有脚本每帧改 transform | 无骨骼动画、无关键帧插值、无动画混合 |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 | 无分屏、无阴影相机、无后视镜 |
@@ -884,7 +970,7 @@ physics_backend()
 
 | 阶段 | 内容 | 改动位置 | 破坏性 |
 | --- | --- | --- | --- |
-| 一 | Rapier 物理后端 | 新增 `r3e-physics/src/rapier_backend.rs` + `app` 一行替换 | 无（契约已定） |
+| 一 | Rapier 物理后端（替换内置实现） | 新增 `r3e-physics/src/rapier_backend.rs` + 接上 `PhysicsKind::Rapier` 分支 | 无（契约与开关已就位） |
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
 | 三 | 视锥剔除 + AABB | `mesh.rs` 加 `aabb()`，`prepare_instances` 加平面测试 | 无 |
 | 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
@@ -923,7 +1009,7 @@ cargo build --release
 | 脚本 | `on_start` / `on_update` 正常调度，`log` 输出可见 |
 | 热重载 | 改 `scene.json` 与 `main.rhai` 后 ≤0.4s 生效，场景干净重建 |
 | REPL | 输入指令后自动暂停脚本，指令立即反映到画面 |
-| 物理 | `physics_backend()` 返回 `null`，`attach_body` 可成功挂载句柄 |
+| 物理 | 默认关：`attach_body` 返回 false、`body_count()` 为 0；`--physics on` 后 5 个刚体落地反弹并进入休眠 |
 | 编译 | `cargo build --release` 零 warning |
 
 ---
@@ -957,7 +1043,7 @@ cargo build --release
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
 | `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`prepare_instances`、`render`、`resize`、`RenderStats` |
 | `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换 |
-| `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BodyDesc`、`NullBackend`、`Physics` 门面 |
+| `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面 |
 | `crates/r3e-script/src/lib.rs` | `ScriptHost`、加载/每帧/热重载/重放、`has_fn` |
 | `crates/r3e-script/src/api.rs` | 全部 Rhai API 绑定、`Clock`、`ScriptContext`、xorshift 随机 |
 | `crates/r3e-app/src/app.rs` | `EngineApp`、帧循环、输入、文件监视、REPL 通道 |
