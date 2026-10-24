@@ -8,14 +8,42 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
-use r3e_core::mesh::{MeshData, MeshProvider, Vertex};
-use r3e_core::{MeshRef, Scene};
+use r3e_core::mesh::{MaterialData, MeshData, MeshProvider, TextureImage, Vertex};
+use r3e_core::{AssetId, MeshRef, Scene};
 use winit::window::Window;
 
 use crate::mesh::{builtin_mesh, vertex_layout, InstanceRaw};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
+
+/// 材质 uniform：base color + PBR 标量。32 字节，16 字节对齐。
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct MaterialUniform {
+    base_color: [f32; 4],
+    /// x = metallic，y = roughness，z = 是否有贴图（0/1），w 保留。
+    params: [f32; 4],
+}
+
+impl Default for MaterialUniform {
+    fn default() -> Self {
+        Self {
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            params: [0.0, 0.6, 0.0, 0.0],
+        }
+    }
+}
+
+/// 材质键：默认材质，或「某资产内第 N 个材质」。
+///
+/// 渲染层只认这个键，具体材质参数通过 `MeshProvider::material` 取，
+/// 因此这里依旧不依赖任何模型文件格式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MaterialKey {
+    Default,
+    Asset { asset: AssetId, index: u32 },
+}
 
 /// 全局相机 / 光照 uniform。128 字节，16 字节对齐。
 #[repr(C)]
@@ -44,7 +72,17 @@ impl Default for CameraUniform {
 pub struct GpuMesh {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    /// 材质分区（P2 起）。至少一段；无材质信息时是整网格一段的 `Default`。
+    /// 各段 `index_count` 之和即本网格的三角形索引总数。
+    parts: Vec<GpuPart>,
+}
+
+/// GPU 侧的一个材质分区。
+#[derive(Debug, Clone, Copy)]
+struct GpuPart {
+    first_index: u32,
     index_count: u32,
+    material: MaterialKey,
 }
 
 /// 网格缓存：按 `MeshRef` 惰性上传 GPU 网格。
@@ -124,7 +162,28 @@ impl MeshCache {
                 }
             }
         };
-        let gpu = upload_mesh(device, queue, &data);
+
+        // 材质分区：沿用资产层给的三角形区间；没有分区信息时整网格一段默认材质。
+        let parts: Vec<GpuPart> = match key {
+            MeshRef::Asset { .. } => self
+                .library
+                .as_ref()
+                .map(|library| library.mesh_parts(key))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|part| GpuPart {
+                    first_index: part.first_index,
+                    index_count: part.index_count,
+                    material: match part.material {
+                        Some((asset, index)) => MaterialKey::Asset { asset, index },
+                        None => MaterialKey::Default,
+                    },
+                })
+                .collect(),
+            MeshRef::Builtin(_) => Vec::new(),
+        };
+
+        let gpu = upload_mesh(device, queue, &data, parts);
         if let MeshRef::Asset { asset, mesh } = key {
             log::info!(
                 "资产网格已上传 GPU: asset {} mesh {} — {} 顶点 / {} 三角",
@@ -158,6 +217,7 @@ pub struct Renderer {
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     mesh_cache: MeshCache,
+    material_cache: MaterialCache,
     instance_buffer: wgpu::Buffer,
     instance_capacity: u64,
     stats: RenderStats,
@@ -243,9 +303,11 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        let material_cache = MaterialCache::new(&device);
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("r3e-pipeline-layout"),
-            bind_group_layouts: &[Some(&camera_layout)],
+            bind_group_layouts: &[Some(&camera_layout), Some(&material_cache.layout)],
             immediate_size: 0,
         });
 
@@ -306,6 +368,7 @@ impl Renderer {
             camera_bind_group,
             depth_view,
             mesh_cache: MeshCache::new(),
+            material_cache,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             stats: RenderStats::default(),
@@ -341,6 +404,7 @@ impl Renderer {
     /// 绘制一帧。场景的任何变化都会在下一帧生效，不需要重建管线。
     pub fn render(&mut self, scene: &Scene) {
         let groups = self.prepare_instances(scene);
+        self.prepare_materials(&groups);
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -402,7 +466,6 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-
             let mut draw_calls = 0u32;
             let mut instances = 0u32;
             let stride = std::mem::size_of::<InstanceRaw>() as u64;
@@ -418,8 +481,24 @@ impl Renderer {
                         .slice(range.start as u64 * stride..range.end as u64 * stride),
                 );
                 pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..gpu.index_count, 0, 0..1);
-                draw_calls += 1;
+
+                // 每个材质分区一次 draw：bind group 1 换成该分区的材质。
+                for part in &gpu.parts {
+                    let Some(material) = self
+                        .material_cache
+                        .get(part.material)
+                        .or_else(|| self.material_cache.get(MaterialKey::Default))
+                    else {
+                        continue;
+                    };
+                    pass.set_bind_group(1, &material.bind_group, &[]);
+                    pass.draw_indexed(
+                        part.first_index..part.first_index + part.index_count,
+                        0,
+                        0..1,
+                    );
+                    draw_calls += 1;
+                }
                 instances += range.end - range.start;
             }
 
@@ -437,6 +516,33 @@ impl Renderer {
     /// 注入资产库（由应用层加载 FBX 后调用）。渲染层本身不认识文件 IO。
     pub fn set_asset_library(&mut self, library: Arc<dyn MeshProvider>) {
         self.mesh_cache.set_library(library);
+        // 资产库换了，材质 / 贴图句柄可能失效，整批丢弃重来。
+        self.material_cache.materials.clear();
+        self.material_cache.textures.clear();
+    }
+
+    /// 收齐本帧要用到的材质并建好 bind group（默认材质也要有一份）。
+    fn prepare_materials(&mut self, groups: &[(MeshRef, std::ops::Range<u32>)]) {
+        let mut keys: Vec<MaterialKey> = vec![MaterialKey::Default];
+        for (key, _) in groups {
+            let Some(gpu) = self.mesh_cache.get(*key) else {
+                continue;
+            };
+            for part in &gpu.parts {
+                if !keys.contains(&part.material) {
+                    keys.push(part.material);
+                }
+            }
+        }
+        let library = self.mesh_cache.library().cloned();
+        for key in keys {
+            self.material_cache.ensure(
+                &self.device,
+                &self.queue,
+                library.as_ref(),
+                key,
+            );
+        }
     }
 
     pub fn mesh_cache(&self) -> &MeshCache {
@@ -538,8 +644,40 @@ impl Renderer {
     }
 }
 
-/// 上传一份 CPU 网格到 GPU。
-fn upload_mesh(device: &wgpu::Device, queue: &wgpu::Queue, data: &MeshData) -> GpuMesh {
+/// 上传一份 CPU 网格到 GPU。`parts` 为空时按「整网格一段默认材质」补齐。
+fn upload_mesh(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    data: &MeshData,
+    mut parts: Vec<GpuPart>,
+) -> GpuMesh {
+    let index_count = data.indices.len() as u32;
+    if parts.is_empty() && index_count > 0 {
+        parts.push(GpuPart {
+            first_index: 0,
+            index_count,
+            material: MaterialKey::Default,
+        });
+    } else {
+        // 资产层给的分区若越界（数据错误），裁到索引范围内，避免 draw 越界。
+        for part in &mut parts {
+            if part.first_index >= index_count {
+                part.index_count = 0;
+                continue;
+            }
+            part.index_count = part
+                .index_count
+                .min(index_count.saturating_sub(part.first_index));
+        }
+        parts.retain(|p| p.index_count > 0);
+        if parts.is_empty() && index_count > 0 {
+            parts.push(GpuPart {
+                first_index: 0,
+                index_count,
+                material: MaterialKey::Default,
+            });
+        }
+    }
     let vertex_size = (data.vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
     let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("r3e-vertex-buffer"),
@@ -565,8 +703,262 @@ fn upload_mesh(device: &wgpu::Device, queue: &wgpu::Queue, data: &MeshData) -> G
     GpuMesh {
         vertex_buffer,
         index_buffer,
-        index_count: data.indices.len() as u32,
+        parts,
     }
+}
+
+/// 一个材质在 GPU 侧的状态。
+struct GpuMaterial {
+    bind_group: wgpu::BindGroup,
+    _uniform: wgpu::Buffer,
+}
+
+/// 材质缓存：材质键 → bind group；贴图按 `(资产, 贴图下标)` 单独缓存，避免重复上传。
+///
+/// 任何一步取不到数据（材质缺失 / 贴图解码失败 / 超出纹理尺寸限制）都不会 panic，
+/// 而是回退到「默认白色 + 纯色」的兜底材质，保证画面继续跑。
+struct MaterialCache {
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    white: wgpu::TextureView,
+    materials: HashMap<MaterialKey, GpuMaterial>,
+    textures: HashMap<(AssetId, u32), wgpu::TextureView>,
+    max_texture_dim: u32,
+}
+
+impl MaterialCache {
+    fn new(device: &wgpu::Device) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("r3e-material-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("r3e-material-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
+        let white = create_white_texture(device);
+
+        let mut cache = Self {
+            layout,
+            sampler,
+            white,
+            materials: HashMap::new(),
+            textures: HashMap::new(),
+            max_texture_dim: 8192,
+        };
+        cache.max_texture_dim = device.limits().max_texture_dimension_2d;
+        cache
+    }
+
+    fn get(&self, key: MaterialKey) -> Option<&GpuMaterial> {
+        self.materials.get(&key)
+    }
+
+    /// 确保材质已就绪；失败时退回默认材质（调用方永远能拿到一组 bind group）。
+    fn ensure(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        library: Option<&Arc<dyn MeshProvider>>,
+        key: MaterialKey,
+    ) {
+        if self.materials.contains_key(&key) {
+            return;
+        }
+
+        let data = match (key, library) {
+            (MaterialKey::Asset { asset, index }, Some(library)) => {
+                library.material(asset, index).unwrap_or_else(|| {
+                    log::warn!("资产 {} 缺少材质 {}，回退默认材质", asset, index);
+                    MaterialData::default()
+                })
+            }
+            _ => MaterialData::default(),
+        };
+
+        let (view, has_texture) = match (data.base_color_texture, library) {
+            (Some((asset, index)), Some(library)) => match self
+                .texture_view(device, queue, asset, index, library)
+            {
+                Some(view) => (view, true),
+                None => (self.white.clone(), false),
+            },
+            _ => (self.white.clone(), false),
+        };
+
+        let uniform = MaterialUniform {
+            base_color: data.base_color,
+            params: [
+                data.metallic,
+                data.roughness,
+                if has_texture { 1.0 } else { 0.0 },
+                0.0,
+            ],
+        };
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-material-ubo"),
+            size: std::mem::size_of::<MaterialUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&uniform));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("r3e-material-bg"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+
+        self.materials.insert(
+            key,
+            GpuMaterial {
+                bind_group,
+                _uniform: buffer,
+            },
+        );
+    }
+
+    fn texture_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        asset: AssetId,
+        index: u32,
+        library: &Arc<dyn MeshProvider>,
+    ) -> Option<wgpu::TextureView> {
+        if let Some(view) = self.textures.get(&(asset, index)) {
+            return Some(view.clone());
+        }
+        let image = library.texture(asset, index)?;
+        let view = upload_texture(device, queue, &image, self.max_texture_dim)?;
+        log::info!(
+            "贴图已上传 GPU: asset {} tex {} — {}x{}",
+            asset,
+            index,
+            image.width,
+            image.height
+        );
+        self.textures.insert((asset, index), view.clone());
+        Some(view)
+    }
+}
+
+fn create_white_texture(device: &wgpu::Device) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-white-1x1"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// 把 RGBA8 像素上传成 sRGB 贴图（源色即 sRGB，采样后自动线性化）。
+fn upload_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    image: &TextureImage,
+    max_dim: u32,
+) -> Option<wgpu::TextureView> {
+    if !image.is_valid() {
+        log::warn!("贴图像素数据不完整（{}x{}），跳过", image.width, image.height);
+        return None;
+    }
+    if image.width > max_dim || image.height > max_dim {
+        log::warn!(
+            "贴图 {}x{} 超过设备上限 {max_dim}，跳过",
+            image.width,
+            image.height
+        );
+        return None;
+    }
+    let size = wgpu::Extent3d {
+        width: image.width,
+        height: image.height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-asset-texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &image.rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(image.width * 4),
+            rows_per_image: Some(image.height),
+        },
+        size,
+    );
+    Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

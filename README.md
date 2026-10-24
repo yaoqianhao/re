@@ -34,7 +34,7 @@ D:\rust3d-engine
 └─ docs/
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
     ├─ PHYSICS.md             # 物理子系统：三层开关、场景字段、脚本 API、内置规则
-    └─ ASSETS.md              # 下一步规划：FBX 资产加载（模型 / 贴图 / 材质 / 动画）
+    └─ ASSETS.md              # FBX 资产加载（P0–P2 已落地，P3 动画 / P4 蒙皮规划）
 ```
 
 各 crate 单向依赖：`app → render / script / physics → core`，核心层不认识 wgpu。
@@ -331,29 +331,41 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 
 ## 7. 已知边界
 
-- 单方向光 + 环境光，Blinn-Phong 着色；无阴影、无后处理、无 PBR 贴图。
-- 网格为程序化生成（立方体 / 球 / 平面 / 圆柱），**尚未接入外部 3D 资产文件**；
-  贴图、材质、骨骼动画亦未支持。下一步计划（FBX 资产加载）见 [`docs/ASSETS.md`](docs/ASSETS.md)。
+- 单方向光 + 环境光，Blinn-Phong 着色；无阴影、无后处理。
+- 网格除四种程序化网格外，可加载外部 `.fbx` 静态网格（含 base_color 贴图与材质因子）；
+  骨骼动画与法线/粗糙度贴图尚未支持。用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
 - 物理：物件互不碰撞、无旋转、无地形碰撞、高速可能穿地（无 CCD）；默认关闭。
 
 ---
 
-## 8. 下一步计划：FBX 资产加载
+## 8. FBX 资产加载（进行中：P0–P2 已完成）
 
-目标：让引擎能直接加载 `.fbx` 格式的 3D 资产（模型 / 贴图 / 材质 / 动画）并放入场景，
-同时保持"场景与行为全部由文本描述"的既有设计——资产只提供几何与材质数据，
-摆放与逻辑仍然写在 `scene.json` / `.rhai` 里。
+已落地：静态网格导入与 GPU 上传、材质分区 + base_color 贴图、场景 `assets` 段声明与 spawn。
+待做：P3 节点级动画、P4 骨骼蒙皮。
 
-完整方案（选型、crate 落点、数据结构改动、场景与脚本 API、阶段拆分、风险与验收）见
+```bash
+# 临时加载一个 FBX 到默认场景（窗口里直接看造型与贴图）
+cargo run -- --asset D:/models/robot.fbx
+# 只看解析统计，不进窗口
+cargo run -- --dump-asset D:/models/robot.fbx
+```
+
+长期用法写在场景里（相对路径按场景文件目录解析）：
+
+```json
+"assets": [
+  { "path": "models/robot.fbx", "position": [0, 0, 0], "scale": [1, 1, 1] }
+]
+```
+
+完整方案（选型、crate 落点、数据结构、阶段拆分、踩坑口径与验收）见
 [`docs/ASSETS.md`](docs/ASSETS.md)，要点：
 
 - 解析器选 **ufbx**（单文件 C 库，静态链接，本机已用 4 个样本实测）；
-- 新增 `r3e-asset` crate，`Vertex` / `MeshData` 从 `r3e-render` 下沉到 `r3e-core` 避免反向依赖；
-- `MeshKind` 从枚举改为句柄（`MeshKind::Asset("models/robot.fbx#Mesh0")`），渲染分组键随之改成
-  `(mesh_key, material_key)`；
-- 贴图走 wgpu 纹理数组 + 材质表，`.fbx` 内嵌或同级目录的图片按相对路径解析；
-- 动画按节点级动画栈（TRS 曲线采样）实现播放 / 循环 / 速度控制；
-- 分阶段落地：P0 几何导入 → P1 贴图材质 → P2 动画播放 → P3 缓存与性能。
+- 新增 `r3e-asset` crate，`Vertex` / `MeshData` 下沉到 `r3e-core`，render 只认 `MeshProvider` trait；
+- `MeshRef` 句柄化（`asset:<路径>#<网格序号>`）+ 材质分区逐段 `draw_indexed`；
+- 贴图 `filename` → 内嵌 `content` → 白纹理三级回退，缺图不阻断渲染；
+- 动画按节点级动画栈（TRS 曲线采样）实现，是下一阶段（P3）的目标。
 

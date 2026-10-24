@@ -6,7 +6,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
 
-use crate::MeshRef;
+use crate::{AssetId, MeshRef};
 
 /// 统一顶点格式：位置 + 法线 + 第一套 UV。
 ///
@@ -106,6 +106,83 @@ impl MeshData {
 ///
 /// `r3e-asset::AssetLibrary` 在资产层实现它，`r3e-app` 负责把实现注入渲染层，
 /// 这样 `r3e-render` 的依赖图里不会出现 `ufbx`。
+///
+/// P2 起这一层除了顶点数据，还对外提供「材质分区」与「材质 / 贴图」——
+/// 渲染层据此决定每个绘制段的 bind group，但仍不需要知道数据来自 FBX 还是别的格式。
 pub trait MeshProvider {
     fn mesh_data(&self, key: MeshRef) -> Option<MeshData>;
+
+    /// 网格的材质分区（按索引区间切分）。返回空表示「整网格一段、用默认材质」。
+    fn mesh_parts(&self, _key: MeshRef) -> Vec<MeshPartData> {
+        Vec::new()
+    }
+
+    /// 取某个资产内第 `index` 个材质。
+    fn material(&self, _asset: AssetId, _index: u32) -> Option<MaterialData> {
+        None
+    }
+
+    /// 取某个资产内第 `index` 张贴图（已解码为 RGBA8）。
+    fn texture(&self, _asset: AssetId, _index: u32) -> Option<TextureImage> {
+        None
+    }
+}
+
+/// 一张已解码的贴图：RGBA8、行优先、每像素 4 字节。
+#[derive(Debug, Clone, Default)]
+pub struct TextureImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl TextureImage {
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    /// 尺寸与字节数是否自洽（渲染层上传前必须能通过这道闸）。
+    pub fn is_valid(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.rgba.len() >= self.width as usize * self.height as usize * 4
+    }
+}
+
+/// 材质数据：渲染层只认这份描述。
+#[derive(Debug, Clone)]
+pub struct MaterialData {
+    pub name: String,
+    /// 线性 base color（与贴图相乘的染色因子）。
+    pub base_color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    /// base color 贴图：`(资产, 该资产贴图表下标)`。
+    pub base_color_texture: Option<(AssetId, u32)>,
+}
+
+impl Default for MaterialData {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            metallic: 0.0,
+            roughness: 0.6,
+            base_color_texture: None,
+        }
+    }
+}
+
+/// 网格内的一个材质分区：索引区间 + 使用的材质。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeshPartData {
+    /// 起始索引（索引缓冲内下标，非三角形号）。
+    pub first_index: u32,
+    pub index_count: u32,
+    /// `None` 表示该段使用默认材质（无贴图、白色）。
+    pub material: Option<(AssetId, u32)>,
 }

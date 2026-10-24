@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::{Instant, SystemTime};
@@ -146,28 +146,6 @@ pub struct EngineApp {
 
 impl EngineApp {
     pub fn new(scene_path: PathBuf, script_path: PathBuf, cli: CliOptions) -> Self {
-        // 资产先行：导入失败不阻断启动，只在日志里明确失败原因
-        let mut library = AssetLibrary::new();
-        for path in &cli.assets {
-            match library.load_fbx(path) {
-                Ok(id) => {
-                    let (meshes, tris) = library
-                        .get(id)
-                        .map(|e| (e.meshes.len(), e.triangle_total()))
-                        .unwrap_or((0, 0));
-                    log::info!(
-                        "资产已导入: {} (id {}) — {} 个网格 / {} 三角形",
-                        path.display(),
-                        id,
-                        meshes,
-                        tris
-                    );
-                }
-                Err(e) => log::error!("资产导入失败 {}: {e}", path.display()),
-            }
-        }
-        let assets = Arc::new(library);
-
         let scene_src = std::fs::read_to_string(&scene_path).unwrap_or_else(|e| {
             log::warn!(
                 "读取场景 {} 失败（{e}），使用内置兜底场景",
@@ -184,6 +162,11 @@ impl EngineApp {
             }
         };
         log::info!("场景 `{}` 载入完成：{} 个物件", scene.name, scene.len());
+
+        // 资产导入：命令行 `--asset` 与场景文件 `assets` 段合并（命令行排在前面）。
+        // 场景里的相对路径按场景文件所在目录解析，导入失败不阻断启动。
+        let asset_specs = collect_asset_specs(&scene, &scene_path, &cli.assets);
+        let assets = Arc::new(load_assets(&asset_specs));
 
         // 物理：默认关闭；场景文件 physics 段 -> 命令行覆盖（后者优先且会粘住热重载）
         let mut physics = Physics::new();
@@ -221,7 +204,7 @@ impl EngineApp {
         let mut asset_nodes: Vec<NodeId> = Vec::new();
         if !assets.is_empty() {
             let mut scene_mut = scene.borrow_mut();
-            let spawned = spawn_asset_nodes(&mut scene_mut, &assets, &cli.assets, &mut asset_nodes);
+            let spawned = spawn_asset_nodes(&mut scene_mut, &assets, &asset_specs, &mut asset_nodes);
             log::info!("资产节点已 spawn: {spawned} 个");
             scene_mut.update_world_transforms();
         }
@@ -780,21 +763,107 @@ fn spawn_console() -> mpsc::Receiver<String> {
     rx
 }
 
+/// 一条待导入的资产：路径 + 可选整体变换 + 是否 spawn 成物件。
+///
+/// 路径同时用作 `AssetId` 与 `asset:<路径>#<序号>` 引用键（`AssetId::from_path`
+/// 内部会做小写与正斜杠归一化，因此两种写法指向同一资产）。
+struct AssetSpec {
+    path: PathBuf,
+    position: Option<[f32; 3]>,
+    rotation: Option<[f32; 3]>,
+    scale: Option<[f32; 3]>,
+    spawn: bool,
+}
+
+/// 合并命令行 `--asset` 与场景文件 `assets` 段。
+///
+/// 命令行排在最前，便于临时替换 / 追加；场景内相对路径按场景文件目录解析。
+fn collect_asset_specs(scene: &Scene, scene_path: &Path, cli: &[PathBuf]) -> Vec<AssetSpec> {
+    let base_dir = scene_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut specs: Vec<AssetSpec> = cli
+        .iter()
+        .map(|path| AssetSpec {
+            path: path.clone(),
+            position: None,
+            rotation: None,
+            scale: None,
+            spawn: true,
+        })
+        .collect();
+
+    for decl in &scene.assets {
+        let raw = decl.path.trim();
+        if raw.is_empty() {
+            log::warn!("场景 assets 段存在空 path，已跳过");
+            continue;
+        }
+        let mut path = PathBuf::from(raw);
+        if path.is_relative() {
+            path = base_dir.join(path);
+        }
+        specs.push(AssetSpec {
+            path,
+            position: decl.position,
+            rotation: decl.rotation,
+            scale: decl.scale,
+            spawn: decl.spawn.unwrap_or(true),
+        });
+    }
+    specs
+}
+
+/// 按顺序导入资产；导入失败只记日志，不影响其余资产与启动流程。
+///
+/// 同一路径可能被命令行与多个场景声明同时引用（例如只想换 transform、或 `spawn: false`
+/// 仅供脚本引用），这里按 `AssetId` 去重，避免重复解析同一个 FBX。
+fn load_assets(specs: &[AssetSpec]) -> AssetLibrary {
+    let mut library = AssetLibrary::new();
+    for spec in specs {
+        let key = spec.path.display().to_string();
+        let id = r3e_core::AssetId::from_path(&key);
+        if library.get(id).is_some() {
+            log::debug!("资产已导入过，跳过重复加载: {key}");
+            continue;
+        }
+        match library.load_fbx(&spec.path) {
+            Ok(id) => {
+                let (meshes, tris) = library
+                    .get(id)
+                    .map(|e| (e.meshes.len(), e.triangle_total()))
+                    .unwrap_or((0, 0));
+                log::info!(
+                    "资产已导入: {} (id {}) — {} 个网格 / {} 三角形",
+                    spec.path.display(),
+                    id,
+                    meshes,
+                    tris
+                );
+            }
+            Err(e) => log::error!("资产导入失败 {}: {e}", spec.path.display()),
+        }
+    }
+    library
+}
+
 /// 按资产内节点路径把一个 FBX 的每个网格 spawn 成场景物件。
 ///
 /// * 物件名默认取网格所属节点的路径（如 `RootNode/Arm/Hand`）；
 /// * 与已有物件或同批重名时追加 `#1`、`#2` 后缀；
 /// * `mesh` 字段写成 `asset:<路径>#<序号>`，渲染层据此从资产库取数据；
-/// * 顶点已是 `geometry_to_world` 后的世界空间坐标，因此物件变换保持单位阵。
+/// * 顶点已是 `geometry_to_world` 后的世界空间坐标，因此默认不加变换；
+///   场景 `assets` 段给了 position/rotation/scale 时会作为整体变换施加。
 fn spawn_asset_nodes(
     scene: &mut Scene,
     library: &AssetLibrary,
-    paths: &[PathBuf],
+    specs: &[AssetSpec],
     out: &mut Vec<NodeId>,
 ) -> usize {
     let mut spawned = 0usize;
-    for path in paths {
-        let path_str = path.display().to_string();
+    for spec in specs {
+        if !spec.spawn {
+            continue;
+        }
+        let path_str = spec.path.display().to_string();
         let id = r3e_core::AssetId::from_path(&path_str);
         let Some(entry) = library.get(id) else {
             continue;
@@ -817,20 +886,16 @@ fn spawn_asset_nodes(
                 name = format!("{base}#{suffix}");
             }
 
-            let color = mesh
-                .material_parts
-                .first()
-                .and_then(|part| part.material_index)
-                .and_then(|mi| entry.materials.get(mi as usize))
-                .map(|m| m.base_color)
-                .unwrap_or([0.8, 0.8, 0.85, 1.0]);
+            // P2 起颜色由材质 bind group 负责（贴图 + 材质因子），节点色保持白色，
+            // 否则会和材质 base_color 相乘造成二次压暗。
+            let color = [1.0, 1.0, 1.0, 1.0];
 
             let desc = ObjectDesc {
                 name: name.clone(),
                 mesh: Some(format!("asset:{}#{}", path_str, index)),
-                position: None,
-                rotation: None,
-                scale: None,
+                position: spec.position,
+                rotation: spec.rotation,
+                scale: spec.scale,
                 color: Some(color),
                 parent: None,
                 visible: Some(true),

@@ -11,7 +11,8 @@ AIGC:
 
 # r3e 资产层规划：FBX 外部资产加载
 
-> 状态：**规划中，尚未实现**（本文档是下一步的工作定义，不是现状描述）
+> 状态：**P0–P2 已落地**（静态网格、材质贴图、场景 `assets` 段）；P3 节点动画、P4 蒙皮为后续
+> 本文档前半部分是阶段规划，第 11 / 12 章是已实现口径与验收记录。
 > 当前代码现状见 [`ARCHITECTURE.md`](ARCHITECTURE.md)；本文档描述「加载 `.fbx` 资产并放入场景」这一阶段的
 > 目标、改动面、数据结构、阶段拆分与验收标准。
 
@@ -224,25 +225,28 @@ struct CachedAsset {
 
 ## 5. 对外接口（文本，全部保持可手写）
 
-### 5.1 场景 JSON
+### 5.1 场景 JSON（P2 已按此口径实现）
 
 ```json
 {
   "name": "fbx_demo",
   "assets": [
-    { "name": "robot", "path": "assets/models/robot.fbx" }
+    { "path": "D:/models/robot.fbx", "position": [0, 0, 0], "scale": [1, 1, 1] },
+    { "path": "D:/models/robot.fbx", "position": [3, 0, 0] },
+    { "path": "D:/models/weapon.fbx", "spawn": false }
   ],
   "objects": [
-    { "name": "robot_1", "mesh": "@robot", "position": [0, 0, 0], "rotation": [0, 90, 0] },
-    { "name": "robot_2", "mesh": "@robot", "position": [3, 0, 0],
-      "anim": { "clip": "Idle", "speed": 1.0, "looping": true } }
+    { "name": "sword", "mesh": "asset:D:/models/weapon.fbx#0", "position": [1, 1, 0] }
   ]
 }
 ```
 
-- `assets[].path` 相对**项目根**；`assets[].name` 是脚本与 `mesh` 字段引用用的短名。
-- `mesh: "@robot"` 表示「取该资产的第一个子网格」；需要指定子网格写 `"@robot#Body"`。
-- 一个资产被多个物件引用 = 只解析一次、只上传一次 GPU 缓冲。
+- `assets[].path`：绝对路径或相对**场景文件所在目录**的路径；导入后按网格逐个 spawn 成物件。
+- `assets[].position / rotation / scale`（可选）：该资产所有网格的整体变换；不写就是单位变换。
+- `assets[].spawn`（可选，默认 `true`）：写 `false` 表示只导入不 spawn，供 `asset:` 引用或脚本使用。
+- `mesh: "asset:<路径>#<序号>"`：序号是资产内网格下标（`--dump-asset` 可查）。
+  路径大小写、`/` 与 `\` 不敏感（`AssetId::from_path` 内部归一化）。
+- 同一路径被多条声明或命令行同时引用 = 只解析一次、只上传一次 GPU 缓冲（命令行的声明排在最前）。
 
 ### 5.2 脚本 API（新增）
 
@@ -287,7 +291,7 @@ struct CachedAsset {
 - `bootstrap` 里按 `assets` 段预加载；
 - 验收：`assets/scene_fbx.json` 能显示导入模型的正确造型与朝向；1000 个导入物件仍是「网格数」次 draw call。
 
-### P2：材质与贴图
+### P2：材质与贴图 —— ✅ 已完成（2026-10-24）
 
 - 材质表 + 每材质 bind group + 纹理上传（`Rgba8UnormSrgb`，UV 采样）；
 - `MaterialAsset` 字段映射：`pbr.base_color` → `base_color`；`pbr.metallic / roughness` → 高光指数与强度的近似；
@@ -410,10 +414,46 @@ struct CachedAsset {
 AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）三例完全一致；
 窗口化联调 3 个资产 spawn 成功、网格上传 GPU，人形造型完整无炸面。
 
-### 11.4 尚未做（留给 P2 及之后）
+### 11.4 尚未做（留给 P3 及之后）
 
-- 贴图只收集元数据（filename / 嵌入判定 / uv_set），未解码、未上传纹理；
-- 材质只有 `base_color` 参与渲染着色，`metallic` / `roughness` 未进 uniform；
-- 场景 JSON 的 `assets` 段与 `--assets-root` 未接（当前只走 CLI `--asset`）；
+- 场景 JSON 的 `assets` 段已接通（见第 12 章），但 `--assets-root` 仍未落地；
 - 物理体推导仍只认内置网格，`MeshRef::Asset` 尚无 AABB 体；
-- 顶点未去重到「位号级」共享（角点级拆分是有意为之，压缩留到后续 LOD 阶段）。
+- 顶点未去重到「位号级」共享（角点级拆分是有意为之，压缩留到后续 LOD 阶段）；
+- 法线贴图 / AO / 金属粗糙度贴图未进通道，目前只有 `base_color` 贴图参与着色。
+
+## 12. P2（材质贴图 + 场景 assets 段）实施现状
+
+### 12.1 落地的内容
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/r3e-core/src/mesh.rs` | `MeshPartData`（索引区间 + 材质下标）、`MaterialData`（base_color / metallic / roughness / base_color_texture）、`TextureImage`；`MeshProvider` 增加 `mesh_parts` / `material` / `texture` |
+| `crates/r3e-asset/src/lib.rs` | 贴图解码（`image` + tga/bmp 特性，按扩展名兜底）、材质因子提取、`mesh_parts` 分区输出 |
+| `crates/r3e-render/src/renderer.rs` | `MaterialCache`（材质 uniform + 贴图 view + 采样器）、bind group 1、按 `GpuPart` 逐段 `draw_indexed` |
+| `crates/r3e-render/src/shader.wgsl` | `group(1)` 材质 uniform 与贴图采样，albedo = 物件色 × 材质因子 × 贴图 |
+| `crates/r3e-app/src/app.rs` | 场景 `assets` 段导入 + 按声明 spawn（position/rotation/scale/`spawn:false`）、路径去重 |
+| `crates/r3e-core/src/scene.rs` | `from_json_str` 剥 UTF-8 BOM（PowerShell/记事本保存的场景不再解析失败） |
+
+### 12.2 关键口径（后续不得回退）
+
+1. **贴图三级回退**：`filename` 能读 → 用外部文件；否则用 `content` 嵌入字节；再失败 → 白纹理。
+   缺贴图的材质仍然可渲染，只是纯色。
+2. **解码要带扩展名提示**：FBX 内嵌图片的字节流没有名字，`image` 无法猜格式（老虎样本的
+   嵌入 TGA 就解码失败过）。`decode_image_bytes` 必须带上贴图名做扩展名兜底。
+3. **FBX 缺省因子归一**：FBX 默认 `diffuse = 0.588`，带贴图时它是缺省值而非美术意图，
+   必须归一到 1.0，否则贴图被额外压暗 41%。
+4. **颜色不再走顶点色**：资产节点颜色固定白色，材质因子只在 bind group 里生效一次；
+   两处都乘会二次压暗（M1 的临时做法已在 P2 移除）。
+5. **分段绘制**：`mesh_parts` 为空时渲染层补「整网格一段」的默认材质，越界分区裁切，避免 draw 越界。
+
+### 12.3 验收记录
+
+`cargo build --offline --workspace` exit=0，零 warning。
+
+| 验证项 | 结果 |
+| --- | --- |
+| 老虎样本（内嵌 TGA） | 贴图上传 GPU 256×256，窗口中可见条纹毛色 |
+| Npc1 样本（外部 PNG） | 贴图上传 GPU 512×512 |
+| 场景 `assets` 段（两条声明同一 FBX，一条 `spawn:false`） | 只导入一次、只 spawn 1 个节点，日志与画面一致 |
+| 场景 JSON 带 BOM | 正常解析（此前会报 `expected value at line 1 column 1`） |
+

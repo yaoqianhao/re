@@ -14,7 +14,9 @@ pub use camera::Camera;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use input::{ButtonEdge, InputState, PadState};
 pub use light::Light;
-pub use mesh::{MeshData, Vertex};
+pub use mesh::{
+    MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex,
+};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
-pub use scene::{ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile};
+pub use scene::{AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile};
 pub use transform::Transform;

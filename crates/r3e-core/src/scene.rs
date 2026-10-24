@@ -99,6 +99,27 @@ pub struct LightDesc {
     pub ambient: Option<[f32; 3]>,
 }
 
+/// 场景文件里声明的外部资产（P2 起）。路径相对场景文件所在目录解析。
+///
+/// 声明后由应用层导入并在导入成功后按资产内网格 spawn 物件；
+/// 物件也可以通过 `"mesh": "asset:<路径>#<序号>"` 直接引用同一资产。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AssetDecl {
+    /// 资产路径（FBX 等）。
+    pub path: String,
+    /// 该资产下所有网格的整体偏移。
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
+    #[serde(default)]
+    pub rotation: Option<[f32; 3]>,
+    /// 整体缩放（三轴相同时即可当作单位换算，例如 FBX 以厘米建模就填 0.01）。
+    #[serde(default)]
+    pub scale: Option<[f32; 3]>,
+    /// 只导入不 spawn（供脚本 / 其它物件的 `asset:` 引用使用）。
+    #[serde(default)]
+    pub spawn: Option<bool>,
+}
+
 /// 场景文件结构（JSON）。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SceneFile {
@@ -114,6 +135,9 @@ pub struct SceneFile {
     pub objects: Vec<ObjectDesc>,
     #[serde(default)]
     pub physics: Option<PhysicsSceneDesc>,
+    /// 外部资产声明（应用层负责真正导入）。
+    #[serde(default)]
+    pub assets: Vec<AssetDecl>,
 }
 
 /// 场景：所有可渲染物件的唯一真源。
@@ -132,6 +156,8 @@ pub struct Scene {
     pub background: Vec4,
     /// 场景级物理配置，随场景一起热重载。
     pub physics: PhysicsSceneDesc,
+    /// 场景文件声明的外部资产（含未导入成功前的原始声明），供应用层导入与热重载比对。
+    pub assets: Vec<AssetDecl>,
 }
 
 impl Default for Scene {
@@ -154,6 +180,7 @@ impl Scene {
             light: Light::default(),
             background: Vec4::new(0.05, 0.06, 0.08, 1.0),
             physics: PhysicsSceneDesc::default(),
+            assets: Vec::new(),
         }
     }
 
@@ -335,6 +362,9 @@ impl Scene {
     // ---------- 加载 ----------
 
     pub fn from_json_str(src: &str) -> Result<Self, String> {
+        // Windows 上用 PowerShell / 记事本保存的 UTF-8 文件常带 BOM，serde_json 会直接
+        // 报 "expected value at line 1 column 1"，这里统一剥掉以免用户以为场景写错了。
+        let src = src.strip_prefix('\u{feff}').unwrap_or(src);
         let file: SceneFile =
             serde_json::from_str(src).map_err(|e| format!("场景 JSON 解析失败: {e}"))?;
         Self::from_file(file)
@@ -344,6 +374,7 @@ impl Scene {
         let mut scene = Scene::new();
         scene.name = file.name.unwrap_or_else(|| "untitled".to_string());
         scene.physics = file.physics.unwrap_or_default();
+        scene.assets = file.assets;
 
         if let Some(bg) = file.background {
             scene.background = Vec4::from(bg);

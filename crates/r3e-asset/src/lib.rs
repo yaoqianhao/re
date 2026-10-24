@@ -13,9 +13,12 @@
 //! `aabb_min / aabb_max` 直接由这些世界空间顶点求得；`node_local_matrix` 仅作为元数据保留。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use r3e_core::mesh::{MeshData, Vertex};
+use r3e_core::mesh::{
+    MaterialData, MeshData, MeshPartData, TextureImage, Vertex,
+};
 use r3e_core::{AssetId, Mat4, MeshRef, Vec3, Vec4};
 use thiserror::Error;
 
@@ -32,9 +35,13 @@ pub enum AssetError {
     MeshNotFound { asset: AssetId, mesh: u32 },
 }
 
-/// 一张贴图的元数据（M1 只收集，不绑定 GPU）。
+/// 一张贴图的元数据与解码结果（P2 起带像素）。
 #[derive(Debug, Clone, Default)]
 pub struct TextureInfo {
+    /// 在 `AssetEntry::textures` 扁平表中的下标（材质引用贴图时用它）。
+    pub index: u32,
+    /// ufbx 贴图元素 id，用于跨材质去重。
+    pub element_id: u32,
     /// FBX 材质槽名，例如 `DiffuseColor` / `BaseColor` / `NormalMap`。
     pub slot: String,
     /// 材质内声明的原始文件名。
@@ -51,6 +58,8 @@ pub struct TextureInfo {
     pub has_file: bool,
     /// 该贴图使用的 UV 集名称。
     pub uv_set: String,
+    /// 解码后的 RGBA8 像素；解码失败或文件缺失时为 `None`（渲染层回退到纯色）。
+    pub image: Option<Arc<TextureImage>>,
 }
 
 /// 材质元数据。
@@ -64,6 +73,8 @@ pub struct MaterialInfo {
     pub metallic: f32,
     pub roughness: f32,
     pub textures: Vec<TextureInfo>,
+    /// 当作 base color 使用的贴图在 `AssetEntry::textures` 中的下标。
+    pub base_color_texture: Option<u32>,
 }
 
 /// 网格内的一个材质分区（连续三角形段）。
@@ -155,7 +166,7 @@ pub struct AssetEntry {
     pub source_path: String,
     pub meshes: Vec<MeshAsset>,
     pub materials: Vec<MaterialInfo>,
-    /// 全部材质贴图的扁平列表（去重前）。
+    /// 去重后的贴图表：同一 ufbx 贴图元素只出现一次，`MaterialInfo::textures[].index` 指到这里。
     pub textures: Vec<TextureInfo>,
 }
 
@@ -240,6 +251,43 @@ impl r3e_core::mesh::MeshProvider for AssetLibrary {
     fn mesh_data(&self, key: MeshRef) -> Option<MeshData> {
         AssetLibrary::mesh_data(self, key)
     }
+
+    fn mesh_parts(&self, key: MeshRef) -> Vec<MeshPartData> {
+        let MeshRef::Asset { asset, mesh } = key else {
+            return Vec::new();
+        };
+        let Some(entry) = self.entries.get(&asset) else {
+            return Vec::new();
+        };
+        let Some(mesh_asset) = entry.mesh(mesh) else {
+            return Vec::new();
+        };
+        mesh_asset
+            .material_parts
+            .iter()
+            .map(|part| MeshPartData {
+                first_index: part.triangle_offset * 3,
+                index_count: part.triangle_count * 3,
+                material: part.material_index.map(|m| (asset, m)),
+            })
+            .collect()
+    }
+
+    fn material(&self, asset: AssetId, index: u32) -> Option<MaterialData> {
+        let info = self.entries.get(&asset)?.materials.get(index as usize)?;
+        Some(MaterialData {
+            name: info.name.clone(),
+            base_color: info.base_color,
+            metallic: info.metallic,
+            roughness: info.roughness,
+            base_color_texture: info.base_color_texture.map(|t| (asset, t)),
+        })
+    }
+
+    fn texture(&self, asset: AssetId, index: u32) -> Option<TextureImage> {
+        let info = self.entries.get(&asset)?.textures.get(index as usize)?;
+        info.image.as_deref().cloned()
+    }
 }
 
 /// 一次性导入并输出报告（`--dump-asset` 的便捷入口）。
@@ -277,21 +325,51 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
     })?;
 
     let id = AssetId::from_path(&display);
+    let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
 
     // ---- 1) 全局材质表 ----
     let mut materials: Vec<MaterialInfo> = Vec::with_capacity(scene.materials.len());
     let mut material_id_to_index: HashMap<u32, u32> = HashMap::new();
     for i in 0..scene.materials.len() {
         let mat: &ufbx::Material = &scene.materials[i];
-        let info = extract_material(mat, i as u32);
+        let info = extract_material(mat, i as u32, &base_dir);
         material_id_to_index.insert(mat.element.element_id, i as u32);
         materials.push(info);
     }
 
-    let textures: Vec<TextureInfo> = materials
-        .iter()
-        .flat_map(|m| m.textures.iter().cloned())
-        .collect();
+    // ---- 1b) 贴图去重 + 指定 base color 贴图 ----
+    //
+    // 同一张贴图常被多个材质引用，因此按 ufbx 贴图元素 id 去重成一张扁平表；
+    // 材质里只保留「槽位元数据 + 扁平表下标」，渲染层据此建 bind group。
+    let mut textures: Vec<TextureInfo> = Vec::new();
+    let mut tex_index: HashMap<u32, u32> = HashMap::new();
+    for mat in &mut materials {
+        for tex in &mut mat.textures {
+            let index = match tex_index.get(&tex.element_id) {
+                Some(&existing) => existing,
+                None => {
+                    let index = textures.len() as u32;
+                    tex_index.insert(tex.element_id, index);
+                    textures.push(tex.clone_with_index(index));
+                    index
+                }
+            };
+            tex.index = index;
+        }
+        mat.base_color_texture = pick_base_color_texture(&mat.textures);
+        // FBX SDK 把 0.588 当「未设置」的缺省 diffuse 因子；带贴图时若仍是该值，
+        // 归一成白色，避免 0.588²·² 的二次压暗（真实外观由贴图决定）。
+        if mat.base_color_texture.is_some() && is_default_fbx_factor(mat.base_color) {
+            mat.base_color = [1.0, 1.0, 1.0, mat.base_color[3].max(1.0)];
+        }
+    }
+    let decoded = textures.iter().filter(|t| t.image.is_some()).count();
+    if !textures.is_empty() {
+        log::debug!(
+            "asset: `{display}` 贴图 {} 张（成功解码 {decoded} 张）",
+            textures.len()
+        );
+    }
 
     // ---- 2) 节点父子索引（用于拼节点路径） ----
     let mut parent_of: HashMap<u32, u32> = HashMap::new();
@@ -345,7 +423,7 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
     })
 }
 
-fn extract_material(mat: &ufbx::Material, index: u32) -> MaterialInfo {
+fn extract_material(mat: &ufbx::Material, index: u32, base_dir: &Path) -> MaterialInfo {
     let pbr = &mat.pbr;
     // base_factor 在经典 Phong 材质下可能只携带 1 个分量（仅 x 有值），
     // 直接当 vec4 用会得到 (1,0,0) 这种假红色，因此仅在 3 分量时才采用。
@@ -369,10 +447,19 @@ fn extract_material(mat: &ufbx::Material, index: u32) -> MaterialInfo {
         index,
         name: mat.element.name.to_string(),
         base_color: [base.x as f32, base.y as f32, base.z as f32, base.w as f32],
-        metallic: map_scalar(&pbr.metalness),
-        roughness: map_scalar(&pbr.roughness),
-        textures: extract_textures(mat),
+        metallic: map_scalar(&pbr.metalness).clamp(0.0, 1.0),
+        roughness: map_scalar(&pbr.roughness).clamp(0.0, 1.0),
+        textures: extract_textures(mat, base_dir),
+        base_color_texture: None,
     }
+}
+
+/// FBX SDK 缺省 diffuse 因子 0.588（sRGB 近似），用来判断「材质没设颜色」。
+fn is_default_fbx_factor(color: [f32; 4]) -> bool {
+    const DEFAULT: f32 = 0.588;
+    (color[0] - DEFAULT).abs() < 0.01
+        && (color[1] - DEFAULT).abs() < 0.01
+        && (color[2] - DEFAULT).abs() < 0.01
 }
 
 fn map_scalar(map: &ufbx::MaterialMap) -> f32 {
@@ -383,7 +470,7 @@ fn map_scalar(map: &ufbx::MaterialMap) -> f32 {
     }
 }
 
-fn extract_textures(mat: &ufbx::Material) -> Vec<TextureInfo> {
+fn extract_textures(mat: &ufbx::Material, base_dir: &Path) -> Vec<TextureInfo> {
     let mut out = Vec::new();
     for i in 0..mat.textures.len() {
         let slot: &ufbx::MaterialTexture = &mat.textures[i];
@@ -394,6 +481,8 @@ fn extract_textures(mat: &ufbx::Material) -> Vec<TextureInfo> {
             slot.material_prop.to_string()
         };
         out.push(TextureInfo {
+            index: 0,
+            element_id: tex.element.element_id,
             slot: slot_name,
             filename: tex.filename.to_string(),
             relative_filename: tex.relative_filename.to_string(),
@@ -402,9 +491,122 @@ fn extract_textures(mat: &ufbx::Material) -> Vec<TextureInfo> {
             content_bytes: tex.content.size,
             has_file: tex.has_file,
             uv_set: tex.uv_set.to_string(),
+            image: decode_texture(tex, base_dir),
         });
     }
     out
+}
+
+impl TextureInfo {
+    /// 复制一份并把扁平表下标写进去（像素是 `Arc`，不会重复占内存）。
+    fn clone_with_index(&self, index: u32) -> Self {
+        let mut out = self.clone();
+        out.index = index;
+        out
+    }
+}
+
+/// 贴图解码：内嵌内容优先 → ufbx 解析出的绝对路径 → 相对 FBX 目录的路径。
+///
+/// 三级回退全部失败时返回 `None`，由渲染层退化为「纯色 + 默认白图」，绝不 panic。
+fn decode_texture(tex: &ufbx::Texture, base_dir: &Path) -> Option<Arc<TextureImage>> {
+    // 1) 内嵌在 FBX 里的二进制
+    if !tex.content.is_empty() {
+        let bytes: &[u8] = &tex.content;
+        if let Some(image) = decode_image_bytes(bytes, Some(&tex.filename.to_string())) {
+            return Some(image);
+        }
+        log::warn!(
+            "asset: 贴图 `{}` 内嵌数据（{} 字节）解码失败",
+            tex.filename,
+            tex.content.size
+        );
+    }
+
+    // 2) 外部文件：绝对路径 → 相对 FBX 目录
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if !tex.absolute_filename.is_empty() {
+        candidates.push(PathBuf::from(tex.absolute_filename.to_string()));
+    }
+    for rel in [&tex.relative_filename, &tex.filename] {
+        if !rel.is_empty() {
+            // FBX 里常见 Windows 反斜杠分隔，先原样拼，再按 `/` 归一化拼一次。
+            let raw = rel.to_string();
+            candidates.push(base_dir.join(&raw));
+            candidates.push(base_dir.join(raw.replace('\\', "/")));
+        }
+    }
+
+    for path in candidates {
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => match decode_image_bytes(&bytes, path.to_str()) {
+                Some(image) => return Some(image),
+                None => log::warn!("asset: 贴图 `{}` 不是可识别的图片格式", path.display()),
+            },
+            Err(err) => log::warn!("asset: 读取贴图 `{}` 失败：{err}", path.display()),
+        }
+    }
+    None
+}
+
+/// 解码一张贴图。先按文件头嗅探；TGA / BMP 这类没有可靠 magic 的格式靠扩展名兜底。
+fn decode_image_bytes(bytes: &[u8], name_hint: Option<&str>) -> Option<Arc<TextureImage>> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let decoded = image::load_from_memory(bytes).or_else(|err| {
+        let ext = name_hint
+            .and_then(|name| std::path::Path::new(name).extension())
+            .and_then(|ext| ext.to_str())
+            .and_then(image::ImageFormat::from_extension);
+        match ext {
+            Some(format) => image::load_from_memory_with_format(bytes, format).map_err(|inner| {
+                log::debug!("按扩展名 {format:?} 解码仍失败: {inner}（嗅探错误: {err}）");
+                inner
+            }),
+            None => Err(err),
+        }
+    });
+    let image = match decoded {
+        Ok(image) => image,
+        Err(err) => {
+            log::debug!("贴图解码失败: {err}");
+            return None;
+        }
+    }
+    .to_rgba8();
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(Arc::new(TextureImage::new(
+        width,
+        height,
+        image.into_raw(),
+    )))
+}
+
+/// 从材质槽位里挑一个当 base color：按常见命名优先级取第一个命中的。
+fn pick_base_color_texture(textures: &[TextureInfo]) -> Option<u32> {
+    const PREFERRED: [&str; 5] = [
+        "diffusecolor",
+        "basecolor",
+        "base_color",
+        "albedo",
+        "diffuse",
+    ];
+    for want in PREFERRED {
+        if let Some(tex) = textures
+            .iter()
+            .find(|t| t.slot.to_ascii_lowercase().contains(want))
+        {
+            return Some(tex.index);
+        }
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -744,9 +946,13 @@ pub fn render_dump(entry: &AssetEntry) -> String {
                 } else {
                     "外部文件缺失".to_string()
                 };
+                let decoded = match tex.image.as_deref() {
+                    Some(img) => format!("已解码 {}x{}", img.width, img.height),
+                    None => "未解码（渲染回退纯色）".to_string(),
+                };
                 let _ = writeln!(
                     out,
-                    "       - [{}] {} ({}) 原始引用: {}",
+                    "       - [{}] {} ({}, {}) 原始引用: {}",
                     tex.slot,
                     if tex.filename.is_empty() {
                         "<未命名>"
@@ -754,6 +960,7 @@ pub fn render_dump(entry: &AssetEntry) -> String {
                         tex.filename.as_str()
                     },
                     state,
+                    decoded,
                     if tex.absolute_filename.is_empty() {
                         "-"
                     } else {
