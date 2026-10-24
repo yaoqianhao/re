@@ -267,7 +267,7 @@ struct CachedAsset {
 | --- | --- |
 | `--dump-asset <fbx>` | 只解析并打印统计后退出，不进窗口。P0/P1 的验证手段，也是排查「模型加载了但看不见」的第一入口 |
 | `--asset <fbx>` | 导入 FBX，并按资产内节点路径逐个 spawn 到场景（可重复传入多个文件），已落地 |
-| `--assets-root <dir>` | 覆盖默认资产根目录（默认项目根 `assets/`），尚未落地（P1 后续） |
+| `--assets-root <dir>` | 场景 `assets` 段里相对路径的解析根。不指定时按场景文件目录；指定后资产可集中放在一个公共目录，场景文件可随意挪位置。**已落地（阶段三 A）** |
 
 ---
 
@@ -418,10 +418,10 @@ struct CachedAsset {
 AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）三例完全一致；
 窗口化联调 3 个资产 spawn 成功、网格上传 GPU，人形造型完整无炸面。
 
-### 11.4 尚未做（留给 P3 及之后）
+### 11.4 尚未做（P3 及之后）
 
-- 场景 JSON 的 `assets` 段已接通（见第 12 章），但 `--assets-root` 仍未落地；
-- 物理体推导仍只认内置网格，`MeshRef::Asset` 尚无 AABB 体；
+- 场景 JSON 的 `assets` 段已接通（见第 12 章），`--assets-root` 已落地（阶段三 A）；
+- 物理体推导已用上真实 AABB（阶段三 A），脚本 `attach_body` 对导入模型立即可用；仍不做凸包/网格碰撞；
 - 顶点未去重到「位号级」共享（角点级拆分是有意为之，压缩留到后续 LOD 阶段）；
 - 法线贴图 / AO / 金属粗糙度贴图未进通道，目前只有 `base_color` 贴图参与着色。
 
@@ -514,10 +514,11 @@ P3 已落地：FBX 动画栈 → `AnimClip`，按骨架节点路径建节点树�
 
 - ~~**蒙皮（P4）**~~：已在 P4 落地（见第 14 章），四肢逐顶点形变已生效。
 - **动画混合/分层**：无 upper-body mask、无 cross-fade，切片段是硬切。
-- **场景 JSON 改 `assets` 段的热生效**：热重载沿用启动时的导入清单（`asset_specs`），
-  增删资产仍需重启；改 `anim` 参数也会被 `set_anim_clip` 的运行时状态覆盖，需重启确认。
-- **`--assets-root`**：仍未落地，路径仍按「场景文件目录 / 命令行原样」解析。
-- **物理 AABB**：`MeshRef::Asset` 仍不参与受限包围盒，物理体只有内置网格有碰撞形状。
+- ~~**场景 JSON 改 `assets` 段的热生效**~~：已在阶段三 A 落地——热重载时比较 `assets` 声明，
+  变了才重新导入并换库，没变则连资产都不重导；但**运行时脚本已改过的 `anim` 参数**仍会被
+  `set_anim_clip` 的运行时状态覆盖，改片段请重启确认。
+- ~~**`--assets-root`**~~：已落地（阶段三 A）。
+- ~~**物理 AABB**~~：已落地（阶段三 A），`ColliderDesc::infer_with / from_node_with` 用真实 AABB 推导半尺寸。
 
 ## 14. P4（骨骼蒙皮）实施现状
 
@@ -582,3 +583,55 @@ P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画�
 - **GPU 侧蒙皮（compute skinning）**：关节矩阵在 CPU 求解后上传，顶点量大时可改 compute。
 - **动画混合 / 状态机**：仍为硬切，跨片段过渡会跳。
 - **表情 / morph target**：未支持。
+
+## 15. 阶段三 A（AABB + 视锥剔除 + 两个小尾巴）实施现状
+
+A 阶段的目标是「让外部资产也拥有包围盒」，它同时是阴影、剔除、物理三件事的公共前置。
+
+### 15.1 落地的内容
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/r3e-core/src/aabb.rs` | 新增 `Aabb`（`min/max`、`EMPTY`、`new/from_points/from_center_half/union/expand/transformed/inflate_relative/half_extents/size/center/is_empty`） |
+| `crates/r3e-core/src/frustum.rs` | 新增 `Frustum`（`from_view_projection`、`planes`、`contains_point`、`intersects_aabb`，正负顶点测试） |
+| `crates/r3e-core/src/mesh.rs` | `MeshData::aabb()` / `aabb_box()`；`MeshProvider` 新增 `mesh_aabb(key) -> Option<Aabb>`（默认 `None`） |
+| `crates/r3e-render/src/renderer.rs` | `MeshCache.bounds`（`HashMap<MeshRef, Option<Aabb>>`）+ `bounds()`；`prepare_instances` 里先过视锥再分配实例/关节槽位；`SKIN_CULL_MARGIN = 0.25`；`RenderStats` 增 `culled / cull_missing_bounds` |
+| `crates/r3e-physics/src/lib.rs` | `ColliderDesc::infer_with / from_node_with(node, bounds)`，`half_extents_from` 用真实 AABB × scale 推导 |
+| `crates/r3e-app/src/app.rs` | 资产库改为 `Rc<RefCell<Arc<AssetLibrary>>>`（可就地换库）；`refresh_assets_from_json` 比较 `assets` 声明后按需重导；`collect_asset_specs(scene, scene_path, cli)` 支持 `--assets-root`；启动/收尾打印剔除统计 |
+| `crates/r3e-app/src/main.rs` | `--assets-root DIR` 解析与 USAGE |
+| `crates/r3e-asset/src/lib.rs` | `mesh_aabb` 直接返回导入时算好的 AABB（零拷贝） |
+
+### 15.2 关键口径（后续不得回退）
+
+1. **fail-open 优先于剔除**：`mesh_aabb` 返回 `None` 时一律照画，并把计数堆到 `cull_missing_bounds`。
+   剔除是优化，不能让物件因为"不知道多大"而消失。
+2. **AABB 变换走角点**：`Aabb::transformed` 变换 8 个角点后重取包围盒。用「中心点 + 半尺寸 × scale」
+   在带旋转的物件上会低估，表现为贴边时物件突然消失。
+3. **蒙皮必须留余量**：AABB 是静止姿态的，形变会越界；`SKIN_CULL_MARGIN` 是相对外扩（按尺寸比例），
+   不用固定值，避免大小模型余量失衡。
+4. **局部 vs 世界不可混用**：`MeshProvider::mesh_aabb` 给的是**局部**空间；`MeshAsset.aabb_*`（资产层）
+   给的是**资产世界空间**（导入时烘焙）。混用会让物件被放大的 `X` 二次缩放。
+5. **热重载比较的是声明而非文件**：`asset_spec_eq` 逐字段比较路径、transform、`spawn`、`anim`
+   参数。只改物件时不动资产库，避免重复解析几百 MB FBX、也避免打断播放进度与物理体。
+6. **换库后必须重新补挂**：资产库换了，`MeshRef::Asset` 句柄全部失效，`rebuild_hook` 里按新声明重建
+   资产节点与动画实例，并调 `renderer.set_asset_library`。
+
+### 15.3 验收记录
+
+`cargo build --release` exit=0；`cargo test --release` 全绿（36 个用例 / 0 失败）。
+
+| 验证项 | 结果 |
+| --- | --- |
+| 视锥单测 | 正前可见、背后剔除、远平面外剔除、侧向剔除、跨界保留、空盒永不可见（共 6 例） |
+| AABB 单测 | `union` / `transform` / `inflate` / `from_points` / 空盒语义（共 5 例） |
+| 物理单测 | `infer_with_uses_mesh_aabb_instead_of_unit_cube`（AABB 参与推导）、`infer_without_bounds_falls_back_to_scale_half`（缺 AABB 退 `scale×0.5`） |
+| `--assets-root` | 场景写 `models/tirger.fbx` 相对路径：不传 root 报 FileNotFound；传 `--assets-root` 后导入 1 资产 / spawn 1 节点 / GPU 上传成功，首帧 `可见 3 / 绘制 2 / 剔除 1 / 缺包围盒 0` |
+| 场景热重载（assets 未变） | `资产节点已随场景重建补挂: 1 个`，**无**「assets 段已变更」日志 → 未重导资产 |
+| 场景热重载（assets 已变） | `场景 assets 段已变更，重新导入资产库: 1 个资产` → 补挂 2 个节点，收尾 `可见 4 / 绘制 3 / 剔除 1 / 缺包围盒 0` |
+| 缺包围盒计数 | 全程 `0`，说明资产层 AABB 已喂到渲染器 |
+
+### 15.4 尚未做（A 阶段范围外）
+
+- **遮挡剔除 / 层级剔除**：逐实例测试，深层次结构下父节点包围盒无法代表整棵子树。
+- **剔除与阴影共用**：阴影 pass 尚未存在，届时需要单独一套以光源为视点的视锥（或复用阴影相机）。
+- **碰撞体形状**：仍是盒/球/胶囊的近似，不做凸包与网格碰撞。

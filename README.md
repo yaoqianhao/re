@@ -359,13 +359,20 @@ cargo run -- --dump-anim D:/models/robot.fbx
 cargo run -- --scene assets/scene_anim.json --anim-clip run_loop --show-bones
 ```
 
-长期用法写在场景里（相对路径按场景文件目录解析）：
+长期用法写在场景里（相对路径按场景文件目录解析，可用 `--assets-root` 改基准目录）：
 
 ```json
 "assets": [
   { "path": "models/robot.fbx", "position": [0, 0, 0], "scale": [1, 1, 1] }
 ]
 ```
+
+资产相关的两个小开关：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--assets-root DIR` | 场景 `assets` 段里**相对路径**的解析根。不指定时按场景文件所在目录（历史行为）；指定后场景文件可以随手挪位置，资产集中放在一个公共目录 |
+| 改场景文件即热重载 | 场景 `assets` 段被改动（增删资产、改 transform / anim 参数）会在 ≤0.4s 内**重新导入并换库**；只改物件、相机、光照时不会重导资产（不打断播放进度与物理体） |
 
 完整方案（选型、crate 落点、数据结构、阶段拆分、踩坑口径与验收）见
 [`docs/ASSETS.md`](docs/ASSETS.md)，要点：

@@ -331,6 +331,19 @@ impl r3e_core::mesh::MeshProvider for AssetLibrary {
         AssetLibrary::mesh_data(self, key)
     }
 
+    /// 导入 `MeshAsset` 时已把顶点变换到资产空间并算好 AABB，这里直接取用：
+    /// 视锥剔除每帧都要问包围盒，绝不能在热路径上重扫顶点。
+    fn mesh_aabb(&self, key: MeshRef) -> Option<r3e_core::Aabb> {
+        let mesh = self.mesh(key)?;
+        if !mesh.aabb_min.iter().chain(mesh.aabb_max.iter()).all(|v| v.is_finite()) {
+            return None;
+        }
+        Some(r3e_core::Aabb::new(
+            Vec3::from(mesh.aabb_min),
+            Vec3::from(mesh.aabb_max),
+        ))
+    }
+
     fn mesh_parts(&self, key: MeshRef) -> Vec<MeshPartData> {
         let MeshRef::Asset { asset, mesh } = key else {
             return Vec::new();

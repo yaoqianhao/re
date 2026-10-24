@@ -90,6 +90,7 @@ r3e —— Rust 3D Engine
 
 资产选项（M1 静态网格）:
   --asset PATH              导入 FBX 并按资产内节点路径 spawn（可重复）
+  --assets-root DIR         场景 assets 段相对路径的解析根（默认场景文件所在目录）
   --dump-asset PATH         导入 FBX 打印资产报告后退出（不建窗口）
 
 动画选项（P3 节点动画）:
@@ -167,6 +168,16 @@ fn main() -> anyhow::Result<()> {
                         log::error!("--asset 需要非空的 FBX 路径");
                     } else {
                         cli.assets.push(PathBuf::from(v));
+                    }
+                }
+                continue;
+            }
+            "--assets-root" => {
+                if let Some(v) = take_value("--assets-root", &mut i) {
+                    if v.trim().is_empty() {
+                        log::error!("--assets-root 需要非空目录");
+                    } else {
+                        cli.assets_root = Some(PathBuf::from(v));
                     }
                 }
                 continue;

@@ -16,7 +16,7 @@ use r3e_core::input::{
 };
 use r3e_asset::AssetLibrary;
 use r3e_core::anim::{AnimBinding, AnimInstance};
-use r3e_core::{AnimDecl, NodeId, ObjectDesc, Scene, SkinInstance};
+use r3e_core::{Aabb, AnimDecl, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance};
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -80,6 +80,11 @@ pub struct CliOptions {
     pub ground: Option<f32>,
     /// `--asset <fbx>`（可重复）：启动时导入并 spawn 的静态资产。
     pub assets: Vec<PathBuf>,
+    /// `--assets-root <dir>`：场景 `assets` 段内相对路径的解析根目录。
+    ///
+    /// 不指定时按场景文件所在目录解析（历史行为）；指定后资产可放在与场景
+    /// 文件无关的目录里，便于场景文件随手换位置、公共资产集中管理。
+    pub assets_root: Option<PathBuf>,
     /// `--dump-asset <fbx>`：只做导入并打印报告，不创建窗口。
     pub dump_asset: Option<PathBuf>,
     /// `--dump-anim <fbx>`：打印动画栈的采样表后退出（P3 的数值验收手段）。
@@ -148,7 +153,16 @@ pub struct EngineApp {
     /// 上次完成「场景声明刚体」绑定的物理世代号。
     physics_gen: u64,
     /// 已导入的外部资产（渲染层通过 `Renderer::set_asset_library` 取得只读引用）。
-    assets: Arc<AssetLibrary>,
+    ///
+    /// 用 `Rc<RefCell<_>>` 而非裸 `Arc`：场景热重载可能改 `assets` 段，需要就地换库，
+    /// 同时让场景重建回调看到的是**换库之后**的同一份资产。
+    assets: Rc<RefCell<Arc<AssetLibrary>>>,
+    /// 当前生效的资产声明（命令行 + 场景 `assets` 段），热重载时按需重算。
+    asset_specs: Rc<RefCell<Vec<AssetSpec>>>,
+    /// 命令行 `--asset`（热重载重算资产声明时仍需带上）。
+    cli_assets: Vec<PathBuf>,
+    /// `--assets-root`：场景内相对资产路径的解析根；`None` 时用场景文件所在目录。
+    assets_root: Option<PathBuf>,
     /// 从资产 spawn 出来的节点（共享给场景重建回调，热重载时同步刷新）。
     asset_nodes: Rc<RefCell<Vec<NodeId>>>,
     /// `--run-seconds`：自动退出的秒数；`None` 表示一直运行。
@@ -185,9 +199,12 @@ impl EngineApp {
         log::info!("场景 `{}` 载入完成：{} 个物件", scene.name, scene.len());
 
         // 资产导入：命令行 `--asset` 与场景文件 `assets` 段合并（命令行排在前面）。
-        // 场景里的相对路径按场景文件所在目录解析，导入失败不阻断启动。
-        let asset_specs = Arc::new(collect_asset_specs(&scene, &scene_path, &cli.assets));
-        let assets = Arc::new(load_assets(&asset_specs));
+        // 场景里的相对路径按 `--assets-root` 解析，未指定时退回场景文件所在目录；
+        // 导入失败不阻断启动。
+        let asset_specs = collect_asset_specs(&scene, &scene_path, cli.assets_root.as_deref(), &cli.assets);
+        let asset_specs = Rc::new(RefCell::new(asset_specs));
+        let assets: Rc<RefCell<Arc<AssetLibrary>>> =
+            Rc::new(RefCell::new(Arc::new(load_assets(&asset_specs.borrow()))));
 
         // 物理：默认关闭；场景文件 physics 段 -> 命令行覆盖（后者优先且会粘住热重载）
         let mut physics = Physics::new();
@@ -215,12 +232,12 @@ impl EngineApp {
 
         // 资产节点：按资产内节点路径 spawn，重名自动加 `#N` 后缀
         let asset_nodes: Rc<RefCell<Vec<NodeId>>> = Rc::new(RefCell::new(Vec::new()));
-        if !assets.is_empty() {
+        if !assets.borrow().is_empty() {
             let mut scene_mut = scene.borrow_mut();
             let spawned = spawn_asset_nodes(
                 &mut scene_mut,
-                &assets,
-                &asset_specs,
+                &assets.borrow(),
+                &asset_specs.borrow(),
                 &mut asset_nodes.borrow_mut(),
                 cli.show_bones,
             );
@@ -235,10 +252,12 @@ impl EngineApp {
             let hook_specs = asset_specs.clone();
             let show_bones = cli.show_bones;
             scripts.set_rebuild_hook(move |scene| {
+                // 每次都取当前生效的库与声明：热重载换过库之后，这里必须看到新的那份
+                let library = hook_assets.borrow().clone();
+                let specs = hook_specs.borrow().clone();
                 let mut sink = hook_nodes.borrow_mut();
                 sink.clear();
-                let spawned =
-                    spawn_asset_nodes(scene, &hook_assets, &hook_specs, &mut sink, show_bones);
+                let spawned = spawn_asset_nodes(scene, &library, &specs, &mut sink, show_bones);
                 if spawned > 0 {
                     log::info!("资产节点已随场景重建补挂: {spawned} 个");
                 }
@@ -290,6 +309,9 @@ impl EngineApp {
             scene_mtime,
             physics_gen: 0,
             assets,
+            asset_specs,
+            cli_assets: cli.assets.clone(),
+            assets_root: cli.assets_root.clone(),
             asset_nodes,
             run_seconds: cli.run_seconds,
             run_elapsed: 0.0,
@@ -400,6 +422,7 @@ impl EngineApp {
         if !self.probe_logged && self.frame_index >= 30 {
             self.probe_logged = true;
             self.log_anim_probe("起始");
+            self.log_cull_probe("起始");
         }
         if let Some(secs) = self.run_seconds {
             self.run_elapsed += self.last_dt_ms / 1000.0;
@@ -410,12 +433,30 @@ impl EngineApp {
                     secs
                 );
                 self.log_anim_probe("收尾");
+                self.log_cull_probe("收尾");
                 self.exit_pending = true;
             }
         }
 
         // 帧末清掉边沿与增量：下一帧的 pressed / released 只反映新事件
         self.input.borrow_mut().end_frame();
+    }
+
+    /// 剔除探针：一帧里有多少物件参与渲染、多少被视锥剔掉。
+    ///
+    /// `缺包围盒` 持续非零说明资产层没喂 AABB（剔除会 fail-open 全画），是排查剔除失效的第一入口。
+    fn log_cull_probe(&self, tag: &str) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let stats = renderer.stats();
+        let visible = self.scene.borrow().iter().filter(|n| n.visible).count();
+        log::info!(
+            "[{tag}] 视锥剔除：可见物件 {visible} / 绘制实例 {} / 剔除 {} / 缺包围盒 {}",
+            stats.instances,
+            stats.culled,
+            stats.cull_unknown
+        );
     }
 
     /// 打印动画实例状态与骨架节点的世界位置。
@@ -506,7 +547,8 @@ impl EngineApp {
                     continue;
                 };
                 let model = node.world;
-                let Some(data) = self.assets.mesh_data(node.mesh) else {
+                let library = self.assets.borrow();
+                let Some(data) = library.mesh_data(node.mesh) else {
                     continue;
                 };
                 let mut sum = Vec3::ZERO;
@@ -586,8 +628,16 @@ impl EngineApp {
 
         let mut physics = self.physics.borrow_mut();
         let mut bound = 0usize;
+        let assets = self.assets.borrow().clone();
         for id in ids {
-            let Some(desc) = scene.get(id).and_then(BodyDesc::from_node) else {
+            // 阶段三 A：外部资产用真实几何包围盒定碰撞盒尺寸，而不是 scale * 0.5
+            let bounds = scene
+                .get(id)
+                .and_then(|node| mesh_bounds(&assets, node.mesh));
+            let Some(desc) = scene
+                .get(id)
+                .and_then(|node| BodyDesc::from_node_with(node, bounds))
+            else {
                 continue;
             };
             if let Some(handle) = physics.try_create_body(id, desc) {
@@ -805,6 +855,45 @@ impl EngineApp {
         log::trace!("鼠标 {button:?} {state:?}");
     }
 
+    /// 场景文件热重载时同步 `assets` 段：声明变了就重新导入并换库。
+    ///
+    /// 只比较「声明」而不是文件内容：声明不变时连磁盘都不碰，避免热重载把
+    /// 已经在播放的资产实例整体重建（会丢动画进度、打断物理体）。
+    /// 换库后渲染层的 `set_asset_library` 会丢弃旧的 GPU 网格与材质缓存，
+    /// 下一帧按新句柄重建，不会引用失效数据。
+    fn refresh_assets_from_json(&mut self, json: &str) {
+        let scenes = match Scene::from_json_str(json) {
+            Ok(s) => s,
+            // 解析失败时重放会另有报错，这里不重复刷日志
+            Err(_) => return,
+        };
+        let fresh = collect_asset_specs(
+            &scenes,
+            &self.scene_path,
+            self.assets_root.as_deref(),
+            &self.cli_assets,
+        );
+        let unchanged = {
+            let current = self.asset_specs.borrow();
+            current.len() == fresh.len()
+                && current.iter().zip(fresh.iter()).all(|(a, b)| asset_spec_eq(a, b))
+        };
+        if unchanged {
+            return;
+        }
+
+        let library = Arc::new(load_assets(&fresh));
+        log::info!(
+            "场景 assets 段已变更，重新导入资产库: {} 个资产",
+            library.len()
+        );
+        *self.asset_specs.borrow_mut() = fresh;
+        *self.assets.borrow_mut() = library.clone();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_asset_library(library);
+        }
+    }
+
     fn watch_files(&mut self) {
         if self.last_watch.elapsed().as_millis() < 400 {
             return;
@@ -818,10 +907,14 @@ impl EngineApp {
         if scene_mtime.is_some() && scene_mtime != self.scene_mtime {
             self.scene_mtime = scene_mtime;
             match std::fs::read_to_string(&self.scene_path) {
-                Ok(json) => match self.scripts.rebuild_scene(&json) {
-                    Ok(()) => log::info!("场景文件已热重载 (scene hot-reloaded): {}", self.scene_path.display()),
-                    Err(e) => log::error!("场景重载失败: {e}"),
-                },
+                Ok(json) => {
+                    // 先看 `assets` 段有没有变：变了就换库，再重建场景（回调会用新库补挂节点）
+                    self.refresh_assets_from_json(&json);
+                    match self.scripts.rebuild_scene(&json) {
+                        Ok(()) => log::info!("场景文件已热重载 (scene hot-reloaded): {}", self.scene_path.display()),
+                        Err(e) => log::error!("场景重载失败: {e}"),
+                    }
+                }
                 Err(e) => log::error!("读取场景失败: {e}"),
             }
             return;
@@ -885,11 +978,12 @@ impl ApplicationHandler for EngineApp {
         match Renderer::new(window.clone()) {
             Ok(mut renderer) => {
                 log::info!("渲染器就绪: {}x{}", renderer.size().0, renderer.size().1);
-                if !self.assets.is_empty() {
-                    renderer.set_asset_library(self.assets.clone());
+                let library = self.assets.borrow().clone();
+                if !library.is_empty() {
+                    renderer.set_asset_library(library.clone());
                     log::info!(
                         "渲染层已接入资产库: {} 个资产 / {} 个资产节点",
-                        self.assets.len(),
+                        library.len(),
                         self.asset_nodes.borrow().len()
                     );
                 }
@@ -998,9 +1092,15 @@ struct AssetSpec {
 
 /// 合并命令行 `--asset` 与场景文件 `assets` 段。
 ///
-/// 命令行排在最前，便于临时替换 / 追加；场景内相对路径按场景文件目录解析。
-fn collect_asset_specs(scene: &Scene, scene_path: &Path, cli: &[PathBuf]) -> Vec<AssetSpec> {
-    let base_dir = scene_path.parent().unwrap_or_else(|| Path::new("."));
+/// 命令行排在最前，便于临时替换 / 追加；场景内相对路径按 `assets_root` 解析，
+/// 未指定 `--assets-root` 时退回场景文件所在目录（保持旧行为）。
+fn collect_asset_specs(
+    scene: &Scene,
+    scene_path: &Path,
+    assets_root: Option<&Path>,
+    cli: &[PathBuf],
+) -> Vec<AssetSpec> {
+    let base_dir = assets_root.unwrap_or_else(|| scene_path.parent().unwrap_or_else(|| Path::new(".")));
     let mut specs: Vec<AssetSpec> = cli
         .iter()
         .map(|path| AssetSpec {
@@ -1033,6 +1133,36 @@ fn collect_asset_specs(scene: &Scene, scene_path: &Path, cli: &[PathBuf]) -> Vec
         });
     }
     specs
+}
+
+/// 两条资产声明是否等价（用于热重载时判断要不要重新导入）。
+///
+/// 不实现 `PartialEq` 而是手写：`AnimDecl` 在 core 层没有派生，且语义上
+/// 只需要「路径 + 变换 + spawn + 动画参数」这几项参与比较。
+fn asset_spec_eq(a: &AssetSpec, b: &AssetSpec) -> bool {
+    a.path == b.path
+        && a.spawn == b.spawn
+        && a.position == b.position
+        && a.rotation == b.rotation
+        && a.scale == b.scale
+        && match (&a.anim, &b.anim) {
+            (None, None) => true,
+            (Some(x), Some(y)) => {
+                x.clip == y.clip
+                    && x.speed == y.speed
+                    && x.looping == y.looping
+                    && x.time == y.time
+                    && x.play == y.play
+            }
+            _ => false,
+        }
+}
+
+/// 取网格的局部包围盒（仅外部资产有；内置网格交给物理层按 scale 推导即可）。
+///
+/// 通过 `MeshProvider::mesh_aabb` 走资产层已算好的 AABB，不重扫顶点。
+fn mesh_bounds(assets: &AssetLibrary, mesh: MeshRef) -> Option<Aabb> {
+    <AssetLibrary as MeshProvider>::mesh_aabb(assets, mesh)
 }
 
 /// 按顺序导入资产；导入失败只记日志，不影响其余资产与启动流程。

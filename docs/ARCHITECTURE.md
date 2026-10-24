@@ -927,6 +927,36 @@ app: bind_asset_skins（静止姿态）──▶ SkinInstance{mesh_node, binding
 
 ---
 
+### 8.9 视锥剔除与 AABB（阶段三 A）
+
+剔除放在 `prepare_instances` 里，而不是 app 层：实例槽位与关节槽位都是在渲染器里分配的，
+早一步在 app 剔除，渲染器仍然要为"已剔除的物件"留位置。
+
+```
+Node.mesh ──MeshProvider::mesh_aabb──▶ MeshCache.bounds（HashMap<MeshRef, Option<Aabb>>，只算一次）
+                                              │
+                node.world × 局部 AABB ──▶ Aabb::transformed（世界空间）
+                                              │  蒙皮网格 inflate_relative(0.25)
+                                              ▼
+                    Frustum::from_view_projection(VP) ── intersects_aabb ──▶ 保留 / 剔除
+```
+
+落点与不变量：
+
+| 事项 | 口径 |
+| --- | --- |
+| AABB 来源 | `MeshProvider::mesh_aabb(key) -> Option<Aabb>`，默认实现返回 `None`；内置网格由 `MeshData::aabb()` 现算，资产网格直接读导入时已算好的值（零拷贝） |
+| fail-open | 返回 `None` 表示"提供者不支持"，调用方**必须照画**。宁可多画，也不让物件凭空消失；`RenderStats::cull_unknown` 持续非零说明资产层没喂 AABB |
+| 缓存 | `MeshCache::bounds` 以 `MeshRef` 为键缓存 `Option<Aabb>`（`None` 也缓存），避免每帧走 `dyn MeshProvider` 与顶点重扫 |
+| 变换口径 | 不用"中心点 × 缩放"，而是把 8 个角点经 `world` 变换后重取包围盒（`Aabb::transformed`）——带旋转的物件用中心点估算会漏掉角部 |
+| 蒙皮余量 | 静止姿态 AABB 不含形变后的顶点，按 `SKIN_CULL_MARGIN = 0.25` 相对外扩，防止跳舞的角色在屏幕边缘突然消失 |
+| 平面测试 | 6 个平面逐一对 AABB 做正/负顶点测试（`intersects_aabb`），不用逐角点全测，常数更小 |
+| 剔除收益 | 被剔除实例既不占实例槽位、也不占关节槽位，`write_buffer` 的数据量随之下降 |
+| 物理联动 | `ColliderDesc::infer_with / from_node_with(node, bounds)` 用同一份 AABB 推导 `half_extents = aabb.half_extents() × scale`，缺 AABB 才退回 `scale × 0.5`；场景里显式写的 `half_extents` 仍然优先 |
+| 验收口径 | 启动/收尾各打一行「可见物件 / 绘制实例 / 剔除 / 缺包围盒」；资产场景实测 `缺包围盒 = 0`，转头后剔除数随视野变化 |
+
+---
+
 ## 9. 端到端数据流
 
 ```
@@ -999,7 +1029,7 @@ app: bind_asset_skins（静止姿态）──▶ SkinInstance{mesh_node, binding
 | 光照 | 1 方向光 + 环境光，Blinn-Phong | 无阴影、无点光、无全局光照 |
 | 后处理 | 无 | 无 bloom / tonemapping / FXAA |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
-| 剔除 | 无视锥剔除、无遮挡剔除 | 屏幕外的物件照样上传和绘制（GPU 会做顶点裁剪，但 CPU 仍付代价） |
+| 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
 | 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4） | 有关键帧插值、速度/循环/片段切换、逐顶点形变；**无动画混合与 cross-fade**（切片段是硬切），无 morph target |
@@ -1009,7 +1039,8 @@ app: bind_asset_skins（静止姿态）──▶ SkinInstance{mesh_node, binding
 ### 11.2 性能特征
 
 - **Draw call**：≤ 4（实际使用的网格种类数），与物件数无关。
-- **每帧 CPU 成本**：O(可见物件数)，主要是组装 `InstanceRaw`（96 B/物件）与一次 `write_buffer`；
+- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（96 B/物件）组装与一次 `write_buffer`；
+  视锥测试前先查 `MeshCache::bounds`（哈希，`MeshRef` 为键），不重扫顶点、不走 `dyn`。
   蒙皮实例额外做一次关节矩阵求解（O(关节数)）与第二路 `write_buffer`。
 - **上传带宽**：实例数 × 96 B/帧 + 关节矩阵 64 B/关节/帧。1000 物件 ≈ 94 KB/帧，
   60 FPS 下约 5.6 MB/s；单个 37 关节的角色每帧仅 2.4 KB，可忽略。
@@ -1020,7 +1051,7 @@ app: bind_asset_skins（静止姿态）──▶ SkinInstance{mesh_node, binding
 ### 11.3 可加固点（按收益排序）
 
 1. **世界法线矩阵的奇异保护**：`Mat3::from_mat4(world).inverse()` 在 scale 含 0 时产 NaN。可在 `update_world_transforms` 里对 scale 做 `max(1e-6)` 保护，或直接复用 `Transform::normal_matrix` 的组合式算法。
-2. **视锥剔除**：在 `prepare_instances` 里对 `node.world` 的中心点做 6 平面测试，可显著降低大场景的实例上传量。当前无包围盒，需先在 `MeshKind` 上定义 `aabb()`。
+2. **遮挡剔除 / 层级剔除**：视锥剔除已按整网格 AABB 落地；进一步可做 BVH + 遮挡查询，或先按父节点包围盒做层级剔除（当前逐实例测试，层级结构深时仍有重复开销）。
 3. **半透明排序**：把 alpha < 1 的物件单独成组、按视深度排序后最后绘制。
 4. **MSAA**：Pipeline 的 `multisample.count = 4` + resolve target，改动局限在渲染器内部。
 5. **脏标记**：若物件规模上万，把"每帧全量上传"改为"版本号变化才上传"。
@@ -1035,7 +1066,7 @@ app: bind_asset_skins（静止姿态）──▶ SkinInstance{mesh_node, binding
 | --- | --- | --- | --- |
 | 一 | Rapier 物理后端（替换内置实现） | 新增 `r3e-physics/src/rapier_backend.rs` + 接上 `PhysicsKind::Rapier` 分支 | 无（契约与开关已就位） |
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
-| 三 | 视锥剔除 + AABB | `mesh.rs` 加 `aabb()`，`prepare_instances` 加平面测试 | 无 |
+| **三（已完成：A）** | **视锥剔除 + AABB**：`MeshProvider::aabb()` 打通到 `MeshRef::Asset`，`prepare_instances` 6 平面测试，物理碰撞体改用真实 AABB | `core/mesh.rs` 加 `aabb()` 与 `MeshProvider::aabb`；`render` 增 `MeshCache::bounds` + `Frustum`；`r3e-physics` 按 AABB 推导半长 | 无（场景 JSON 不变） |
 | 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
 | **五（已完成：P0–P4）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 / 骨骼蒙皮 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
 | 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |

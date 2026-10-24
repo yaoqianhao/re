@@ -9,13 +9,15 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
 use r3e_core::mesh::{MaterialData, MeshData, MeshProvider, TextureImage, Vertex};
-use r3e_core::{AssetId, MeshRef, Scene};
+use r3e_core::{Aabb, AssetId, Frustum, MeshRef, Scene};
 use winit::window::Window;
 
 use crate::mesh::{builtin_mesh, vertex_layout, InstanceRaw};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
+/// 蒙皮网格做视锥剔除时的包围盒外扩比例：动画形变会超出静止姿态的 AABB。
+const SKIN_CULL_MARGIN: f32 = 0.25;
 
 /// 材质 uniform：base color + PBR 标量。32 字节，16 字节对齐。
 #[repr(C)]
@@ -94,6 +96,11 @@ struct GpuPart {
 /// 这里的 `dyn MeshProvider` 抽象定义在 `r3e-core`，因此渲染层的依赖图中不含 `ufbx`。
 pub struct MeshCache {
     meshes: HashMap<MeshRef, GpuMesh>,
+    /// 网格局部包围盒缓存（视锥剔除与上传都要用）。`None` = 该网格确实取不到包围盒。
+    ///
+    /// 缓存的意义：内置网格的包围盒只能靠生成几何再统计得到，资产网格虽然自带 AABB，
+    /// 但每帧走一次 `dyn` 调用也没必要；剔除是热路径，只做一次哈希查找。
+    bounds: HashMap<MeshRef, Option<Aabb>>,
     library: Option<Arc<dyn MeshProvider>>,
 }
 
@@ -107,6 +114,7 @@ impl MeshCache {
     pub fn new() -> Self {
         Self {
             meshes: HashMap::new(),
+            bounds: HashMap::new(),
             library: None,
         }
     }
@@ -114,14 +122,17 @@ impl MeshCache {
     pub fn with_library(library: Arc<dyn MeshProvider>) -> Self {
         Self {
             meshes: HashMap::new(),
+            bounds: HashMap::new(),
             library: Some(library),
         }
     }
 
-    /// 注入（或替换）资产库；替换时丢弃此前上传的资产网格，避免引用失效。
+    /// 注入（或替换）资产库；替换时丢弃此前上传的资产网格与包围盒，避免引用失效。
     pub fn set_library(&mut self, library: Arc<dyn MeshProvider>) {
         self.library = Some(library);
         self.meshes
+            .retain(|key, _| matches!(key, MeshRef::Builtin(_)));
+        self.bounds
             .retain(|key, _| matches!(key, MeshRef::Builtin(_)));
     }
 
@@ -139,6 +150,33 @@ impl MeshCache {
 
     pub fn get(&self, key: MeshRef) -> Option<&GpuMesh> {
         self.meshes.get(&key)
+    }
+
+    /// 网格局部包围盒（几何空间）。取不到时返回 `None`，调用方必须按「不剔除」处理。
+    ///
+    /// 顺序：缓存 → 资产层 `mesh_aabb`（零拷贝）→ 兜底 `mesh_data` 现算（仅当提供者
+    /// 没有实现 `mesh_aabb`，且只会发生一次）。
+    pub fn bounds(&mut self, key: MeshRef) -> Option<Aabb> {
+        if let Some(cached) = self.bounds.get(&key) {
+            return *cached;
+        }
+        let computed = match key {
+            MeshRef::Builtin(kind) => {
+                let aabb = builtin_mesh(kind).aabb_box();
+                (!aabb.is_empty()).then_some(aabb)
+            }
+            MeshRef::Asset { .. } => {
+                let library = self.library.clone();
+                library.and_then(|library| {
+                    library
+                        .mesh_aabb(key)
+                        .or_else(|| library.mesh_data(key).map(|data| data.aabb_box()))
+                        .filter(|aabb| !aabb.is_empty())
+                })
+            }
+        };
+        self.bounds.insert(key, computed);
+        computed
     }
 
     /// 确保某个网格已在 GPU 上；返回是否可用。
@@ -203,6 +241,10 @@ impl MeshCache {
 pub struct RenderStats {
     pub draw_calls: u32,
     pub instances: u32,
+    /// 本帧被视锥剔除的实例数（阶段三 A）。
+    pub culled: u32,
+    /// 想剔除但拿不到包围盒、只能照画的实例数。持续非零说明资产层没喂 AABB。
+    pub cull_unknown: u32,
     pub frame_index: u64,
 }
 
@@ -447,7 +489,7 @@ impl Renderer {
 
     /// 绘制一帧。场景的任何变化都会在下一帧生效，不需要重建管线。
     pub fn render(&mut self, scene: &Scene) {
-        let groups = self.prepare_instances(scene);
+        let (groups, culled, cull_unknown) = self.prepare_instances(scene);
         self.prepare_materials(&groups);
 
         let frame = match self.surface.get_current_texture() {
@@ -550,6 +592,8 @@ impl Renderer {
             self.stats = RenderStats {
                 draw_calls,
                 instances,
+                culled,
+                cull_unknown,
                 frame_index: scene.frame,
             };
         }
@@ -595,7 +639,12 @@ impl Renderer {
     }
 
     /// 把场景里可见的物件整理成按 `MeshRef` 分组的实例区间，并上传到 GPU。
-    fn prepare_instances(&mut self, scene: &Scene) -> Vec<(MeshRef, std::ops::Range<u32>)> {
+    ///
+    /// 返回值附带本帧的剔除统计 `(绘制分组, 剔除数, 缺包围盒数)`。
+    fn prepare_instances(
+        &mut self,
+        scene: &Scene,
+    ) -> (Vec<(MeshRef, std::ops::Range<u32>)>, u32, u32) {
         // 更新相机 / 光照 uniform
         let mut camera = scene.camera;
         camera.aspect = self.aspect();
@@ -636,12 +685,33 @@ impl Renderer {
         // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
         self.joint_scratch.clear();
         let mut joint_overflow = 0usize;
+        // 阶段三 A：先用 6 个视锥平面过一遍节点，被剔除的实例不占实例槽位、也不占关节槽位
+        let frustum = Frustum::from_view_projection(&camera.view_projection());
+        let mut culled = 0u32;
+        let mut cull_unknown = 0u32;
 
         for key in &keys {
             let start = all.len() as u32;
             for node in scene.iter() {
                 if !node.visible || node.mesh != *key {
                     continue;
+                }
+                match self.mesh_cache.bounds(*key) {
+                    Some(local) => {
+                        // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
+                        let world = local.transformed(&node.world);
+                        let world = if scene.skin_of(node.id).is_some() {
+                            world.inflate_relative(SKIN_CULL_MARGIN)
+                        } else {
+                            world
+                        };
+                        if !frustum.intersects_aabb(&world) {
+                            culled += 1;
+                            continue;
+                        }
+                    }
+                    // 拿不到包围盒就不剔除（fail-open），宁可多画也不让物件凭空消失
+                    None => cull_unknown += 1,
                 }
                 let color: Vec4 = node.color;
                 let joint_base = match scene.skin_of(node.id) {
@@ -699,7 +769,7 @@ impl Renderer {
         }
 
         if all.is_empty() {
-            return groups;
+            return (groups, culled, cull_unknown);
         }
 
         // 容量不足则扩容（按 2 倍增长，避免每帧重建）
@@ -720,7 +790,7 @@ impl Renderer {
         self.queue
             .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all));
 
-        groups
+        (groups, culled, cull_unknown)
     }
 }
 

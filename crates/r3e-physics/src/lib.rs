@@ -14,7 +14,7 @@
 //! `body_count` 恒为 0，物件完全由脚本驱动（与旧行为一致）。
 
 use glam::Vec3;
-use r3e_core::{BuiltinMesh, Node, NodeId, PhysicsSceneDesc, Scene};
+use r3e_core::{Aabb, BuiltinMesh, Node, NodeId, PhysicsSceneDesc, Scene};
 
 /// 刚体句柄，由后端分配。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,6 +92,14 @@ impl BodyDesc {
     /// 仅凭网格与缩放推断一个刚体描述（不读 `physics` 段）。
     /// 用于脚本运行时创建、且没有物理描述的物件。
     pub fn infer(node: &Node) -> Self {
+        Self::infer_with(node, None)
+    }
+
+    /// 同 [`BodyDesc::infer`]，但可用网格真实包围盒推出更贴合的碰撞体尺寸。
+    ///
+    /// `bounds` 是网格**局部**空间的 AABB（来自 `MeshProvider::mesh_aabb`）；给了就按
+    /// `AABB 半尺寸 × scale` 推导，缺失则退回 `scale * 0.5`。
+    pub fn infer_with(node: &Node, bounds: Option<Aabb>) -> Self {
         let shape = match node.mesh {
             r3e_core::MeshRef::Builtin(BuiltinMesh::Sphere) => ColliderShape::Sphere,
             r3e_core::MeshRef::Builtin(BuiltinMesh::Cylinder) => ColliderShape::Cylinder,
@@ -101,7 +109,7 @@ impl BodyDesc {
         Self {
             kind: BodyKind::Dynamic,
             shape,
-            half_extents: (scale * 0.5).max(Vec3::splat(0.001)),
+            half_extents: half_extents_from(bounds, scale),
             position: node.world_position(),
             rotation: node.transform.rotation,
             scale,
@@ -114,6 +122,15 @@ impl BodyDesc {
     /// 缺省规则与场景文件约定一致：碰撞形状由 `collider` 指定、否则由 mesh 推导；
     /// 半尺寸由 `half_extents` 指定、否则取 scale * 0.5；质量缺省 1.0。
     pub fn from_node(node: &Node) -> Option<Self> {
+        Self::from_node_with(node, None)
+    }
+
+    /// 同 [`BodyDesc::from_node`]，但可用网格真实包围盒推导碰撞体尺寸。
+    ///
+    /// 外部资产网格（`MeshRef::Asset`）的真实尺寸往往远不是 1×1×1，退化成
+    /// `scale * 0.5` 会让碰撞体明显偏小；这里让 AABB 参与推导。
+    /// 显式写了 `half_extents` 的场景仍然以场景为准（人工调过的值优先）。
+    pub fn from_node_with(node: &Node, bounds: Option<Aabb>) -> Option<Self> {
         let p = node.physics.as_ref()?;
         let shape = p
             .collider
@@ -128,7 +145,7 @@ impl BodyDesc {
         let half_extents = p
             .half_extents
             .map(|h| Vec3::from(h).abs())
-            .unwrap_or(scale * 0.5);
+            .unwrap_or_else(|| half_extents_from(bounds, scale));
         Some(Self {
             kind: BodyKind::parse(&p.body),
             shape,
@@ -140,6 +157,16 @@ impl BodyDesc {
             rotation: node.transform.rotation,
             scale,
         })
+    }
+}
+
+/// 碰撞体半尺寸：有真实 AABB 就用它乘缩放，否则退回 `scale * 0.5`。
+///
+/// 下限 1e-3 避免零厚度网格生成退化碰撞体。
+fn half_extents_from(bounds: Option<Aabb>, scale: Vec3) -> Vec3 {
+    match bounds.filter(|b| !b.is_empty()) {
+        Some(aabb) => (aabb.half_extents() * scale).max(Vec3::splat(0.001)),
+        None => (scale * 0.5).max(Vec3::splat(0.001)),
     }
 }
 
@@ -839,6 +866,26 @@ mod tests {
         let (scene, id) = scene_with_ball();
         let desc = BodyDesc::infer(scene.get(id).unwrap());
         assert_eq!(desc.shape, ColliderShape::Sphere);
+        assert!((desc.half_extents.x - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn infer_with_uses_mesh_aabb_instead_of_unit_cube() {
+        // 资产网格真实尺寸远大于 1：碰撞体应跟着 AABB 走，而不是退化成 scale*0.5
+        let (mut scene, id) = scene_with_ball();
+        scene.get_mut(id).unwrap().transform.scale = Vec3::new(2.0, 1.0, 0.5);
+        let bounds = Aabb::new(Vec3::new(-1.0, 0.0, -0.5), Vec3::new(1.0, 2.0, 0.5));
+        let desc = BodyDesc::infer_with(scene.get(id).unwrap(), Some(bounds));
+        // AABB 半尺寸 (1,1,0.5) × scale (2,1,0.5) = (2,1,0.25)
+        assert!((desc.half_extents.x - 2.0).abs() < 1e-6, "x={}", desc.half_extents.x);
+        assert!((desc.half_extents.y - 1.0).abs() < 1e-6, "y={}", desc.half_extents.y);
+        assert!((desc.half_extents.z - 0.25).abs() < 1e-6, "z={}", desc.half_extents.z);
+    }
+
+    #[test]
+    fn infer_without_bounds_falls_back_to_scale_half() {
+        let (scene, id) = scene_with_ball();
+        let desc = BodyDesc::infer_with(scene.get(id).unwrap(), None);
         assert!((desc.half_extents.x - 0.5).abs() < 1e-6);
     }
 

@@ -6,7 +6,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
 
-use crate::{AssetId, MeshRef};
+use crate::{aabb::Aabb, AssetId, MeshRef};
 
 /// 统一顶点格式：位置 + 法线 + 第一套 UV + 蒙皮（P4）。
 ///
@@ -158,6 +158,12 @@ impl MeshData {
         }
         (min, max)
     }
+
+    /// 同 [`MeshData::aabb`]，但返回 [`Aabb`] 类型，便于做变换与视锥测试。
+    pub fn aabb_box(&self) -> Aabb {
+        let (min, max) = self.aabb();
+        Aabb::new(min, max)
+    }
 }
 
 /// 网格数据来源：渲染层只依赖该抽象，不认识具体资产存储与文件 IO。
@@ -169,6 +175,14 @@ impl MeshData {
 /// 渲染层据此决定每个绘制段的 bind group，但仍不需要知道数据来自 FBX 还是别的格式。
 pub trait MeshProvider {
     fn mesh_data(&self, key: MeshRef) -> Option<MeshData>;
+
+    /// 网格的局部包围盒（几何空间），用于视锥剔除与物理碰撞体推导。
+    ///
+    /// `None` 表示「本提供者不提供包围盒」，调用方应退回未剔除路径（fail-open），
+    /// 而不是把物件当空盒剔掉。资产层的实现直接读导入时已算好的 AABB，零拷贝。
+    fn mesh_aabb(&self, _key: MeshRef) -> Option<Aabb> {
+        None
+    }
 
     /// 网格的材质分区（按索引区间切分）。返回空表示「整网格一段、用默认材质」。
     fn mesh_parts(&self, _key: MeshRef) -> Vec<MeshPartData> {
