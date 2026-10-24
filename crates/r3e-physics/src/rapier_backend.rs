@@ -25,12 +25,14 @@ use std::sync::{Arc, Mutex};
 
 use glam::{Quat, Vec3};
 use rapier3d::na::Unit;
+use rapier3d::parry::query::{intersection_test, Ray as ParryRay};
+use rapier3d::parry::shape::Ball;
 use rapier3d::prelude::*;
 use r3e_core::{NodeId, Scene};
 
 use crate::{
-    BackendCaps, BodyDesc, BodyHandle, BodyKind, ColliderShape, PhysicsBackend, PhysicsEvent,
-    PhysicsEventKind,
+    BackendCaps, BodyDesc, BodyHandle, BodyKind, ColliderShape, OverlapHit, PhysicsBackend,
+    PhysicsEvent, PhysicsEventKind, Ray, RayHit,
 };
 
 /// 地面半空间的 `user_data` 标记：它不是场景节点，事件里应报 `None`。
@@ -134,6 +136,8 @@ impl EventHandler for EventCollector {
 /// 一条刚体记录：句柄 ↔ Rapier 实体 ↔ 场景节点。
 struct Record {
     body: RigidBodyHandle,
+    /// 挂在刚体上的碰撞体；查询（raycast / overlap）按它做窄相检测。
+    collider: ColliderHandle,
     node: NodeId,
     kind: BodyKind,
 }
@@ -255,13 +259,15 @@ impl PhysicsBackend for RapierBackend {
         if let Some(body) = self.bodies.get_mut(rb) {
             body.set_rotation(quat_to_rapier(desc.rotation), false);
         }
-        self.colliders
+        let collider = self
+            .colliders
             .insert_with_parent(collider_for(&desc), rb, &mut self.bodies);
 
         self.records.insert(
             handle,
             Record {
                 body: rb,
+                collider,
                 node,
                 kind: desc.kind,
             },
@@ -393,5 +399,68 @@ impl PhysicsBackend for RapierBackend {
             Ok(mut sink) => std::mem::take(&mut *sink),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// 用 parry 的窄相做射线检测：逐碰撞体 cast，取最近命中。
+    ///
+    /// 地面半空间不属于任何场景节点（`records` 里没有它），因此查询只覆盖刚体；
+    /// 这与内置后端「查刚体、不查地面」的口径一致。
+    fn raycast(&self, ray: Ray, max_distance: f32) -> Option<RayHit> {
+        if max_distance <= 0.0 {
+            return None;
+        }
+        let parry_ray = ParryRay::new(to_rapier(ray.origin), to_rapier(ray.dir));
+        let mut best: Option<RayHit> = None;
+        for (handle, rec) in self.records.iter() {
+            let Some(collider) = self.colliders.get(rec.collider) else {
+                continue;
+            };
+            let Some(hit) = collider.shape().cast_ray_and_get_normal(
+                collider.position(),
+                &parry_ray,
+                max_distance,
+                true,
+            ) else {
+                continue;
+            };
+            let distance = hit.time_of_impact;
+            if best.map_or(true, |b| distance < b.distance) {
+                best = Some(RayHit {
+                    handle: *handle,
+                    node: rec.node,
+                    distance,
+                    point: ray.point_at(distance),
+                    normal: to_glam(hit.normal).normalize_or_zero(),
+                });
+            }
+        }
+        best
+    }
+
+    /// 用 parry 的 `intersection_test` 做球 vs 碰撞体相交，结果按 node 升序。
+    fn overlap_sphere(&self, center: Vec3, radius: f32) -> Vec<OverlapHit> {
+        if radius <= 0.0 {
+            return Vec::new();
+        }
+        let ball = Ball::new(radius);
+        let pose = Pose3::translation(center.x, center.y, center.z);
+        let mut hits: Vec<OverlapHit> = self
+            .records
+            .iter()
+            .filter(|(_, rec)| {
+                let Some(collider) = self.colliders.get(rec.collider) else {
+                    return false;
+                };
+                intersection_test(&pose, &ball, collider.position(), collider.shape())
+                    .map(|r| r.intersecting)
+                    .unwrap_or(false)
+            })
+            .map(|(handle, rec)| OverlapHit {
+                handle: *handle,
+                node: rec.node,
+            })
+            .collect();
+        hits.sort_by_key(|h| h.node);
+        hits
     }
 }

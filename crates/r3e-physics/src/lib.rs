@@ -49,6 +49,10 @@ pub struct BackendCaps {
     pub ccd: bool,
     /// 碰撞事件（开始 / 结束）。
     pub collision_events: bool,
+    /// 射线查询（`raycast`）：从一点朝一个方向打射线，拿到最近命中体。
+    pub raycast: bool,
+    /// 形状重叠查询（`overlap_sphere`）：给定球体覆盖范围内的刚体。
+    pub overlap: bool,
 }
 
 impl BackendCaps {
@@ -59,10 +63,21 @@ impl BackendCaps {
         joints: false,
         ccd: false,
         collision_events: false,
+        raycast: false,
+        overlap: false,
     };
 
-    /// 内置后端：只有「刚体 vs 地面」这一条接触规则，无旋转、无事件、无 CCD。
-    pub const BASIC: Self = Self::NONE;
+    /// 内置后端：只有「刚体 vs 地面」这一条接触规则，无旋转、无事件、无 CCD，
+    /// 但查询（射线 / 重叠）用解析法真实可查。
+    pub const BASIC: Self = Self {
+        body_body_contacts: false,
+        rotational_dynamics: false,
+        joints: false,
+        ccd: false,
+        collision_events: false,
+        raycast: true,
+        overlap: true,
+    };
 
     /// 有真实约束求解器的档位：刚体互撞 + 旋转动力学 + 碰撞事件（Rapier 当前落在这一档）。
     pub const CONTACT: Self = Self {
@@ -71,19 +86,15 @@ impl BackendCaps {
         joints: false,
         ccd: false,
         collision_events: true,
+        raycast: true,
+        overlap: true,
     };
 
     /// 门面（`PhysicsBackend` trait + 脚本 `physics_*`）当前真正暴露给上层的上限。
     ///
     /// 关节与 CCD 还没有 trait 方法与脚本入口，所以任何后端都**不得**申报它们，
     /// 否则脚本通过 `physics_has_capability` 拿到的是一个无法使用的承诺。
-    pub const EXPOSED: Self = Self {
-        body_body_contacts: true,
-        rotational_dynamics: true,
-        joints: false,
-        ccd: false,
-        collision_events: true,
-    };
+    pub const EXPOSED: Self = Self::CONTACT;
 
     /// 完整能力，仅作「等门面补齐关节与 CCD 接口后」的目标档位预留。
     ///
@@ -95,6 +106,8 @@ impl BackendCaps {
         joints: true,
         ccd: true,
         collision_events: true,
+        raycast: true,
+        overlap: true,
     };
 
     /// 申报是否落在门面已暴露的能力范围内（越界即虚报）。
@@ -119,6 +132,12 @@ impl BackendCaps {
         }
         if self.collision_events {
             keys.push("events");
+        }
+        if self.raycast {
+            keys.push("raycast");
+        }
+        if self.overlap {
+            keys.push("overlap");
         }
         keys
     }
@@ -422,6 +441,51 @@ impl PhysicsConfig {
 // 后端契约
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 查询（与后端无关的输入 / 输出类型）
+// ---------------------------------------------------------------------------
+
+/// 一条射线。`dir` 在构造时归一化，`max_distance` 由调用方按世界单位给。
+#[derive(Debug, Clone, Copy)]
+pub struct Ray {
+    pub origin: Vec3,
+    pub dir: Vec3,
+}
+
+impl Ray {
+    /// 构造射线；零向量方向退化为 +Y，避免后端拿到 NaN 方向。
+    pub fn new(origin: Vec3, dir: Vec3) -> Self {
+        let len = dir.length();
+        let dir = if len > 1e-6 { dir / len } else { Vec3::Y };
+        Self { origin, dir }
+    }
+
+    /// 射线上的点：`origin + dir * t`。
+    pub fn point_at(&self, t: f32) -> Vec3 {
+        self.origin + self.dir * t
+    }
+}
+
+/// 射线命中的最近刚体。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RayHit {
+    pub handle: BodyHandle,
+    pub node: NodeId,
+    /// 沿射线的命中距离（世界单位，`>= 0`）。
+    pub distance: f32,
+    /// 命中点世界坐标。
+    pub point: Vec3,
+    /// 命中面法线（世界空间、已归一化；射线从物体内部出发时取 `-dir`）。
+    pub normal: Vec3,
+}
+
+/// 重叠查询命中的一个刚体。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlapHit {
+    pub handle: BodyHandle,
+    pub node: NodeId,
+}
+
 /// 物理后端契约。实现者负责积分、碰撞与把结果写回场景。
 pub trait PhysicsBackend {
     fn name(&self) -> &'static str;
@@ -465,6 +529,22 @@ pub trait PhysicsBackend {
     /// 可选：取走自上次调用以来的碰撞事件（不清空刚体）。
     /// 默认后端不产生事件；支持事件的后端需在 `capabilities().collision_events` 里如实置位。
     fn drain_events(&mut self) -> Vec<PhysicsEvent> {
+        Vec::new()
+    }
+
+    /// 可选：射线查询，返回 `max_distance` 内最近的命中体。
+    ///
+    /// 默认实现返回 `None`；能查的后端必须同时把 `capabilities().raycast` 置真，
+    /// 否则脚本会拿到「申报能查、实际查不到」的假承诺。
+    fn raycast(&self, _ray: Ray, _max_distance: f32) -> Option<RayHit> {
+        None
+    }
+
+    /// 可选：球体重叠查询，返回球心 `center`、半径 `radius` 内相交的刚体。
+    ///
+    /// 结果按 `node` 升序，保证同一场景下多次查询顺序稳定。
+    /// 默认实现返回空表；能查的后端需把 `capabilities().overlap` 置真。
+    fn overlap_sphere(&self, _center: Vec3, _radius: f32) -> Vec<OverlapHit> {
         Vec::new()
     }
 }
@@ -749,6 +829,120 @@ impl PhysicsBackend for BuiltinBackend {
     fn take_all_handles(&self) -> Option<Vec<BodyHandle>> {
         Some(self.bodies.iter().map(|b| b.handle).collect())
     }
+
+    /// 解析法射线查询：把每个刚体化成世界 AABB 做 slab 测试，取最近命中。
+    ///
+    /// 内置后端不旋转、形状本身就轴对齐，AABB 即精确包围体；
+    /// 球用半径立方体近似（脚本拿来做拾取足够，需要精确球面就走 Rapier）。
+    fn raycast(&self, ray: Ray, max_distance: f32) -> Option<RayHit> {
+        if max_distance <= 0.0 {
+            return None;
+        }
+        let mut best: Option<RayHit> = None;
+        for rb in self.bodies.iter() {
+            let (min, max) = body_aabb(rb.shape, rb.position, rb.half);
+            let Some((t, normal)) = ray_aabb(&ray, min, max, max_distance) else {
+                continue;
+            };
+            if best.map_or(true, |b| t < b.distance) {
+                best = Some(RayHit {
+                    handle: rb.handle,
+                    node: rb.node,
+                    distance: t,
+                    point: ray.point_at(t),
+                    normal,
+                });
+            }
+        }
+        best
+    }
+
+    /// 解析法球体重叠：球心到 AABB 的最近距离 <= 半径即算命中。
+    fn overlap_sphere(&self, center: Vec3, radius: f32) -> Vec<OverlapHit> {
+        if radius <= 0.0 {
+            return Vec::new();
+        }
+        let mut hits: Vec<OverlapHit> = self
+            .bodies
+            .iter()
+            .filter(|rb| {
+                let (min, max) = body_aabb(rb.shape, rb.position, rb.half);
+                aabb_distance_sq(center, min, max) <= radius * radius
+            })
+            .map(|rb| OverlapHit {
+                handle: rb.handle,
+                node: rb.node,
+            })
+            .collect();
+        hits.sort_by_key(|h| h.node);
+        hits
+    }
+}
+
+/// 刚体在世界空间的轴对齐包围盒（内置后端不旋转，AABB 精确）。
+fn body_aabb(shape: ColliderShape, center: Vec3, half: Vec3) -> (Vec3, Vec3) {
+    let h = match shape {
+        ColliderShape::Sphere => Vec3::splat(half.x.abs()),
+        ColliderShape::Box => half.abs(),
+        // 胶囊 / 圆柱在竖直方向更高，水平方向按半径处理
+        ColliderShape::Capsule | ColliderShape::Cylinder => {
+            Vec3::new(half.x.abs(), half.y.abs(), half.x.abs())
+        }
+    };
+    (center - h, center + h)
+}
+
+/// 射线 vs AABB（slab 法）。返回 `(距离, 法线)`；起点在盒内时距离取 0、法线取 `-dir`。
+fn ray_aabb(ray: &Ray, min: Vec3, max: Vec3, max_distance: f32) -> Option<(f32, Vec3)> {
+    let mut t_enter = 0.0f32;
+    let mut t_exit = max_distance;
+    let mut normal = -ray.dir;
+    for axis in 0..3 {
+        let o = ray.origin[axis];
+        let d = ray.dir[axis];
+        let (lo, hi) = (min[axis], max[axis]);
+        if d.abs() < 1e-6 {
+            if o < lo || o > hi {
+                return None;
+            }
+            continue;
+        }
+        let inv = 1.0 / d;
+        let mut t1 = (lo - o) * inv;
+        let mut t2 = (hi - o) * inv;
+        // 从哪一端进入：沿正方向走就是撞到 lo 面（法线朝 -轴），反之撞 hi 面。
+        let mut n = Vec3::ZERO;
+        n[axis] = if d > 0.0 { -1.0 } else { 1.0 };
+        if t1 > t2 {
+            std::mem::swap(&mut t1, &mut t2);
+        }
+        if t1 > t_enter {
+            t_enter = t1;
+            normal = n;
+        }
+        t_exit = t_exit.min(t2);
+        if t_enter > t_exit {
+            return None;
+        }
+    }
+    (t_enter <= max_distance).then_some((t_enter, normal))
+}
+
+/// 点到 AABB 的最近距离平方。
+fn aabb_distance_sq(p: Vec3, min: Vec3, max: Vec3) -> f32 {
+    let mut d2 = 0.0;
+    for axis in 0..3 {
+        let v = p[axis];
+        let e = if v < min[axis] {
+            min[axis] - v
+        } else if v > max[axis] {
+            v - max[axis]
+        } else {
+            0.0
+        };
+        d2 += e * e;
+    }
+    d2
 }
 
 /// 统一推导碰撞体半尺寸：优先 BodyDesc.half_extents，退化到 scale * 0.5。
@@ -936,6 +1130,24 @@ impl Physics {
     /// 取走碰撞事件（需要 `capabilities().collision_events`）。
     pub fn drain_events(&mut self) -> Vec<PhysicsEvent> {
         self.backend.drain_events()
+    }
+
+    /// 射线查询：物理关闭或后端不申报 `raycast` 时返回 `None`。
+    ///
+    /// `max_distance` 用世界单位；`handle` / `node` 可直接用来做拾取后的操作。
+    pub fn raycast(&self, ray: Ray, max_distance: f32) -> Option<RayHit> {
+        if !self.enabled || !self.backend.capabilities().raycast {
+            return None;
+        }
+        self.backend.raycast(ray, max_distance)
+    }
+
+    /// 球体重叠查询：物理关闭或后端不申报 `overlap` 时返回空表。
+    pub fn overlap_sphere(&self, center: Vec3, radius: f32) -> Vec<OverlapHit> {
+        if !self.enabled || !self.backend.capabilities().overlap {
+            return Vec::new();
+        }
+        self.backend.overlap_sphere(center, radius)
     }
 
     /// 创建刚体；物理关闭时返回 `None`，由调用方决定如何提示。

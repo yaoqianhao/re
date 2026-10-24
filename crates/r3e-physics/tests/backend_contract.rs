@@ -152,6 +152,10 @@ fn capability_matrix_is_honest() {
     assert!(!caps.body_body_contacts, "内置后端不互撞");
     assert!(!caps.rotational_dynamics, "内置后端不旋转");
     assert!(!caps.collision_events, "内置后端不产事件");
+    assert!(
+        caps.raycast && caps.overlap,
+        "内置后端用解析法查 AABB，必须申报 raycast/overlap"
+    );
 
     #[cfg(feature = "rapier")]
     {
@@ -159,9 +163,98 @@ fn capability_matrix_is_honest() {
         let caps = rapier.capabilities();
         assert_eq!(caps, BackendCaps::CONTACT);
         assert!(caps.body_body_contacts && caps.rotational_dynamics && caps.collision_events);
+        assert!(caps.raycast && caps.overlap, "Rapier 走 parry 查询管线");
         assert!(caps.has("events") && !caps.has("ccd") && !caps.has("joints"));
         assert_eq!(rapier.kind(), PhysicsKind::Rapier);
         assert_eq!(rapier.backend_name(), "rapier");
+    }
+}
+
+/// 查询层契约：每个可用后端都必须能「打中最近的盒子、打不中空处、球体能圈到物体」。
+///
+/// 两个静态盒子沿 Z 轴排在 z=0 与 z=-4 处，射线从 z=-10 朝 +Z 打过去，
+/// 最近的应该是近处的那个（z=-4 盒子最近的面在 z=-5）。
+#[test]
+fn every_backend_raycast_and_overlap_find_nearest_body() {
+    for kind in selectable() {
+        let mut physics = physics_of(kind);
+        let mut scene = Scene::new();
+        let mut spawn = |name: &str, z: f32| {
+            let id = scene
+                .spawn(ObjectDesc {
+                    name: name.into(),
+                    mesh: Some("box".into()),
+                    position: Some([0.0, 2.0, z]),
+                    ..Default::default()
+                })
+                .expect("spawn");
+            physics
+                .try_create_body(
+                    id,
+                    BodyDesc {
+                        kind: r3e_physics::BodyKind::Static,
+                        shape: ColliderShape::Box,
+                        half_extents: Vec3::splat(1.0),
+                        position: Vec3::new(0.0, 2.0, z),
+                        ..Default::default()
+                    },
+                )
+                .expect("static body");
+            id
+        };
+        spawn("near", -4.0);
+        let far = spawn("far", 0.0);
+        scene.update_world_transforms();
+
+        let ray = r3e_physics::Ray::new(Vec3::new(0.0, 2.0, -10.0), Vec3::Z);
+        let hit = physics
+            .raycast(ray, 100.0)
+            .unwrap_or_else(|| panic!("{kind:?}: 射线应命中盒子"));
+        assert!(
+            (hit.distance - 5.0).abs() < 0.05,
+            "{kind:?}: 应命中 z=-5 的面，距离 5，实际 {}",
+            hit.distance
+        );
+        assert!(
+            (hit.point.z + 5.0).abs() < 0.05,
+            "{kind:?}: 命中点应在 z≈-5，实际 {}",
+            hit.point.z
+        );
+        // 法线朝向来向：-Z 方向
+        assert!(
+            hit.normal.z < -0.9,
+            "{kind:?}: 迎面法线应为 -Z，实际 {:?}",
+            hit.normal
+        );
+        assert_ne!(hit.node, far, "{kind:?}: 不该跳过近处盒子");
+
+        // 背向打空：朝 -Z 只有空气
+        let miss = r3e_physics::Ray::new(Vec3::new(0.0, 2.0, -10.0), -Vec3::Z);
+        assert!(physics.raycast(miss, 100.0).is_none(), "{kind:?}: 背向应打空");
+        // 距离不够也打不中
+        assert!(
+            physics.raycast(ray, 2.0).is_none(),
+            "{kind:?}: max_distance 应生效"
+        );
+
+        // 球体圈中近处盒子，圈不到远处
+        let near_hits = physics.overlap_sphere(Vec3::new(0.0, 2.0, -4.0), 1.2);
+        assert!(
+            !near_hits.is_empty(),
+            "{kind:?}: 球心在盒内，重叠查询不应为空"
+        );
+        assert!(
+            physics.overlap_sphere(Vec3::new(0.0, 2.0, -8.0), 0.5).is_empty(),
+            "{kind:?}: 两盒之间的空隙不该有重叠"
+        );
+
+        // 关掉物理后查询立即失效，不残留旧结果
+        physics.set_enabled(false);
+        assert!(physics.raycast(ray, 100.0).is_none(), "{kind:?}: 关闭后不查");
+        assert!(
+            physics.overlap_sphere(Vec3::new(0.0, 2.0, -4.0), 1.2).is_empty(),
+            "{kind:?}: 关闭后不查"
+        );
     }
 }
 

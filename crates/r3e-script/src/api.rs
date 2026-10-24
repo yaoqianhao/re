@@ -9,7 +9,7 @@ use std::rc::Rc;
 use glam::{Vec3, Vec4};
 use r3e_core::input::{parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::{InputState, MeshRef, ObjectDesc, Scene};
-use r3e_physics::{BodyDesc, BodyHandle, BodyKind, PhysicsKind, Physics};
+use r3e_physics::{BodyDesc, BodyHandle, BodyKind, Physics, PhysicsKind, Ray};
 use rhai::{Array, Dynamic, Engine};
 
 /// 引擎递给脚本的运行时时钟。
@@ -679,6 +679,9 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     // 场景 JSON / 命令行开启后，内置后端开始积分与地面碰撞。
     let c = ctx.clone();
     engine.register_fn("attach_body", move |name: &str, kind: &str, mass: f64| -> bool {
+        // 脚本里常见「create_node → attach_body」连写，此时节点的世界矩阵还没刷新，
+        // 直接读 world_position() 会拿到原点，刚体就会落在错误位置（查询也会跟着偏）。
+        c.scene.borrow_mut().update_world_transforms();
         let scene = c.scene.borrow();
         let Some(node) = scene.find(name) else {
             println!("[script] attach_body: 物件 `{name}` 不存在");
@@ -805,6 +808,46 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn("physics_has_capability", move |key: &str| -> bool {
         c.physics.borrow().capabilities().has(key)
     });
+
+    // 射线查询：命中返回 [node, distance, px, py, pz]，未命中返回空数组。
+    // 方向不必先归一化（Ray 构造时归一），max_dist 用世界单位。
+    let c = ctx.clone();
+    engine.register_fn(
+        "physics_raycast",
+        move |ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, max_dist: f64| -> Array {
+            let ray = Ray::new(
+                Vec3::new(f32_of(ox), f32_of(oy), f32_of(oz)),
+                Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz)),
+            );
+            match c.physics.borrow().raycast(ray, f32_of(max_dist)) {
+                Some(hit) => vec![
+                    Dynamic::from(hit.node as i64),
+                    Dynamic::from(hit.distance as f64),
+                    Dynamic::from(hit.point.x as f64),
+                    Dynamic::from(hit.point.y as f64),
+                    Dynamic::from(hit.point.z as f64),
+                ],
+                None => Array::new(),
+            }
+        },
+    );
+
+    // 球体重叠：返回命中节点的 id 数组（按 id 升序），空数组即没碰到。
+    let c = ctx.clone();
+    engine.register_fn(
+        "physics_overlap",
+        move |x: f64, y: f64, z: f64, radius: f64| -> Array {
+            c.physics
+                .borrow()
+                .overlap_sphere(
+                    Vec3::new(f32_of(x), f32_of(y), f32_of(z)),
+                    f32_of(radius),
+                )
+                .iter()
+                .map(|h| Dynamic::from(h.node as i64))
+                .collect()
+        },
+    );
 
     // CCD 开关占位：契约里还没有这个方法（也就没有后端申报 `ccd` 能力位），
     // 这里明确报「未支持」并返回 false，避免脚本以为设置成功。
