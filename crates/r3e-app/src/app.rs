@@ -473,14 +473,18 @@ impl EngineApp {
             } else {
                 for inst in &scene.animations {
                     log::info!(
-                        "[{tag}] 动画 `{}` clip={} t={:.3}/{:.3}s speed={:.2} playing={} 绑定={}",
+                        "[{tag}] 动画 `{}` clip={} t={:.3}/{:.3}s speed={:.2} playing={} 绑定={} fade={}",
                         inst.name,
                         inst.clip.name,
                         inst.sample_time(),
                         inst.clip.duration,
                         inst.speed,
                         inst.playing,
-                        inst.bindings.len()
+                        inst.bindings.len(),
+                        match inst.fade.as_ref() {
+                            Some(f) => format!("{}→{} {:.0}%", f.clip.name, inst.clip.name, f.weight() * 100.0),
+                            None => "无".to_string(),
+                        }
                     );
                 }
             }

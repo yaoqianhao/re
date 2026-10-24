@@ -484,13 +484,36 @@ impl Scene {
         for inst in self.animations.iter_mut() {
             inst.advance(dt);
             let time = inst.sample_time();
-            for b in inst.bindings.iter() {
-                let Some(track) = inst.clip.tracks.get(b.track as usize) else {
-                    continue;
+            let weight = inst.fade_weight();
+            let fade_time = inst.fade_sample_time();
+            for (i, b) in inst.bindings.iter().enumerate() {
+                let fresh = if b.track == crate::anim::NO_TRACK {
+                    None
+                } else {
+                    inst.clip
+                        .tracks
+                        .get(b.track as usize)
+                        .and_then(|t| t.sample(time))
                 };
-                if let Some(transform) = track.sample(time) {
-                    writes.push((b.node, transform));
-                }
+                // 过渡中的旧片段：只知道与绑定的对应关系，缺轨道时下标为 NO_TRACK
+                let old = match (inst.fade.as_ref(), fade_time) {
+                    (Some(fade), Some(t)) => fade
+                        .tracks
+                        .get(i)
+                        .copied()
+                        .filter(|t| *t != crate::anim::NO_TRACK)
+                        .and_then(|idx| fade.clip.tracks.get(idx as usize))
+                        .and_then(|track| track.sample(t)),
+                    _ => None,
+                };
+                let transform = match (fresh, old) {
+                    // 新片段缺该轨道：过渡期间由旧片段继续驱动，结束后停在末姿态
+                    (None, Some(o)) => o,
+                    (Some(n), Some(o)) => crate::anim::blend_transform(&o, &n, weight),
+                    (Some(n), None) => n,
+                    (None, None) => continue,
+                };
+                writes.push((b.node, transform));
             }
         }
 
@@ -614,23 +637,7 @@ impl Scene {
     /// 实例名形如 `<资产名>/<片段名>`，片段名从该资产已登记的片段里按名字（大小写不敏感）查找，
     /// 因此脚本可以写 `set_anim_clip("tirger/idle_loop", "run_loop")`。
     pub fn set_anim_clip(&mut self, instance: &str, clip_name: &str) -> bool {
-        let Some(inst_key) = self
-            .anim_instance(instance)
-            .map(|a| a.name.split('/').next().unwrap_or("").to_string())
-        else {
-            return false;
-        };
-        let head = format!("{inst_key}/");
-        let Some(clip) = self
-            .anim_clips
-            .iter()
-            .find(|(k, _)| {
-                k.strip_prefix(&head)
-                    .map(|n| n.eq_ignore_ascii_case(clip_name))
-                    .unwrap_or(false)
-            })
-            .map(|(_, c)| c.clone())
-        else {
+        let Some(clip) = self.find_anim_clip(instance, clip_name) else {
             return false;
         };
         match self.anim_instance_mut(instance) {
@@ -640,6 +647,52 @@ impl Scene {
             }
             None => false,
         }
+    }
+
+    /// 带交叉淡入地切换片段，`duration` 为过渡秒数（`<= 0` 等价 [`Self::set_anim_clip`]）。
+    pub fn set_anim_clip_fade(&mut self, instance: &str, clip_name: &str, duration: f32) -> bool {
+        let Some(clip) = self.find_anim_clip(instance, clip_name) else {
+            return false;
+        };
+        match self.anim_instance_mut(instance) {
+            Some(inst) => {
+                inst.cross_fade(clip, duration);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 交叉淡入剩余进度：新片段当前权重（`1.0` 表示没有过渡正在进行）。
+    pub fn anim_fade_weight(&self, instance: &str) -> Option<f32> {
+        self.anim_instance(instance).map(|a| a.fade_weight())
+    }
+
+    /// 过渡中的旧片段名；没有过渡时返回空串（脚本日志用）。
+    pub fn anim_fade_source(&self, instance: &str) -> String {
+        self.anim_instance(instance)
+            .and_then(|a| a.fade.as_ref().map(|f| f.clip.name.clone()))
+            .unwrap_or_default()
+    }
+
+    /// 按「实例名前缀 + 片段名（大小写不敏感）」解析出可切换片段。
+    fn find_anim_clip(&self, instance: &str, clip_name: &str) -> Option<std::sync::Arc<AnimClip>> {
+        let inst_key = self
+            .anim_instance(instance)?
+            .name
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let head = format!("{inst_key}/");
+        self.anim_clips
+            .iter()
+            .find(|(k, _)| {
+                k.strip_prefix(&head)
+                    .map(|n| n.eq_ignore_ascii_case(clip_name))
+                    .unwrap_or(false)
+            })
+            .map(|(_, c)| c.clone())
     }
 
     // ---------- 加载 ----------
@@ -837,6 +890,89 @@ mod anim_tests {
         scene.update_animations(0.5);
         let p = scene.get(id).unwrap().transform.position;
         assert!((p.x - 10.0).abs() < 1e-4, "切片段后应采样新片段，实际 {p:?}");
+    }
+
+    /// walk（x: 0→10）与 run（x: 0→20）共用同一节点，用于交叉淡入断言。
+    fn fade_scene() -> (Scene, NodeId) {
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let walk = clip_with_move();
+        let mut run = clip_with_move();
+        run.name = "run".to_string();
+        run.tracks[0].keys[1].position = Vec3::new(20.0, 0.0, 0.0);
+
+        scene.register_anim_clip("demo/walk", std::sync::Arc::new(walk.clone()));
+        scene.register_anim_clip("demo/run", std::sync::Arc::new(run));
+
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(walk));
+        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        scene.add_anim_instance(inst);
+        (scene, id)
+    }
+
+    #[test]
+    fn cross_fade_blends_two_clips_then_settles() {
+        let (mut scene, id) = fade_scene();
+        scene.update_animations(0.25);
+        assert!((scene.get(id).unwrap().transform.position.x - 2.5).abs() < 1e-4);
+
+        // 过渡 0.4s：半程时新旧姿态各占一半权重
+        assert!(scene.set_anim_clip_fade("demo/walk", "run", 0.4));
+        assert_eq!(scene.anim_fade_source("demo/walk"), "walk");
+        assert!((scene.anim_fade_weight("demo/walk").unwrap() - 0.0).abs() < 1e-4);
+
+        scene.update_animations(0.2);
+        // 新 clip run 时间 0.2 → x=4；旧 clip walk 继续走到 0.45 → x=4.5；权重 smoothstep(0.5)=0.5
+        let x = scene.get(id).unwrap().transform.position.x;
+        assert!((x - 4.25).abs() < 1e-3, "半程应混合到 x=4.25，实际 {x}");
+
+        scene.update_animations(0.3);
+        // 过渡走完：只剩 run，时间 0.5 → x=10
+        let x = scene.get(id).unwrap().transform.position.x;
+        assert!((x - 10.0).abs() < 1e-3, "过渡结束后应等于新片段，实际 {x}");
+        assert_eq!(scene.anim_fade_source("demo/walk"), "");
+        assert!((scene.anim_fade_weight("demo/walk").unwrap() - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn cross_fade_zero_duration_is_hard_cut() {
+        let (mut scene, id) = fade_scene();
+        scene.update_animations(0.25);
+
+        assert!(scene.set_anim_clip_fade("demo/walk", "run", 0.0));
+        assert_eq!(scene.anim_fade_source("demo/walk"), "", "0 时长不应留下过渡");
+        scene.update_animations(0.2);
+        let x = scene.get(id).unwrap().transform.position.x;
+        assert!((x - 4.0).abs() < 1e-4, "硬切后直接采样 run，实际 {x}");
+    }
+
+    #[test]
+    fn cross_fade_keeps_old_track_when_new_clip_lacks_it() {
+        let (mut scene, id) = fade_scene();
+        // 新片段只有另一条轨道（root/leg），因此 arm 在过渡期间只能由旧片段驱动
+        let mut run = clip_with_move();
+        run.name = "run".to_string();
+        // 换一条轨道（下标与路径都不同），确保 arm 的绑定在新片段里找不到对应轨道
+        run.tracks[0].node_index = 2;
+        run.tracks[0].node_path = "root/leg".to_string();
+        scene.register_anim_clip("demo/run", std::sync::Arc::new(run));
+
+        scene.update_animations(0.25);
+        assert!(scene.set_anim_clip_fade("demo/walk", "run", 0.4));
+        scene.update_animations(0.2);
+        let x = scene.get(id).unwrap().transform.position.x;
+        assert!((x - 4.5).abs() < 1e-3, "缺轨道时应由旧片段驱动到 walk(0.45)=4.5，实际 {x}");
+
+        // 过渡结束后不再有轨道驱动，节点停在旧片段最后写入的姿态
+        scene.update_animations(0.3);
+        let x = scene.get(id).unwrap().transform.position.x;
+        assert!((x - 4.5).abs() < 1e-3, "过渡结束后应停在末姿态，实际 {x}");
     }
 
     #[test]

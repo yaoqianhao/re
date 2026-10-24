@@ -372,6 +372,33 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow_mut().set_anim_clip(inst, clip)
     });
 
+    // 带交叉淡入地切片段：`dur` 秒内旧动作逐渐淡出，避免 idle→run 这类切换硬跳。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_clip_fade",
+        move |inst: &str, clip: &str, dur: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_clip_fade(inst, clip, dur as f32)
+        },
+    );
+
+    // 过渡进度（新动作权重，1.0 = 已完成/无过渡），供脚本做状态机与日志验收。
+    let c = ctx.clone();
+    engine.register_fn("anim_fade", move |inst: &str| -> f64 {
+        c.scene
+            .borrow()
+            .anim_fade_weight(inst)
+            .map(|w| w as f64)
+            .unwrap_or(1.0)
+    });
+
+    // 正在淡出的旧动作名（无过渡为空串）。
+    let c = ctx.clone();
+    engine.register_fn("anim_fade_from", move |inst: &str| -> String {
+        c.scene.borrow().anim_fade_source(inst)
+    });
+
     let c = ctx.clone();
     engine.register_fn("anim_clips", move |prefix: &str| -> Array {
         c.scene

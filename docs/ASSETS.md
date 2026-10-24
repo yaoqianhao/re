@@ -513,7 +513,7 @@ P3 已落地：FBX 动画栈 → `AnimClip`，按骨架节点路径建节点树�
 ### 13.4 尚未做（P3 范围外）
 
 - ~~**蒙皮（P4）**~~：已在 P4 落地（见第 14 章），四肢逐顶点形变已生效。
-- **动画混合/分层**：无 upper-body mask、无 cross-fade，切片段是硬切。
+- **动画混合/分层**：阶段三 C 已补 cross-fade（见第 16 章），仍无 upper-body mask 与 additive 叠加。
 - ~~**场景 JSON 改 `assets` 段的热生效**~~：已在阶段三 A 落地——热重载时比较 `assets` 声明，
   变了才重新导入并换库，没变则连资产都不重导；但**运行时脚本已改过的 `anim` 参数**仍会被
   `set_anim_clip` 的运行时状态覆盖，改片段请重启确认。
@@ -581,7 +581,7 @@ P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画�
 - **多套蒙皮 / 每网格多 skin**：目前一网格一蒙皮实例，`MeshAsset.skin` 只存一个槽位。
 - **双四元数蒙皮（DQS）**：现在是 LBS，关节大角度扭转时会有糖纸效应。
 - **GPU 侧蒙皮（compute skinning）**：关节矩阵在 CPU 求解后上传，顶点量大时可改 compute。
-- **动画混合 / 状态机**：仍为硬切，跨片段过渡会跳。
+- **动画混合 / 状态机**：cross-fade 与脚本状态机已在阶段三 C 落地（见第 16 章）；分层 mask、additive、相位对齐仍未做。
 - **表情 / morph target**：未支持。
 
 ## 15. 阶段三 A（AABB + 视锥剔除 + 两个小尾巴）实施现状
@@ -637,3 +637,56 @@ A 阶段的目标是「让外部资产也拥有包围盒」，它同时是阴影
 - **遮挡剔除 / 层级剔除**：逐实例测试，深层次结构下父节点包围盒无法代表整棵子树。
 - **剔除与阴影共用**：阴影 pass 尚未存在，届时需要单独一套以光源为视点的视锥（或复用阴影相机）。
 - **碰撞体形状**：仍是盒/球/胶囊的近似，不做凸包与网格碰撞。
+
+## 16. 阶段三 C（动画交叉淡入 + 脚本状态机）实施现状
+
+C 阶段解决的是「切片段会跳」这个观感问题：`set_anim_clip` 原地重绑后时间归零，跨片段位姿差异直接体现为一帧突变。
+现在多了一条 `set_anim_clip_fade` 路径，在 `duration` 秒内把旧片段的姿态平滑让位给新片段。
+
+### 16.1 落地的内容
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/r3e-core/src/anim.rs` | `NO_TRACK = u32::MAX`；`wrap_time(t, duration, looping)`（与时间轴取模同源）；`blend_transform(a, b, w)`（位置/缩放 lerp、旋转 slerp）；`AnimFade{clip, time, speed, looping, tracks, elapsed, duration}` + `weight()`（smoothstep）；`AnimInstance` 加 `fade: Option<AnimFade>`、`cross_fade(clip, duration)`、`fade_weight()`、`fade_source()`，`advance()` 里同步推进旧片段与 `elapsed`，到点自动 `fade = None` |
+| `crates/r3e-core/src/scene.rs` | `update_animations` 改为「按绑定取新旧两路采样 + 加权混合」；`find_anim_clip` 抽出复用；新增 `set_anim_clip_fade / anim_fade_weight / anim_fade_source`；`set_anim_clip` 保持硬切语义 |
+| `crates/r3e-script/src/api.rs` | 新增 `set_anim_clip_fade(实例, 片段, 秒)` / `anim_fade(实例)` / `anim_fade_from(实例)` |
+| `crates/r3e-app/src/app.rs` | `log_anim_probe` 输出 `fade=旧片段→新片段 xx%` 或 `fade=无` |
+| `scripts/anim_state.rhai` | 三态演示（idle / run / atk）：按住左键跑、点击左键攻击、攻击播完回落待机，全部带 0.15–0.25s 淡入 |
+| `scripts/anim_demo.rhai` | 轮播改用 `set_anim_clip_fade(…, 0.35)`，过渡期间打印权重曲线 |
+
+### 16.2 关键口径（后续不得回退）
+
+1. **过渡期间只有一套骨架**：旧片段只提供采样值，不额外驱动一份节点树；关节矩阵/蒙皮那条链路一行未改，
+   因此不会出现"双重蒙皮"或缺一张关节矩阵。
+2. **权重曲线必须两端慢**：用 `smoothstep` 而非线性，是让切换起点/终点的速度连续；线性权重在
+   切片段那一帧和结束那一帧仍有可见的速度突变，等于把"跳位姿"换成"跳速度"。
+3. **旋转必须 slerp**：`Quat::lerp` 在夹角接近 180° 时长度塌缩、归一化后方向不可控；混合永远走 `slerp`。
+4. **旧片段时间独立推进**：`AnimFade` 冻结 `time/speed/looping`，过渡期间不跟随 `set_anim_speed` 等外部改动，
+   否则旧片段会在半途变速，混合结果是两个都不像。
+5. **缺轨道靠 `NO_TRACK` 而不是补零**：新片段没有的轨道要由旧片段继续喂，写 `u32::MAX` 标记；
+   若用 0 号轨道顶替，角色会长出别人的肢体动作。
+6. **零时长等价硬切**：`duration <= 0` 直接走 `set_clip`；这条保证了既有场景 JSON 与旧脚本行为不变。
+7. **状态机不进引擎**：状态判定、优先级（先按的时间片）、攻击播完回落全部在脚本里按帧重算。
+   引擎只提供"带过渡的切片段"这一个原子操作，脚本热重载后状态自然从当前输入重建，不留脏状态。
+8. **打不断的长动作要脚本自己管**：引擎不阻止过渡中再次 `cross_fade`（会按当前混合状态重建过渡），
+   是否需要"攻击期间忽略移动输入"属于逻辑，由脚本判定。
+
+### 16.3 验收记录
+
+`cargo build --workspace` exit=0；`cargo test --workspace` 39 passed / 0 failed（其中 `r3e-core` 23 例，含新增 3 例）。
+
+| 验证项 | 结果 |
+| --- | --- |
+| `cross_fade_blends_two_clips_then_settles` | 过渡中节点位置落在两片段采样值之间；`fade` 到点归 `None`，之后姿态只由新片段决定 |
+| `zero_duration_is_hard_cut` | `duration=0` 时 `fade=None`，第一帧即为新片段姿态 |
+| `keeps_old_track_when_new_clip_lacks_it` | 新片段缺该轨道时节点仍按旧片段推进（实测 3.25 而非绑定姿态），过渡结束后停在旧片段末姿态 |
+| 权重曲线（`anim_demo.rhai` + `--run-seconds 8`） | 日志逐帧打印 `过渡中 idle_loop → atk：2%…99%`，8 秒内完成 3 次切换，收尾探针 `fade=无` |
+| 三态状态机（`anim_state.rhai` + `--run-seconds 4`） | 脚本载入无报错，无输入时稳定停留 `idle_loop`（`t=1.903/2.100s`），未误触发 run/atk |
+| 蒙皮未回归 | 收尾探针 `蒙皮质心位移 0.4565`、`最大偏差 1.5304`、`可见 44 / 绘制 44 / 剔除 0 / 缺包围盒 0`，与 A 阶段一致 |
+
+### 16.4 尚未做（C 阶段范围外）
+
+- **分层 / mask 混合**：无 upper-body 遮罩，无法「下半身跑 + 上半身攻击」。
+- **additive 叠加**：无叠加层，呼吸、受击抖动这类增量动画只能当完整片段播。
+- **同步组与相位对齐**：跑→跑（变速）这类同族片段按各自时间轴采样，不做步频对齐，脚步可能错拍。
+- **状态机 DSL**：状态转移仍写在 Rhai 里，没有引擎侧的 transition 表或条件图。

@@ -957,6 +957,38 @@ Node.mesh ──MeshProvider::mesh_aabb──▶ MeshCache.bounds（HashMap<Mesh
 
 ---
 
+### 8.10 动画交叉淡入与状态机（阶段三 C）
+
+阶段 C 只改「`AnimClip` 采样之后、写节点 TRS 之前」这一段，渲染层与蒙皮链路零改动：
+过渡期间仍是**一套**骨架节点树、一份关节矩阵，因此不需要双份蒙皮权重或第二遍上传。
+
+```
+update_animations(dt)
+  ├─ inst.advance(dt)：新片段时间 += dt·speed；fade.elapsed += dt，旧片段时间 += dt·旧speed
+  └─ 逐绑定 i：
+        fresh = 新片段.tracks[binding.track].sample(t)        // NO_TRACK 时为 None
+        old   = fade.clip.tracks[fade.tracks[i]].sample(t_old) // 无过渡时为 None
+        w     = smoothstep(fade.elapsed / fade.duration)       // 无过渡时 1.0
+        node.transform = blend(old, fresh, w)                  // 位置/缩放 lerp，旋转 slerp
+```
+
+落点与不变量：
+
+| 事项 | 口径 |
+| --- | --- |
+| 过渡状态 | `AnimInstance.fade: Option<AnimFade{clip, time, speed, looping, tracks[], elapsed, duration}>`；`None` 即单片段直出 |
+| 权重曲线 | `smoothstep(t) = t²(3−2t)`，`t = elapsed/duration` 钳到 `[0,1]`——两端速度为 0，切换瞬间不抽搐 |
+| 混合口径 | 位置/缩放线性、旋转 `Quat::slerp`；和关键帧插值同一套口径，避免四元数线性插值在 180° 附近塌缩 |
+| 旧片段时间 | 切片段那一刻把 `time/speed/looping` 一起冻结进 `AnimFade`，过渡期间按旧速度继续走（倒放也成立），不跟 `set_anim_speed` 变动 |
+| 缺轨道 | 新片段没有的轨道在绑定表里写 `NO_TRACK`（`u32::MAX`）：过渡期间由旧片段继续驱动，结束后节点停在旧片段末姿态，绝不回到绑定姿态硬跳 |
+| 硬切等价 | `duration <= 0` 或目标片段与当前相同 → 直接 `set_clip`，不建 `AnimFade`，旧行为完全保留 |
+| 打断过渡 | 过渡中再次 `cross_fade` 会用「当前混合后的片段状态」重建 `AnimFade`，只保留一层过渡，不会叠成多层淡入淡出 |
+| 脚本 API | `set_anim_clip_fade(实例, 片段, 秒)`、`anim_fade(实例)`（新片段权重 0–1）、`anim_fade_from(实例)`（旧片段名，无过渡为空串） |
+| 状态机归属 | **状态机写在脚本层**（见 `scripts/anim_state.rhai`）：引擎只提供「带过渡的切片段」这一原子操作，状态判定、优先级、攻击播完回落都由脚本按帧重算，热重载不残留状态 |
+| 验收口径 | `cargo test -p r3e-core` 覆盖权重/边界/缺轨道三类用例；无头运行 `--run-seconds` 打印 `fade=旧→新 xx%` 与脚本侧权重曲线 |
+
+---
+
 ## 9. 端到端数据流
 
 ```
@@ -1032,7 +1064,7 @@ Node.mesh ──MeshProvider::mesh_aabb──▶ MeshCache.bounds（HashMap<Mesh
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
 | 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4） | 有关键帧插值、速度/循环/片段切换、逐顶点形变；**无动画混合与 cross-fade**（切片段是硬切），无 morph target |
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；**无上半身 mask/分层混合**、无 additive、无 morph target |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 | 无分屏、无阴影相机、无后视镜 |
 
@@ -1066,7 +1098,7 @@ Node.mesh ──MeshProvider::mesh_aabb──▶ MeshCache.bounds（HashMap<Mesh
 | --- | --- | --- | --- |
 | 一 | Rapier 物理后端（替换内置实现） | 新增 `r3e-physics/src/rapier_backend.rs` + 接上 `PhysicsKind::Rapier` 分支 | 无（契约与开关已就位） |
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
-| **三（已完成：A）** | **视锥剔除 + AABB**：`MeshProvider::aabb()` 打通到 `MeshRef::Asset`，`prepare_instances` 6 平面测试，物理碰撞体改用真实 AABB | `core/mesh.rs` 加 `aabb()` 与 `MeshProvider::aabb`；`render` 增 `MeshCache::bounds` + `Frustum`；`r3e-physics` 按 AABB 推导半长 | 无（场景 JSON 不变） |
+| **三（已完成：A、C）** | **A 视锥剔除 + AABB**：`MeshProvider::aabb()` 打通到 `MeshRef::Asset`，`prepare_instances` 6 平面测试，物理碰撞体改用真实 AABB；**C 动画交叉淡入 + 脚本状态机**：`AnimInstance.fade` 双片段加权混合、`set_anim_clip_fade` 脚本 API、`scripts/anim_state.rhai` 三态示例 | `core/mesh.rs` 加 `aabb()` 与 `MeshProvider::aabb`；`render` 增 `MeshCache::bounds` + `Frustum`；`r3e-physics` 按 AABB 推导半长；`core/anim.rs` 加 `AnimFade`/`blend_transform`/`NO_TRACK`，`scene.rs` 混合写回 | 无（场景 JSON 不变，`set_anim_clip` 仍为硬切） |
 | 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
 | **五（已完成：P0–P4）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 / 骨骼蒙皮 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
 | 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |

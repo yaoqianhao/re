@@ -24,7 +24,9 @@ D:\rust3d-engine
 ├─ scripts/
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
 │   ├─ input_demo.rhai        # 鼠标 / 手柄演示
-│   └─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
+│   ├─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
+│   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
+│   └─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
 ├─ crates/
 │   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
@@ -333,7 +335,7 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 
 - 单方向光 + 环境光，Blinn-Phong 着色；无阴影、无后处理。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
-  骨骼蒙皮）；法线/粗糙度贴图、动画混合、morph target 尚未支持。
+  骨骼蒙皮、交叉淡入与脚本状态机）；法线/粗糙度贴图、分层/叠加混合、morph target 尚未支持。
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
@@ -345,8 +347,9 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 
 已落地：静态网格导入与 GPU 上传、材质分区 + base_color 贴图、场景 `assets` 段声明与 spawn、
 骨架节点树 + 节点级动画（多片段、速度、循环、热切换、场景热重载后自动补挂）、
-骨骼蒙皮（`skin_deformers` → 关节绑定 → `group(2)` 关节矩阵 + 顶点着色器 LBS，逐顶点形变）。
-尚未做：动画混合 / cross-fade、morph target、DQS、GPU skinning。
+骨骼蒙皮（`skin_deformers` → 关节绑定 → `group(2)` 关节矩阵 + 顶点着色器 LBS，逐顶点形变）、
+交叉淡入（`set_anim_clip_fade`，smoothstep 双片段加权，位置/缩放 lerp + 旋转 slerp）与脚本层状态机。
+尚未做：分层 mask / additive 混合、morph target、DQS、GPU skinning。
 
 ```bash
 # 临时加载一个 FBX 到默认场景（窗口里直接看造型与贴图）
@@ -382,5 +385,12 @@ cargo run -- --scene assets/scene_anim.json --anim-clip run_loop --show-bones
 - `MeshRef` 句柄化（`asset:<路径>#<网格序号>`）+ 材质分区逐段 `draw_indexed`；
 - 贴图 `filename` → 内嵌 `content` → 白纹理三级回退，缺图不阻断渲染；
 - 动画按节点级动画栈（TRS 曲线采样）实现（P3）；蒙皮由 `SkinInstance` 提供关节矩阵、
-  `shader.wgsl` 做 LBS（P4），顶点 `stride 56`、实例 `stride 96`（含 `joint_base`）。
+  `shader.wgsl` 做 LBS（P4），顶点 `stride 56`、实例 `stride 96`（含 `joint_base`）；
+- 交叉淡入（阶段三 C）由 `AnimInstance.fade` 双片段加权混合完成，仍是同一套骨架与关节矩阵，
+  渲染层零改动；状态机放脚本层，`scripts/anim_state.rhai` 是可直接跑的示例：
+
+```bash
+# 待机 / 跑 / 攻击三态，切换全部带淡入（按住左键跑、点击左键攻击）
+cargo run -- assets/scene_anim.json scripts/anim_state.rhai
+```
 

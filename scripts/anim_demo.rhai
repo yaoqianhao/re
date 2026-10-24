@@ -22,11 +22,16 @@ fn on_update(dt) {
     if clips.len == 0 {
         return;
     }
-    // 每 3 秒换一个动作，检验切换片段不残留旧姿态
+    // 每 3 秒换一个动作，带 0.35s 交叉淡入：切换瞬间不再硬跳
     let idx = (time() / 3.0).to_int() % clips.len;
     let want = clips[idx];
-    if anim_clip(inst) != want && set_anim_clip(inst, want) {
-        print(`切到 tirger/${want}：${anim_info(inst)}`);
+    if anim_clip(inst) != want && set_anim_clip_fade(inst, want, 0.35) {
+        print(`淡入到 tirger/${want}（旧 ${anim_fade_from(inst)}）：${anim_info(inst)}`);
+    }
+    // 过渡期间权重从 0 涨到 1，可用作缓存/调试信息
+    let w = anim_fade(inst);
+    if w < 1.0 {
+        print(`  过渡中 ${anim_fade_from(inst)} → ${anim_clip(inst)}：${(w * 100.0).to_int()}%`);
     }
 }
 // hot-reload probe 104256
