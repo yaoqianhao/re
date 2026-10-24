@@ -1,7 +1,8 @@
 # r3e 物理系统
 
-> 状态：**已接入**。内置最简物理后端可用（重力 / 地面碰撞 / 弹性 / 摩擦 / 休眠），
-> 默认**关闭**，三层入口可开；`PhysicsBackend` 契约不变，随时可换成 Rapier。
+> 状态：**已接入两个后端**。内置最简后端（重力 / 地面碰撞 / 弹性 / 摩擦 / 休眠，零依赖）+
+> Rapier3D 后端（物件互撞、堆叠、旋转、碰撞事件，由 `--features rapier` 隔离）。
+> 默认**关闭**、默认后端仍是 `builtin`；后端可运行时切换，`PhysicsBackend` 契约对上层零变化。
 
 ---
 
@@ -11,6 +12,12 @@
 # 专用物理演示场景（场景文件里已 enabled=true）
 cargo run -- assets/scene_physics.json scripts/physics_demo.rhai
 
+# Rapier 演示：堆叠方块 + 碰撞事件（必须先带 feature 编译，否则 rapier 不可选）
+cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai
+
+# 后端运行时切换演示：3s 降 builtin、6s 升回 rapier，观察堆叠行为与重绑日志
+cargo run --features rapier -- assets/scene_rapier.json scripts/backend_switch_demo.rhai
+
 # 用命令行临时打开物理（覆盖场景文件设置）
 cargo run -- --physics on
 
@@ -19,9 +26,12 @@ cargo run -- assets/scene_physics.json scripts/physics_demo.rhai --physics on --
 
 # 只看不模拟（null 后端空转，脚本仍可 attach 但不产生位移）
 cargo run -- --physics on --physics-backend null
+
+# 带 rapier 构建时用命令行指定后端
+cargo run --features rapier -- assets/scene_physics.json scripts/physics_demo.rhai --physics on --physics-backend rapier
 ```
 
-窗口标题会实时显示物理状态：`物理 builtin / 6 刚体` 或 `物理关`。
+窗口标题会实时显示物理状态：`物理 rapier / 6 刚体` 或 `物理关`。
 
 ---
 
@@ -154,6 +164,9 @@ else:
 | `physics_set_enabled(on)` | bool | 返回**操作后的**开关状态 |
 | `physics_backend()` | string | `null` / `builtin` / `rapier` |
 | `physics_set_backend(name)` | bool | 运行时切后端，会**清空已有刚体**；`rapier` 未编译时返回 false |
+| `physics_capabilities()` | string | 当前后端能力位，逗号分隔（见 7.3） |
+| `physics_has_capability(name)` | bool | 单个能力位查询，脚本据此分支而非硬编码后端名 |
+| `physics_take_events()` | array | 取走本帧碰撞事件（每条形如 `started:2-3`），无 events 能力时恒为空数组 |
 | `physics_gravity()` | f64 | 取 `y` 分量 |
 | `physics_set_gravity(x,y,z)` | void | 设置重力向量 |
 | `physics_ground()` | f64 | 地面平面高度 |
@@ -195,7 +208,77 @@ fn on_update(dt) {
 
 ---
 
-## 7. 与帧循环 / 热重载的配合
+## 7. Rapier 后端
+
+### 7.1 编译与启用
+
+Rapier 走 **optional feature**，默认构建完全不含它（`cargo build` 不拉 `rapier3d` / `parry3d` / `nalgebra`）：
+
+```toml
+# crates/r3e-physics/Cargo.toml
+rapier = ["dep:rapier3d"]
+
+# crates/r3e-app/Cargo.toml —— 透传，方便直接 cargo run --features rapier
+rapier = ["r3e-physics/rapier"]
+```
+
+| 构建方式 | `builtin` | `rapier` | 说明 |
+| --- | --- | --- | --- |
+| `cargo run` | 可用 | **不可用**（`set_kind(Rapier)` 报错，`set_backend("rapier")` 返回 false） | 默认构建，二进制不带物理引擎 |
+| `cargo run --features rapier` | 可用 | 可用 | 两后端同在一个二进制里，可运行时互切 |
+
+「未编译就明确报错、不静默降级」是刻意行为：`PhysicsKind::available_names()` 会按当前构建返回 `builtin / null` 或 `builtin / null / rapier`，
+命令行帮助、未知后端提示、脚本报错都用它，避免用户以为切了后端其实没切。
+
+### 7.2 与内置后端的行为差异
+
+| 行为 | `builtin` | `rapier` |
+| --- | --- | --- |
+| 刚体 vs 地面 | 有（无限平面） | 有（`halfspace`，随 `ground` 平移） |
+| 刚体 vs 刚体 | **无** | 有，可堆叠、可互相推挤 |
+| 旋转 / 翻滚 / 力矩 | 无 | 有，`sync_to_scene` 写回 `transform.rotation` |
+| 碰撞事件 | 无 | 有（`started` / `stopped`） |
+| CCD（高速防穿透） | 无 | 支持（当前默认关闭，按物体需要再开） |
+| 关节 | 无 | 底层支持，门面暂不暴露 |
+| 子步策略 | 1/60 切分，最多 6 步 | 同左，`MAX_SUBSTEPS = 6` 保持一致节奏 |
+| 静态 `plane` | 装饰用，碰撞由 `ground` 平面负责 | 同左（不做网格碰撞） |
+
+对齐过的语义（换后端不会让脚本行为跳变）：
+
+- `Static` 完全不动：脚本挪静态物件不会带动碰撞，需重建刚体。
+- `Kinematic` 每帧从节点推位姿给物理引擎，由它带着动态体走。
+- `Dynamic` 由物理积分；脚本 `set_pos` 位移超过 `1e-4` 视为**瞬移**，位置以节点为准并清零线速度/角速度。
+- 节点被 `remove_node` → `sync_to_scene` 回收刚体（`records` 里查不到节点即销毁），无句柄泄漏。
+- 地面本身不是场景节点，事件里以 `none` 表示（例如 `started:none-9` 是 9 号节点砸地）。
+
+### 7.3 能力位
+
+`PhysicsBackend::capabilities()` 用 5 个布尔位申报真实能力，**这是脚本做兼容分支的唯一正确姿势**：
+
+| 位 / 脚本名 | builtin | rapier |
+| --- | --- | --- |
+| `body_body`（`body_body_contacts`） | false | true |
+| `rotation`（`rotational_dynamics`） | false | true |
+| `joints` | false | true |
+| `ccd` | false | true |
+| `events`（`collision_events`） | false | true |
+
+脚本侧：`physics_capabilities()` 拿整串（全 false 时为 `none`），`physics_has_capability("events")` 查单个。
+**不要在脚本里判断 `physics_backend() == "rapier"`** —— 那会把「后端名」和「能力」绑死，将来接入第三个后端就又要改脚本。
+
+### 7.4 运行时切换
+
+`physics_set_backend("builtin")` / `("rapier")` / `("null")`，语义与 `set_kind` 一致：
+
+1. 清空**全部**刚体并 bump `generation`；
+2. `app` 在下一代重新把「场景声明了 physics 的物件」绑成刚体；
+3. 脚本此前 `attach_body` 的手工刚体不会自动恢复，需要脚本在 `generation` 变化后自行重绑。
+
+切换是「换引擎」而非「改参数」，飞行中的物件会回到场景初始位姿重新下落 —— 这是预期行为，文档与日志都如实写明。
+
+---
+
+## 8. 与帧循环 / 热重载的配合
 
 ```
 dt → scripts.tick → camera input → sync_physics_bindings → physics.step → update_world_transforms
@@ -210,23 +293,29 @@ dt → scripts.tick → camera input → sync_physics_bindings → physics.step 
 
 ---
 
-## 8. 换成 Rapier（或任何外部后端）
+## 9. 再接入第三个后端（或替换 Rapier）
 
-契约没有变，改动面固定在三处：
+契约没有变，改动面固定在三处 —— Rapier 就是照这个模板加进来的：
 
-1. 新建 `crates/r3e-physics/src/rapier_backend.rs`，实现 `PhysicsBackend` 的 8 个必需方法：
-   `name` / `create_body` / `destroy_body` / `apply_impulse` / `set_gravity` / `step` / `sync_to_scene` / `body_count`。
-   `BodyDesc.shape` → `SharedShape`，`BodyKind` → `RigidBodyType`，`step` 内 `pipeline.step(...)`，
-   `sync_to_scene` 写回 `transform.position` / `rotation`。
-2. `PhysicsKind` 增加真实可用分支，`Physics::rebuild_backend` 里把 `Rapier` 指向新实例。
-3. `Cargo.toml` 加 `rapier3d` 依赖（当前刻意零依赖）。
+1. 新建 `crates/r3e-physics/src/xxx_backend.rs`，实现 `PhysicsBackend` 的必需方法：
+   `name` / `create_body` / `destroy_body` / `apply_impulse` / `set_gravity` / `step` / `sync_to_scene` / `body_count`；
+   若该引擎能出事件，再实现 `drain_events` 并在 `capabilities().collision_events` 如实置位。
+2. `PhysicsKind` 增加分支 + `Physics::rebuild_backend` 指向新实例 + 在 `available_names` 里按 feature 暴露。
+3. `Cargo.toml` 加 optional 依赖与 feature，`r3e-app` 透传同名 feature。
 
 场景 JSON、脚本 API、`app` 层、`core::Scene` 都**不需要改**。
-唯一语义差异：外部后端做物件间碰撞与旋转，内置后端不做 —— 这属于「换后端带来的能力升级」，不是接口破坏。
+
+**唯一红线**：外部引擎的类型只能出现在那一个后端文件里。门面、`app`、脚本层只允许出现 `glam::Vec3` / `Quat`
+和 `PhysicsBackend` 契约类型；高级能力通过 `BackendCaps` 位申报，不往 trait 里塞后端专属方法。
+守不住这条，第二次切换就要动上层代码，可插拔就名存实亡。
+
+回归口径：`crates/r3e-physics/tests/backend_contract.rs` 是一组**后端无关**的契约测试，
+对当前构建里所有 `available_names()` 逐个跑（落体、销毁回收、切换清空、能力矩阵自洽），
+Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]` 关起来。加新后端时把名字塞进列表即可复用。
 
 ---
 
-## 9. 已实测行为
+## 10. 已实测行为
 
 | 场景 | 观测 |
 | --- | --- |
@@ -236,16 +325,33 @@ dt → scripts.tick → camera input → sync_physics_bindings → physics.step 
 | 下落积分 | 球从 `y=6` 落到 `y=0.5` 后反弹至 `y≈4.34`（restitution 0.85），逐次衰减 |
 | 静止与休眠 | 盒子从 `y=12` 落到 `y=0.6999…`（half=0.7）后数值恒定不再抖动 |
 | 运行时开关 | `physics_set_enabled(false/true)`、`physics_set_backend("null"/"builtin")` 均生效 |
-| `physics_set_backend("rapier")` | 返回 false 并打印「未编译进本构建」，不静默降级 |
+| 默认构建 `physics_set_backend("rapier")` | 返回 false 并打印「未编译进本构建」，不静默降级 |
+| `cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai` | 日志「物理: 启用 / 后端 rapier / 能力 [body_body,rotation,joints,ccd,events]」，绑定 6 个场景刚体；脚本打印碰撞事件（如 `started:none-9` 砸地、`stopped:10-11` 方块分离），方块在平台上堆住不倒 |
+| `scripts/backend_switch_demo.rhai`（同场景，运行中切换） | 3s `physics_set_backend("builtin")` → true、刚体数归 0、能力变 `none`，引擎打印「物理后端 -> builtin」并重新绑定 6 个场景刚体；6s 切回 rapier 同样成功，碰撞事件恢复 |
 
-单元测试：`cargo test -p r3e-physics`（10 个用例，覆盖关闭语义、优先级合并、世代号、形状推导、反弹、休眠唤醒、后端切换清空）。
+测试：`cargo test --workspace` 全绿；`cargo test -p r3e-physics --features rapier` 额外跑 Rapier 契约用例
+（落体、销毁回收、后端切换清空、能力矩阵，以及 `rapier_stacks_bodies_and_reports_collision_events`
+——球落平台触发真实互撞事件）。
 
 ---
 
-## 10. 已知限制
+## 11. 已知限制
+
+按后端分列，都属于「该后端的定位」，不是待修 bug：
+
+**`builtin`（刻意保持 ~400 行可读）**
 
 - 物件互不碰撞，所以「一堆球掉进箱子」只会全部穿到地面。
 - 无旋转，盒子落地不会侧翻，斜坡上不会滚动。
-- 地面是无限平面，没有地形 / 网格碰撞。
 - 高速度（>~50 m/s）可能单帧穿过地面（无 CCD）。
+
+**`rapier`**
+
+- 关节（joint）底层支持但门面未暴露，脚本暂不能建约束。
+- CCD 位申报为 true，但默认全关，高速物体仍可能穿透（需按物体打开）。
+- 静态 `plane` 只是装饰，物理地面永远是 `ground` 定义的无限平面，没有地形 / 网格碰撞。
+
+**通用**
+
 - 物理与脚本共用 `RefCell<Scene>`，脚本里不能长期持有 `borrow()` 期间再 `attach_body`（现有 API 已规避）。
+- 切换后端会清空全部刚体并让物件回到场景初始位姿，运行中「换引擎」不是无损操作。

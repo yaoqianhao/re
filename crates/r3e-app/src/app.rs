@@ -103,7 +103,10 @@ impl CliOptions {
         let kind = self.backend.as_deref().and_then(|name| {
             let parsed = PhysicsKind::parse(name);
             if parsed.is_none() {
-                log::warn!("未知物理后端 `{name}`，可用：builtin / null / rapier(预留)");
+                log::warn!(
+                    "未知物理后端 `{name}`，当前构建可用：{}",
+                    PhysicsKind::available_names().join(" / ")
+                );
             }
             parsed
         });
@@ -217,9 +220,10 @@ impl EngineApp {
             }
         }
         log::info!(
-            "物理: {} / 后端 {} / 重力 {:?} / 地面 {}",
+            "物理: {} / 后端 {} / 能力 [{}] / 重力 {:?} / 地面 {}",
             if physics.enabled() { "启用" } else { "关闭" },
             physics.kind().name(),
+            physics.capabilities().summary(),
             physics.gravity.to_array(),
             physics.ground()
         );

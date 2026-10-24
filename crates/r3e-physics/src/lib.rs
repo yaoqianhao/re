@@ -1,24 +1,147 @@
-//! r3e-physics —— 物理抽象层 + 内置最简物理后端。
+//! r3e-physics —— 物理抽象层 + 可插拔后端（内置最简 / Rapier / 空转）。
 //!
 //! 设计分两层：
 //!
 //! * **抽象层**：`Physics` 门面持有 `Box<dyn PhysicsBackend>`，场景与脚本只认这套接口。
-//!   将来接 Rapier / Jolt 只需新增一个后端实现，上层零改动。
-//! * **内置后端**：`BuiltinBackend` 是纯 Rust 自实现的最简规则（零外部依赖），
-//!   只做「刚体 vs 地面平面」：重力积分、弹性反弹、摩擦、静止休眠。
-//!   物件之间不碰撞、不做旋转动力学、无关节与堆叠 —— 定位是「够用的轻量物理」。
+//!   后端名（`null` / `builtin` / `rapier`）只是实现细节，**能力由 [`BackendCaps`] 申报**，
+//!   上层按能力分支而不是按后端名分支，因此换后端不牵动上层逻辑。
+//! * **后端实现**：
+//!   - `BuiltinBackend`：纯 Rust 自实现的最简规则（零外部依赖），只做「刚体 vs 地面平面」：
+//!     重力积分、弹性反弹、摩擦、静止休眠。物件之间不碰撞、不做旋转动力学、无关节与堆叠。
+//!   - `RapierBackend`（`feature = "rapier"`）：Rapier3D 真实物理，互撞 / 堆叠 / 旋转动力学 /
+//!     碰撞事件。默认不编译，`--features rapier` 构建才可用。
+//!   - `NullBackend`：空转，只登记句柄。
 //!
 //! 物理默认**关闭**（`Physics::new()` 即 Null 后端 + enabled=false），
 //! 通过三层任一入口开启：命令行 `--physics on`、场景 JSON 的 `physics.enabled`、
 //! 脚本 `physics_set_enabled(true)`。关闭时不进入积分、`attach_body` 返回 false、
 //! `body_count` 恒为 0，物件完全由脚本驱动（与旧行为一致）。
+//!
+//! **可切换性是硬约束**：`rapier3d` / `parry` 的类型只允许出现在 `rapier_backend.rs`，
+//! 门面、`app`、脚本层只接触 `glam` 向量与本文件的契约类型。
+
 
 use glam::Vec3;
 use r3e_core::{Aabb, BuiltinMesh, Node, NodeId, PhysicsSceneDesc, Scene};
 
+#[cfg(feature = "rapier")]
+mod rapier_backend;
+
 /// 刚体句柄，由后端分配。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BodyHandle(pub u64);
+
+/// 后端能力位：回答「这个后端能做什么」，而不是「它叫什么」。
+///
+/// 上层（`app` / 脚本 / 编辑器）应当按能力分支：例如只有在
+/// `collision_events` 为真时才有意义去消费碰撞事件，
+/// 只有 `body_body_contacts` 为真时才指望球撞球。
+/// 新增后端（Jolt / PhysX / 刚体树）只需如实申报一份位表。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BackendCaps {
+    /// 刚体之间互相碰撞（不止与地面相交）。
+    pub body_body_contacts: bool,
+    /// 旋转动力学（力矩、翻滚、角速度）。
+    pub rotational_dynamics: bool,
+    /// 关节与约束。
+    pub joints: bool,
+    /// 连续碰撞检测（高速物体不穿透）。
+    pub ccd: bool,
+    /// 碰撞事件（开始 / 结束）。
+    pub collision_events: bool,
+}
+
+impl BackendCaps {
+    /// 什么都不做（`null` 后端）。
+    pub const NONE: Self = Self {
+        body_body_contacts: false,
+        rotational_dynamics: false,
+        joints: false,
+        ccd: false,
+        collision_events: false,
+    };
+
+    /// 内置后端：只有「刚体 vs 地面」这一条接触规则，无旋转、无事件、无 CCD。
+    pub const BASIC: Self = Self::NONE;
+
+    /// 完整能力（Rapier 这一档）。
+    pub const FULL: Self = Self {
+        body_body_contacts: true,
+        rotational_dynamics: true,
+        joints: true,
+        ccd: true,
+        collision_events: true,
+    };
+
+    /// 能力键名（稳定标识，供日志与脚本消费）。
+    pub fn enabled_keys(&self) -> Vec<&'static str> {
+        let mut keys = Vec::new();
+        if self.body_body_contacts {
+            keys.push("body_body");
+        }
+        if self.rotational_dynamics {
+            keys.push("rotation");
+        }
+        if self.joints {
+            keys.push("joints");
+        }
+        if self.ccd {
+            keys.push("ccd");
+        }
+        if self.collision_events {
+            keys.push("events");
+        }
+        keys
+    }
+
+    /// 逗号分隔的能力摘要；全关时返回 `none`。
+    pub fn summary(&self) -> String {
+        let keys = self.enabled_keys();
+        if keys.is_empty() {
+            "none".to_string()
+        } else {
+            keys.join(",")
+        }
+    }
+
+    /// 按能力名查询，未知键返回 false。
+    pub fn has(&self, key: &str) -> bool {
+        self.enabled_keys().contains(&key)
+    }
+}
+
+/// 碰撞事件类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicsEventKind {
+    /// 两个碰撞体开始接触。
+    Started,
+    /// 两个碰撞体分离。
+    Stopped,
+}
+
+/// 碰撞事件。一侧为 `None` 表示它不是场景节点（例如后端自带的地面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicsEvent {
+    pub kind: PhysicsEventKind,
+    pub a: Option<NodeId>,
+    pub b: Option<NodeId>,
+}
+
+impl PhysicsEvent {
+    /// 压成一行文本：`started:7-none`，便于日志与脚本筛选。
+    pub fn to_text(&self) -> String {
+        let side = |n: Option<NodeId>| match n {
+            Some(id) => id.to_string(),
+            None => "none".to_string(),
+        };
+        let tag = match self.kind {
+            PhysicsEventKind::Started => "started",
+            PhysicsEventKind::Stopped => "stopped",
+        };
+        format!("{}:{}-{}", tag, side(self.a), side(self.b))
+    }
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyKind {
@@ -174,18 +297,22 @@ fn half_extents_from(bounds: Option<Aabb>, scale: Vec3) -> Vec3 {
 // 后端选择与配置
 // ---------------------------------------------------------------------------
 
-/// 物理后端种类。`Rapier` 是预留槽位：真正编译进来之前选择它会报错而不是静默降级。
+/// 物理后端种类。`Rapier` 由 `feature = "rapier"` 决定是否真的可用：
+/// 未编译进来时选择它会返回错误而不是静默降级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicsKind {
     /// 空转：只登记句柄，不做任何模拟（等价于「物理关闭」）。
     Null,
     /// 内置最简物理（本 crate 自实现）。
     Builtin,
-    /// 外部 Rapier 后端（预留，当前构建不可用）。
+    /// Rapier 后端（`feature = "rapier"`）。
     Rapier,
 }
 
 impl PhysicsKind {
+    /// 全部后端槽位，顺序即日志/帮助里的展示顺序。
+    pub const ALL: [PhysicsKind; 3] = [Self::Null, Self::Builtin, Self::Rapier];
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "none" | "off" | "null" => Some(Self::Null),
@@ -205,7 +332,19 @@ impl PhysicsKind {
 
     /// 当前构建是否真的能提供该后端。
     pub fn is_available(&self) -> bool {
-        matches!(self, Self::Null | Self::Builtin)
+        match self {
+            Self::Null | Self::Builtin => true,
+            Self::Rapier => cfg!(feature = "rapier"),
+        }
+    }
+
+    /// 当前构建真正可用的后端名（错误提示与帮助文本用，避免写死）。
+    pub fn available_names() -> Vec<&'static str> {
+        Self::ALL
+            .iter()
+            .filter(|k| k.is_available())
+            .map(|k| k.name())
+            .collect()
     }
 }
 
@@ -286,6 +425,19 @@ pub trait PhysicsBackend {
 
     /// 可选：设置地面平面高度（仅内置后端消费）。
     fn set_ground(&mut self, _ground: f32) {}
+
+    /// 可选：如实申报本后端能做什么。默认「什么都不做」。
+    ///
+    /// 这是「可切换性」的关键位：上层按能力分支，不要按 `name()` 分支。
+    fn capabilities(&self) -> BackendCaps {
+        BackendCaps::NONE
+    }
+
+    /// 可选：取走自上次调用以来的碰撞事件（不清空刚体）。
+    /// 默认后端不产生事件；支持事件的后端需在 `capabilities().collision_events` 里如实置位。
+    fn drain_events(&mut self) -> Vec<PhysicsEvent> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +608,11 @@ impl BuiltinBackend {
 impl PhysicsBackend for BuiltinBackend {
     fn name(&self) -> &'static str {
         "builtin"
+    }
+
+    /// 只有「刚体 vs 地面」一条接触规则：不互撞、不旋转、无事件、无 CCD。
+    fn capabilities(&self) -> BackendCaps {
+        BackendCaps::BASIC
     }
 
     fn create_body(&mut self, node: NodeId, desc: BodyDesc) -> BodyHandle {
@@ -677,12 +834,13 @@ impl Physics {
         self.backend.set_ground(ground);
     }
 
-    /// 运行时切换后端（会清空已有刚体，脚本需重新 attach）。
+    /// 运行时切换后端（会清空已有刚体、`generation` 自增，脚本需重新 attach）。
     pub fn set_kind(&mut self, kind: PhysicsKind) -> Result<(), String> {
         if !kind.is_available() {
             return Err(format!(
-                "物理后端 `{}` 未编译进本构建（当前可用：null / builtin）",
-                kind.name()
+                "物理后端 `{}` 未编译进本构建（当前可用：{}）；带 Rapier 构建：cargo build --features rapier",
+                kind.name(),
+                PhysicsKind::available_names().join(" / ")
             ));
         }
         if kind == self.kind {
@@ -720,12 +878,35 @@ impl Physics {
     fn rebuild_backend(&mut self) {
         self.backend = match self.kind {
             PhysicsKind::Builtin => Box::new(BuiltinBackend::new(self.gravity, self.ground)),
-            // Rapier 不可用时 set_kind 已经拦下，这里兜底为 null
-            PhysicsKind::Null | PhysicsKind::Rapier => Box::new(NullBackend::new()),
+            PhysicsKind::Rapier => Self::external_backend(self.gravity, self.ground),
+            PhysicsKind::Null => Box::new(NullBackend::new()),
         };
         self.backend.set_gravity(self.gravity);
         self.backend.set_ground(self.ground);
         self.generation += 1;
+    }
+
+    /// 外部后端工厂：唯一一处受 `feature` 影响的分支。
+    /// 将来接 Jolt 等只需在这里加一个 `PhysicsKind` + 一句构造。
+    #[cfg(feature = "rapier")]
+    fn external_backend(gravity: Vec3, ground: f32) -> Box<dyn PhysicsBackend> {
+        Box::new(rapier_backend::RapierBackend::new(gravity, ground))
+    }
+
+    /// 未编译外部后端时的兜底：`set_kind` 已经拦下，正常走不到这里。
+    #[cfg(not(feature = "rapier"))]
+    fn external_backend(_gravity: Vec3, _ground: f32) -> Box<dyn PhysicsBackend> {
+        Box::new(NullBackend::new())
+    }
+
+    /// 当前后端的能力位。上层按能力分支，别按后端名分支。
+    pub fn capabilities(&self) -> BackendCaps {
+        self.backend.capabilities()
+    }
+
+    /// 取走碰撞事件（需要 `capabilities().collision_events`）。
+    pub fn drain_events(&mut self) -> Vec<PhysicsEvent> {
+        self.backend.drain_events()
     }
 
     /// 创建刚体；物理关闭时返回 `None`，由调用方决定如何提示。
@@ -987,7 +1168,10 @@ mod tests {
         assert_eq!(physics.body_count(), 1);
         physics.set_kind(PhysicsKind::Null).unwrap();
         assert_eq!(physics.body_count(), 0);
-        assert!(physics.set_kind(PhysicsKind::Rapier).is_err());
+        // rapier 槽位诚实地跟随构建特性：没编进去就报错，编进去了就能切
+        let switched = physics.set_kind(PhysicsKind::Rapier);
+        assert_eq!(switched.is_ok(), cfg!(feature = "rapier"), "{switched:?}");
+        assert!(physics.set_kind(PhysicsKind::Null).is_ok());
         physics.step(1.0 / 60.0, &mut scene);
     }
 

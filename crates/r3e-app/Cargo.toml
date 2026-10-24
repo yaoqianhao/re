@@ -9,6 +9,11 @@ license.workspace = true
 name = "r3e"
 path = "src/main.rs"
 
+[features]
+default = []
+# 把 Rapier 物理后端编进二进制：`cargo run --features rapier -- --physics on --physics-backend rapier`
+rapier = ["r3e-physics/rapier"]
+
 [dependencies]
 r3e-core.workspace = true
 r3e-asset.workspace = true

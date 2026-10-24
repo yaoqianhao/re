@@ -8,7 +8,7 @@
 //!
 //! 物理选项（命令行优先级最高，覆盖场景文件里的 `physics` 段）：
 //! * `--physics on|off`：开关物理模拟
-//! * `--physics-backend builtin|null`：选择后端（`rapier` 为预留槽位）
+//! * `--physics-backend builtin|null|rapier`：选择后端（`rapier` 需 `--features rapier` 构建）
 //! * `--gravity x,y,z`：重力加速度，例如 `--gravity 0,-9.81,0`
 //! * `--ground y`：地面平面高度，例如 `--ground 0`
 //!
@@ -84,7 +84,7 @@ r3e —— Rust 3D Engine
 
 物理选项（覆盖场景文件里的 physics 段）:
   --physics on|off          开关物理模拟
-  --physics-backend NAME    物理后端: builtin | null | rapier(预留)
+  --physics-backend NAME    物理后端: builtin | null | rapier（rapier 需 --features rapier 构建）
   --gravity x,y,z           重力加速度，默认 0,-9.81,0
   --ground Y                地面平面高度，默认 0
 

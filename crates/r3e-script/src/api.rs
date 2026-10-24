@@ -777,7 +777,10 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("physics_set_backend", move |name: &str| -> bool {
         let Some(kind) = PhysicsKind::parse(name) else {
-            println!("[script] 未知物理后端 `{name}`（可用：builtin / null / rapier）");
+            println!(
+                "[script] 未知物理后端 `{name}`（当前构建可用：{}）",
+                PhysicsKind::available_names().join(" / ")
+            );
             return false;
         };
         match c.physics.borrow_mut().set_kind(kind) {
@@ -790,6 +793,24 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
                 false
             }
         }
+    });
+
+    // 后端能力位：脚本据此判断能不能指望互撞 / 旋转 / 碰撞事件，别按后端名写分支。
+    let c = ctx.clone();
+    engine.register_fn("physics_capabilities", move || -> String {
+        c.physics.borrow().capabilities().summary()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_has_capability", move |key: &str| -> bool {
+        c.physics.borrow().capabilities().has(key)
+    });
+
+    // 取走自上次调用以来的碰撞事件（形如 "started:7-none"）；不支持事件的后端返回空数组。
+    let c = ctx.clone();
+    engine.register_fn("physics_take_events", move || -> Array {
+        let events = c.physics.borrow_mut().drain_events();
+        events.iter().map(|e| Dynamic::from(e.to_text())).collect()
     });
 
     let c = ctx.clone();
