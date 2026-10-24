@@ -8,16 +8,24 @@ use glam::{Vec2, Vec3};
 
 use crate::{AssetId, MeshRef};
 
-/// 统一顶点格式：位置 + 法线 + 第一套 UV。
+/// 统一顶点格式：位置 + 法线 + 第一套 UV + 蒙皮（P4）。
 ///
 /// 使用 `#[repr(C)]` + `Pod` 是为了让渲染层能直接把切片当作字节上传，
 /// 但类型本身不依赖任何 wgpu API。
+///
+/// 蒙皮字段在 P4 加入：`joints` 是关节槽位下标（对应 `SkinInstance::joint_matrices`），
+/// `weights` 是对应权重。**非蒙皮顶点两者全为 0**，着色器据此走「不做蒙皮」分支，
+/// 因此同一份顶点布局能同时服务内置网格与蒙皮资产网格。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    /// 每顶点最多 4 个关节下标（P4）。
+    pub joints: [u16; 4],
+    /// 每顶点最多 4 个权重，和为 1；非蒙皮顶点为 0（P4）。
+    pub weights: [f32; 4],
 }
 
 impl Vertex {
@@ -26,7 +34,31 @@ impl Vertex {
             position,
             normal,
             uv,
+            joints: [0; 4],
+            weights: [0.0; 4],
         }
+    }
+
+    /// 带蒙皮权重的顶点（P4）。
+    pub const fn skinned(
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+        joints: [u16; 4],
+        weights: [f32; 4],
+    ) -> Self {
+        Self {
+            position,
+            normal,
+            uv,
+            joints,
+            weights,
+        }
+    }
+
+    /// 是否带蒙皮权重。
+    pub fn is_skinned(&self) -> bool {
+        self.weights.iter().any(|w| *w > 0.0)
     }
 
     pub fn position(&self) -> Vec3 {
@@ -76,6 +108,32 @@ impl MeshData {
 
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty() || self.indices.is_empty()
+    }
+
+    /// 由「位置 / 法线 / UV / 蒙皮权重」平行数组拼装顶点（P4）。
+    ///
+    /// `joints` / `weights` 为 `None` 时蒙皮字段填 0，等价于非蒙皮网格；
+    /// 位置数组长度决定顶点数，其余数组短了按缺省值补齐。
+    pub fn from_arrays_skinned(
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        uvs: Option<&[[f32; 2]]>,
+        joints: Option<&[[u16; 4]]>,
+        weights: Option<&[[f32; 4]]>,
+        indices: Vec<u32>,
+    ) -> Self {
+        let count = positions.len();
+        let mut vertices = Vec::with_capacity(count);
+        for i in 0..count {
+            let uv = uvs.and_then(|u| u.get(i).copied()).unwrap_or([0.0, 0.0]);
+            let j = joints.and_then(|j| j.get(i).copied()).unwrap_or([0; 4]);
+            let w = weights
+                .and_then(|w| w.get(i).copied())
+                .unwrap_or([0.0; 4]);
+            let normal = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+            vertices.push(Vertex::skinned(positions[i], normal, uv, j, w));
+        }
+        Self { vertices, indices }
     }
 
     pub fn vertex_count(&self) -> usize {

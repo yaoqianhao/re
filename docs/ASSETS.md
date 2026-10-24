@@ -11,8 +11,8 @@ AIGC:
 
 # r3e 资产层规划：FBX 外部资产加载
 
-> 状态：**P0–P2 已落地**（静态网格、材质贴图、场景 `assets` 段）；P3 节点动画、P4 蒙皮为后续
-> 本文档前半部分是阶段规划，第 11 / 12 章是已实现口径与验收记录。
+> 状态：**P0–P4 已落地**（静态网格、材质贴图、场景 `assets` 段、节点动画、骨骼蒙皮）
+> 本文档前半部分是阶段规划，第 11 – 14 章是已实现口径与验收记录。
 > 当前代码现状见 [`ARCHITECTURE.md`](ARCHITECTURE.md)；本文档描述「加载 `.fbx` 资产并放入场景」这一阶段的
 > 目标、改动面、数据结构、阶段拆分与验收标准。
 
@@ -53,7 +53,7 @@ AIGC:
 
 | 排除项 | 理由 |
 | --- | --- |
-| 骨骼蒙皮（skin / joint weights） | 需要新增顶点着色器 skinning 路径、关节调色板 uniform、骨架层级图，改动量约等于前四项之和，单独立一阶段 |
+| ~~骨骼蒙皮（skin / joint weights）~~ | 原计划排除，实际作为 P4 单独立项落地（见第 14 章）；主因是它需要独立的顶点属性、关节矩阵通道与绑定姿态口径 |
 | 形变目标（morph target / blend shape） | 同上，属于顶点级动画 |
 | 动画混合 / 状态机 / 过渡 | 属动画系统，不属资产加载；先给「播一个 clip」 |
 | FBX 写出（导出） | 引擎只读 |
@@ -304,11 +304,15 @@ struct CachedAsset {
 - 场景 JSON `anim` 段 + 脚本 `play_anim` / `set_anim_clip` 系列 + `--dump-anim` / `--show-bones`；
 - 验收：老虎样本 7 个片段可轮播，`speed` / `looping` / 切片段生效，细节见第 13 章。
 
-### P4（后置）：骨骼蒙皮
+### P4：骨骼蒙皮 —— ✅ 已完成（2026-10-24）
 
-单独立项：新增 `SkinAsset`（关节索引 + 权重）、关节层级与逆绑定矩阵、顶点着色器 skinning、
-关节矩阵 uniform（或 storage buffer）。P0–P3 的数据结构为此预留：`Vertex` 再加 `joints/weights` 两个属性，
-`MeshAsset` 再多一个 `skin: Option<AssetId>`，不需要推翻已有设计。
+- `SkinData`（关节表）/ `SkinInstance`（场景侧绑定 + 每帧关节矩阵）落在 `r3e-core::skin`；
+  `Vertex` 加 `joints(u16x4) / weights(f32x4)`，`stride 32 → 56`；
+- 资产层从 ufbx `skin_deformers → clusters` 提取关节与每顶点权重，`MeshAsset.skin` 填槽位；
+- 渲染层 `group(2)` 关节矩阵 storage buffer（4096 槽位、256 KiB）+ 顶点着色器 LBS，
+  实例数据加 `joint_base`；
+- 验收：老虎样本 37 关节 / 3084 顶点带权重，4 s 内蒙皮质心位移 0.164、四肢逐顶点形变，
+  整体平移实例不产生形变。细节见第 14 章。
 
 ---
 
@@ -461,7 +465,8 @@ AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）�
 ## 13. P3（节点级动画 + 骨架节点树 + 片段切换）实施现状
 
 P3 已落地：FBX 动画栈 → `AnimClip`，按骨架节点路径建节点树，逐帧采样写 `Transform`，
-脚本与场景 JSON 都能声明/切换片段。**蒙皮仍留给 P4**，因此当前能动的只有「节点变换」这一层。
+脚本与场景 JSON 都能声明/切换片段。P3 阶段蒙皮尚未接入，只动「节点变换」这一层；
+**P4 已在同一套骨架节点树上补上蒙皮**，见第 14 章。
 
 ### 13.1 落地的内容
 
@@ -507,9 +512,73 @@ P3 已落地：FBX 动画栈 → `AnimClip`，按骨架节点路径建节点树�
 
 ### 13.4 尚未做（P3 范围外）
 
-- **蒙皮（P4）**：老虎网格挂在单一节点上，动画目前只能带动整体与骨骼节点，四肢不会逐顶点形变。
+- ~~**蒙皮（P4）**~~：已在 P4 落地（见第 14 章），四肢逐顶点形变已生效。
 - **动画混合/分层**：无 upper-body mask、无 cross-fade，切片段是硬切。
 - **场景 JSON 改 `assets` 段的热生效**：热重载沿用启动时的导入清单（`asset_specs`），
   增删资产仍需重启；改 `anim` 参数也会被 `set_anim_clip` 的运行时状态覆盖，需重启确认。
 - **`--assets-root`**：仍未落地，路径仍按「场景文件目录 / 命令行原样」解析。
 - **物理 AABB**：`MeshRef::Asset` 仍不参与受限包围盒，物理体只有内置网格有碰撞形状。
+
+## 14. P4（骨骼蒙皮）实施现状
+
+P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画推进节点 TRS 后由
+`update_skinning` 折算成关节矩阵，顶点着色器做线性混合蒙皮（LBS）。老虎样本的四肢现在真正形变。
+
+### 14.1 落地的内容
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/r3e-core/src/mesh.rs` | `Vertex` 加 `joints: [u16; 4]` / `weights: [f32; 4]`（stride 56）、`Vertex::is_skinned()`、`with_skin()` |
+| `crates/r3e-core/src/skin.rs` | `SkinData`（关节表）、`SkinJoint`、`SkinInstance`（`SkinBinding` 静止姿态 + 逆绑定矩阵、`joint_matrices`）、`solve()` / `update_skinning()`、`MAX_JOINT_MATRICES = 4096` |
+| `crates/r3e-core/src/scene.rs` | `skins` 表与 `add_skin / skin_of / update_skinning / prune_skins`；`update_world_transforms` 末尾自动求解 |
+| `crates/r3e-asset/src/lib.rs` | `skin_deformers → clusters` 提取关节（`node_index` / `path` / `bind_to_world`）与每顶点 `joints/weights`（归一化、超 4 权重取大者），`MeshAsset.skin: Option<u32>`、`AssetEntry.skins`、`skin_stats()` |
+| `crates/r3e-render/src/mesh.rs` | 顶点属性 5 个（`0..=4`，`3 = Uint16x4`、`4 = Float32x4`）；`InstanceRaw` 加 `joint_base`（location 10），stride 96 |
+| `crates/r3e-render/src/shader.wgsl` | `@group(2) @binding(0) u_joints: array<mat4x4>`；`skin_matrix()` 做 LBS，权重全 0 时跳过取样（内置网格零成本） |
+| `crates/r3e-render/src/renderer.rs` | 关节 storage buffer + bind group + pipeline layout `group(2)`；`prepare_instances` 按 `scene.skin_of(mesh_node)` 填 `joint_base` 并上传本帧关节矩阵（溢出报错不静默截断） |
+| `crates/r3e-app/src/app.rs` | `bind_asset_skins`（静止姿态绑关节，按 `node_index` 对齐）、`log_skin_probe`（CPU 复算蒙皮质心 / 最大偏差，做无头验收） |
+| `crates/r3e-asset/examples/skin_probe.rs` | 口径探针：同一帧分别用 `bind_to_world⁻¹` 与静止姿态逆矩阵做 CPU 蒙皮，对比顶点位移，作为「逆绑定取静止姿态」的证据 |
+
+### 14.2 关键口径（后续不得回退）
+
+1. **顶点空间约定**：资产层把顶点烘焙到「资产世界空间」（实例变换之前）。绑定姿态存的是
+   **网格局部空间**的关节矩阵 `L_rest = X_rest⁻¹ · B_rest`，每帧
+   `M_i = X⁻¹ · B_now_i · L_rest_i⁻¹`，着色器 `world = X · Σ w_i M_i p`。
+   直接用 `X⁻¹ · B_now · B_rest⁻¹` 会让实例平移在静止姿态被抵消（网格钉在原点），这条是踩过的坑。
+2. **逆绑定矩阵取「静止姿态」而非 `cluster.bind_to_world`**：`skin_probe` 实测该老虎资产
+   两者不一致 —— 用 `bind_to_world⁻¹` 时动画停在第 0 帧仍有 1018/1018 顶点偏移（max 0.6715），
+   用导入位姿逆矩阵时同帧偏移为 0。`bind_to_world` 仅作元数据保留。
+3. **静止姿态必须等于 P3 画面**：`max_deviation()` 在未推进动画时应≈0，否则说明逆绑定矩阵口径错。
+4. **绑定时机**：必须在场景节点建好、**动画推进之前**绑定（`spawn_asset_anim` 之后、首帧
+   `update_animations` 之前），否则逆绑定矩阵吃到动画位姿，模型会整体扭曲。
+5. **权重归一化在资产层做掉**：ufbx 的 cluster weight 不保证和为 1；同时每顶点只保留最大的 4 个
+   权重并重新归一，多余权重丢弃时 `warn` 一次。
+6. **关节矩阵槽位上限**：单帧关节矩阵总槽位 `MAX_JOINT_MATRICES = 4096`（256 KiB storage）；
+   多蒙皮实例按 `joint_base` 顺排，超出直接报错，不允许静默截断成错形变。
+7. **非蒙皮网格零成本**：内置网格与无 skin 的资产顶点权重全 0，着色器提前 return，
+   不读 storage buffer，也不占槽位。
+8. **CPU 探针是唯一无头验收手段**：窗口里肉眼难判断四肢是否真的形变，`log_skin_probe`
+   用同一套关节矩阵在 CPU 上重算蒙皮质心与最大偏差，配合骨骼位移量交叉验证。
+
+### 14.3 验收记录
+
+`cargo test --workspace` 全绿（core 9 / asset 1 / render 3 / app 10）；
+`cargo build --release` exit=0，零 warning。
+
+| 验证项 | 结果 |
+| --- | --- |
+| 老虎样本导入 | `蒙皮 tirger/skin#0：37 个关节 / 3084 顶点带权重，绑定到网格节点 diaojingbaihu` |
+| 4 s 动画运行 | 骨骼最大位移 0.4990；蒙皮质心 `(-0.0035,0.6033,0.2049) → (-0.0172,0.7662,0.2153)`，位移 0.1638 |
+| 静止姿态偏差 | 绑定时不推进动画，`max_deviation()` 的 ≈0 断言放在单元测试（静止 / 整体平移 / 整体缩放三种情形均 <1e-5）；运行期探针打印的是「相对基准帧」的偏差（首帧 1.37），不是静止偏差 |
+| 实例平移 [2.5,0,0] | 质心 x 从 -0.004 变为 2.4962，位移量误差 <0.01，且仍在形变（位移 0.2380）→ 平移不被蒙皮吞掉 |
+| 权重自洽性单测 | 每顶点权重和 = 1（±1e-3）、关节下标 < 关节数、至少一个顶点带权重 |
+| 顶点/实例布局单测 | 顶点 stride 56、`3/4` 号为 `Uint16x4 / Float32x4`；实例 stride 96、`joint_base` 在 location 10 |
+| 内置网格回归 | `cube/sphere/plane/cylinder` 权重全 0，走非蒙皮分支，画面与 P3 逐像素一致 |
+| 口径探针 `skin_probe` | 老虎样本每顶点最多 2 个权重（1=482 / 2=536）；`bind_to_world` 口径在第 0 帧就整体偏移（max 0.6715），静止姿态口径同帧 0.0000 |
+
+### 14.4 尚未做（P4 范围外）
+
+- **多套蒙皮 / 每网格多 skin**：目前一网格一蒙皮实例，`MeshAsset.skin` 只存一个槽位。
+- **双四元数蒙皮（DQS）**：现在是 LBS，关节大角度扭转时会有糖纸效应。
+- **GPU 侧蒙皮（compute skinning）**：关节矩阵在 CPU 求解后上传，顶点量大时可改 compute。
+- **动画混合 / 状态机**：仍为硬切，跨片段过渡会跳。
+- **表情 / morph target**：未支持。

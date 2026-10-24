@@ -28,18 +28,27 @@ var t_base_color: texture_2d<f32>;
 @group(1) @binding(2)
 var s_base_color: sampler;
 
+// P4：关节矩阵表。所有蒙皮实例共用一块 storage buffer，实例用 `joint_base`
+// 指出自己那段起点；非蒙皮实例权重全 0，不会读到这些槽位。
+@group(2) @binding(0)
+var<storage, read> u_joints: array<mat4x4<f32>>;
+
 struct VsIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     // M1 起顶点带 UV（uv 原点左上，v 已由资产层做 v' = 1 - v 翻转），
     // 本阶段仅透传到片元着色器，尚未接入采样（贴图绑定在后续阶段）。
     @location(2) uv: vec2<f32>,
+    // P4：每顶点 4 组关节槽位与权重（非蒙皮顶点权重为 0）
+    @location(3) joints: vec4<u32>,
+    @location(4) weights: vec4<f32>,
     // 实例矩阵按列传入
-    @location(3) m0: vec4<f32>,
-    @location(4) m1: vec4<f32>,
-    @location(5) m2: vec4<f32>,
-    @location(6) m3: vec4<f32>,
-    @location(7) color: vec4<f32>,
+    @location(5) m0: vec4<f32>,
+    @location(6) m1: vec4<f32>,
+    @location(7) m2: vec4<f32>,
+    @location(8) m3: vec4<f32>,
+    @location(9) color: vec4<f32>,
+    @location(10) joint_base: u32,
 };
 
 struct VsOut {
@@ -50,10 +59,49 @@ struct VsOut {
     @location(3) uv: vec2<f32>,
 };
 
+// 线性混合蒙皮：顶点先在「关节空间」里被矩阵累加，再走实例矩阵。
+//
+// 顶点缓冲是资产导入时烘焙好的世界空间坐标，关节矩阵已经是
+// `M_i = X⁻¹ · B_now_i · B_rest_i⁻¹`（X 为实例模型矩阵，见 core::skin）。
+// 因此这里得到 `deformed = Σ w_i · M_i · p`，再乘 model 恰好回到世界空间；
+// 静止姿态下 M_i = X⁻¹，world = p，与 P3 的静态画面完全一致。
+fn skin_matrix(in: VsIn) -> mat4x4<f32> {
+    let base = in.joint_base;
+    var m = mat4x4<f32>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+    if in.weights.x > 0.0 {
+        m += u_joints[base + in.joints.x] * in.weights.x;
+    }
+    if in.weights.y > 0.0 {
+        m += u_joints[base + in.joints.y] * in.weights.y;
+    }
+    if in.weights.z > 0.0 {
+        m += u_joints[base + in.joints.z] * in.weights.z;
+    }
+    if in.weights.w > 0.0 {
+        m += u_joints[base + in.joints.w] * in.weights.w;
+    }
+    return m;
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
-    let world = model * vec4<f32>(in.position, 1.0);
+
+    // 非蒙皮顶点权重全 0：直接跳过 storage 读取，保持内置网格路径零开销
+    var local_position = in.position;
+    var local_normal = in.normal;
+    if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
+        let skinned = skin_matrix(in);
+        local_position = (skinned * vec4<f32>(in.position, 1.0)).xyz;
+        // 蒙皮矩阵含非均匀缩放时法线要逆转置；这里用伴随矩阵近似，与下方模型矩阵一致
+        local_normal = mat3x3<f32>(
+            cross(skinned[1].xyz, skinned[2].xyz),
+            cross(skinned[2].xyz, skinned[0].xyz),
+            cross(skinned[0].xyz, skinned[1].xyz),
+        ) * in.normal;
+    }
+
+    let world = model * vec4<f32>(local_position, 1.0);
 
     // 非均匀缩放下严格做法是用逆转置；此处用伴随矩阵近似，均匀缩放时精确。
     let normal_matrix = mat3x3<f32>(
@@ -65,7 +113,7 @@ fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
     out.clip_position = u_camera.view_proj * world;
     out.world_position = world.xyz;
-    out.world_normal = normalize(normal_matrix * in.normal);
+    out.world_normal = normalize(normal_matrix * local_normal);
     out.color = in.color;
     out.uv = in.uv;
     return out;

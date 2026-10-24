@@ -9,6 +9,7 @@ pub mod light;
 pub mod mesh;
 pub mod node;
 pub mod scene;
+pub mod skin;
 pub mod transform;
 
 pub use anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
@@ -22,5 +23,8 @@ pub use mesh::{
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile,
+};
+pub use skin::{
+    SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,
 };
 pub use transform::Transform;

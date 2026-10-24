@@ -894,6 +894,37 @@ app: spawn_asset_anim ──建骨架节点树（<资产>/<节点路径>）+ Ani
 | 场景重建 | `ScriptHost::rebuild_hook` 在场景 JSON 重放（热重载 / F5）后、脚本 `on_start` 前，由 app 重新 spawn 资产节点与动画实例 |
 | 启动顺序 | 场景 → 资产与动画实例 → 脚本，保证 `on_start` 里 `anims()` 非空 |
 
+### 8.8 骨骼蒙皮（P4）
+
+蒙皮接在 P3 的骨架节点树之后：动画写节点 TRS → 世界矩阵 → 关节矩阵 → 顶点着色器形变。
+渲染层仍然只认「网格句柄 + 实例数据」，不认识 FBX 的骨骼概念：
+
+```
+ufbx skin_deformers ──r3e-asset──▶ SkinData{joints[{node_index,path}], 顶点 joints/weights}
+                                          │
+app: bind_asset_skins（静止姿态）──▶ SkinInstance{mesh_node, bindings[rest→inverse_bind]}
+                                          │
+     每帧：update_animations ─▶ update_world_transforms ─▶ update_skinning（M_i）
+                                          │
+                        renderer.prepare_instances：joint_base + storage buffer 上传
+                                          ▼
+                    shader.wgsl：world = X · Σ w_i · M_i · p（权重全 0 时跳过）
+```
+
+落点与不变量：
+
+| 事项 | 口径 |
+| --- | --- |
+| 顶点属性 | `Vertex` 加 `joints(u16x4) / weights(f32x4)`，`stride 56`；属性位置 `3 / 4`，实例属性从 `5` 起 |
+| 绑定姿态口径 | `L_rest = X_rest⁻¹ · B_rest`（网格局部空间），每帧 `M_i = X⁻¹ · B_now · L_rest⁻¹`，`world = X · Σ w M p` |
+| 逆绑定来源 | 取「场景静止姿态」而不是 `cluster.bind_to_world`：该资产两者不一致，用后者即使不动画也会整体偏移（`skin_probe` 实测 max 0.6715） |
+| 顶点空间 | 顶点是「资产世界空间」坐标，`X` 是网格节点世界矩阵；静止姿态 `world = X · p`，与 P3 画面一致 |
+| 关节矩阵通道 | `@group(2) @binding(0)` storage buffer，`MAX_JOINT_MATRICES = 4096` 槽位（256 KiB），超出报错 |
+| 实例寻址 | `InstanceRaw.joint_base` 指向该实例关节矩阵在本帧缓冲里的起点；非蒙皮实例填 0 且权重为 0 |
+| 求解时机 | `update_world_transforms` 末尾自动 `update_skinning`；绑定必须在动画推进之前完成 |
+| 关节丢失 | 关节节点被销毁时该关节矩阵退化为单位阵（不塌到原点），绑定失效的蒙皮由 `prune_skins` 清理 |
+| 校验手段 | `max_deviation()` 断言静止姿态 ≈0；`log_skin_probe` 用 CPU 复算蒙皮质心做无头验收 |
+
 ---
 
 ## 9. 端到端数据流
@@ -963,7 +994,7 @@ app: spawn_asset_anim ──建骨架节点树（<资产>/<节点路径>）+ Ani
 
 | 维度 | 现状 | 影响 |
 | --- | --- | --- |
-| 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 动画已到"节点级"（P3），蒙皮权重仍未使用，见 [`ASSETS.md`](ASSETS.md) |
+| 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图 | 无金属度/粗糙度贴图、无法线贴图；材质参数已进 uniform，仅着色近似 |
 | 光照 | 1 方向光 + 环境光，Blinn-Phong | 无阴影、无点光、无全局光照 |
 | 后处理 | 无 | 无 bloom / tonemapping / FXAA |
@@ -971,15 +1002,17 @@ app: spawn_asset_anim ──建骨架节点树（<资产>/<节点路径>）+ Ani
 | 剔除 | 无视锥剔除、无遮挡剔除 | 屏幕外的物件照样上传和绘制（GPU 会做顶点裁剪，但 CPU 仍付代价） |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
 | 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3） | 有关键帧插值、速度/循环/片段切换，**无蒙皮**：网格挂在单节点上，四肢不会逐顶点形变；无动画混合与 cross-fade |
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4） | 有关键帧插值、速度/循环/片段切换、逐顶点形变；**无动画混合与 cross-fade**（切片段是硬切），无 morph target |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 | 无分屏、无阴影相机、无后视镜 |
 
 ### 11.2 性能特征
 
 - **Draw call**：≤ 4（实际使用的网格种类数），与物件数无关。
-- **每帧 CPU 成本**：O(可见物件数)，主要是组装 `InstanceRaw`（80 B/物件）与一次 `write_buffer`。
-- **上传带宽**：实例数 × 80 B/帧。1000 物件 ≈ 78 KB/帧，60 FPS 下约 4.7 MB/s，可忽略。
+- **每帧 CPU 成本**：O(可见物件数)，主要是组装 `InstanceRaw`（96 B/物件）与一次 `write_buffer`；
+  蒙皮实例额外做一次关节矩阵求解（O(关节数)）与第二路 `write_buffer`。
+- **上传带宽**：实例数 × 96 B/帧 + 关节矩阵 64 B/关节/帧。1000 物件 ≈ 94 KB/帧，
+  60 FPS 下约 5.6 MB/s；单个 37 关节的角色每帧仅 2.4 KB，可忽略。
 - **世界矩阵求解**：`update_world_transforms` 带记忆化缓存 + 深度上限，深层次结构下仍是 O(n)。
 - **实测规模**：数千物件的群体动画（`example_swarm.rhai`）在 RTX 5060 Laptop / Vulkan 下运行正常，帧时间 1 ms 量级。
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配。
@@ -1004,8 +1037,8 @@ app: spawn_asset_anim ──建骨架节点树（<资产>/<节点路径>）+ Ani
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
 | 三 | 视锥剔除 + AABB | `mesh.rs` 加 `aabb()`，`prepare_instances` 加平面测试 | 无 |
 | 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
-| **五（进行中：P0–P3 已完成）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
-| 六 | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
+| **五（已完成：P0–P4）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 / 骨骼蒙皮 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
+| 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
 | 七 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
 
 两条与顺序相关的说明：
@@ -1016,7 +1049,7 @@ app: spawn_asset_anim ──建骨架节点树（<资产>/<节点路径>）+ Ani
   渲染器的网格缓存键、物理碰撞体推导、场景 JSON 的 `mesh` 字段语义都要跟着改。
   在此之前 `MeshKind` 枚举是刻意保持简单的——这也是为什么它被排在物理、剔除、阴影之后才做。
 
-阶段五的完整设计（目标、依赖选型、数据结构、P0–P3 拆分与验收标准）见 [`docs/ASSETS.md`](ASSETS.md)。
+阶段五的完整设计（目标、依赖选型、数据结构、P0–P4 拆分与验收标准）见 [`docs/ASSETS.md`](ASSETS.md)。
 核心取舍：FBX 用 `ufbx` 解析（单文件 C 库，覆盖模型/材质/贴图/动画四类信息），
 第一步只做「解析并打印统计」以验证 C 工具链与数据正确性，不碰渲染器；
 坐标与单位在解析期统一换算为「Y-up、单位米」，引擎内部不感知 DCC 差异。

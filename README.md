@@ -34,7 +34,7 @@ D:\rust3d-engine
 └─ docs/
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
     ├─ PHYSICS.md             # 物理子系统：三层开关、场景字段、脚本 API、内置规则
-    └─ ASSETS.md              # FBX 资产加载（P0–P3 已落地，P4 蒙皮规划）
+    └─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
 ```
 
 各 crate 单向依赖：`app → render / script / physics → core`，核心层不认识 wgpu。
@@ -332,19 +332,21 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 ## 7. 已知边界
 
 - 单方向光 + 环境光，Blinn-Phong 着色；无阴影、无后处理。
-- 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画）；
-  **骨骼蒙皮**、法线/粗糙度贴图、动画混合尚未支持。用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
+- 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
+  骨骼蒙皮）；法线/粗糙度贴图、动画混合、morph target 尚未支持。
+  用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
 - 物理：物件互不碰撞、无旋转、无地形碰撞、高速可能穿地（无 CCD）；默认关闭。
 
 ---
 
-## 8. FBX 资产加载（进行中：P0–P3 已完成）
+## 8. FBX 资产加载（P0–P4 已完成）
 
 已落地：静态网格导入与 GPU 上传、材质分区 + base_color 贴图、场景 `assets` 段声明与 spawn、
-骨架节点树 + 节点级动画（多片段、速度、循环、热切换、场景热重载后自动补挂）。
-待做：P4 骨骼蒙皮。
+骨架节点树 + 节点级动画（多片段、速度、循环、热切换、场景热重载后自动补挂）、
+骨骼蒙皮（`skin_deformers` → 关节绑定 → `group(2)` 关节矩阵 + 顶点着色器 LBS，逐顶点形变）。
+尚未做：动画混合 / cross-fade、morph target、DQS、GPU skinning。
 
 ```bash
 # 临时加载一个 FBX 到默认场景（窗口里直接看造型与贴图）
@@ -372,5 +374,6 @@ cargo run -- --scene assets/scene_anim.json --anim-clip run_loop --show-bones
 - 新增 `r3e-asset` crate，`Vertex` / `MeshData` 下沉到 `r3e-core`，render 只认 `MeshProvider` trait；
 - `MeshRef` 句柄化（`asset:<路径>#<网格序号>`）+ 材质分区逐段 `draw_indexed`；
 - 贴图 `filename` → 内嵌 `content` → 白纹理三级回退，缺图不阻断渲染；
-- 动画按节点级动画栈（TRS 曲线采样）实现，已落地（P3）；蒙皮留给 P4。
+- 动画按节点级动画栈（TRS 曲线采样）实现（P3）；蒙皮由 `SkinInstance` 提供关节矩阵、
+  `shader.wgsl` 做 LBS（P4），顶点 `stride 56`、实例 `stride 96`（含 `joint_base`）。
 

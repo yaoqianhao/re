@@ -20,6 +20,7 @@ use r3e_core::anim::{AnimClip, AnimTrack};
 use r3e_core::mesh::{
     MaterialData, MeshData, MeshPartData, TextureImage, Vertex,
 };
+use r3e_core::skin::{SkinData, SkinJoint};
 use r3e_core::{AssetId, Mat4, MeshRef, Vec3, Vec4};
 use thiserror::Error;
 
@@ -108,6 +109,12 @@ pub struct MeshAsset {
     /// `node.geometry_to_world` 的 4x4 列主序拷贝（元数据）。
     pub node_local_matrix: [[f32; 4]; 4],
     pub source_path: String,
+    /// 每顶点关节槽位（P4）：与 `positions` 等长；全 0 表示该网格不参与蒙皮。
+    pub joints: Vec<[u16; 4]>,
+    /// 每顶点关节权重（P4）：与 `positions` 等长，已归一化。
+    pub weights: Vec<[f32; 4]>,
+    /// 该网格所用骨骼表在 `AssetEntry::skins` 中的下标（P4）；`None` 为静态网格。
+    pub skin: Option<u32>,
     /// ufbx 侧的原始统计，便于和导入结果交叉验证。
     pub source_vertex_count: usize,
     pub source_face_count: usize,
@@ -154,9 +161,30 @@ impl MeshAsset {
         ]
     }
 
-    /// 转成渲染层可直接上传的 CPU 网格。
+    /// 转成渲染层可直接上传的 CPU 网格（蒙皮网格会自动带上 joint/weight）。
     pub fn to_mesh_data(&self) -> MeshData {
-        MeshData::from_arrays(&self.positions, &self.normals, Some(&self.uvs), self.indices.clone())
+        if self.joints.len() == self.positions.len() && !self.joints.is_empty() {
+            MeshData::from_arrays_skinned(
+                &self.positions,
+                &self.normals,
+                Some(&self.uvs),
+                Some(&self.joints),
+                Some(&self.weights),
+                self.indices.clone(),
+            )
+        } else {
+            MeshData::from_arrays(
+                &self.positions,
+                &self.normals,
+                Some(&self.uvs),
+                self.indices.clone(),
+            )
+        }
+    }
+
+    /// 是否为蒙皮网格。
+    pub fn is_skinned(&self) -> bool {
+        self.skin.is_some() && self.joints.len() == self.positions.len()
     }
 }
 
@@ -191,6 +219,8 @@ pub struct AssetEntry {
     pub nodes: Vec<NodeAsset>,
     /// 烘焙后的动画片段（P3 起）；为空表示该资产没有可播放的节点动画。
     pub animations: Vec<AnimClip>,
+    /// 骨骼表（P4 起）：`MeshAsset::skin` 指向这里，关节记录 FBX 节点下标与逆绑定矩阵。
+    pub skins: Vec<SkinData>,
 }
 
 impl AssetEntry {
@@ -217,6 +247,19 @@ impl AssetEntry {
 
     pub fn vertex_total(&self) -> usize {
         self.meshes.iter().map(|m| m.vertex_count()).sum()
+    }
+
+    /// 按骨骼表下标取蒙皮描述（P4）。
+    pub fn skin(&self, index: u32) -> Option<&SkinData> {
+        self.skins.get(index as usize)
+    }
+
+    /// 蒙皮统计：`(蒙皮网格数, 关节总数)`。
+    pub fn skin_stats(&self) -> (usize, usize) {
+        (
+            self.meshes.iter().filter(|m| m.is_skinned()).count(),
+            self.skins.iter().map(|s| s.joint_count()).sum(),
+        )
     }
 }
 
@@ -419,8 +462,17 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
         }
     }
 
+    // 节点 element_id → scene.nodes 下标（等于 `NodeAsset::index`），
+    // 蒙皮关节要用它把 FBX 骨骼节点绑到动画轨道同一套下标上（P4）
+    let mut node_index_of: HashMap<u32, u32> = HashMap::with_capacity(scene.nodes.len());
+    for i in 0..scene.nodes.len() {
+        node_index_of.insert(scene.nodes[i].element.element_id, i as u32);
+    }
+
     // ---- 3) 逐节点抽取网格 ----
     let mut meshes: Vec<MeshAsset> = Vec::new();
+    // 骨骼表（P4）：多个网格共用同一 deformation 时按 deformer 名复用
+    let mut skins: Vec<SkinData> = Vec::new();
     // 节点 element_id -> 网格下标，供节点树记录「哪个节点挂着哪个网格」
     let mut node_mesh: HashMap<u32, u32> = HashMap::new();
     for i in 0..scene.nodes.len() {
@@ -429,7 +481,7 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
             continue;
         };
         let mesh: &ufbx::Mesh = mesh_ref;
-        let asset = extract_mesh(
+        let (mut asset, skin_data) = extract_mesh(
             mesh,
             node,
             &display,
@@ -437,7 +489,28 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
             &material_id_to_index,
             &parent_of,
             &name_of,
+            &node_index_of,
         )?;
+        if let Some(skin) = skin_data {
+            let slot = match skins
+                .iter()
+                .position(|s| s.name == skin.name && s.joint_count() == skin.joint_count())
+            {
+                Some(existing) => existing as u32,
+                None => {
+                    skins.push(skin);
+                    (skins.len() - 1) as u32
+                }
+            };
+            asset.skin = Some(slot);
+            log::debug!(
+                "asset: {} -> 蒙皮 {} 关节",
+                asset.node_path,
+                skins[slot as usize].joint_count()
+            );
+        } else {
+            asset.skin = None;
+        }
         log::debug!(
             "asset: {} -> {} ({} 顶点 / {} 三角)",
             asset.node_path,
@@ -474,6 +547,7 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
         textures,
         nodes,
         animations,
+        skins,
     })
 }
 
@@ -938,7 +1012,8 @@ fn extract_mesh(
     material_id_to_index: &HashMap<u32, u32>,
     parent_of: &HashMap<u32, u32>,
     name_of: &HashMap<u32, String>,
-) -> Result<MeshAsset, AssetError> {
+    node_index_of: &HashMap<u32, u32>,
+) -> Result<(MeshAsset, Option<SkinData>), AssetError> {
     let world = mat4_from(&node.geometry_to_world);
     let normal_matrix = world.inverse().transpose();
     let has_normal = mesh.vertex_normal.exists;
@@ -956,6 +1031,8 @@ fn extract_mesh(
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut corner_to_vertex: Vec<u32> = vec![0; corner_count];
+    // 输出顶点 → ufbx 顶点（控制点）号：蒙皮权重按 ufbx 顶点号索引，必须留映射（P4）
+    let mut vertex_pos_index: Vec<u32> = Vec::new();
     let mut dedup: HashMap<(u32, u32, u32), u32> = HashMap::new();
 
     let mut aabb_min = Vec3::splat(f32::INFINITY);
@@ -1038,6 +1115,7 @@ fn extract_mesh(
         };
 
         let out = positions.len() as u32;
+        vertex_pos_index.push(pos_ix);
         positions.push([wp.x, wp.y, wp.z]);
         normals.push([n.x, n.y, n.z]);
         uvs.push([u, v]);
@@ -1107,7 +1185,11 @@ fn extract_mesh(
         }
     }
 
-    Ok(MeshAsset {
+    // ---- 蒙皮（P4）：关节表 + 每顶点 joint/weight ----
+    let (skin_data, joints, weights) =
+        extract_skinning(mesh, &vertex_pos_index, node_index_of, parent_of, name_of);
+
+    Ok((MeshAsset {
         name: mesh.element.name.to_string(),
         node_path: node_path_of(node.element.element_id, parent_of, name_of),
         positions,
@@ -1117,12 +1199,135 @@ fn extract_mesh(
         material_parts,
         aabb_min: [aabb_min.x, aabb_min.y, aabb_min.z],
         aabb_max: [aabb_max.x, aabb_max.y, aabb_max.z],
+        joints,
+        weights,
+        // 真正下标由 import_fbx 在收集骨骼表时回填
+        skin: skin_data.as_ref().map(|_| 0),
         node_local_matrix: world.to_cols_array_2d(),
         source_path: source_path.to_string(),
         source_vertex_count: mesh.num_vertices,
         source_face_count: mesh.num_faces,
         source_triangle_count: mesh.num_triangles,
-    })
+    }, skin_data))
+}
+
+/// 抽取一个网格的蒙皮（P4）。
+///
+/// ufbx 的权重是**按 ufbx 顶点号（控制点）聚集**的：
+/// `deformer.vertices[v]` 给出该顶点在 `deformer.weights` 里的区间
+/// `[weight_begin, weight_begin + num_weights)`，区间内每项是
+/// `(cluster_index, weight)`。而引擎顶点是按角点拆分的，所以要用
+/// `vertex_pos_index` 把每个输出顶点映射回 ufbx 顶点号。
+///
+/// 返回 `(骨骼表, 每顶点关节槽位, 每顶点权重)`；无蒙皮时返回 `(None, vec![], vec![])`。
+fn extract_skinning(
+    mesh: &ufbx::Mesh,
+    vertex_pos_index: &[u32],
+    node_index_of: &HashMap<u32, u32>,
+    parent_of: &HashMap<u32, u32>,
+    name_of: &HashMap<u32, String>,
+) -> (Option<SkinData>, Vec<[u16; 4]>, Vec<[f32; 4]>) {
+    let Some(deformer) = mesh.skin_deformers.first() else {
+        return (None, Vec::new(), Vec::new());
+    };
+    if mesh.skin_deformers.len() > 1 {
+        log::warn!(
+            "网格 `{}` 有 {} 个 skin deformer，只使用第一个",
+            mesh.element.name,
+            mesh.skin_deformers.len()
+        );
+    }
+
+    // cluster 下标 → 关节槽位（骨骼表下标）；拿不到骨骼节点的 cluster 直接丢弃
+    let mut slot_of_cluster: Vec<Option<u16>> = vec![None; deformer.clusters.len()];
+    let mut joints: Vec<SkinJoint> = Vec::new();
+    for (ci, cluster) in deformer.clusters.iter().enumerate() {
+        let Some(bone) = cluster.bone_node.as_ref() else {
+            continue;
+        };
+        let bone_id = bone.element.element_id;
+        let Some(&node_index) = node_index_of.get(&bone_id) else {
+            log::warn!(
+                "蒙皮 cluster `{}` 的骨骼节点不在节点树里，已跳过",
+                cluster.element.name
+            );
+            continue;
+        };
+        if joints.len() >= r3e_core::MAX_JOINT_MATRICES {
+            log::warn!("关节数超过上限 {}，后续关节被丢弃", r3e_core::MAX_JOINT_MATRICES);
+            break;
+        }
+        slot_of_cluster[ci] = Some(joints.len() as u16);
+        joints.push(SkinJoint {
+            node_index,
+            path: node_path_of(bone_id, parent_of, name_of),
+            bind_world: mat4_from(&cluster.bind_to_world),
+        });
+    }
+
+    if joints.is_empty() {
+        return (None, Vec::new(), Vec::new());
+    }
+
+    let mut joints_out: Vec<[u16; 4]> = Vec::with_capacity(vertex_pos_index.len());
+    let mut weights_out: Vec<[f32; 4]> = Vec::with_capacity(vertex_pos_index.len());
+    let mut overflow = 0usize;
+    let mut orphan = 0usize;
+
+    for &pos_ix in vertex_pos_index {
+        let mut acc: Vec<(u16, f32)> = Vec::new();
+        if let Some(sv) = deformer.vertices.get(pos_ix as usize) {
+            let begin = sv.weight_begin as usize;
+            let end = begin + sv.num_weights as usize;
+            if sv.num_weights as usize > 4 {
+                overflow += 1;
+            }
+            for k in begin..end.min(deformer.weights.len()) {
+                let w = deformer.weights[k];
+                let Some(Some(slot)) = slot_of_cluster.get(w.cluster_index as usize) else {
+                    continue;
+                };
+                let weight = w.weight as f32;
+                if weight > 0.0 {
+                    acc.push((*slot, weight));
+                }
+            }
+        }
+        if acc.is_empty() {
+            orphan += 1;
+        }
+        // 权重大的优先保留前 4 个，再归一化（保证着色器里 sum(weight)=1）
+        acc.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        acc.truncate(4);
+        let sum: f32 = acc.iter().map(|(_, w)| *w).sum();
+        let mut j = [0u16; 4];
+        let mut wt = [0.0f32; 4];
+        if sum > 1e-6 {
+            for (i, (slot, w)) in acc.iter().enumerate() {
+                j[i] = *slot;
+                wt[i] = w / sum;
+            }
+        }
+        joints_out.push(j);
+        weights_out.push(wt);
+    }
+
+    if overflow > 0 {
+        log::warn!("网格 `{}` 有 {overflow} 个顶点权重数超过 4，已截断", mesh.element.name);
+    }
+    if orphan > 0 {
+        log::debug!("网格 `{}` 有 {orphan} 个顶点没有有效权重（按静止位置绘制）", mesh.element.name);
+    }
+
+    let data = SkinData {
+        name: if deformer.element.name.is_empty() {
+            mesh.element.name.to_string()
+        } else {
+            deformer.element.name.to_string()
+        },
+        joints,
+    };
+    (Some(data), joints_out, weights_out)
 }
 
 fn material_of(
@@ -1323,4 +1528,48 @@ pub fn vertices_of(mesh: &MeshAsset) -> Vec<Vertex> {
     (0..count)
         .map(|i| Vertex::new(mesh.positions[i], mesh.normals[i], mesh.uvs[i]))
         .collect()
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::*;
+
+    /// 真实样本：老虎 FBX 的蒙皮提取结果自洽性检查。
+    /// 样本不存在时直接跳过（该文件来自本机游戏 Mod，不入库）。
+    const SAMPLE: &str =
+        "D:/steam/steamapps/common/AmazingCultivationSimulator/Mods/Example/Resources/Mod/Npc/Monster/tirger/tirger.fbx";
+
+    #[test]
+    fn extract_skinning_from_sample() {
+        if !std::path::Path::new(SAMPLE).exists() {
+            eprintln!("跳过：样本 {SAMPLE} 不存在");
+            return;
+        }
+        let entry = import_fbx(std::path::Path::new(SAMPLE)).expect("导入样本失败");
+        let mesh = &entry.meshes[0];
+        let skin_index = mesh.skin.expect("网格应带蒙皮槽位");
+        let skin = entry.skin(skin_index).expect("蒙皮数据应存在");
+
+        assert!(!skin.is_empty(), "关节表不应为空");
+        assert_eq!(mesh.joints.len(), mesh.positions.len(), "每顶点一组关节下标");
+        assert_eq!(mesh.weights.len(), mesh.positions.len(), "每顶点一组权重");
+
+        let joint_count = skin.joint_count() as u16;
+        let mut weighted = 0usize;
+        for (vi, w) in mesh.weights.iter().enumerate() {
+            let sum: f32 = w.iter().sum();
+            if sum > 0.0 {
+                weighted += 1;
+                assert!((sum - 1.0).abs() < 1e-3, "顶点 {vi} 权重未归一化: {sum}");
+            }
+            for (k, j) in mesh.joints[vi].iter().enumerate() {
+                if mesh.weights[vi][k] > 0.0 {
+                    assert!(*j < joint_count, "顶点 {vi} 关节下标越界: {j}");
+                }
+            }
+        }
+        assert!(weighted > 0, "至少应有顶点带权重");
+        // 角点拆分后每个引擎顶点都应从 ufbx 顶点继承权重
+        assert!(weighted <= mesh.joints.len());
+    }
 }

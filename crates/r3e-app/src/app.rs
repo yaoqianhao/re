@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::{Instant, SystemTime};
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use gilrs::{Axis, Button};
 use r3e_core::input::{
     InputState, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT, PAD_AXIS_COUNT,
@@ -16,7 +16,7 @@ use r3e_core::input::{
 };
 use r3e_asset::AssetLibrary;
 use r3e_core::anim::{AnimBinding, AnimInstance};
-use r3e_core::{AnimDecl, NodeId, ObjectDesc, Scene};
+use r3e_core::{AnimDecl, NodeId, ObjectDesc, Scene, SkinInstance};
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -159,6 +159,8 @@ pub struct EngineApp {
     probe_logged: bool,
     /// 起始帧的骨骼节点世界位置快照，用于在收尾时给出「动了多少」的数值。
     probe_snapshot: Vec<(String, Vec3)>,
+    /// 蒙皮质心底账（名称 → 质心），与 `probe_snapshot` 同理用于算位移。
+    probe_skin_snapshot: Vec<(String, Vec3)>,
     /// 请求在本次事件处理结束后退出事件循环。
     exit_pending: bool,
 }
@@ -293,6 +295,7 @@ impl EngineApp {
             run_elapsed: 0.0,
             probe_logged: false,
             probe_snapshot: Vec::new(),
+            probe_skin_snapshot: Vec::new(),
             exit_pending: false,
         }
     }
@@ -481,6 +484,79 @@ impl EngineApp {
                 max_name,
                 max_delta
             );
+        }
+
+        self.log_skin_probe(tag);
+    }
+
+    /// 蒙皮探针：用关节矩阵在 CPU 上重算一遍顶点质心。
+    ///
+    /// 这是「网格真的在形变」的数值证据 —— 骨骼位移非零只说明节点在动，
+    /// 质心跟着动才说明 joints/weights 与 skinning 矩阵链路通了。
+    fn log_skin_probe(&mut self, tag: &str) {
+        let mut centroids: Vec<(String, Vec3)> = Vec::new();
+        {
+            let scene = self.scene.borrow();
+            if scene.skins.is_empty() {
+                log::info!("[{tag}] 无蒙皮实例");
+                return;
+            }
+            for skin in &scene.skins {
+                let Some(node) = scene.get(skin.mesh_node) else {
+                    continue;
+                };
+                let model = node.world;
+                let Some(data) = self.assets.mesh_data(node.mesh) else {
+                    continue;
+                };
+                let mut sum = Vec3::ZERO;
+                let mut count = 0usize;
+                for v in &data.vertices {
+                    if !v.is_skinned() {
+                        continue;
+                    }
+                    let mut blended = Mat4::ZERO;
+                    for k in 0..r3e_core::MAX_JOINTS_PER_VERTEX {
+                        let w = v.weights[k];
+                        let j = v.joints[k] as usize;
+                        if w <= 0.0 || j >= skin.joint_matrices.len() {
+                            continue;
+                        }
+                        blended += skin.joint_matrices[j] * w;
+                    }
+                    sum += model.transform_point3(blended.transform_point3(v.position()));
+                    count += 1;
+                }
+                if count == 0 {
+                    continue;
+                }
+                let centroid = sum / count as f32;
+                log::info!(
+                    "[{tag}] 蒙皮 `{}`：{} 关节 / {count} 顶点参与，质心 ({:.4}, {:.4}, {:.4})，最大偏差 {:.4}",
+                    skin.name,
+                    skin.joint_count(),
+                    centroid.x,
+                    centroid.y,
+                    centroid.z,
+                    skin.max_deviation()
+                );
+                centroids.push((skin.name.clone(), centroid));
+            }
+        }
+
+        if self.probe_skin_snapshot.is_empty() {
+            self.probe_skin_snapshot = centroids;
+        } else {
+            for (name, now) in &centroids {
+                let Some((_, base)) = self.probe_skin_snapshot.iter().find(|(n, _)| n == name) else {
+                    continue;
+                };
+                log::info!(
+                    "[{tag}] 蒙皮质心位移 `{}`：{:.4}（对比基准帧）",
+                    name,
+                    (*now - *base).length()
+                );
+            }
         }
     }
 
@@ -1103,6 +1179,8 @@ fn spawn_asset_nodes(
         let Some(entry) = library.get(id) else {
             continue;
         };
+        // 网格节点按资产内 mesh 下标对齐（P4 蒙皮要拿它当被驱动对象）
+        let mut mesh_nodes: Vec<NodeId> = Vec::new();
         for (index, mesh) in entry.meshes.iter().enumerate() {
             let base = if mesh.node_path.trim().is_empty() {
                 if mesh.name.trim().is_empty() {
@@ -1139,18 +1217,82 @@ fn spawn_asset_nodes(
             match scene.spawn(desc) {
                 Ok(node_id) => {
                     out.push(node_id);
+                    mesh_nodes.push(node_id);
                     spawned += 1;
                 }
                 Err(e) => log::warn!("资产节点 `{name}` spawn 失败: {e}"),
             }
         }
 
-        // 有节点树 / 动画时再建骨架节点与播放器，纯静态资产不额外造节点
-        if !entry.nodes.is_empty() && !entry.animations.is_empty() {
-            spawn_asset_anim(scene, entry, spec, &path_str, show_bones);
+        // 有节点树时建骨架（动画片段顺带登记）；纯静态资产不额外造节点
+        if !entry.nodes.is_empty() && (!entry.animations.is_empty() || !entry.skins.is_empty()) {
+            let skel = spawn_asset_anim(scene, entry, spec, &path_str, show_bones);
+
+            // P4：骨架就位后立刻以「静止姿态」绑定蒙皮 —— 逆绑定矩阵必须取这一刻的
+            // 世界矩阵，任何动画推进之后再绑都会把当前姿态误当绑定姿态。
+            if let Some(skel) = skel {
+                scene.update_world_transforms();
+                bind_asset_skins(scene, entry, &path_str, &skel, &mesh_nodes);
+            }
         }
     }
     spawned
+}
+
+/// 一个资产实例建出来的骨架句柄：节点下标 → 场景节点，供蒙皮按 `node_index` 对齐。
+struct SkeletonSpawn {
+    prefix: String,
+    ids: Vec<Option<NodeId>>,
+}
+
+/// 把资产的蒙皮数据绑到网格节点上（P4）。
+///
+/// 关节按 `node_index` 对齐场景节点（与动画轨道同一套对齐方式），路径只作日志；
+/// 绑定姿态取当前世界矩阵，交给 `SkinInstance` 求逆绑定矩阵。
+fn bind_asset_skins(
+    scene: &mut Scene,
+    entry: &r3e_asset::AssetEntry,
+    path_str: &str,
+    skel: &SkeletonSpawn,
+    mesh_nodes: &[NodeId],
+) {
+    for (mi, mesh) in entry.meshes.iter().enumerate() {
+        let Some(skin_index) = mesh.skin else {
+            continue;
+        };
+        let Some(data) = entry.skin(skin_index) else {
+            log::warn!("资产 `{path_str}` 的网格 #{mi} 引用了不存在的蒙皮 #{skin_index}");
+            continue;
+        };
+        let Some(&mesh_node) = mesh_nodes.get(mi) else {
+            continue;
+        };
+        let Some(mesh_world) = scene.get(mesh_node).map(|n| n.world) else {
+            continue;
+        };
+        let mut inst = SkinInstance::new(format!("{}/skin#{mi}", skel.prefix), mesh_node);
+        for joint in &data.joints {
+            let Some(Some(node)) = skel.ids.get(joint.node_index as usize) else {
+                continue;
+            };
+            let Some(n) = scene.get(*node) else {
+                continue;
+            };
+            inst.add_joint(*node, joint.node_index, joint.path.clone(), n.world, mesh_world);
+        }
+        if inst.is_empty() {
+            log::warn!("蒙皮 `{}` 无有效关节，跳过", inst.name);
+            continue;
+        }
+        log::info!(
+            "蒙皮 `{}`：{} 个关节 / {} 顶点带权重，绑定到网格节点 `{}`",
+            inst.name,
+            inst.joint_count(),
+            mesh.joints.len(),
+            scene.get(mesh_node).map(|n| n.name.clone()).unwrap_or_default()
+        );
+        scene.add_skin(inst);
+    }
 }
 
 /// 为一个资产实例建立「骨架节点树 + 播放器」（P3）。
@@ -1160,14 +1302,14 @@ fn spawn_asset_nodes(
 /// 因此骨架节点只承载变换、不挂网格（`visible: false` 纯粹是让渲染层跳过），
 /// 真正决定形状的蒙皮要等 P4；P3 验证的是「轨道采样 → 节点局部 TRS」这条链路。
 ///
-/// 返回实例名（未挂上播放器时为 `None`）。
+/// 返回骨架句柄（根节点创建失败时为 `None`）；无可用片段时只建骨架不挂播放器。
 fn spawn_asset_anim(
     scene: &mut Scene,
     entry: &r3e_asset::AssetEntry,
     spec: &AssetSpec,
     path_str: &str,
     show_bones: bool,
-) -> Option<String> {
+) -> Option<SkeletonSpawn> {
     let stem = Path::new(path_str)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1341,7 +1483,12 @@ fn spawn_asset_anim(
         None => entry.default_animation(),
     };
     let Some(clip) = clip else {
-        return None;
+        // 只有蒙皮没有动画的资产：骨架已建好，回去绑蒙皮即可
+        log::info!("资产 `{path_str}` 无动画片段，仅建立骨架（{} 个节点）", ids.len());
+        return Some(SkeletonSpawn {
+            prefix: prefix.clone(),
+            ids,
+        });
     };
 
     // 轨道 → 场景节点（按资产内节点下标对齐，比路径匹配更稳；路径留作切片段时的兜底）
@@ -1380,5 +1527,6 @@ fn spawn_asset_anim(
             "已暂停"
         }
     );
-    Some(inst_name)
+    let _ = inst_name;
+    Some(SkeletonSpawn { prefix, ids })
 }

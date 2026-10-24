@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3, Vec4};
 use serde::Deserialize;
 
+use crate::skin::SkinInstance;
 use crate::{AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, Transform};
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
@@ -189,6 +190,9 @@ pub struct Scene {
     /// 可切换的片段目录（P3 起）：键为 `"<资产名>/<片段名>"`，值与其他实例共享同一份
     /// `Arc<AnimClip>`。应用层导入资产后登记，脚本用 `set_anim_clip` 按名字切片段。
     pub anim_clips: HashMap<String, std::sync::Arc<AnimClip>>,
+    /// 场景内的蒙皮实例（P4 起）。每个带蒙皮的网格实例一条，每帧由
+    /// `update_skinning` 求解关节矩阵，渲染层直接上传。
+    pub skins: Vec<SkinInstance>,
 }
 
 impl Default for Scene {
@@ -214,6 +218,7 @@ impl Scene {
             assets: Vec::new(),
             animations: Vec::new(),
             anim_clips: HashMap::new(),
+            skins: Vec::new(),
         }
     }
 
@@ -297,6 +302,14 @@ impl Scene {
         for child in node.children {
             self.despawn_id(child);
         }
+
+        // P4：蒙皮实例引用节点，节点没了就顺手剪掉，避免悬空 NodeId
+        if !self.skins.is_empty()
+            && (self.skins.iter().any(|s| s.mesh_node == id)
+                || self.skins.iter().any(|s| s.bindings.iter().any(|b| b.node == id)))
+        {
+            self.prune_skins();
+        }
     }
 
     /// 清空所有物件（脚本热重载时用）。
@@ -304,6 +317,8 @@ impl Scene {
         self.nodes.clear();
         self.order.clear();
         self.name_index.clear();
+        // 蒙皮实例全部指向已清空的节点，一并丢弃
+        self.skins.clear();
     }
 
     // ---------- 查询 ----------
@@ -369,6 +384,10 @@ impl Scene {
                 node.world_normal = glam::Mat3::from_mat4(world).inverse().transpose();
             }
         }
+
+        // P4：世界矩阵一刷新就跟着求解蒙皮矩阵，渲染层拿到的永远是本帧结果，
+        // 调用方无需记得额外多做一步。
+        self.update_skinning();
     }
 
     fn resolve_world(
@@ -390,6 +409,63 @@ impl Scene {
         };
         cache.insert(id, world);
         world
+    }
+
+    // ---------- 蒙皮（P4） ----------
+
+    /// 登记一个蒙皮实例，返回其在 `Scene::skins` 中的下标。
+    ///
+    /// 约定：调用前场景节点应处于**静止姿态**（未推进动画），
+    /// 关节的 `rest_world` 需要由调用方用当前世界矩阵填好（见 `add_joint`）。
+    pub fn add_skin(&mut self, skin: SkinInstance) -> usize {
+        self.skins.push(skin);
+        self.skins.len() - 1
+    }
+
+    /// 按网格节点找蒙皮实例。
+    pub fn skin_of(&self, mesh_node: NodeId) -> Option<&SkinInstance> {
+        self.skins.iter().find(|s| s.mesh_node == mesh_node)
+    }
+
+    /// 求解所有蒙皮实例的关节矩阵。
+    ///
+    /// `update_world_transforms` 会自动调用本方法，一般不需要手动调。
+    /// 关节节点被销毁时该关节退化为单位矩阵，不会让整块网格塌到原点。
+    pub fn update_skinning(&mut self) {
+        if self.skins.is_empty() {
+            return;
+        }
+        let worlds: HashMap<NodeId, Mat4> = self
+            .nodes
+            .iter()
+            .map(|(id, node)| (*id, node.world))
+            .collect();
+        for skin in &mut self.skins {
+            let model = worlds
+                .get(&skin.mesh_node)
+                .copied()
+                .unwrap_or(Mat4::IDENTITY);
+            skin.solve(model, |id| worlds.get(&id).copied());
+        }
+    }
+
+    /// 移除绑定了已销毁节点的蒙皮实例（网格节点或任一关节没了就整条丢）。
+    pub fn prune_skins(&mut self) {
+        if self.skins.is_empty() {
+            return;
+        }
+        let alive: std::collections::HashSet<NodeId> = self.nodes.keys().copied().collect();
+        self.skins.retain(|s| {
+            alive.contains(&s.mesh_node) && s.bindings.iter().all(|b| alive.contains(&b.node))
+        });
+    }
+
+    /// 蒙皮统计：`(实例数, 关节总数)`，供日志与验收使用。
+    pub fn skin_stats(&self) -> (usize, usize) {
+        (
+            self.skins.len(),
+            self.skins.iter().map(|s| s.joint_count()).sum(),
+        )
     }
 
     // ---------- 动画（P3） ----------

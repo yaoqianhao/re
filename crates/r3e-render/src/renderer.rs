@@ -220,6 +220,12 @@ pub struct Renderer {
     material_cache: MaterialCache,
     instance_buffer: wgpu::Buffer,
     instance_capacity: u64,
+    /// P4：全体蒙皮实例共用的关节矩阵 storage buffer（容量固定为
+    /// `MAX_JOINT_MATRICES` 个 mat4，约 256 KiB）。
+    joint_buffer: wgpu::Buffer,
+    joint_bind_group: wgpu::BindGroup,
+    /// 每帧收集的关节矩阵，扁平存 16 个 f32 / 矩阵，直接 memcpy 上传。
+    joint_scratch: Vec<[f32; 16]>,
     stats: RenderStats,
 }
 
@@ -305,9 +311,44 @@ impl Renderer {
 
         let material_cache = MaterialCache::new(&device);
 
+        // P4：group(2) —— 关节矩阵 storage buffer，所有蒙皮实例共用一段连续槽位
+        let joint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("r3e-joint-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let joint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-joint-buffer"),
+            size: (r3e_core::MAX_JOINT_MATRICES * 16 * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let joint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("r3e-joint-bg"),
+            layout: &joint_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: joint_buffer.as_entire_binding(),
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("r3e-pipeline-layout"),
-            bind_group_layouts: &[Some(&camera_layout), Some(&material_cache.layout)],
+            bind_group_layouts: &[
+                Some(&camera_layout),
+                Some(&material_cache.layout),
+                Some(&joint_layout),
+            ],
             immediate_size: 0,
         });
 
@@ -371,6 +412,9 @@ impl Renderer {
             material_cache,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            joint_buffer,
+            joint_bind_group,
+            joint_scratch: Vec::new(),
             stats: RenderStats::default(),
         })
     }
@@ -466,6 +510,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(2, &self.joint_bind_group, &[]);
             let mut draw_calls = 0u32;
             let mut instances = 0u32;
             let stride = std::mem::size_of::<InstanceRaw>() as u64;
@@ -588,6 +633,9 @@ impl Renderer {
 
         let mut all: Vec<InstanceRaw> = Vec::new();
         let mut groups: Vec<(MeshRef, std::ops::Range<u32>)> = Vec::new();
+        // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
+        self.joint_scratch.clear();
+        let mut joint_overflow = 0usize;
 
         for key in &keys {
             let start = all.len() as u32;
@@ -596,14 +644,46 @@ impl Renderer {
                     continue;
                 }
                 let color: Vec4 = node.color;
+                let joint_base = match scene.skin_of(node.id) {
+                    Some(skin) if skin.is_solved() => {
+                        let need = skin.joint_matrices.len();
+                        if self.joint_scratch.len() + need > r3e_core::MAX_JOINT_MATRICES {
+                            joint_overflow += need;
+                            0
+                        } else {
+                            let base = self.joint_scratch.len() as u32;
+                            for m in &skin.joint_matrices {
+                                self.joint_scratch.push(m.to_cols_array());
+                            }
+                            base
+                        }
+                    }
+                    _ => 0,
+                };
                 all.push(InstanceRaw {
                     model: node.world.to_cols_array_2d(),
                     color: color.to_array(),
+                    joint_base,
+                    _pad: [0; 3],
                 });
             }
             if all.len() as u32 > start {
                 groups.push((*key, start..all.len() as u32));
             }
+        }
+
+        if joint_overflow > 0 {
+            log::error!(
+                "关节矩阵槽位不足（缺 {joint_overflow} 个，上限 {}），超出部分实例按非蒙皮绘制",
+                r3e_core::MAX_JOINT_MATRICES
+            );
+        }
+        if !self.joint_scratch.is_empty() {
+            self.queue.write_buffer(
+                &self.joint_buffer,
+                0,
+                bytemuck::cast_slice(&self.joint_scratch),
+            );
         }
 
         // 确保用到的网格都已上传（内置即时生成，资产从注入的 MeshProvider 取）
