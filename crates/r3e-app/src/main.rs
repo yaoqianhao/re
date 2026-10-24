@@ -91,6 +91,12 @@ r3e —— Rust 3D Engine
 资产选项（M1 静态网格）:
   --asset PATH              导入 FBX 并按资产内节点路径 spawn（可重复）
   --dump-asset PATH         导入 FBX 打印资产报告后退出（不建窗口）
+
+动画选项（P3 节点动画）:
+  --dump-anim PATH          导入 FBX 打印各动画片段采样表后退出（不建窗口）
+  --anim-clip NAME          配合 --dump-anim 只看指定片段
+  --show-bones              把骨架节点画成小方块，肉眼确认节点动画
+  --run-seconds SEC         窗口运行指定秒数后自动退出（无人值守验证）
   -h, --help                显示本帮助
 ";
 
@@ -171,6 +177,32 @@ fn main() -> anyhow::Result<()> {
                 }
                 continue;
             }
+            "--dump-anim" => {
+                if let Some(v) = take_value("--dump-anim", &mut i) {
+                    cli.dump_anim = Some(PathBuf::from(v));
+                }
+                continue;
+            }
+            "--anim-clip" | "--clip" => {
+                if let Some(v) = take_value("--anim-clip", &mut i) {
+                    cli.anim_clip = Some(v);
+                }
+                continue;
+            }
+            "--show-bones" | "--bones" => {
+                cli.show_bones = true;
+                i += 1;
+                continue;
+            }
+            "--run-seconds" | "--seconds" => {
+                if let Some(v) = take_value("--run-seconds", &mut i) {
+                    match v.trim().parse::<f32>() {
+                        Ok(secs) if secs > 0.0 => cli.run_seconds = Some(secs),
+                        _ => log::error!("--run-seconds 取值应为正数秒，收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
             other if other.starts_with("--") => {
                 log::warn!("未知选项 `{arg}`，已忽略（--help 查看用法）");
                 i += 1;
@@ -201,6 +233,20 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 eprintln!("资产导入失败: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // --dump-anim：P3 数值验收，打印轨道采样表后退出
+    if let Some(path) = cli.dump_anim.clone() {
+        match app::dump_anim(&path, cli.anim_clip.as_deref()) {
+            Ok(report) => {
+                println!("{report}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("动画导入失败: {e}");
                 std::process::exit(1);
             }
         }

@@ -1,11 +1,11 @@
-//! 场景图：物件容器、生命周期（生成 / 消失）、层次变换与文件加载。
+﻿//! 场景图：物件容器、生命周期（生成 / 消失）、层次变换与文件加载。
 
 use std::collections::HashMap;
 
 use glam::{Mat4, Vec3, Vec4};
 use serde::Deserialize;
 
-use crate::{Camera, Light, MeshRef, Node, NodeId};
+use crate::{AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, Transform};
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -99,6 +99,29 @@ pub struct LightDesc {
     pub ambient: Option<[f32; 3]>,
 }
 
+/// 资产自带的动画播放声明（P3 起）。
+///
+/// 写在场景 `assets[]` 项里，语义是「导入后立刻给这个资产实例挂一个播放器」。
+/// `clip` 省略时取该资产动画栈里的第一个片段。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AnimDecl {
+    /// 片段名（大小写不敏感）。
+    #[serde(default)]
+    pub clip: Option<String>,
+    /// 播放速度，缺省 1.0；负值为倒放。
+    #[serde(default)]
+    pub speed: Option<f32>,
+    /// 是否循环，缺省 true。
+    #[serde(default)]
+    pub looping: Option<bool>,
+    /// 起始时间（秒），缺省 0。
+    #[serde(default)]
+    pub time: Option<f32>,
+    /// 是否立即播放，缺省 true。false 时实例存在但处于暂停状态。
+    #[serde(default)]
+    pub play: Option<bool>,
+}
+
 /// 场景文件里声明的外部资产（P2 起）。路径相对场景文件所在目录解析。
 ///
 /// 声明后由应用层导入并在导入成功后按资产内网格 spawn 物件；
@@ -118,6 +141,9 @@ pub struct AssetDecl {
     /// 只导入不 spawn（供脚本 / 其它物件的 `asset:` 引用使用）。
     #[serde(default)]
     pub spawn: Option<bool>,
+    /// 导入后自动挂载的动画播放器（P3 起）。
+    #[serde(default)]
+    pub anim: Option<AnimDecl>,
 }
 
 /// 场景文件结构（JSON）。
@@ -158,6 +184,11 @@ pub struct Scene {
     pub physics: PhysicsSceneDesc,
     /// 场景文件声明的外部资产（含未导入成功前的原始声明），供应用层导入与热重载比对。
     pub assets: Vec<AssetDecl>,
+    /// 场景内的动画实例（P3 起）。每个资产实例（或脚本手动挂载的播放器）一条。
+    pub animations: Vec<AnimInstance>,
+    /// 可切换的片段目录（P3 起）：键为 `"<资产名>/<片段名>"`，值与其他实例共享同一份
+    /// `Arc<AnimClip>`。应用层导入资产后登记，脚本用 `set_anim_clip` 按名字切片段。
+    pub anim_clips: HashMap<String, std::sync::Arc<AnimClip>>,
 }
 
 impl Default for Scene {
@@ -181,6 +212,8 @@ impl Scene {
             background: Vec4::new(0.05, 0.06, 0.08, 1.0),
             physics: PhysicsSceneDesc::default(),
             assets: Vec::new(),
+            animations: Vec::new(),
+            anim_clips: HashMap::new(),
         }
     }
 
@@ -359,6 +392,180 @@ impl Scene {
         world
     }
 
+    // ---------- 动画（P3） ----------
+
+    /// 推进所有动画实例并把采样结果写回节点局部变换。
+    ///
+    /// 必须在 `update_world_transforms` 之前调用：动画改的是局部 TRS，世界矩阵由
+    /// 场景图统一合成。已销毁节点的绑定会被就地剔除，避免每帧都做无效查找。
+    pub fn update_animations(&mut self, dt: f32) {
+        if self.animations.is_empty() {
+            return;
+        }
+
+        // 先算出所有待写回项，再统一落到节点上，避免同时可变借用 animations 与 nodes
+        let mut writes: Vec<(NodeId, Transform)> = Vec::new();
+        for inst in self.animations.iter_mut() {
+            inst.advance(dt);
+            let time = inst.sample_time();
+            for b in inst.bindings.iter() {
+                let Some(track) = inst.clip.tracks.get(b.track as usize) else {
+                    continue;
+                };
+                if let Some(transform) = track.sample(time) {
+                    writes.push((b.node, transform));
+                }
+            }
+        }
+
+        if writes.is_empty() {
+            return;
+        }
+        for (id, transform) in writes {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.transform = transform;
+            }
+        }
+    }
+
+    /// 移除绑定了已销毁节点的死绑定（销毁节点后调用，保持实例表干净）。
+    pub fn prune_anim_bindings(&mut self) {
+        if self.animations.is_empty() {
+            return;
+        }
+        let alive: std::collections::HashSet<NodeId> = self.nodes.keys().copied().collect();
+        for inst in &mut self.animations {
+            inst.bindings.retain(|b| alive.contains(&b.node));
+        }
+    }
+
+    pub fn add_anim_instance(&mut self, instance: AnimInstance) -> usize {
+        self.animations.push(instance);
+        self.animations.len() - 1
+    }
+
+    pub fn anim_names(&self) -> Vec<String> {
+        self.animations.iter().map(|a| a.name.clone()).collect()
+    }
+
+    /// 按名字找实例；`name` 为空时取第一个（脚本里 `play_anim()` 的默认行为）。
+    pub fn anim_instance(&self, name: &str) -> Option<&AnimInstance> {
+        if name.is_empty() {
+            return self.animations.first();
+        }
+        self.animations
+            .iter()
+            .find(|a| a.name == name || a.clip.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn anim_instance_mut(&mut self, name: &str) -> Option<&mut AnimInstance> {
+        if name.is_empty() {
+            return self.animations.first_mut();
+        }
+        self.animations
+            .iter_mut()
+            .find(|a| a.name == name || a.clip.name.eq_ignore_ascii_case(name))
+    }
+
+    /// 播放（从当前时间继续）。返回是否命中实例。
+    pub fn play_anim(&mut self, name: &str) -> bool {
+        match self.anim_instance_mut(name) {
+            Some(inst) => {
+                inst.playing = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 暂停并保留当前时间。
+    pub fn stop_anim(&mut self, name: &str) -> bool {
+        match self.anim_instance_mut(name) {
+            Some(inst) => {
+                inst.playing = false;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 设置播放速度（负值为倒放）。
+    pub fn set_anim_speed(&mut self, name: &str, speed: f32) -> bool {
+        match self.anim_instance_mut(name) {
+            Some(inst) => {
+                inst.speed = speed;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 跳转到指定时间（秒）。超出片段范围时按循环/钳制规则处理。
+    pub fn set_anim_time(&mut self, name: &str, time: f32) -> bool {
+        match self.anim_instance_mut(name) {
+            Some(inst) => {
+                inst.time = time;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 查询播放时间（秒），未命中返回 `None`。
+    pub fn anim_time(&self, name: &str) -> Option<f32> {
+        self.anim_instance(name).map(|a| a.sample_time())
+    }
+
+    /// 登记一份可切换的片段，键为 `"<资产名>/<片段名>"`。
+    pub fn register_anim_clip(&mut self, key: impl Into<String>, clip: std::sync::Arc<AnimClip>) {
+        self.anim_clips.insert(key.into(), clip);
+    }
+
+    /// 某个资产（实例名前缀）下所有可切换片段名，按名称排序。
+    pub fn anim_clip_names(&self, prefix: &str) -> Vec<String> {
+        let head = format!("{prefix}/");
+        let mut out: Vec<String> = self
+            .anim_clips
+            .keys()
+            .filter_map(|k| k.strip_prefix(&head).map(str::to_string))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// 把实例切换到同一资产的另一个片段（如 idle → run → atk）。
+    ///
+    /// 实例名形如 `<资产名>/<片段名>`，片段名从该资产已登记的片段里按名字（大小写不敏感）查找，
+    /// 因此脚本可以写 `set_anim_clip("tirger/idle_loop", "run_loop")`。
+    pub fn set_anim_clip(&mut self, instance: &str, clip_name: &str) -> bool {
+        let Some(inst_key) = self
+            .anim_instance(instance)
+            .map(|a| a.name.split('/').next().unwrap_or("").to_string())
+        else {
+            return false;
+        };
+        let head = format!("{inst_key}/");
+        let Some(clip) = self
+            .anim_clips
+            .iter()
+            .find(|(k, _)| {
+                k.strip_prefix(&head)
+                    .map(|n| n.eq_ignore_ascii_case(clip_name))
+                    .unwrap_or(false)
+            })
+            .map(|(_, c)| c.clone())
+        else {
+            return false;
+        };
+        match self.anim_instance_mut(instance) {
+            Some(inst) => {
+                inst.set_clip(clip);
+                true
+            }
+            None => false,
+        }
+    }
+
     // ---------- 加载 ----------
 
     pub fn from_json_str(src: &str) -> Result<Self, String> {
@@ -413,5 +620,169 @@ impl Scene {
         }
         scene.update_world_transforms();
         Ok(scene)
+    }
+}
+
+#[cfg(test)]
+mod anim_tests {
+    use super::*;
+    use crate::anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
+    use glam::Quat;
+
+    fn clip_with_move() -> AnimClip {
+        let track = AnimTrack {
+            node_path: "root/arm".to_string(),
+            node_index: 1,
+            keys: vec![
+                AnimKey {
+                    time: 0.0,
+                    position: Vec3::new(0.0, 0.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                AnimKey {
+                    time: 1.0,
+                    position: Vec3::new(10.0, 0.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+            ],
+        };
+        AnimClip {
+            name: "walk".to_string(),
+            duration: 1.0,
+            tracks: vec![track],
+        }
+    }
+
+    #[test]
+    fn instance_advances_and_writes_node_transform() {
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
+        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        scene.add_anim_instance(inst);
+
+        scene.update_animations(0.25);
+        let p = scene.get(id).unwrap().transform.position;
+        assert!((p.x - 2.5).abs() < 1e-4, "0.25s 应插值到 x=2.5，实际 {p:?}");
+
+        // 循环：1.0s 后回到 0，再走 0.5s → x=5
+        scene.update_animations(0.75);
+        scene.update_animations(0.5);
+        let p = scene.get(id).unwrap().transform.position;
+        assert!((p.x - 5.0).abs() < 1e-4, "循环后 x 应为 5，实际 {p:?}");
+    }
+
+    #[test]
+    fn stop_keeps_pose_and_speed_scales_time() {
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
+        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.looping = false;
+        scene.add_anim_instance(inst);
+
+        assert!(scene.set_anim_speed("demo/walk", 2.0));
+        scene.update_animations(0.25); // 0.5s 处
+        assert!((scene.anim_time("demo/walk").unwrap() - 0.5).abs() < 1e-4);
+
+        assert!(scene.stop_anim("demo/walk"));
+        scene.update_animations(0.5);
+        let p = scene.get(id).unwrap().transform.position;
+        assert!((p.x - 5.0).abs() < 1e-4, "暂停后姿态不应变化，实际 {p:?}");
+    }
+
+    #[test]
+    fn non_looping_stops_at_end() {
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
+        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.looping = false;
+        scene.add_anim_instance(inst);
+
+        scene.update_animations(3.0);
+        let node = scene.get(id).unwrap();
+        assert!((node.transform.position.x - 10.0).abs() < 1e-4);
+        assert!(!scene.anim_instance("demo/walk").unwrap().playing);
+    }
+
+    #[test]
+    fn switching_clip_rebinds_tracks() {
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // 两个片段共用同一节点（下标 1 / 路径 root/arm），但终点位移不同
+        let mut run = clip_with_move();
+        run.name = "run".to_string();
+        run.tracks[0].keys[1].position = Vec3::new(20.0, 0.0, 0.0);
+
+        let walk = clip_with_move();
+        scene.register_anim_clip("demo/walk", std::sync::Arc::new(walk.clone()));
+        scene.register_anim_clip("demo/run", std::sync::Arc::new(run));
+
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(walk));
+        inst.bindings = vec![crate::anim::AnimBinding {
+            node: id,
+            node_index: 1,
+            path: "root/arm".to_string(),
+            track: 0,
+        }];
+        scene.add_anim_instance(inst);
+
+        assert_eq!(scene.anim_clip_names("demo"), vec!["run", "walk"]);
+        assert!(scene.set_anim_clip("demo/walk", "run"), "应能切到 run");
+        let inst = scene.anim_instance("demo/walk").unwrap();
+        assert_eq!(inst.clip.name, "run");
+        assert_eq!(inst.bindings.len(), 1, "切片段后应按节点下标重新绑定轨道");
+
+        // 从 0 播到 0.5s（片段 1s 循环，直接播 1s 会绕回 0），x 应在 run 的中点 10
+        scene.update_animations(0.5);
+        let p = scene.get(id).unwrap().transform.position;
+        assert!((p.x - 10.0).abs() < 1e-4, "切片段后应采样新片段，实际 {p:?}");
+    }
+
+    #[test]
+    fn dead_node_bindings_are_pruned() {
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
+        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        scene.add_anim_instance(inst);
+
+        scene.despawn("arm");
+        scene.prune_anim_bindings();
+        assert_eq!(
+            scene.anim_instance("demo/walk").unwrap().bindings.len(),
+            0
+        );
+        // 没有绑定也不该 panic
+        scene.update_animations(0.1);
     }
 }

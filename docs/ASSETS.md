@@ -298,11 +298,11 @@ struct CachedAsset {
 - 采样器：`Linear` + `Repeat`，无 mipmap（后续可加）；
 - 验收：带贴图样本（嵌入 + 外链各一）颜色正确、无 UV 错位、无上下颠倒（FBX 的 V 轴与 wgpu 的 UV 原点不同，需显式翻转）。
 
-### P3：节点级动画
+### P3：节点级动画 —— ✅ 已完成（2026-10-24）
 
-- `AnimClip / AnimTrack / AnimState` + 每帧采样；
-- 场景 JSON `anim` 段 + 脚本 `play_anim` 系列；
-- 验收：Maya 动画样本能连续播放，`speed` / `looping` 生效；与脚本 `set_pos` 的覆盖关系符合文档描述。
+- `AnimClip / AnimTrack / AnimInstance` + 每帧采样（线性插值 + 时间轴重基），骨架节点树按路径建；
+- 场景 JSON `anim` 段 + 脚本 `play_anim` / `set_anim_clip` 系列 + `--dump-anim` / `--show-bones`；
+- 验收：老虎样本 7 个片段可轮播，`speed` / `looping` / 切片段生效，细节见第 13 章。
 
 ### P4（后置）：骨骼蒙皮
 
@@ -457,3 +457,59 @@ AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）�
 | 场景 `assets` 段（两条声明同一 FBX，一条 `spawn:false`） | 只导入一次、只 spawn 1 个节点，日志与画面一致 |
 | 场景 JSON 带 BOM | 正常解析（此前会报 `expected value at line 1 column 1`） |
 
+
+## 13. P3（节点级动画 + 骨架节点树 + 片段切换）实施现状
+
+P3 已落地：FBX 动画栈 → `AnimClip`，按骨架节点路径建节点树，逐帧采样写 `Transform`，
+脚本与场景 JSON 都能声明/切换片段。**蒙皮仍留给 P4**，因此当前能动的只有「节点变换」这一层。
+
+### 13.1 落地的内容
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/r3e-core/src/anim.rs` | `AnimClip`（名/时长/轨道）、`AnimTrack`（节点路径 + T/R/S 关键帧）、`AnimKey`、`AnimInstance`（时间轴 + 速度 + 循环 + `AnimBinding`） |
+| `crates/r3e-core/src/scene.rs` | `update_animations(dt)`、`play_anim/stop_anim/set_anim_speed/set_anim_time/anim_time/anim_names/add_anim_instance/prune_anim_bindings`；片段注册表 `register_anim_clip/anim_clip_names/set_anim_clip` |
+| `crates/r3e-asset/src/lib.rs` | 从 `scene.anim_stacks` 提取全部栈（`time_begin` 重基到 0）、从 `scene.nodes` 提取节点树（local TRS + parent 下标 + 路径） |
+| `crates/r3e-app/src/app.rs` | `spawn_asset_anim`：按节点路径建骨架节点树（`<资产名>/<节点路径>`）、按 `node_index` 绑轨道、建播放器；`--show-bones` 挂标记方块 |
+| `crates/r3e-script/src/api.rs` | `anims/anim_of/anim_info/anim_clip/anim_clips/play_anim/stop_anim/set_anim_clip/set_anim_speed/set_anim_time/anim_time/set_anim_looping/anim_playing` |
+| `crates/r3e-app/src/main.rs` | `--dump-anim <fbx>`、`--anim-clip <名>`、`--show-bones` |
+| `scripts/anim_demo.rhai`、`assets/scene_anim.json` | 演示：每 3 秒轮播该资产 7 个片段，打印实例与片段信息 |
+
+### 13.2 关键口径（后续不得回退）
+
+1. **时间轴重基**：ufbx 的 `AnimStack.time_begin` 不一定是 0（Maya 样本是 0.234），
+   提取时统一 `t -= time_begin`，否则起播瞬间会跳帧；`AnimClip.duration = time_end - time_begin`。
+2. **绑定靠 `node_index` 而非名字**：轨道与骨骼同名的情况并不罕见（Blender 常见 `Bone.001`），
+   `AnimBinding` 同时记 `node_index` 与 `path`，切片段时按 `node_index` 优先、`path` 兜底重绑。
+3. **切片段 = 原地重绑**：`set_anim_clip` 复用同一个 `AnimInstance`（不重建节点树、不重置节点位姿），
+   时间归零后按新片段采样；同一骨架不同动作严禁重复 `spawn`。
+4. **空片段降级**：`AnimClip` 无轨道（如只含单帧的 `sleep_loop`）时不建实例，只 `warn`，不阻断资产导入。
+5. **非循环到点即停**：`looping: false` 在 `duration` 处停止并保留末帧姿态，不回 0。
+6. **场景重建后必须补挂**：`ScriptHost` 增加 `rebuild_hook`，场景热重载 / F5 重放 JSON 后由 app
+   把资产节点与动画实例重新 spawn 回去，且要早于脚本 `on_start`（否则 `anims()` 为空）。
+7. **脚本先于资产是错序**：启动顺序固定为「建场景 → spawn 资产与动画 → 载入脚本」，`on_start` 才能枚举到实例。
+8. **标记方块是调试件**：`--show-bones` 的方块尺寸按资产缩放反算（`0.25 / scale`），
+   贴在骨骼节点本地原点，常被网格包住看不清——确认动画请用 `--anim-clip` 逐个对照或看日志位移。
+
+### 13.3 验收记录
+
+`cargo build -p r3e-app` exit=0；`cargo test -p r3e-core` 5 passed（动画采样、非循环停止、
+速度缩放、切片段重绑，以及旧的场景用例）。
+
+| 验证项 | 结果 |
+| --- | --- |
+| 老虎样本 `--dump-anim` | 7 个栈：`atk / atk2 / die / free / idle_loop / run_loop / sleep_loop`，时长 0.03–2.93s，位移最大轨道幅度合理 |
+| 场景声明 `anim: { clip: "idle_loop" }` | 日志 `动画实例 \`tirger/idle_loop\`：40 条轨道 / 2.10s / 播放中` |
+| 骨骼位移探针 | 26s 内 `tirger/.../Bone03` 世界位移 0.131，证明采样真的写进了节点 TRS |
+| 脚本轮播 7 个片段 | 每 3 秒一条 `切到 tirger/<片段>`，切换后轨道数仍 40、时长为该片段自身时长、时间归零 |
+| 脚本热重载（改 `.rhai` 触发） | 日志 `资产节点已随场景重建补挂: 1 个` + `动画实例数: 1`，模型与动画未丢失 |
+| 窗口渲染 | 老虎模型正常显示（贴图/材质沿用 P2），骨架标记方块被网格包住、肉眼难辨，见 13.2-8 |
+
+### 13.4 尚未做（P3 范围外）
+
+- **蒙皮（P4）**：老虎网格挂在单一节点上，动画目前只能带动整体与骨骼节点，四肢不会逐顶点形变。
+- **动画混合/分层**：无 upper-body mask、无 cross-fade，切片段是硬切。
+- **场景 JSON 改 `assets` 段的热生效**：热重载沿用启动时的导入清单（`asset_specs`），
+  增删资产仍需重启；改 `anim` 参数也会被 `set_anim_clip` 的运行时状态覆盖，需重启确认。
+- **`--assets-root`**：仍未落地，路径仍按「场景文件目录 / 命令行原样」解析。
+- **物理 AABB**：`MeshRef::Asset` 仍不参与受限包围盒，物理体只有内置网格有碰撞形状。

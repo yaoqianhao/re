@@ -30,6 +30,8 @@ pub struct ScriptHost {
     script_path: Option<PathBuf>,
     script_mtime: Option<SystemTime>,
     base_scene_json: Option<String>,
+    /// 场景重建后的补挂回调（P3）：宿主用它把资产节点与动画实例重新 spawn 回场景。
+    rebuild_hook: Option<Box<dyn FnMut(&mut Scene)>>,
     /// 脚本运行期错误，供 HUD / 控制台观察。
     pub last_error: Option<String>,
 }
@@ -64,8 +66,24 @@ impl ScriptHost {
             script_path: None,
             script_mtime: None,
             base_scene_json: None,
+            rebuild_hook: None,
             last_error: None,
         }
+    }
+
+    /// 注册场景重建回调：每次场景被重放（热重载 / F5）都会在重跑脚本前调用，
+    /// 宿主借此把资产节点与动画实例补挂回去，避免热重载后资产凭空消失。
+    pub fn set_rebuild_hook(&mut self, hook: impl FnMut(&mut Scene) + 'static) {
+        self.rebuild_hook = Some(Box::new(hook));
+    }
+
+    /// 跑一遍重建回调并刷新世界变换；无回调时只刷新变换。
+    fn run_rebuild_hook(&mut self) {
+        let mut scene = self.scene.borrow_mut();
+        if let Some(hook) = self.rebuild_hook.as_mut() {
+            hook(&mut scene);
+        }
+        scene.update_world_transforms();
     }
 
     /// 输入状态句柄，供 app 层每帧填充后脚本读取。
@@ -84,6 +102,9 @@ impl ScriptHost {
 
     /// 编译并执行一段脚本源码。
     pub fn load_str(&mut self, src: &str, name: &str) -> Result<(), String> {
+        // Windows 编辑器常给 UTF-8 加 BOM，Rhai 会把它当成非法首字符（Unexpected '\u{feff}'），
+        // 这里统一剥掉，避免用户复制粘贴脚本后莫名其妙编译失败。
+        let src = src.strip_prefix('\u{feff}').unwrap_or(src);
         let ast = self
             .engine
             .compile(src)
@@ -167,6 +188,7 @@ impl ScriptHost {
             }
         }
         self.base_scene_json = Some(json.to_string());
+        self.run_rebuild_hook();
 
         if let Some(ast) = self.ast.clone() {
             self.scope.clear();
@@ -220,6 +242,10 @@ impl ScriptHost {
                 }
             }
         }
+
+        // 资产节点/动画实例必须重新挂回重放后的场景，且要在脚本 on_start 之前
+        // （否则热重载后模型消失、on_start 里 anims() 为空）
+        self.run_rebuild_hook();
 
         if let Err(e) = self.load_file(&path) {
             println!("[script] 热重载失败: {e}");

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use r3e_core::anim::{AnimClip, AnimTrack};
 use r3e_core::mesh::{
     MaterialData, MeshData, MeshPartData, TextureImage, Vertex,
 };
@@ -159,6 +160,24 @@ impl MeshAsset {
     }
 }
 
+/// 资产内的一个节点（P3 起）。
+///
+/// 与 FBX 节点树一一对应，`index` 就是动画轨道里的 `node_index`。`path` 是
+/// `Root/Arm/Hand` 形式的层级路径，用于日志与脚本按名字定位。
+#[derive(Debug, Clone, Default)]
+pub struct NodeAsset {
+    pub index: u32,
+    pub name: String,
+    pub path: String,
+    pub parent: Option<u32>,
+    /// 绑定姿态的局部变换（节点未被动画驱动时的值）。
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+    /// 该节点自身挂的网格在 `AssetEntry::meshes` 里的下标。
+    pub mesh: Option<u32>,
+}
+
 /// 一个资产文件（FBX）的导入结果。
 #[derive(Debug, Clone)]
 pub struct AssetEntry {
@@ -168,12 +187,29 @@ pub struct AssetEntry {
     pub materials: Vec<MaterialInfo>,
     /// 去重后的贴图表：同一 ufbx 贴图元素只出现一次，`MaterialInfo::textures[].index` 指到这里。
     pub textures: Vec<TextureInfo>,
+    /// 节点树（P3 起）：层级、绑定姿态与网格挂载点。
+    pub nodes: Vec<NodeAsset>,
+    /// 烘焙后的动画片段（P3 起）；为空表示该资产没有可播放的节点动画。
+    pub animations: Vec<AnimClip>,
 }
 
 impl AssetEntry {
     pub fn mesh(&self, index: u32) -> Option<&MeshAsset> {
         self.meshes.get(index as usize)
     }
+
+    /// 按名字找动画片段（大小写不敏感）。
+    pub fn animation(&self, name: &str) -> Option<&AnimClip> {
+        self.animations
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+    }
+
+    /// 默认片段：第一个非空动画。
+    pub fn default_animation(&self) -> Option<&AnimClip> {
+        self.animations.first()
+    }
+
 
     pub fn triangle_total(&self) -> usize {
         self.meshes.iter().map(|m| m.triangle_count()).sum()
@@ -385,6 +421,8 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
 
     // ---- 3) 逐节点抽取网格 ----
     let mut meshes: Vec<MeshAsset> = Vec::new();
+    // 节点 element_id -> 网格下标，供节点树记录「哪个节点挂着哪个网格」
+    let mut node_mesh: HashMap<u32, u32> = HashMap::new();
     for i in 0..scene.nodes.len() {
         let node: &ufbx::Node = &scene.nodes[i];
         let Some(mesh_ref) = node.mesh.as_ref() else {
@@ -407,11 +445,25 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
             asset.vertex_count(),
             asset.triangle_count()
         );
+        node_mesh.insert(node.element.element_id, meshes.len() as u32);
         meshes.push(asset);
     }
 
     if meshes.is_empty() {
         log::warn!("asset: `{display}` 不含任何网格节点");
+    }
+
+    // ---- 3b) 节点树（P3 起） ----
+    let nodes = extract_nodes(&scene, &node_mesh);
+
+    // ---- 3c) 动画烘焙（P3 起） ----
+    let animations = extract_animations(&scene, &nodes);
+    if !animations.is_empty() {
+        let keys: usize = animations.iter().map(|a| a.tracks.iter().map(|t| t.keys.len()).sum::<usize>()).sum();
+        log::debug!(
+            "asset: `{display}` 动画 {} 段 / 共 {keys} 个关键帧",
+            animations.len()
+        );
     }
 
     Ok(AssetEntry {
@@ -420,7 +472,275 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
         meshes,
         materials,
         textures,
+        nodes,
+        animations,
     })
+}
+
+/// 由 ufbx 节点表构建节点树：父子下标、层级路径与绑定姿态局部变换。
+fn extract_nodes(scene: &ufbx::Scene, node_mesh: &HashMap<u32, u32>) -> Vec<NodeAsset> {
+    let mut index_of: HashMap<u32, u32> = HashMap::with_capacity(scene.nodes.len());
+    for i in 0..scene.nodes.len() {
+        index_of.insert(scene.nodes[i].element.element_id, i as u32);
+    }
+
+    let mut nodes: Vec<NodeAsset> = Vec::with_capacity(scene.nodes.len());
+    for i in 0..scene.nodes.len() {
+        let node: &ufbx::Node = &scene.nodes[i];
+        let lt = &node.local_transform;
+        nodes.push(NodeAsset {
+            index: i as u32,
+            name: node.element.name.to_string(),
+            path: String::new(),
+            parent: node
+                .parent
+                .as_ref()
+                .and_then(|p| index_of.get(&p.element.element_id).copied()),
+            position: [lt.translation.x as f32, lt.translation.y as f32, lt.translation.z as f32],
+            rotation: [
+                lt.rotation.x as f32,
+                lt.rotation.y as f32,
+                lt.rotation.z as f32,
+                lt.rotation.w as f32,
+            ],
+            scale: [lt.scale.x as f32, lt.scale.y as f32, lt.scale.z as f32],
+            mesh: node_mesh.get(&node.element.element_id).copied(),
+        });
+    }
+
+    // 路径自顶向下拼：先沿父链收集未知段，再回填，避免递归借用。
+    let mut paths: Vec<Option<String>> = vec![None; nodes.len()];
+    for i in 0..nodes.len() {
+        let mut chain: Vec<usize> = Vec::new();
+        let mut cur = Some(i);
+        while let Some(idx) = cur {
+            if let Some(known) = &paths[idx] {
+                chain.push(idx);
+                let _ = known;
+                break;
+            }
+            chain.push(idx);
+            cur = nodes[idx].parent.map(|p| p as usize);
+            if chain.len() > 128 {
+                break;
+            }
+        }
+        let mut acc = chain
+            .last()
+            .and_then(|idx| paths[*idx].clone())
+            .unwrap_or_default();
+        for idx in chain.iter().rev() {
+            if paths[*idx].is_some() {
+                continue;
+            }
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(&nodes[*idx].name);
+            paths[*idx] = Some(acc.clone());
+        }
+    }
+    for (i, p) in paths.into_iter().enumerate() {
+        nodes[i].path = p.unwrap_or_else(|| nodes[i].name.clone());
+    }
+    nodes
+}
+
+/// 烘焙动画栈：把每个动画栈的节点 TRS 曲线抽成 `AnimClip`。
+///
+/// 用 ufbx 的 bake 而不是直接读曲线：一是不必在引擎里重实现贝塞尔/阶跃插值，
+/// 二是烘焙结果已经把多个 layer 与 blend 结果合到了一起。采样率 30fps，
+/// 并开启关键帧精简，避免常量通道产生冗长数据。
+fn extract_animations(scene: &ufbx::Scene, nodes: &[NodeAsset]) -> Vec<AnimClip> {
+    let mut out: Vec<AnimClip> = Vec::new();
+    if scene.anim_stacks.len() == 0 {
+        return out;
+    }
+
+    // ufbx 节点元素 id -> `scene.nodes` 下标（即 `NodeAsset::index`）
+    let mut elem_to_index: HashMap<u32, u32> = HashMap::with_capacity(scene.nodes.len());
+    for i in 0..scene.nodes.len() {
+        elem_to_index.insert(scene.nodes[i].element.element_id, i as u32);
+    }
+
+    for si in 0..scene.anim_stacks.len() {
+        let stack: &ufbx::AnimStack = &scene.anim_stacks[si];
+        let name = stack.element.name.to_string();
+        if stack.layers.len() == 0 {
+            // 空栈（只有名字没有 layer）没有可求值内容，按规划直接降级跳过
+            log::debug!("动画栈 `{name}` 无 layer，跳过");
+            continue;
+        }
+
+        let opts = ufbx::BakeOpts {
+            resample_rate: 30.0,
+            trim_start_time: true,
+            key_reduction_enabled: true,
+            key_reduction_threshold: 1e-4,
+            ..Default::default()
+        };
+        let baked = match ufbx::bake_anim(scene, &stack.anim, opts) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("动画栈 `{name}` 烘焙失败: {:?} {}", e.type_, e.description);
+                continue;
+            }
+        };
+
+        let mut tracks: Vec<AnimTrack> = Vec::new();
+        for bn in baked.nodes.iter() {
+            // `BakedNode::element_id` 对应 ufbx 节点元素 id
+            let Some(node_index) = elem_to_index.get(&bn.element_id).copied() else {
+                continue;
+            };
+            let bind = &nodes[node_index as usize];
+            let keys = bake_node_keys(bn, bind);
+            if keys.len() <= 1 {
+                // 常量通道（整段不动）无需参与播放，省下每帧写回
+                continue;
+            }
+            tracks.push(AnimTrack {
+                node_path: bind.path.clone(),
+                node_index,
+                keys,
+            });
+        }
+        if tracks.is_empty() {
+            log::debug!("动画栈 `{name}` 没有变化的节点通道，跳过");
+            continue;
+        }
+
+        let mut clip = AnimClip {
+            name,
+            duration: 0.0,
+            tracks,
+        };
+        for track in &mut clip.tracks {
+            r3e_core::anim::rebase_track(track);
+        }
+        clip.duration = r3e_core::anim::clip_duration(&clip.tracks);
+        log::debug!(
+            "动画栈 `{}`：{} 条轨道 / {:.2}s",
+            clip.name,
+            clip.tracks.len(),
+            clip.duration
+        );
+        out.push(clip);
+    }
+    out
+}
+
+/// 把一个烘焙节点的三通道关键帧合并到统一时间轴，输出引擎侧 `AnimKey`。
+///
+/// 位移/缩放线性插值，旋转球面插值。某通道缺失时用绑定姿态填充。
+fn bake_node_keys(bn: &ufbx::BakedNode, bind: &NodeAsset) -> Vec<r3e_core::AnimKey> {
+    use r3e_core::AnimKey;
+
+    let mut times: Vec<f64> = Vec::new();
+    times.extend(bn.translation_keys.iter().map(|k| k.time));
+    times.extend(bn.rotation_keys.iter().map(|k| k.time));
+    times.extend(bn.scale_keys.iter().map(|k| k.time));
+    if times.is_empty() {
+        return Vec::new();
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    times.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+
+    let bind_pos = Vec3::new(bind.position[0], bind.position[1], bind.position[2]);
+    let bind_rot = r3e_core::Quat::from_xyzw(
+        bind.rotation[0],
+        bind.rotation[1],
+        bind.rotation[2],
+        bind.rotation[3],
+    );
+    let bind_scale = Vec3::new(bind.scale[0], bind.scale[1], bind.scale[2]);
+
+    let mut out: Vec<AnimKey> = Vec::with_capacity(times.len());
+    for t in times {
+        let position = sample_vec3_keys(&bn.translation_keys, t).unwrap_or(bind_pos);
+        let rotation = sample_quat_keys(&bn.rotation_keys, t).unwrap_or(bind_rot);
+        let scale = sample_vec3_keys(&bn.scale_keys, t).unwrap_or(bind_scale);
+        out.push(AnimKey {
+            time: t as f32,
+            position,
+            rotation,
+            scale,
+        });
+    }
+    out
+}
+
+fn sample_vec3_keys(keys: &[ufbx::BakedVec3], time: f64) -> Option<Vec3> {
+    let first = keys.first()?;
+    if keys.len() == 1 || time <= first.time {
+        return Some(Vec3::new(
+            first.value.x as f32,
+            first.value.y as f32,
+            first.value.z as f32,
+        ));
+    }
+    let last = keys.last()?;
+    if time >= last.time {
+        return Some(Vec3::new(
+            last.value.x as f32,
+            last.value.y as f32,
+            last.value.z as f32,
+        ));
+    }
+    let mut lo = 0usize;
+    let mut hi = keys.len() - 1;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if keys[mid].time <= time {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let a = &keys[lo];
+    let b = &keys[hi];
+    let span = b.time - a.time;
+    let t = if span > 1e-9 {
+        ((time - a.time) / span) as f32
+    } else {
+        0.0
+    };
+    let av = Vec3::new(a.value.x as f32, a.value.y as f32, a.value.z as f32);
+    let bv = Vec3::new(b.value.x as f32, b.value.y as f32, b.value.z as f32);
+    Some(av.lerp(bv, t))
+}
+
+fn sample_quat_keys(keys: &[ufbx::BakedQuat], time: f64) -> Option<r3e_core::Quat> {
+    let first = keys.first()?;
+    let to_quat = |q: &ufbx::Quat| {
+        r3e_core::Quat::from_xyzw(q.x as f32, q.y as f32, q.z as f32, q.w as f32).normalize()
+    };
+    if keys.len() == 1 || time <= first.time {
+        return Some(to_quat(&first.value));
+    }
+    let last = keys.last()?;
+    if time >= last.time {
+        return Some(to_quat(&last.value));
+    }
+    let mut lo = 0usize;
+    let mut hi = keys.len() - 1;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if keys[mid].time <= time {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let a = &keys[lo];
+    let b = &keys[hi];
+    let span = b.time - a.time;
+    let t = if span > 1e-9 {
+        ((time - a.time) / span) as f32
+    } else {
+        0.0
+    };
+    Some(to_quat(&a.value).slerp(to_quat(&b.value), t))
 }
 
 fn extract_material(mat: &ufbx::Material, index: u32, base_dir: &Path) -> MaterialInfo {

@@ -257,6 +257,131 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         }
     });
 
+    // ---------------- 动画（P3） ----------------
+    // 一个「动画实例」= 一个资产实例 + 一个片段（导入时建好，名字为 `<资产名>/<片段名>`）。
+    // 脚本侧只操作实例，不直接碰轨道；`anim_of(node)` 用于从骨骼节点反查它属于哪个实例。
+    let c = ctx.clone();
+    engine.register_fn("anims", move || -> Array {
+        c.scene
+            .borrow()
+            .anim_names()
+            .into_iter()
+            .map(|n| Dynamic::from(n))
+            .collect()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_count", move || -> i64 {
+        c.scene.borrow().animations.len() as i64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_of", move |node: &str| -> String {
+        let s = c.scene.borrow();
+        let Some(id) = s.find_id(node) else {
+            return String::new();
+        };
+        for inst in &s.animations {
+            if inst.bindings.iter().any(|b| b.node == id) {
+                return inst.name.clone();
+            }
+        }
+        String::new()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("play_anim", move |name: &str| -> bool {
+        c.scene.borrow_mut().play_anim(name)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("stop_anim", move |name: &str| -> bool {
+        c.scene.borrow_mut().stop_anim(name)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("set_anim_speed", move |name: &str, speed: f64| -> bool {
+        c.scene.borrow_mut().set_anim_speed(name, f32_of(speed))
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("set_anim_time", move |name: &str, t: f64| -> bool {
+        c.scene.borrow_mut().set_anim_time(name, f32_of(t))
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_time", move |name: &str| -> f64 {
+        c.scene
+            .borrow()
+            .anim_time(name)
+            .map(|t| t as f64)
+            .unwrap_or(0.0)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("set_anim_looping", move |name: &str, looping: bool| -> bool {
+        match c.scene.borrow_mut().anim_instance_mut(name) {
+            Some(inst) => {
+                inst.looping = looping;
+                true
+            }
+            None => false,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_playing", move |name: &str| -> bool {
+        c.scene
+            .borrow()
+            .anim_instance(name)
+            .map(|a| a.playing)
+            .unwrap_or(false)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_info", move |name: &str| -> String {
+        let s = c.scene.borrow();
+        match s.anim_instance(name) {
+            Some(a) => format!(
+                "{} / 片段 {} / {} 轨道 / 时长 {:.2}s / 当前 {:.2}s / 速度 {} / {} / {}",
+                a.name,
+                a.clip.name,
+                a.track_count(),
+                a.clip.duration,
+                a.sample_time(),
+                a.speed,
+                if a.looping { "循环" } else { "单次" },
+                if a.playing { "播放中" } else { "已暂停" }
+            ),
+            None => format!("没有名为 `{name}` 的动画实例"),
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_clip", move |name: &str| -> String {
+        c.scene
+            .borrow()
+            .anim_instance(name)
+            .map(|a| a.clip.name.clone())
+            .unwrap_or_default()
+    });
+
+    // 切片段：同一骨架的不同动作共用一个实例，避免重复 spawn 节点树。
+    let c = ctx.clone();
+    engine.register_fn("set_anim_clip", move |inst: &str, clip: &str| -> bool {
+        c.scene.borrow_mut().set_anim_clip(inst, clip)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_clips", move |prefix: &str| -> Array {
+        c.scene
+            .borrow()
+            .anim_clip_names(prefix)
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    });
+
     // ---------------- 相机 / 光照 / 环境 ----------------
     let c = ctx.clone();
     engine.register_fn(

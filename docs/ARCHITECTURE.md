@@ -866,6 +866,34 @@ camera(6, 4, 8, 0, 0, 0)
 physics_backend()
 ```
 
+### 8.7 动画驱动（P3）
+
+FBX 动画走「CPU 采样 → 写节点 `Transform` → 渲染层照常读世界矩阵」的路径，渲染层完全不知道动画存在：
+
+```
+ufbx AnimStack ──r3e-asset──▶ AnimClip{name,duration,tracks[]}
+                                   │ track: {node_index, path, T/R/S keys}
+                                   ▼
+app: spawn_asset_anim ──建骨架节点树（<资产>/<节点路径>）+ AnimInstance 绑轨道
+                                   │
+              每帧：脚本 on_update ──▶ scene.update_animations(dt) ──▶ 节点 local TRS
+                                   │                              （父子链 → 世界矩阵）
+                                   ▼
+                          renderer.prepare_instances（原样）
+```
+
+落点与不变量：
+
+| 事项 | 口径 |
+| --- | --- |
+| 片段注册表 | `Scene.anim_clips: HashMap<"<资产>/<片段>", Arc<AnimClip>>`，导入时登记资产内全部片段 |
+| 实例命名 | `AnimInstance.name = "<资产名>/<片段名>"`（初始片段），切片段后名字保持不变，当前片段看 `anim_info` |
+| 绑定 | `AnimBinding{node, node_index, path, track}`；切片段按 `node_index` 重绑，`path` 兜底 |
+| 时间推进 | 帧循环顺序为「脚本 `on_update` → `update_animations` → 物理」，脚本改的位姿会被本帧动画覆盖（这是有意的：动画是位姿来源，脚本管逻辑） |
+| 循环与停止 | `looping=true` 对 `duration` 取模；`false` 到 `duration` 停止并保留末帧 |
+| 场景重建 | `ScriptHost::rebuild_hook` 在场景 JSON 重放（热重载 / F5）后、脚本 `on_start` 前，由 app 重新 spawn 资产节点与动画实例 |
+| 启动顺序 | 场景 → 资产与动画实例 → 脚本，保证 `on_start` 里 `anims()` 非空 |
+
 ---
 
 ## 9. 端到端数据流
@@ -935,7 +963,7 @@ physics_backend()
 
 | 维度 | 现状 | 影响 |
 | --- | --- | --- |
-| 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 动画曲线与蒙皮权重暂未使用，见 [`ASSETS.md`](ASSETS.md)（P0–P2 已落地） |
+| 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 动画已到"节点级"（P3），蒙皮权重仍未使用，见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图 | 无金属度/粗糙度贴图、无法线贴图；材质参数已进 uniform，仅着色近似 |
 | 光照 | 1 方向光 + 环境光，Blinn-Phong | 无阴影、无点光、无全局光照 |
 | 后处理 | 无 | 无 bloom / tonemapping / FXAA |
@@ -943,7 +971,7 @@ physics_backend()
 | 剔除 | 无视锥剔除、无遮挡剔除 | 屏幕外的物件照样上传和绘制（GPU 会做顶点裁剪，但 CPU 仍付代价） |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
 | 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
-| 动画 | 只有脚本每帧改 transform | 无骨骼动画、无关键帧插值、无动画混合；FBX 节点级动画为 P3 目标（`rb.anim_stacks` 的采样口径已在探针阶段验证，尚未写入 `AssetEntry`） |
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3） | 有关键帧插值、速度/循环/片段切换，**无蒙皮**：网格挂在单节点上，四肢不会逐顶点形变；无动画混合与 cross-fade |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 | 无分屏、无阴影相机、无后视镜 |
 
@@ -976,7 +1004,7 @@ physics_backend()
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
 | 三 | 视锥剔除 + AABB | `mesh.rs` 加 `aabb()`，`prepare_instances` 加平面测试 | 无 |
 | 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
-| **五（下一步）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
+| **五（进行中：P0–P3 已完成）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
 | 六 | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
 | 七 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
 

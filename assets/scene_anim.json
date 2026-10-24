@@ -1,0 +1,33 @@
+{
+  "name": "r3e-anim-demo",
+  "background": [0.043, 0.049, 0.070, 1.0],
+  "camera": {
+    "position": [3.2, 2.0, 4.6],
+    "target": [0.0, 1.0, 0.0],
+    "fov": 50.0
+  },
+  "light": {
+    "direction": [-0.45, -0.9, -0.35],
+    "color": [1.0, 0.96, 0.90],
+    "intensity": 1.15,
+    "ambient": [0.16, 0.18, 0.23]
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [0, 0, 0],
+      "scale": [12, 1, 12],
+      "color": [0.20, 0.22, 0.27, 1.0],
+      "physics": { "body": "static", "collider": "box" }
+    }
+  ],
+  "assets": [
+    {
+      "path": "D:/steam/steamapps/common/AmazingCultivationSimulator/Mods/Example/Resources/Mod/Npc/Monster/tirger/tirger.fbx",
+      "position": [0.0, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0],
+      "anim": { "clip": "idle_loop", "speed": 1.0, "looping": true }
+    }
+  ]
+}
