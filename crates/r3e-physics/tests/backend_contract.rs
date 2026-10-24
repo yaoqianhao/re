@@ -157,10 +157,31 @@ fn capability_matrix_is_honest() {
     {
         let rapier = physics_of(PhysicsKind::Rapier);
         let caps = rapier.capabilities();
+        assert_eq!(caps, BackendCaps::CONTACT);
         assert!(caps.body_body_contacts && caps.rotational_dynamics && caps.collision_events);
-        assert!(caps.has("events") && caps.has("ccd") && caps.has("joints"));
+        assert!(caps.has("events") && !caps.has("ccd") && !caps.has("joints"));
         assert_eq!(rapier.kind(), PhysicsKind::Rapier);
         assert_eq!(rapier.backend_name(), "rapier");
+    }
+}
+
+/// 申报口径守卫：任何可用后端都不得申报门面还没暴露的能力位。
+///
+/// 关节与 CCD 在 `PhysicsBackend` 契约里既没有方法、脚本也没有入口，
+/// 一旦有后端报 `joints`/`ccd` = true，脚本 `physics_has_capability` 就会拿到
+/// 一个用不了的承诺（这是本次修复的原始 bug）。
+#[test]
+fn no_backend_overclaims_capabilities() {
+    for kind in PhysicsKind::ALL.iter().copied().filter(|k| k.is_available()) {
+        let caps = physics_of(kind).capabilities();
+        assert!(
+            caps.is_within_exposed(),
+            "{kind:?}: 申报了门面未暴露的能力位（joints/ccd），属于虚报"
+        );
+        assert!(
+            !caps.has("joints") && !caps.has("ccd"),
+            "{kind:?}: 门面没有关节/CCD 接口前不得申报这两项"
+        );
     }
 }
 

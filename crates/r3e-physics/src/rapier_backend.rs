@@ -8,7 +8,12 @@
 //! * 刚体之间互相碰撞、可堆叠
 //! * 旋转动力学（翻滚、角速度、力矩）
 //! * 碰撞事件（`collision_events` 能力位）
-//! * 支持 CCD（目前默认关闭，留给需要时按物体打开）
+//!
+//! 能力申报口径（见 `BackendCaps::EXPOSED`）：本后端**只申报门面真能用的能力**。
+//! Rapier 底层本来就有 CCD 与关节（`ccd_solver` / `impulse_joints` / `multibody_joints`
+//! 都已在求解器里接好），但 `PhysicsBackend` 契约里还没有打开 CCD 的开关，也没有
+//! 建关节的方法，脚本更没有任何入口——所以 `joints` / `ccd` 两位一律报 `false`。
+//! 等门面补齐接口后再把 `capabilities()` 提升到 `CONTACT` 之外的档位。
 //!
 //! 语义对齐点（与内置后端保持一致，避免换后端后脚本行为跳变）：
 //! * `BodyKind::Static` 完全不动，`Kinematic` 每帧从场景节点推位置，`Dynamic` 由物理积分
@@ -230,7 +235,8 @@ impl PhysicsBackend for RapierBackend {
     }
 
     fn capabilities(&self) -> BackendCaps {
-        BackendCaps::FULL
+        // 只报门面已暴露的三位；joints / ccd 见文件头「能力申报口径」。
+        BackendCaps::CONTACT
     }
 
     fn create_body(&mut self, node: NodeId, desc: BodyDesc) -> BodyHandle {

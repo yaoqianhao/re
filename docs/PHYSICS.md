@@ -166,6 +166,7 @@ else:
 | `physics_set_backend(name)` | bool | 运行时切后端，会**清空已有刚体**；`rapier` 未编译时返回 false |
 | `physics_capabilities()` | string | 当前后端能力位，逗号分隔（见 7.3） |
 | `physics_has_capability(name)` | bool | 单个能力位查询，脚本据此分支而非硬编码后端名 |
+| `physics_set_ccd(on)` | bool | **恒返回 false** 并打印「未支持」：契约里还没有 CCD 开关，能力位 `ccd=false` |
 | `physics_take_events()` | array | 取走本帧碰撞事件（每条形如 `started:2-3`），无 events 能力时恒为空数组 |
 | `physics_gravity()` | f64 | 取 `y` 分量 |
 | `physics_set_gravity(x,y,z)` | void | 设置重力向量 |
@@ -238,7 +239,7 @@ rapier = ["r3e-physics/rapier"]
 | 刚体 vs 刚体 | **无** | 有，可堆叠、可互相推挤 |
 | 旋转 / 翻滚 / 力矩 | 无 | 有，`sync_to_scene` 写回 `transform.rotation` |
 | 碰撞事件 | 无 | 有（`started` / `stopped`） |
-| CCD（高速防穿透） | 无 | 支持（当前默认关闭，按物体需要再开） |
+| CCD（高速防穿透） | 无 | 底层有能力，门面未暴露 → 能力位 `false`，高速物体仍可能穿透 |
 | 关节 | 无 | 底层支持，门面暂不暴露 |
 | 子步策略 | 1/60 切分，最多 6 步 | 同左，`MAX_SUBSTEPS = 6` 保持一致节奏 |
 | 静态 `plane` | 装饰用，碰撞由 `ground` 平面负责 | 同左（不做网格碰撞） |
@@ -259,9 +260,17 @@ rapier = ["r3e-physics/rapier"]
 | --- | --- | --- |
 | `body_body`（`body_body_contacts`） | false | true |
 | `rotation`（`rotational_dynamics`） | false | true |
-| `joints` | false | true |
-| `ccd` | false | true |
+| `joints` | false | **false** |
+| `ccd` | false | **false** |
 | `events`（`collision_events`） | false | true |
+
+申报口径：**能力位只报门面真能用到的能力**（`BackendCaps::EXPOSED`）。Rapier 底层确实有
+`ccd_solver` / `impulse_joints` / `multibody_joints`，但 `PhysicsBackend` 契约里既没有打开 CCD 的
+开关、也没有建关节的方法，脚本更没有任何入口——这种情况下报 `true` 就是虚报，脚本会拿着
+`physics_has_capability("joints") == true` 去调用并不存在的接口。所以这两位一律为 `false`，
+等门面补齐接口（trait 方法 + 脚本入口 + 契约测试）后再一起点亮。
+`BackendCaps::CONTACT` 是当前上限档，`BackendCaps::FULL`（含 joints/ccd）只是给未来预留的档位，
+`tests/backend_contract.rs::no_backend_overclaims_capabilities` 会拦住任何越界申报。
 
 脚本侧：`physics_capabilities()` 拿整串（全 false 时为 `none`），`physics_has_capability("events")` 查单个。
 **不要在脚本里判断 `physics_backend() == "rapier"`** —— 那会把「后端名」和「能力」绑死，将来接入第三个后端就又要改脚本。
@@ -300,6 +309,8 @@ dt → scripts.tick → camera input → sync_physics_bindings → physics.step 
 1. 新建 `crates/r3e-physics/src/xxx_backend.rs`，实现 `PhysicsBackend` 的必需方法：
    `name` / `create_body` / `destroy_body` / `apply_impulse` / `set_gravity` / `step` / `sync_to_scene` / `body_count`；
    若该引擎能出事件，再实现 `drain_events` 并在 `capabilities().collision_events` 如实置位。
+   **能力位只报门面真能用到的能力**：契约里没有对应方法、脚本没有入口的位（目前是 `joints` / `ccd`）
+   一律置 `false`，否则脚本会拿到用不了的承诺。
 2. `PhysicsKind` 增加分支 + `Physics::rebuild_backend` 指向新实例 + 在 `available_names` 里按 feature 暴露。
 3. `Cargo.toml` 加 optional 依赖与 feature，`r3e-app` 透传同名 feature。
 
@@ -326,7 +337,7 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 | 静止与休眠 | 盒子从 `y=12` 落到 `y=0.6999…`（half=0.7）后数值恒定不再抖动 |
 | 运行时开关 | `physics_set_enabled(false/true)`、`physics_set_backend("null"/"builtin")` 均生效 |
 | 默认构建 `physics_set_backend("rapier")` | 返回 false 并打印「未编译进本构建」，不静默降级 |
-| `cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai` | 日志「物理: 启用 / 后端 rapier / 能力 [body_body,rotation,joints,ccd,events]」，绑定 6 个场景刚体；脚本打印碰撞事件（如 `started:none-9` 砸地、`stopped:10-11` 方块分离），方块在平台上堆住不倒 |
+| `cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai` | 日志「物理: 启用 / 后端 rapier / 能力 [body_body,rotation,events]」，绑定 6 个场景刚体；脚本打印碰撞事件（如 `started:none-9` 砸地、`stopped:10-11` 方块分离），方块在平台上堆住不倒 |
 | `scripts/backend_switch_demo.rhai`（同场景，运行中切换） | 3s `physics_set_backend("builtin")` → true、刚体数归 0、能力变 `none`，引擎打印「物理后端 -> builtin」并重新绑定 6 个场景刚体；6s 切回 rapier 同样成功，碰撞事件恢复 |
 
 测试：`cargo test --workspace` 全绿；`cargo test -p r3e-physics --features rapier` 额外跑 Rapier 契约用例
@@ -347,8 +358,9 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 
 **`rapier`**
 
-- 关节（joint）底层支持但门面未暴露，脚本暂不能建约束。
-- CCD 位申报为 true，但默认全关，高速物体仍可能穿透（需按物体打开）。
+- 关节（joint）底层支持但门面未暴露，脚本暂不能建约束，能力位 `joints=false`。
+- CCD 底层有 `ccd_solver`，但契约里没有开关，能力位 `ccd=false`，高速物体仍可能穿透；脚本调
+  `physics_set_ccd()` 会拿到 `false` 与「未支持」日志。
 - 静态 `plane` 只是装饰，物理地面永远是 `ground` 定义的无限平面，没有地形 / 网格碰撞。
 
 **通用**

@@ -806,6 +806,13 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.physics.borrow().capabilities().has(key)
     });
 
+    // CCD 开关占位：契约里还没有这个方法（也就没有后端申报 `ccd` 能力位），
+    // 这里明确报「未支持」并返回 false，避免脚本以为设置成功。
+    engine.register_fn("physics_set_ccd", move |_on: bool| -> bool {
+        println!("[script] 当前物理契约未暴露 CCD，physics_set_ccd 未支持（能力位 ccd=false）");
+        false
+    });
+
     // 取走自上次调用以来的碰撞事件（形如 "started:7-none"）；不支持事件的后端返回空数组。
     let c = ctx.clone();
     engine.register_fn("physics_take_events", move || -> Array {

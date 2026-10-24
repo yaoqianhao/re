@@ -64,7 +64,31 @@ impl BackendCaps {
     /// 内置后端：只有「刚体 vs 地面」这一条接触规则，无旋转、无事件、无 CCD。
     pub const BASIC: Self = Self::NONE;
 
-    /// 完整能力（Rapier 这一档）。
+    /// 有真实约束求解器的档位：刚体互撞 + 旋转动力学 + 碰撞事件（Rapier 当前落在这一档）。
+    pub const CONTACT: Self = Self {
+        body_body_contacts: true,
+        rotational_dynamics: true,
+        joints: false,
+        ccd: false,
+        collision_events: true,
+    };
+
+    /// 门面（`PhysicsBackend` trait + 脚本 `physics_*`）当前真正暴露给上层的上限。
+    ///
+    /// 关节与 CCD 还没有 trait 方法与脚本入口，所以任何后端都**不得**申报它们，
+    /// 否则脚本通过 `physics_has_capability` 拿到的是一个无法使用的承诺。
+    pub const EXPOSED: Self = Self {
+        body_body_contacts: true,
+        rotational_dynamics: true,
+        joints: false,
+        ccd: false,
+        collision_events: true,
+    };
+
+    /// 完整能力，仅作「等门面补齐关节与 CCD 接口后」的目标档位预留。
+    ///
+    /// 当前没有任何后端可以返回它：申报能力必须以门面已暴露的接口为准，
+    /// 详见 [`BackendCaps::EXPOSED`]。
     pub const FULL: Self = Self {
         body_body_contacts: true,
         rotational_dynamics: true,
@@ -72,6 +96,11 @@ impl BackendCaps {
         ccd: true,
         collision_events: true,
     };
+
+    /// 申报是否落在门面已暴露的能力范围内（越界即虚报）。
+    pub fn is_within_exposed(&self) -> bool {
+        !self.joints && !self.ccd
+    }
 
     /// 能力键名（稳定标识，供日志与脚本消费）。
     pub fn enabled_keys(&self) -> Vec<&'static str> {
