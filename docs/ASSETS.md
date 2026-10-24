@@ -248,6 +248,36 @@ struct CachedAsset {
   路径大小写、`/` 与 `\` 不敏感（`AssetId::from_path` 内部归一化）。
 - 同一路径被多条声明或命令行同时引用 = 只解析一次、只上传一次 GPU 缓冲（命令行的声明排在最前）。
 
+### 5.1.1 光照阴影段（阶段三 D）
+
+```json
+"light": {
+  "direction": [-0.55, -0.62, -0.35],
+  "color": [1.0, 0.95, 0.88],
+  "intensity": 1.25,
+  "ambient": [0.12, 0.14, 0.18],
+  "shadow": {
+    "enabled": true,
+    "size": 2048,
+    "ortho_size": 0.0,
+    "bias": 0.0015,
+    "normal_bias": 1.5,
+    "distance": 2.0,
+    "strength": 1.0
+  }
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 关闭后整帧跳过阴影 pass，零开销 |
+| `size` | `2048` | 阴影贴图边长，夹到 64..8192；改值会重建纹理 |
+| `ortho_size` | `0` | 正交相机半宽；0 = 按场景包围球自适应 |
+| `bias` | `0.0015` | 深度比较偏移，抑制自阴影条纹 |
+| `normal_bias` | `1.5` | 沿法线的世界空间偏移（按纹素换算），斜射面抗 acne |
+| `distance` | `2.0` | 光源后退距离 = 包围球半径 × 该值 + 1 |
+| `strength` | `1.0` | 阴影强度 0..1 |
+
 ### 5.2 脚本 API（新增）
 
 | 函数 | 说明 |
@@ -690,3 +720,53 @@ C 阶段解决的是「切片段会跳」这个观感问题：`set_anim_clip` �
 - **additive 叠加**：无叠加层，呼吸、受击抖动这类增量动画只能当完整片段播。
 - **同步组与相位对齐**：跑→跑（变速）这类同族片段按各自时间轴采样，不做步频对齐，脚步可能错拍。
 - **状态机 DSL**：状态转移仍写在 Rhai 里，没有引擎侧的 transition 表或条件图。
+
+---
+
+## 17. 阶段三 D（方向光阴影贴图）实施现状
+
+### 17.1 落地的内容
+
+| 层 | 变更 |
+| --- | --- |
+| `r3e-core` | `ShadowSettings`（`enabled` / `size` / `ortho_size` / `bias` / `normal_bias` / `distance` / `strength`）挂在 `Light::shadow`；`sanitized()` 统一夹值；`Light::shadow_view_projection(center, radius)` 生成正交光源相机（右乘 + DirectX 深度 0..1，与主相机同套约定） |
+| 场景 JSON | `light` 段新增可选 `shadow` 对象，字段与结构体同名；不写则用默认值（**默认开启**，2048²，正交范围按场景包围球自适应） |
+| `r3e-render` | 新增 `Depth32Float` 阴影纹理 + `sampler_comparison`；`ShadowUniform`（矩阵 + 纹素 + bias + 启用位 + 法线偏移 + 强度）；阴影 pass 专用 `ShadowPassUniform` 与独立 pipeline layout；`prepare_shadow` 拟合相机并写 uniform；`render` 先跑深度 pass 再跑主 pass；`RenderStats.shadow_draws` |
+| 着色器 | `vs_shadow`（含 LBS 蒙皮，形变后的网格投出跟随姿势的影子）、`shadow_factor`（3×3 PCF + 法线偏移 + 越界按受光 + 强度 `mix`）；主片段里只让直接光被遮挡，环境光不衰减 |
+| `r3e-script` | `set_shadow(bool)` / `shadow_enabled() -> bool` / `set_shadow_strength(f64)` / `set_shadow_size(int)` / `set_shadow_extent(f64)` |
+| 演示 | `assets/scene_shadow.json`（地面 + 高柱 + 方块 + 球 + 圆柱，五物件四种网格）+ `scripts/shadow_demo.rhai`（光源绕 Y 轴扫动、强度呼吸、右键切阴影） |
+
+### 17.2 关键口径（后续不得回退）
+
+1. **阴影 pass 的布局必须与主 pass 分离**：主 pass 的 `group3` 里绑着阴影贴图本身，
+   若阴影 pass 复用同一个 pipeline layout，wgpu 会判定「同一张纹理在同 pass 内既写入又采样」而 panic
+   （实测报错：`A RenderPass ... has a texture that is both written and sampled`）。
+   因此阴影 pass 用独立 layout（group0/1/2 占位 + `group3@binding3 = ShadowPassUniform`）。
+2. **布局里每个 bind group 都必须在 pass 内被 `set_bind_group`**，哪怕着色器根本不引用它——
+   wgpu 校验的是 pipeline layout 而非着色器实际使用。踩坑记录：先是报 index 0 未绑，补完后报 index 3 未绑。
+3. **深度图不能原地 resize**：`size` 变化必须重建纹理 + 视图 + 比较采样器绑定组（`prepare_shadow` 内完成）。
+4. **只有直接光乘阴影系数**，环境光项不乘；否则阴影区变纯黑、暗部层次全丢。
+5. **三维场景取不到包围盒时不得让阴影失效**：`radius <= 1e-4` 时退回 1.0，宁可精度差也不出 NaN 矩阵。
+6. **越界一律按受光**（UV 出 [0,1] 或 `ndc.z > 1` 返回 1.0）：阴影正交范围小于视锥时，
+   视锥外的物件不能出现硬边黑块——表现为「影子边界被一刀切断」，比没有影子更难排查。
+7. **场景默认开启阴影**：语义变化要写进文档（`light.shadow` 缺省即开启），需要旧观感请显式 `enabled:false`。
+
+### 17.3 验收记录（2026-10-24）
+
+| 项 | 方法 | 结果 |
+| --- | --- | --- |
+| 编译 | `cargo build --workspace` | 通过，无 warning |
+| 单测 | `cargo test --workspace` | 43 passed / 0 failed（core 27、physics 12、render 3、asset 1） |
+| 阴影真的在画 | `--run-seconds 6` 起止探针 | `阴影通道：draw call 4 / 主通道实例 5`（5 物件按网格合批成 4 组） |
+| 关闭即归零 | 同一场景 `shadow.enabled = false` 跑一遍 | 探针 `draw call 0`，且截图确认地面无任何投影 |
+| 目视（开） | 窗口运行 9s 后截屏 | 柱子、方块、球在一致方向上有边缘清晰的投影 |
+| 目视（关） | 同上参数，仅关阴影 | 地面干净、无投影残留（纯光照渐变） |
+| 逐帧重渲 | `shadow_demo.rhai` 光源绕 Y 轴旋转 | 影子随时间扫动，说明光源矩阵每帧重算并写入 |
+
+### 17.4 尚未做（D 阶段范围外）
+
+- **点光 / 聚光阴影**：只支持单方向光；无立方体阴影、无聚光透视阴影。
+- **级联阴影（CSM）**：无远近分级，正交范围覆盖整个场景时远景纹素密度随场景尺寸下降。
+- **软阴影 / VSM / 接触硬化**：仅 3×3 PCF，无可变半影、无接触硬化。
+- **多光源与阴影图集**：单张深度图，一个方向光。
+- **半透明与自发光投影**：深度 pass 不区分材质，透明物件也会投实影。

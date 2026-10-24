@@ -457,6 +457,13 @@ impl EngineApp {
             stats.culled,
             stats.cull_unknown
         );
+        // 阴影探针：0 = 本帧没跑阴影通道（场景未开启 / 无可见物件），
+        // 否则是深度通道里的 draw call 数（按网格合批，故通常 ≤ 主通道实例数）。
+        log::info!(
+            "[{tag}] 阴影通道：draw call {} / 主通道实例 {}",
+            stats.shadow_draws,
+            stats.instances
+        );
     }
 
     /// 打印动画实例状态与骨架节点的世界位置。

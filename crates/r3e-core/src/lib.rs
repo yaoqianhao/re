@@ -20,13 +20,13 @@ pub use camera::Camera;
 pub use frustum::Frustum;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use input::{ButtonEdge, InputState, PadState};
-pub use light::Light;
+pub use light::{Light, ShadowSettings};
 pub use mesh::{
     MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex,
 };
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use scene::{
-    AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile,
+    AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
 };
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,

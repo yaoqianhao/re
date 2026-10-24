@@ -33,6 +33,25 @@ var s_base_color: sampler;
 @group(2) @binding(0)
 var<storage, read> u_joints: array<mat4x4<f32>>;
 
+// 阶段 D：方向光阴影贴图（正交深度图）。params:
+//   x = 1/size（纹素尺寸），y = 深度比较偏移，z = 是否启用（0/1），
+//   w = 法线方向偏移量（世界单位，已按纹素与世界尺寸换算）
+struct Shadow {
+    light_view_proj: mat4x4<f32>,
+    params: vec4<f32>,
+    // x = 阴影强度，yzw 保留
+    params2: vec4<f32>,
+};
+
+@group(3) @binding(0)
+var shadow_map: texture_depth_2d;
+
+@group(3) @binding(1)
+var shadow_sampler: sampler_comparison;
+
+@group(3) @binding(2)
+var<uniform> u_shadow: Shadow;
+
 struct VsIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -65,20 +84,19 @@ struct VsOut {
 // `M_i = X⁻¹ · B_now_i · B_rest_i⁻¹`（X 为实例模型矩阵，见 core::skin）。
 // 因此这里得到 `deformed = Σ w_i · M_i · p`，再乘 model 恰好回到世界空间；
 // 静止姿态下 M_i = X⁻¹，world = p，与 P3 的静态画面完全一致。
-fn skin_matrix(in: VsIn) -> mat4x4<f32> {
-    let base = in.joint_base;
+fn skin_matrix(base: u32, joints: vec4<u32>, weights: vec4<f32>) -> mat4x4<f32> {
     var m = mat4x4<f32>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
-    if in.weights.x > 0.0 {
-        m += u_joints[base + in.joints.x] * in.weights.x;
+    if weights.x > 0.0 {
+        m += u_joints[base + joints.x] * weights.x;
     }
-    if in.weights.y > 0.0 {
-        m += u_joints[base + in.joints.y] * in.weights.y;
+    if weights.y > 0.0 {
+        m += u_joints[base + joints.y] * weights.y;
     }
-    if in.weights.z > 0.0 {
-        m += u_joints[base + in.joints.z] * in.weights.z;
+    if weights.z > 0.0 {
+        m += u_joints[base + joints.z] * weights.z;
     }
-    if in.weights.w > 0.0 {
-        m += u_joints[base + in.joints.w] * in.weights.w;
+    if weights.w > 0.0 {
+        m += u_joints[base + joints.w] * weights.w;
     }
     return m;
 }
@@ -91,7 +109,7 @@ fn vs_main(in: VsIn) -> VsOut {
     var local_position = in.position;
     var local_normal = in.normal;
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
-        let skinned = skin_matrix(in);
+        let skinned = skin_matrix(in.joint_base, in.joints, in.weights);
         local_position = (skinned * vec4<f32>(in.position, 1.0)).xyz;
         // 蒙皮矩阵含非均匀缩放时法线要逆转置；这里用伴随矩阵近似，与下方模型矩阵一致
         local_normal = mat3x3<f32>(
@@ -119,6 +137,67 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
+// 阶段 D：阴影通道只写深度。顶点变换与主通道一致（含线性混合蒙皮），
+// 因此形变后的蒙皮网格投出的影子跟随姿势。
+struct ShadowVsIn {
+    @location(0) position: vec3<f32>,
+    @location(3) joints: vec4<u32>,
+    @location(4) weights: vec4<f32>,
+    @location(5) m0: vec4<f32>,
+    @location(6) m1: vec4<f32>,
+    @location(7) m2: vec4<f32>,
+    @location(8) m3: vec4<f32>,
+    @location(10) joint_base: u32,
+};
+
+// 深度 pass 专用：只含光源正交矩阵，故意不复用阴影贴图那一组绑定，
+// 否则同一张纹理会在本 pass 内「既被写入又被采样」。
+struct ShadowPass {
+    light_view_proj: mat4x4<f32>,
+    pad: vec4<f32>,
+};
+
+@group(3) @binding(3)
+var<uniform> u_shadow_pass: ShadowPass;
+
+@vertex
+fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
+    let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
+    var local_position = in.position;
+    if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
+        let skinned = skin_matrix(in.joint_base, in.joints, in.weights);
+        local_position = (skinned * vec4<f32>(in.position, 1.0)).xyz;
+    }
+    return u_shadow_pass.light_view_proj * (model * vec4<f32>(local_position, 1.0));
+}
+
+// 3×3 PCF：把深度图比较结果在邻域里平均，边缘得到两三个纹素的柔和过渡。
+// 阴影贴图按「世界 → 光源裁剪空间」定位，越界或超出远平面一律按「受光」处理，
+// 避免视锥外物件出现硬边黑块。
+fn shadow_factor(world_position: vec3<f32>, n: vec3<f32>) -> f32 {
+    if u_shadow.params.z < 0.5 {
+        return 1.0;
+    }
+    let texel = u_shadow.params.x;
+    let biased_world = world_position + n * u_shadow.params.w;
+    let clip = u_shadow.light_view_proj * vec4<f32>(biased_world, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0 {
+        return 1.0;
+    }
+    let cmp_depth = ndc.z - u_shadow.params.y;
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel;
+            sum = sum + textureSampleCompare(shadow_map, shadow_sampler, uv + offset, cmp_depth);
+        }
+    }
+    let visible = sum / 9.0;
+    return mix(1.0, visible, u_shadow.params2.x);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -143,9 +222,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ndl = max(dot(n, l), 0.0);
     let spec = pow(max(dot(n, h), 0.0), shininess) * spec_strength * step(0.001, ndl);
 
+    // 阶段 D：只有直接光（漫反射 + 高光）被遮挡，环境光不衰减，
+    // 否则影子会变成纯黑块、丢掉暗部层次。
+    let shadow = shadow_factor(in.world_position, n);
+
     let lit = albedo
-        * (u_camera.ambient.rgb + u_camera.light_color.rgb * u_camera.light_color.w * ndl)
-        + vec3<f32>(spec);
+        * (u_camera.ambient.rgb + u_camera.light_color.rgb * u_camera.light_color.w * ndl * shadow)
+        + vec3<f32>(spec * shadow);
 
     return vec4<f32>(lit, in.color.a * u_material.base_color.a);
 }

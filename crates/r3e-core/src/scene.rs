@@ -98,6 +98,29 @@ pub struct LightDesc {
     pub intensity: Option<f32>,
     #[serde(default)]
     pub ambient: Option<[f32; 3]>,
+    /// 阴影配置（阶段 D）；省略时沿用引擎默认（开启，2048²，自适应半宽）。
+    #[serde(default)]
+    pub shadow: Option<ShadowDesc>,
+}
+
+/// 场景文件里的阴影配置（阶段 D）。字段都可省略，省略即沿用默认值。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShadowDesc {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub size: Option<u32>,
+    /// 正交相机半宽；省略或 0 表示按场景包围球自适应
+    #[serde(default, alias = "ortho_size")]
+    pub ortho: Option<f32>,
+    #[serde(default)]
+    pub bias: Option<f32>,
+    #[serde(default, alias = "normalBias")]
+    pub normal_bias: Option<f32>,
+    #[serde(default)]
+    pub distance: Option<f32>,
+    #[serde(default)]
+    pub strength: Option<f32>,
 }
 
 /// 资产自带的动画播放声明（P3 起）。
@@ -741,6 +764,31 @@ impl Scene {
             }
             if let Some(a) = l.ambient {
                 scene.light.ambient = Vec3::from(a);
+            }
+            if let Some(sd) = l.shadow {
+                let mut s = scene.light.shadow;
+                if let Some(v) = sd.enabled {
+                    s.enabled = v;
+                }
+                if let Some(v) = sd.size {
+                    s.size = v;
+                }
+                if let Some(v) = sd.ortho {
+                    s.ortho_size = v;
+                }
+                if let Some(v) = sd.bias {
+                    s.bias = v;
+                }
+                if let Some(v) = sd.normal_bias {
+                    s.normal_bias = v;
+                }
+                if let Some(v) = sd.distance {
+                    s.distance = v;
+                }
+                if let Some(v) = sd.strength {
+                    s.strength = v;
+                }
+                scene.light.shadow = s.sanitized();
             }
         }
 

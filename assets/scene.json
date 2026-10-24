@@ -10,7 +10,16 @@
     "direction": [-0.45, -0.9, -0.35],
     "color": [1.0, 0.96, 0.90],
     "intensity": 1.15,
-    "ambient": [0.16, 0.18, 0.23]
+    "ambient": [0.16, 0.18, 0.23],
+    "shadow": {
+      "enabled": true,
+      "size": 2048,
+      "ortho_size": 0.0,
+      "bias": 0.0015,
+      "normal_bias": 1.5,
+      "distance": 2.0,
+      "strength": 0.9
+    }
   },
   "objects": [
     {

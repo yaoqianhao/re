@@ -1,0 +1,65 @@
+{
+  "name": "r3e-shadow-demo",
+  "background": [0.043, 0.049, 0.070, 1.0],
+  "camera": {
+    "position": [7.5, 5.5, 9.0],
+    "target": [0.0, 1.2, 0.0],
+    "fov": 55.0
+  },
+  "light": {
+    "direction": [-0.55, -0.62, -0.35],
+    "color": [1.0, 0.950, 0.880],
+    "intensity": 1.25,
+    "ambient": [0.12, 0.14, 0.18],
+    "shadow": {
+      "enabled": true,
+      "size": 2048,
+      "ortho_size": 0.0,
+      "bias": 0.0015,
+      "normal_bias": 1.5,
+      "distance": 2.0,
+      "strength": 0.95
+    }
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [0, 0, 0],
+      "scale": [24, 1, 24],
+      "color": [0.3, 0.31, 0.34, 1.0],
+      "physics": {
+        "body": "static",
+        "collider": "box"
+      }
+    },
+    {
+      "name": "tall_block",
+      "mesh": "cube",
+      "position": [-2.6, 2.0, 0.4],
+      "scale": [1.4, 4.0, 1.4],
+      "color": [0.92, 0.48, 0.26, 1.0]
+    },
+    {
+      "name": "mid_block",
+      "mesh": "cube",
+      "position": [1.6, 1.0, -1.2],
+      "scale": [1.8, 2.0, 1.8],
+      "color": [0.35, 0.72, 0.95, 1.0]
+    },
+    {
+      "name": "orb",
+      "mesh": "sphere",
+      "position": [2.8, 1.0, 2.2],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.45, 0.85, 0.62, 1.0]
+    },
+    {
+      "name": "pillar",
+      "mesh": "cylinder",
+      "position": [-0.4, 2.2, -3.4],
+      "scale": [0.9, 4.4, 0.9],
+      "color": [0.8, 0.82, 0.88, 1.0]
+    }
+  ]
+}

@@ -451,6 +451,37 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow_mut().light.ambient = Vec3::new(f32_of(r), f32_of(g), f32_of(b));
     });
 
+    // ---------------- 阶段 D：方向光阴影 ----------------
+    // 开关：set_shadow(true/false)。关闭后渲染器整帧跳过阴影通道，零开销。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow", move |on: bool| {
+        c.scene.borrow_mut().light.shadow.enabled = on;
+    });
+
+    // 只读查询：当前阴影是否开启（脚本里做开关叙事 / 打印状态用）。
+    let c = ctx.clone();
+    engine.register_fn("shadow_enabled", move || -> bool {
+        c.scene.borrow().light.shadow.enabled
+    });
+
+    // 阴影强度 0..1：1 = 完全遮挡，0 = 无阴影（保留光照）。用于淡入/调试。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_strength", move |strength: f64| {
+        c.scene.borrow_mut().light.shadow.strength = f32_of(strength);
+    });
+
+    // 阴影贴图分辨率（正方形），运行时改会触发贴图重建；非 2 的幂会被夹到 64..8192。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_size", move |size: i64| {
+        c.scene.borrow_mut().light.shadow.size = size.clamp(64, 8192) as u32;
+    });
+
+    // 正交相机半宽：0 = 按场景包围球自适应（默认），>0 = 固定覆盖范围（更清晰但更易裁切）。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_extent", move |half: f64| {
+        c.scene.borrow_mut().light.shadow.ortho_size = f32_of(half).max(0.0);
+    });
+
     let c = ctx.clone();
     engine.register_fn("set_background", move |r: f64, g: f64, b: f64| {
         c.scene.borrow_mut().background = Vec4::new(f32_of(r), f32_of(g), f32_of(b), 1.0);

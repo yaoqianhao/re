@@ -20,13 +20,15 @@ D:\rust3d-engine
 ├─ .cargo/config.toml         # 国内镜像 + MinGW 链接器（本机 gnu 工具链）
 ├─ assets/
 │   ├─ scene.json             # 场景描述（纯文本，可随时改）
-│   └─ scene_physics.json     # 物理演示场景（已启用物理）
+│   ├─ scene_physics.json     # 物理演示场景（已启用物理）
+│   └─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
 ├─ scripts/
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
 │   ├─ input_demo.rhai        # 鼠标 / 手柄演示
 │   ├─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
 │   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
-│   └─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
+│   ├─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
+│   └─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
 ├─ crates/
 │   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
@@ -200,6 +202,10 @@ ok
 | `set_light_color(r, g, b, intensity)` | 光色与强度 |
 | `set_ambient(r, g, b)` | 环境光 |
 | `set_background(r, g, b)` | 背景色 |
+| `set_shadow(on)` / `shadow_enabled()` | 阴影开关（关后整帧跳过阴影通道） |
+| `set_shadow_strength(v)` | 阴影强度 0..1 |
+| `set_shadow_size(px)` | 阴影贴图边长（64..8192，改值重建纹理） |
+| `set_shadow_extent(half)` | 正交半宽；0 = 按场景包围球自适应 |
 
 ### 时间 / 随机 / 输出
 
@@ -333,7 +339,8 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 
 ## 7. 已知边界
 
-- 单方向光 + 环境光，Blinn-Phong 着色；无阴影、无后处理。
+- 单方向光 + 环境光，Blinn-Phong 着色；方向光带单张正交阴影贴图（3×3 PCF，默认开启），无后处理。
+  阴影限制：无点光/聚光阴影、无级联、透明物件也投实心影。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
   骨骼蒙皮、交叉淡入与脚本状态机）；法线/粗糙度贴图、分层/叠加混合、morph target 尚未支持。
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
@@ -394,3 +401,32 @@ cargo run -- --scene assets/scene_anim.json --anim-clip run_loop --show-bones
 cargo run -- assets/scene_anim.json scripts/anim_state.rhai
 ```
 
+---
+
+## 9. 方向光阴影（阶段三 D 已完成）
+
+一个方向光 + 一张正交深度图（`Depth32Float`）+ 第二个 render pass。默认开启，2048²，
+正交范围按场景包围球自适应；3×3 PCF 软化边缘，法线偏移抑制自阴影条纹，强度可调。
+
+```bash
+# 阴影演示：光源绕 Y 轴扫动、强度呼吸、右键开关阴影
+cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai
+```
+
+场景里写死（`light` 段下的 `shadow` 对象，缺省即默认值）：
+
+```json
+"light": {
+  "direction": [-0.55, -0.62, -0.35],
+  "intensity": 1.25,
+  "shadow": { "enabled": true, "size": 2048, "strength": 1.0 }
+}
+```
+
+脚本侧四个开关：`set_shadow(on)` / `shadow_enabled()` / `set_shadow_strength(v)` /
+`set_shadow_size(px)` / `set_shadow_extent(half)`（半宽写 0 = 自适应）。
+
+验证手段：`--run-seconds N` 的起止探针会打出
+`阴影通道：draw call X / 主通道实例 Y`，关闭阴影时为 0——这是「阴影通道真的跑了」的数值证据。
+设计细节与踩坑（独立 pipeline layout、深度图不可原地 resize）见
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 5.7 与 [`docs/ASSETS.md`](docs/ASSETS.md) 17。

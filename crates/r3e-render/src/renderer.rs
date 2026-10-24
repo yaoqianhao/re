@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use r3e_core::mesh::{MaterialData, MeshData, MeshProvider, TextureImage, Vertex};
-use r3e_core::{Aabb, AssetId, Frustum, MeshRef, Scene};
+use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, Scene};
 use winit::window::Window;
 
 use crate::mesh::{builtin_mesh, vertex_layout, InstanceRaw};
@@ -67,6 +67,52 @@ impl Default for CameraUniform {
             light_dir: [0.0, -1.0, 0.0, 0.0],
             light_color: [1.0, 1.0, 1.0, 1.0],
             ambient: [0.1, 0.1, 0.1, 1.0],
+        }
+    }
+}
+
+/// 阶段 D：阴影通道的 uniform —— 光源正交矩阵 + 采样参数。
+///
+/// `params`：x = 1/size（纹素尺寸），y = 深度比较偏移，z = 是否启用（0/1），
+/// w = 法线方向偏移（世界单位，已按纹素与世界尺寸换算）。
+/// `params2`：x = 阴影强度。
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ShadowUniform {
+    light_view_proj: [[f32; 4]; 4],
+    params: [f32; 4],
+    params2: [f32; 4],
+}
+
+/// 阴影通道（深度 pass）专用的最小 uniform：只含光源正交矩阵。
+///
+/// 为什么不复用 `ShadowUniform`：深度 pass 正在往阴影贴图里写像素，
+/// 若它的顶点着色器还绑定同一组的「阴影贴图 + 比较采样器」，wgpu 会判定
+/// 同一张纹理既被采样又被写入而拒绝（逻辑上也是循环依赖）。因此拆成
+/// 独立 bind group：group(3) binding(3) 只放矩阵，主通道用 binding(0..=2)。
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ShadowPassUniform {
+    light_view_proj: [[f32; 4]; 4],
+    /// 凑满 16 字节对齐（mat4 已是 64B，这里只是显式占位，便于将来扩展）。
+    pad: [f32; 4],
+}
+
+impl Default for ShadowPassUniform {
+    fn default() -> Self {
+        Self {
+            light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            pad: [0.0; 4],
+        }
+    }
+}
+
+impl Default for ShadowUniform {
+    fn default() -> Self {
+        Self {
+            light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            params: [0.0, 0.0, 0.0, 0.0],
+            params2: [1.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -245,6 +291,8 @@ pub struct RenderStats {
     pub culled: u32,
     /// 想剔除但拿不到包围盒、只能照画的实例数。持续非零说明资产层没喂 AABB。
     pub cull_unknown: u32,
+    /// 本帧阴影通道提交的 draw call 数（阶段 D）。0 表示阴影关闭或贴图未就绪。
+    pub shadow_draws: u32,
     pub frame_index: u64,
 }
 
@@ -268,6 +316,18 @@ pub struct Renderer {
     joint_bind_group: wgpu::BindGroup,
     /// 每帧收集的关节矩阵，扁平存 16 个 f32 / 矩阵，直接 memcpy 上传。
     joint_scratch: Vec<[f32; 16]>,
+    /// 阶段 D：方向光阴影贴图（深度图 + 比较采样器 + 光源正交矩阵 uniform）。
+    shadow_size: u32,
+    _shadow_texture: wgpu::Texture,
+    shadow_view: wgpu::TextureView,
+    shadow_sampler: wgpu::Sampler,
+    shadow_layout: wgpu::BindGroupLayout,
+    shadow_bind_group: wgpu::BindGroup,
+    shadow_uniform: wgpu::Buffer,
+    /// 阴影通道专用：只含光源正交矩阵的 uniform 与绑定组（见 `ShadowPassUniform`）。
+    shadow_pass_bind_group: wgpu::BindGroup,
+    shadow_pass_uniform: wgpu::Buffer,
+    shadow_pipeline: wgpu::RenderPipeline,
     stats: RenderStats,
 }
 
@@ -384,12 +444,130 @@ impl Renderer {
             }],
         });
 
+        // 阶段 D：group(3) —— 方向光阴影贴图。布局与纹理在管线之前建好，
+        // 尺寸按场景配置在 render() 里按需重建（改 `shadow.size` 不必重建整机）。
+        let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("r3e-shadow-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // 深度 pass 的独立 group(3)：只有 binding(3) 一个矩阵 uniform，
+        // 与主通道采样的 binding(0..=2) 完全分开，避免「写的同时采样」。
+        let shadow_pass_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("r3e-shadow-pass-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let shadow_pass_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-shadow-pass-ubo"),
+            size: std::mem::size_of::<ShadowPassUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_pass_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("r3e-shadow-pass-bg"),
+            layout: &shadow_pass_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 3,
+                resource: shadow_pass_uniform.as_entire_binding(),
+            }],
+        });
+
+        let shadow_size = r3e_core::ShadowSettings::default().size;
+        let (shadow_texture, shadow_view) = create_shadow_target(&device, shadow_size);
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("r3e-shadow-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            // 比较采样：一次采样即完成硬件 PCF 的「小于等于」深度测试
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let shadow_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-shadow-ubo"),
+            size: std::mem::size_of::<ShadowUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("r3e-shadow-bg"),
+            layout: &shadow_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shadow_uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("r3e-pipeline-layout"),
             bind_group_layouts: &[
                 Some(&camera_layout),
                 Some(&material_cache.layout),
                 Some(&joint_layout),
+                Some(&shadow_layout),
+            ],
+            immediate_size: 0,
+        });
+
+        // 阴影通道专用布局：group(3) 换成 `shadow_pass_layout`（只有矩阵 uniform），
+        // 不含「阴影贴图 + 比较采样器」——深度 pass 不能一边写一边采样同一张图。
+        // 注意 wgpu 要求布局里每个组都被 set，所以 0/1/2 仍要在 pass 里逐个绑定。
+        let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("r3e-shadow-pipeline-layout"),
+            bind_group_layouts: &[
+                Some(&camera_layout),
+                Some(&material_cache.layout),
+                Some(&joint_layout),
+                Some(&shadow_pass_layout),
             ],
             immediate_size: 0,
         });
@@ -433,6 +611,42 @@ impl Renderer {
 
         let depth_view = create_depth_view(&device, width, height);
 
+        // 阶段 D：阴影通道管线 —— 无颜色目标，只写深度。
+        // 顶点布局与主通道完全一致（同一份实例缓冲直接复用），
+        // 因此阴影通道不需要任何额外 CPU 侧顶点处理。
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("r3e-shadow-pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_layout()), Some(InstanceRaw::layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                // 斜率相关偏移：斜射面最容易出 acne，硬件斜率偏移比纯常数偏移稳
+                bias: wgpu::DepthBiasState {
+                    constant: 1,
+                    slope_scale: 1.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: None,
+            multiview_mask: None,
+            cache: None,
+        });
+
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("r3e-instance-buffer"),
             size: INITIAL_INSTANCE_CAPACITY * std::mem::size_of::<InstanceRaw>() as u64,
@@ -457,6 +671,16 @@ impl Renderer {
             joint_buffer,
             joint_bind_group,
             joint_scratch: Vec::new(),
+            shadow_size,
+            _shadow_texture: shadow_texture,
+            shadow_view,
+            shadow_sampler,
+            shadow_layout,
+            shadow_bind_group,
+            shadow_uniform: shadow_uniform_buffer,
+            shadow_pass_bind_group,
+            shadow_pass_uniform,
+            shadow_pipeline,
             stats: RenderStats::default(),
         })
     }
@@ -489,8 +713,10 @@ impl Renderer {
 
     /// 绘制一帧。场景的任何变化都会在下一帧生效，不需要重建管线。
     pub fn render(&mut self, scene: &Scene) {
-        let (groups, culled, cull_unknown) = self.prepare_instances(scene);
+        let (groups, culled, cull_unknown, bounds) = self.prepare_instances(scene);
         self.prepare_materials(&groups);
+        // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
+        let shadow_on = self.prepare_shadow(&groups, bounds, scene.light);
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -519,6 +745,61 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("r3e-encoder"),
             });
+
+        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let mut shadow_draws = 0u32;
+
+        // 阶段 D：阴影通道。只画进深度图，不触碰颜色附件。
+        if shadow_on {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("r3e-shadow-pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            pass.set_pipeline(&self.shadow_pipeline);
+            // 阴影管线只真正用到 group(2)（蒙皮关节矩阵），但 wgpu 要求管线布局里
+            // 低索引的绑定组必须逐个 set（否则报 "expects a BindGroup at index 0"），
+            // 所以这里顺带绑上相机与默认材质 —— 顶点着色器不采样它们，纯占位。
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            if let Some(default_material) = self.material_cache.get(MaterialKey::Default) {
+                pass.set_bind_group(1, &default_material.bind_group, &[]);
+            }
+            pass.set_bind_group(2, &self.joint_bind_group, &[]);
+            // group(3) 这里是「只含光源矩阵」的阴影通道专用绑定组，
+            // 不是主通道那张比较采样器 —— 深度图此刻正被本 pass 写入。
+            pass.set_bind_group(3, &self.shadow_pass_bind_group, &[]);
+            for (key, range) in &groups {
+                let Some(gpu) = self.mesh_cache.get(*key) else {
+                    continue;
+                };
+                pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
+                pass.set_vertex_buffer(
+                    1,
+                    self.instance_buffer
+                        .slice(range.start as u64 * stride..range.end as u64 * stride),
+                );
+                pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for part in &gpu.parts {
+                    pass.draw_indexed(
+                        part.first_index..part.first_index + part.index_count,
+                        0,
+                        0..1,
+                    );
+                    shadow_draws += 1;
+                }
+            }
+        }
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -553,9 +834,10 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.joint_bind_group, &[]);
+            // 阶段 D：主通道采样上一步渲好的阴影贴图
+            pass.set_bind_group(3, &self.shadow_bind_group, &[]);
             let mut draw_calls = 0u32;
             let mut instances = 0u32;
-            let stride = std::mem::size_of::<InstanceRaw>() as u64;
 
             for (key, range) in &groups {
                 let Some(gpu) = self.mesh_cache.get(*key) else {
@@ -594,12 +876,96 @@ impl Renderer {
                 instances,
                 culled,
                 cull_unknown,
+                shadow_draws,
                 frame_index: scene.frame,
             };
         }
 
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
+    }
+
+    /// 阶段 D：把阴影贴图尺寸对齐场景配置；返回本帧是否要跑阴影通道。
+    fn prepare_shadow(
+        &mut self,
+        groups: &[(MeshRef, std::ops::Range<u32>)],
+        bounds: Option<Aabb>,
+        light: Light,
+    ) -> bool {
+        let shadow = light.shadow.sanitized();
+
+        // 尺寸变化就重建纹理 + bind group（贴图句柄必须换新，不能原地 resize）
+        if shadow.size != self.shadow_size {
+            self.resize_shadow(shadow.size);
+        }
+
+        // 拟合光源正交相机：用全部可见物件的包围盒中心 + 半径，留 5% 余量防边缘裁切
+        let (center, radius) = match bounds {
+            Some(b) if !b.is_empty() => {
+                let center = b.center();
+                let radius = (b.size().length() * 0.5).max(0.25);
+                (center, radius)
+            }
+            // 空场景也要给出合法矩阵，否则 uniform 里是恒等矩阵、采样会乱
+            _ => (Vec3::ZERO, 8.0),
+        };
+        let view_proj = light.shadow_view_projection(center, radius * 1.05);
+        // ortho_size = 0 表示按场景包围球自适应，否则用用户给定值（仍是半宽）
+        let half = if shadow.ortho_size > 0.0 { shadow.ortho_size } else { radius * 1.05 };
+        let texel_world = (2.0 * half / shadow.size as f32).max(1e-5);
+
+        let uniform = ShadowUniform {
+            light_view_proj: view_proj.to_cols_array_2d(),
+            params: [
+                1.0 / shadow.size as f32,
+                shadow.bias,
+                if shadow.enabled { 1.0 } else { 0.0 },
+                shadow.normal_bias * texel_world,
+            ],
+            params2: [shadow.strength, 0.0, 0.0, 0.0],
+        };
+        self.queue
+            .write_buffer(&self.shadow_uniform, 0, bytemuck::bytes_of(&uniform));
+
+        // 深度 pass 只认这一份矩阵（不碰会被主通道采样的 ShadowUniform）
+        let pass_uniform = ShadowPassUniform {
+            light_view_proj: view_proj.to_cols_array_2d(),
+            pad: [0.0; 4],
+        };
+        self.queue.write_buffer(
+            &self.shadow_pass_uniform,
+            0,
+            bytemuck::bytes_of(&pass_uniform),
+        );
+
+        shadow.enabled && !groups.is_empty()
+    }
+
+    /// 重建阴影深度图与对应的 bind group（改 `shadow.size` 时触发）。
+    fn resize_shadow(&mut self, size: u32) {
+        let (texture, view) = create_shadow_target(&self.device, size);
+        self.shadow_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("r3e-shadow-bg"),
+            layout: &self.shadow_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.shadow_uniform.as_entire_binding(),
+                },
+            ],
+        });
+        self.shadow_view = view;
+        self._shadow_texture = texture;
+        self.shadow_size = size;
+        log::info!("阴影贴图重建: {size}x{size}");
     }
 
     /// 注入资产库（由应用层加载 FBX 后调用）。渲染层本身不认识文件 IO。
@@ -640,11 +1006,18 @@ impl Renderer {
 
     /// 把场景里可见的物件整理成按 `MeshRef` 分组的实例区间，并上传到 GPU。
     ///
-    /// 返回值附带本帧的剔除统计 `(绘制分组, 剔除数, 缺包围盒数)`。
+    /// 返回值附带本帧的剔除统计
+    /// `(绘制分组, 剔除数, 缺包围盒数, 全部可见物件的世界包围盒)`；
+    /// 最后一项供阴影通道生成光源正交相机（阶段 D）。
     fn prepare_instances(
         &mut self,
         scene: &Scene,
-    ) -> (Vec<(MeshRef, std::ops::Range<u32>)>, u32, u32) {
+    ) -> (
+        Vec<(MeshRef, std::ops::Range<u32>)>,
+        u32,
+        u32,
+        Option<Aabb>,
+    ) {
         // 更新相机 / 光照 uniform
         let mut camera = scene.camera;
         camera.aspect = self.aspect();
@@ -689,6 +1062,10 @@ impl Renderer {
         let frustum = Frustum::from_view_projection(&camera.view_projection());
         let mut culled = 0u32;
         let mut cull_unknown = 0u32;
+        // 阶段 D：把「所有可见（含被视锥剔除）物件」的包围盒并起来，
+        // 交给阴影通道拟合正交相机 —— 阴影要考虑镜头外的遮挡物，
+        // 所以这里统计在剔除判断之前。
+        let mut scene_bounds: Option<Aabb> = None;
 
         for key in &keys {
             let start = all.len() as u32;
@@ -705,6 +1082,10 @@ impl Renderer {
                         } else {
                             world
                         };
+                        scene_bounds = Some(match scene_bounds {
+                            Some(b) => b.union(&world),
+                            None => world,
+                        });
                         if !frustum.intersects_aabb(&world) {
                             culled += 1;
                             continue;
@@ -769,7 +1150,7 @@ impl Renderer {
         }
 
         if all.is_empty() {
-            return (groups, culled, cull_unknown);
+            return (groups, culled, cull_unknown, scene_bounds);
         }
 
         // 容量不足则扩容（按 2 倍增长，避免每帧重建）
@@ -790,7 +1171,7 @@ impl Renderer {
         self.queue
             .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all));
 
-        (groups, culled, cull_unknown)
+        (groups, culled, cull_unknown, scene_bounds)
     }
 }
 
@@ -1109,6 +1490,27 @@ fn upload_texture(
         size,
     );
     Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
+/// 阶段 D：创建正方形阴影深度图（可作渲染目标，也可被比较采样）。
+fn create_shadow_target(device: &wgpu::Device, size: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = size.max(1);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-shadow-map"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

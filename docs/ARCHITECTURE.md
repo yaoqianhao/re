@@ -262,14 +262,31 @@ pub struct Camera {
 
 ```rust
 pub struct Light {
-    pub direction: Vec3,  // 默认归一化的 (-0.45, -0.8, -0.4)，即光线传播方向
-    pub color: Vec3,      // 默认 (1.0, 0.97, 0.92) 略偏暖
-    pub intensity: f32,   // 默认 1.0
-    pub ambient: Vec3,    // 默认 (0.18, 0.19, 0.23) 略偏冷
+    pub direction: Vec3,       // 默认归一化的 (-0.45, -0.8, -0.4)，即光线传播方向
+    pub color: Vec3,           // 默认 (1.0, 0.97, 0.92) 略偏暖
+    pub intensity: f32,        // 默认 1.0
+    pub ambient: Vec3,         // 默认 (0.18, 0.19, 0.23) 略偏冷
+    pub shadow: ShadowSettings // 阶段 D：方向光阴影配置（见 5.7）
+}
+
+pub struct ShadowSettings {
+    pub enabled: bool,      // 默认 true
+    pub size: u32,          // 阴影贴图边长，默认 2048，夹到 [64, 8192]
+    pub ortho_size: f32,    // 正交相机半宽，0 = 按场景包围球自适应（默认 0）
+    pub bias: f32,          // 深度偏移，默认 0.0015，夹到 [0, 0.05]
+    pub normal_bias: f32,   // 法线方向偏移（纹素），默认 1.5，夹到 [0, 8]
+    pub distance: f32,      // 光源后退距离倍数，默认 2.0，夹到 [0.05, 16]
+    pub strength: f32,      // 阴影强度 0..1，默认 1.0
 }
 ```
 
-只有一个平行光 + 环境光，没有点光、聚光、阴影。`direction` 的语义是**光线行进方向**（从光源射出），不是"指向光源的方向"——着色器里取 `normalize(-light_dir)` 得到表面指向光源的向量。
+只有一个平行光 + 环境光，没有点光、聚光；阴影只做「该方向光的单张正交深度图」，无级联/无心点光立方阴影。
+`direction` 的语义是**光线行进方向**（从光源射出），不是"指向光源的方向"——着色器里取 `normalize(-light_dir)` 得到表面指向光源的向量。
+
+`ShadowSettings::sanitized()` 负责把越界值夹回可用区间：这份数据会被场景 JSON、脚本 API、CLI 三处写入，
+任何一处传 NaN / 负数 / 超大分辨率都不能让渲染器 panic 或悄悄失效。阴影相机的拟合逻辑在
+`Light::shadow_view_projection(center, radius)`：光源挂到场景包围球外，正交半宽取 `ortho_size` 或 `radius × 1.05`，
+因此光照换向时不需要重建任何包围盒数据。
 
 ---
 
@@ -353,21 +370,32 @@ render(scene):
   │   ├─ 按固定顺序 [Cube, Sphere, Plane, Cylinder] 遍历 scene.iter()
   │   │     └─ 跳过 !visible；用 node.world 与 node.color 组装 InstanceRaw
   │   │        每组记录 Range<u32>（连续区间）
+  │   ├─ 顺带 union 出可见物件的世界包围盒，返回给阴影通道拟合光源相机
   │   ├─ 惰性上传尚未创建的网格（首次用某网格才传）
   │   ├─ 实例数超过容量 → 2 倍扩容重建 buffer
   │   └─ write_buffer 上传全部实例
+  ├─ prepare_shadow(groups, bounds, light)  → bool 是否需要跑阴影通道
+  │   ├─ shadow.size 变化 → 重建深度纹理 + 采样器 bind group（贴图句柄不能原地 resize）
+  │   ├─ Light::shadow_view_projection(场景包围球) → 光源正交矩阵
+  │   ├─ 写 ShadowUniform（矩阵 + 纹素尺寸 + bias + 启用位 + 法线偏移 + 强度）
+  │   └─ 写 ShadowPassUniform（只有矩阵，见 5.7 的绑定组切分原因）
   ├─ surface.get_current_texture()
   │   ├─ Success    → 直接用
   │   ├─ Suboptimal → 重新 configure 后用
   │   ├─ Outdated / Lost → 重新 configure 并 return（跳过本帧）
   │   └─ 其它        → 记 debug 日志并 return
-  ├─ 开 RenderPass：clear 颜色 = scene.background，clear 深度 = 1.0
+  ├─ [阴影通道] 开 RenderPass：无颜色附件，clear 深度 = 1.0（format = Depth32Float）
+  │     set_pipeline(shadow_pipeline, vs_shadow 只写深度)
+  │     set_bind_group(0..=2)  ← wgpu 要求布局里每个组都必须绑，哪怕着色器不用
+  │     set_bind_group(3) = shadow_pass_bind_group（只含光源矩阵）
+  │     for (mesh, range) in groups: draw_indexed(...)   → stats.shadow_draws++
+  ├─ [主通道] 开 RenderPass：clear 颜色 = scene.background，clear 深度 = 1.0
   ├─ for (kind, range) in groups:
   │     set_vertex_buffer(0, 该网格顶点)
   │     set_vertex_buffer(1, instance_buffer[range])
   │     set_index_buffer(Uint32)
   │     draw_indexed(index_count, 0, 0..1)     ← 1 次 call 画完该网格全部实例
-  ├─ 统计 RenderStats { draw_calls, instances, frame_index }
+  ├─ 统计 RenderStats { draw_calls, instances, shadow_draws, culled, cull_unknown, frame_index }
   ├─ queue.submit + queue.present
 ```
 
@@ -425,10 +453,65 @@ color = base.rgb * (ambient + light_color * intensity * ndl) + spec
 ### 5.6 RenderStats 与 HUD
 
 ```rust
-pub struct RenderStats { pub draw_calls: u32, pub instances: u32, pub frame_index: u64 }
+pub struct RenderStats {
+    pub draw_calls: u32,   // 主通道 draw call（按网格合批）
+    pub instances: u32,    // 主通道绘制实例数
+    pub shadow_draws: u32, // 阴影通道 draw call；0 = 本帧跳过了阴影通道
+    pub culled: u32,       // 被视锥剔除的实例
+    pub cull_unknown: u32, // 缺包围盒而 fail-open 放行的实例
+    pub frame_index: u64,
+}
 ```
 
+`--run-seconds` 的起止探针会把 `shadow_draws` 与主通道实例数一起打出来，
+是「阴影通道真的跑了」的数值证据（场景关闭阴影时为 0）。
+
 `app.rs` 每帧把统计写进窗口标题：`r3e — Rust 3D Engine | N 物件 / M draw / X.X ms | 运行中`。这是当前唯一的运行时观测手段（无 GUI overlay）。
+
+### 5.7 方向光阴影贴图（阶段三 D）
+
+单方向光的正交阴影，一张 `Depth32Float` 深度图 + 第二个 render pass。
+
+**两趟 pass 的顺序不能反**：先渲染阴影通道（只写深度、无颜色附件），再渲染主通道。
+主通道在片元着色器里采样这张深度图做遮挡判定，因此两张 pass 之间有隐式写后读依赖——
+wgpu 依靠同一个 encoder 内的顺序与资源状态自动插入 barrier，无需手动同步。
+
+**为什么单独拆一份 `ShadowPassUniform`（`group3@binding3`）**
+
+最初的实现是让 `vs_shadow` 直接复用主通道的 `u_shadow`（`group3@binding2`），结果 wgpu 报
+「纹理在同一 pass 内既被写入又被采样」：因为 `group3@binding0` 绑的就是这张深度图本身，
+即使顶点着色器根本没读它，只要绑定组里有、且该组在 pass 里被 `set_bind_group`，就构成读写冲突。
+
+修法是给阴影 pass 建**独立的 pipeline layout**（只有 group0 相机 / group1 材质 / group2 关节），
+再加一个**只含光源矩阵**的 uniform（`group3@binding3`），阴影 pass 建 `set_bind_group(3, shadow_pass_bind_group)`。
+两条硬约束：
+
+1. 阴影 pipeline layout 里每个 group 都必须在 pass 内被 `set_bind_group`（wgpu 校验的是布局而非着色器实际引用），
+   所以即使 `vs_shadow` 不用材质与关节，`0/1/2` 也必须绑占位组。
+2. 深度图句柄不能原地 resize。`size` 变化时重建纹理 + 视图 + 比较采样器绑定组，
+   句柄替换发生在 `prepare_shadow` 里，避免在 pass 中途换资源。
+
+**遮挡计算（`shadow_factor`）**
+
+| 步骤 | 做法 |
+| --- | --- |
+| 世界 → 光源裁剪 | `u_shadow.light_view_proj * world_position`，正交投影故 `w = 1`，`ndc.z` 直接就是 0..1 深度 |
+| UV | `(x*0.5+0.5, 0.5-y*0.5)`（Y 翻转，与贴图采样口径一致） |
+| 越界 | UV 出 [0,1] 或 `ndc.z > 1` 一律返回 1.0（受光），防止视锥外的物件出现硬边黑块 |
+| 比较 | `cmp_depth = ndc.z - bias`，用 `textureSampleCompare` + `sampler_comparison`，硬件做比较采样 |
+| 滤波 | 3×3 PCF（9 次比较平均），给出两三个纹素宽的柔和边缘 |
+| 偏移 | 先按法线方向推 `normal_bias` 个世界单位再投影（`params.w`），斜射面抗 acne 且比纯深度偏移更少「影子漂移」 |
+| 强度 | `mix(1.0, visible, strength)`，让强度可调而不是硬开关 |
+
+**只有直接光被遮挡**：片元着色器里 `diffuse * ndl * shadow` 与 `spec * shadow`，环境光项不乘。
+否则阴影区会掉到纯黑，暗部层次全丢（这一条是视觉验收时最先看出来的问题）。
+
+**渲染统计**：`stats.shadow_draws` 记录阴影通道的 draw call 数。因为实例按网格合批，
+这个数通常小于主通道实例数（例如演示场景 5 个物件、4 种网格 → 4 次 draw）；关闭阴影时为 0。
+`app.rs` 的起止探针会同时打印两者，作为「阴影真的跑了 / 真的关了」的数值证据。
+
+**代价**：阴影通道的顶点开销 = 主通道的顶点开销（同一批网格再画一遍），片元只写深度、无着色；
+主通道每片元多 9 次比较采样。2048² 贴图在集显上实测仍为满帧，主要成本来自 PCF 采样而非贴图带宽。
 
 ---
 
@@ -664,6 +747,10 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_light_color(r, g, b, intensity)` | 光色 + 强度 |
 | `set_ambient(r, g, b)` | 环境光 |
 | `set_background(r, g, b)` | 背景色 |
+| `set_shadow(on)` / `shadow_enabled()` | 阴影总开关（关闭后整帧跳过阴影通道，零开销） |
+| `set_shadow_strength(v)` | 阴影强度 0..1，`mix(1.0, visible, v)` |
+| `set_shadow_size(px)` | 阴影贴图边长，夹到 64..8192，变化时重建深度纹理 |
+| `set_shadow_extent(half)` | 正交半宽，0 = 按场景包围球自适应 |
 
 **时钟与随机**
 
@@ -1058,7 +1145,7 @@ update_animations(dt)
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图 | 无金属度/粗糙度贴图、无法线贴图；材质参数已进 uniform，仅着色近似 |
-| 光照 | 1 方向光 + 环境光，Blinn-Phong | 无阴影、无点光、无全局光照 |
+| 光照 | 1 方向光 + 环境光，Blinn-Phong；方向光带单张正交阴影贴图（阶段三 D） | 无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
 | 后处理 | 无 | 无 bloom / tonemapping / FXAA |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
@@ -1066,7 +1153,7 @@ update_animations(dt)
 | 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；**无上半身 mask/分层混合**、无 additive、无 morph target |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
-| 多相机 | 单相机 | 无分屏、无阴影相机、无后视镜 |
+| 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 
 ### 11.2 性能特征
 
@@ -1079,6 +1166,9 @@ update_animations(dt)
 - **世界矩阵求解**：`update_world_transforms` 带记忆化缓存 + 深度上限，深层次结构下仍是 O(n)。
 - **实测规模**：数千物件的群体动画（`example_swarm.rhai`）在 RTX 5060 Laptop / Vulkan 下运行正常，帧时间 1 ms 量级。
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配。
+- **阴影通道成本**：顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
+  主通道每片元多 9 次 `textureSampleCompare`（3×3 PCF）。2048² 贴图实测仍满帧，
+  瓶颈在 PCF 采样而非贴图带宽。关闭阴影后该 pass 整段跳过，`draw_calls` 与 `shadow_draws` 同时归零。
 
 ### 11.3 可加固点（按收益排序）
 
@@ -1099,7 +1189,7 @@ update_animations(dt)
 | 一 | Rapier 物理后端（替换内置实现） | 新增 `r3e-physics/src/rapier_backend.rs` + 接上 `PhysicsKind::Rapier` 分支 | 无（契约与开关已就位） |
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
 | **三（已完成：A、C）** | **A 视锥剔除 + AABB**：`MeshProvider::aabb()` 打通到 `MeshRef::Asset`，`prepare_instances` 6 平面测试，物理碰撞体改用真实 AABB；**C 动画交叉淡入 + 脚本状态机**：`AnimInstance.fade` 双片段加权混合、`set_anim_clip_fade` 脚本 API、`scripts/anim_state.rhai` 三态示例 | `core/mesh.rs` 加 `aabb()` 与 `MeshProvider::aabb`；`render` 增 `MeshCache::bounds` + `Frustum`；`r3e-physics` 按 AABB 推导半长；`core/anim.rs` 加 `AnimFade`/`blend_transform`/`NO_TRACK`，`scene.rs` 混合写回 | 无（场景 JSON 不变，`set_anim_clip` 仍为硬切） |
-| 四 | 阴影贴图 | 第二个 pass + 深度纹理 + 光照 VP 矩阵 | 着色器与 uniform 布局变化 |
+| **四（已完成：D）** | **D 方向光阴影贴图**：`ShadowSettings` 进 `Light`、场景 `light.shadow` 段、`ShadowPassUniform` 独立绑定、`vs_shadow` 深度 pass、3×3 PCF + 法线偏移、4 个脚本 API | `core/light.rs` 加 `ShadowSettings` / `shadow_view_projection`；`render` 加深度纹理 + 第二 pass + 独立 pipeline layout；`script/api.rs` 注册 `set_shadow*` / `shadow_enabled`；`assets/scene_shadow.json` + `scripts/shadow_demo.rhai` | 着色器与 uniform 布局变化（场景 JSON 向后兼容：`light.shadow` 缺省即默认开启阴影，可用 `enabled:false` 关闭） |
 | **五（已完成：P0–P4）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 / 骨骼蒙皮 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
 | 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
 | 七 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
@@ -1154,7 +1244,7 @@ cargo build --release
 
 ## 14. 关键约束速查
 
-写场景 / 脚本时最容易踩的十条：
+写场景 / 脚本时最容易踩的几条：
 
 1. 物件 `name` **全局唯一**，重名 `spawn` 直接失败。
 2. 父物件必须**先于**子物件定义（JSON 里 `objects` 的顺序有意义）。
@@ -1166,6 +1256,8 @@ cargo build --release
 8. 相机 `aspect` 由渲染器每帧覆盖，写在 JSON 里无效。
 9. 热重载会**重建整个场景**，脚本里的运行时累积状态（计数器、随机序列）会归零。
 10. REPL 输入会自动暂停脚本驱动，要恢复动画按空格。
+11. 阴影**默认开启**（`light.shadow` 缺省 = `enabled:true`、2048²、正交范围自适应）；要关掉写 `"shadow": { "enabled": false }` 或脚本 `set_shadow(false)`。
+12. `set_shadow_extent` 传 0 表示"跟着场景包围球自适应"；写死一个小的半宽会把远景影子裁掉（表现是远处物件突然没有影子，不是黑块）。
 
 ---
 
@@ -1177,10 +1269,10 @@ cargo build --release
 | `crates/r3e-core/src/node.rs` | `NodeId`、`MeshKind`（含别名解析）、`Node` 字段与 `world_position` |
 | `crates/r3e-core/src/scene.rs` | `ObjectDesc` / `PhysicsDesc` / `CameraDesc` / `LightDesc` / `SceneFile`、`Scene` 三索引、生命周期、`resolve_world`、`from_json_str` |
 | `crates/r3e-core/src/camera.rs` | `Camera`、DirectX 风格投影、`orbit` |
-| `crates/r3e-core/src/light.rs` | `Light` 默认值与语义 |
+| `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机 |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
-| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`prepare_instances`、`render`、`resize`、`RenderStats` |
-| `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换 |
+| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass + 主 pass）、`resize`、`RenderStats` |
+| `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样 |
 | `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面 |
 | `crates/r3e-script/src/lib.rs` | `ScriptHost`、加载/每帧/热重载/重放、`has_fn` |
 | `crates/r3e-script/src/api.rs` | 全部 Rhai API 绑定、`Clock`、`ScriptContext`、xorshift 随机 |
