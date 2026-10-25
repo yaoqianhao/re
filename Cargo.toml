@@ -7,6 +7,7 @@ members = [
     "crates/r3e-script",
     "crates/r3e-asset",
     "crates/r3e-app",
+    "crates/r3e-editor",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ r3e-render = { path = "crates/r3e-render" }
 r3e-physics = { path = "crates/r3e-physics" }
 r3e-script = { path = "crates/r3e-script" }
 r3e-asset = { path = "crates/r3e-asset" }
+r3e-editor = { path = "crates/r3e-editor" }
 
 # 图形
 wgpu = "30.0"

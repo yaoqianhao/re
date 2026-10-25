@@ -189,7 +189,13 @@ mod tests {
     fn rest_pose_keeps_vertices_at_model_space() {
         let mut skin = SkinInstance::new("s", 1);
         let model = translation(5.0, 0.0, 0.0);
-        skin.add_joint(2, 0, "Root/Joint", model * translation(0.0, 2.0, 0.0), model);
+        skin.add_joint(
+            2,
+            0,
+            "Root/Joint",
+            model * translation(0.0, 2.0, 0.0),
+            model,
+        );
         skin.solve(model, |id| {
             assert_eq!(id, 2);
             Some(model * translation(0.0, 2.0, 0.0))
@@ -197,7 +203,10 @@ mod tests {
         let p = Vec3::new(1.0, 2.0, 3.0);
         let out = model.transform_point3(skin.joint_matrices[0].transform_point3(p));
         let want = model.transform_point3(p);
-        assert!((out - want).length() < 1e-5, "静止姿态应等于模型变换后的位置: {out:?}");
+        assert!(
+            (out - want).length() < 1e-5,
+            "静止姿态应等于模型变换后的位置: {out:?}"
+        );
     }
 
     /// 绑定后又整体平移实例：网格跟着走且不产生形变（M = I）。
@@ -221,7 +230,13 @@ mod tests {
     #[test]
     fn bone_motion_moves_vertices_by_delta() {
         let mut skin = SkinInstance::new("s", 1);
-        skin.add_joint(2, 0, "Root/Joint", translation(0.0, 1.0, 0.0), Mat4::IDENTITY);
+        skin.add_joint(
+            2,
+            0,
+            "Root/Joint",
+            translation(0.0, 1.0, 0.0),
+            Mat4::IDENTITY,
+        );
         skin.solve(Mat4::IDENTITY, |_| Some(translation(0.0, 3.0, 0.0)));
         let p = Vec3::new(0.0, 1.0, 0.0);
         let out = skin.joint_matrices[0].transform_point3(p);

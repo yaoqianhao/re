@@ -124,9 +124,8 @@ impl Light {
         // 与 Camera 保持同一套右手系 + directx(NDC 深度 0..1) 约定，才和 wgpu 对齐
         let view = glam::camera::rh::view::look_at_mat4(eye, center, up);
         let far = back + radius * 2.0 + 1.0;
-        let proj = glam::camera::rh::proj::directx::orthographic(
-            -half, half, -half, half, 0.05, far,
-        );
+        let proj =
+            glam::camera::rh::proj::directx::orthographic(-half, half, -half, half, 0.05, far);
         proj * view
     }
 }

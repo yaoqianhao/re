@@ -104,11 +104,7 @@ pub fn validate_with(mesh: &MeshData, joint_count: Option<usize>) -> Vec<AirIssu
     if mesh.vertices.is_empty() || mesh.indices.is_empty() {
         issues.push(AirIssue::new(
             AirIssueKind::EmptyMesh,
-            format!(
-                "顶点 {} / 索引 {}",
-                mesh.vertices.len(),
-                mesh.indices.len()
-            ),
+            format!("顶点 {} / 索引 {}", mesh.vertices.len(), mesh.indices.len()),
         ));
         return issues;
     }
@@ -155,12 +151,7 @@ pub fn validate(mesh: &MeshData) -> Vec<AirIssue> {
     validate_with(mesh, None)
 }
 
-fn validate_vertex(
-    v: &Vertex,
-    i: usize,
-    joint_count: Option<usize>,
-    issues: &mut Vec<AirIssue>,
-) {
+fn validate_vertex(v: &Vertex, i: usize, joint_count: Option<usize>, issues: &mut Vec<AirIssue>) {
     if !v.position.iter().all(|c| c.is_finite()) {
         issues.push(AirIssue::new(
             AirIssueKind::NonFinitePosition,
@@ -189,7 +180,10 @@ fn validate_vertex(
     }
 
     // 不变量 7：蒙皮
-    if v.weights.iter().any(|w| !w.is_finite() || *w < -WEIGHT_SUM_EPS) {
+    if v.weights
+        .iter()
+        .any(|w| !w.is_finite() || *w < -WEIGHT_SUM_EPS)
+    {
         issues.push(AirIssue::new(
             AirIssueKind::SkinWeightNegative,
             format!("顶点 #{i} weights = {:?}", v.weights),
@@ -610,8 +604,7 @@ mod tests {
         mesh.vertices[0].joints = [7, 0, 0, 0];
         mesh.vertices[0].weights = [1.0, 0.0, 0.0, 0.0];
         assert_eq!(validate_with(&mesh, None), Vec::new());
-        assert!(kinds(&validate_with(&mesh, Some(4)))
-            .contains(&AirIssueKind::SkinJointOutOfRange));
+        assert!(kinds(&validate_with(&mesh, Some(4))).contains(&AirIssueKind::SkinJointOutOfRange));
     }
 
     #[test]
@@ -717,7 +710,13 @@ mod tests {
             [0.1, 0.2, 0.3, 0.4],
         );
         assert!(!normalize::compact_skinning_vertex(&mut v, 4));
-        let mut v2 = Vertex::skinned([0.0; 3], [0.0, 1.0, 0.0], [0.0; 2], [7, 8, 0, 0], [3.0, 1.0, 0.0, 0.0]);
+        let mut v2 = Vertex::skinned(
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            [0.0; 2],
+            [7, 8, 0, 0],
+            [3.0, 1.0, 0.0, 0.0],
+        );
         assert!(normalize::compact_skinning_vertex(&mut v2, 4));
         assert_eq!(v2.joints, [7, 8, 0, 0]);
         assert!((v2.weights[0] - 0.75).abs() < 1e-6);
@@ -728,11 +727,8 @@ mod tests {
     fn weld_merges_duplicate_vertices() {
         let mut mesh = quad();
         // 把一个三角形改成重复顶点构成的同位置几何，焊接后顶点数应减少
-        mesh.vertices.push(Vertex::new(
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 0.0],
-        ));
+        mesh.vertices
+            .push(Vertex::new([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0]));
         mesh.indices.extend_from_slice(&[0, 4, 2]);
         let removed = normalize::weld_vertices(&mut mesh, 1e-5);
         assert_eq!(removed, 1);

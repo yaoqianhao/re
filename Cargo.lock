@@ -2067,9 +2067,12 @@ dependencies = [
  "pollster",
  "r3e-asset",
  "r3e-core",
+ "r3e-editor",
  "r3e-physics",
  "r3e-render",
  "r3e-script",
+ "rhai",
+ "serde_json",
  "wgpu",
  "winit",
 ]
@@ -2092,6 +2095,15 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam 0.34.1",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "r3e-editor"
+version = "0.1.0"
+dependencies = [
  "log",
  "serde",
  "serde_json",

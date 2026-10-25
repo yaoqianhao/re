@@ -314,13 +314,14 @@ impl AnimInstance {
     /// 避免每帧做无效查找。
     pub fn set_clip(&mut self, clip: Arc<AnimClip>) {
         self.fade = None;
-        self.bindings.retain_mut(|b| match clip.track_of(b.node_index, &b.path) {
-            Some(track) => {
-                b.track = track;
-                true
-            }
-            None => false,
-        });
+        self.bindings
+            .retain_mut(|b| match clip.track_of(b.node_index, &b.path) {
+                Some(track) => {
+                    b.track = track;
+                    true
+                }
+                None => false,
+            });
         self.clip = clip;
         self.time = 0.0;
         self.playing = true;
@@ -360,9 +361,14 @@ impl AnimInstance {
 /// FBX 动画栈常带 `time_begin != 0`（例如 1..25 帧），不重基会让片段开头出现
 /// 一段「静止」或直接跳到中段，因此导入时统一归一。
 pub fn rebase_track(track: &mut AnimTrack) {
-    let Some(min) = track.keys.iter().map(|k| k.time).fold(None, |acc: Option<f32>, t| {
-        Some(acc.map_or(t, |a| a.min(t)))
-    }) else {
+    let Some(min) = track
+        .keys
+        .iter()
+        .map(|k| k.time)
+        .fold(None, |acc: Option<f32>, t| {
+            Some(acc.map_or(t, |a| a.min(t)))
+        })
+    else {
         return;
     };
     if min.abs() < 1e-6 {

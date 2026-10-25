@@ -25,6 +25,7 @@
 //! * Esc：退出
 
 mod app;
+mod editor;
 
 use std::path::{Path, PathBuf};
 
@@ -100,6 +101,11 @@ r3e —— Rust 3D Engine
   --show-bones              把骨架节点画成小方块，肉眼确认节点动画
   --run-seconds SEC         窗口运行指定秒数后自动退出（无人值守验证）
   -h, --help                显示本帮助
+
+编辑器桥选项（r3e-editor 的 JSON-RPC 2.0 over TCP + NDJSON）:
+  --rpc-port PORT           监听端口，0 = 由系统分配；不指定则不启动桥
+  --rpc-token TOKEN         握手令牌，客户端须原样带回（不指定则不校验）
+  --rpc-max-per-frame N     每帧最多处理的请求数，默认 8
 ";
 
 fn main() -> anyhow::Result<()> {
@@ -220,6 +226,34 @@ fn main() -> anyhow::Result<()> {
                     match v.trim().parse::<f32>() {
                         Ok(secs) if secs > 0.0 => cli.run_seconds = Some(secs),
                         _ => log::error!("--run-seconds 取值应为正数秒，收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
+            "--rpc-port" => {
+                if let Some(v) = take_value("--rpc-port", &mut i) {
+                    match v.trim().parse::<u16>() {
+                        Ok(port) => cli.rpc_port = Some(port),
+                        Err(_) => log::error!("--rpc-port 取值应为 0..65535，收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
+            "--rpc-token" => {
+                if let Some(v) = take_value("--rpc-token", &mut i) {
+                    if v.trim().is_empty() {
+                        log::error!("--rpc-token 需要非空令牌");
+                    } else {
+                        cli.rpc_token = Some(v);
+                    }
+                }
+                continue;
+            }
+            "--rpc-max-per-frame" => {
+                if let Some(v) = take_value("--rpc-max-per-frame", &mut i) {
+                    match v.trim().parse::<usize>() {
+                        Ok(n) if n > 0 => cli.rpc_max_per_frame = Some(n),
+                        _ => log::error!("--rpc-max-per-frame 取值应为正整数，收到 `{v}`"),
                     }
                 }
                 continue;

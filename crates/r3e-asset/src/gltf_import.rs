@@ -65,13 +65,16 @@ pub fn import_glb(path: &Path) -> Result<AssetEntry, AssetError> {
 fn check_glb_integrity(path: &Path) -> Result<(), AssetError> {
     use std::io::Read;
 
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| load_error(path, format!("打不开文件: {e}")))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| load_error(path, format!("打不开文件: {e}")))?;
     let mut header = [0u8; 12];
     if let Err(e) = file.read_exact(&mut header) {
         return Err(load_error(
             path,
-            format!("文件不足 12 字节的 GLB 头（实际 {} 字节）: {e}", header_len(path)),
+            format!(
+                "文件不足 12 字节的 GLB 头（实际 {} 字节）: {e}",
+                header_len(path)
+            ),
         ));
     }
     if &header[0..4] != b"glTF" {
@@ -388,17 +391,17 @@ fn import_materials(
 }
 
 /// 解码一张 glTF 贴图（bufferView 内嵌或外部文件）。
-fn decode_image(
-    image_source: &gltf::Image<'_>,
-    buffers: &[Vec<u8>],
-) -> Option<Arc<TextureImage>> {
+fn decode_image(image_source: &gltf::Image<'_>, buffers: &[Vec<u8>]) -> Option<Arc<TextureImage>> {
     let bytes: Vec<u8> = match image_source.source() {
         gltf::image::Source::View { view, mime_type } => {
             let buffer = buffers.get(view.buffer().index())?;
             let start = view.offset();
             let end = start + view.length();
             if end > buffer.len() {
-                log::warn!("glTF: 贴图 bufferView 越界（{start}..{end} / {}）", buffer.len());
+                log::warn!(
+                    "glTF: 贴图 bufferView 越界（{start}..{end} / {}）",
+                    buffer.len()
+                );
                 return None;
             }
             log::debug!("glTF: 解码内嵌贴图 {mime_type} {} 字节", view.length());
@@ -487,8 +490,8 @@ fn import_mesh<'a>(
     let mut missing_uv = false;
 
     for (prim_index, primitive) in mesh.primitives().enumerate() {
-        let reader = primitive
-            .reader(|buffer| buffers.get(buffer.index()).map(|bytes| bytes.as_slice()));
+        let reader =
+            primitive.reader(|buffer| buffers.get(buffer.index()).map(|bytes| bytes.as_slice()));
         let Some(positions) = reader.read_positions().map(|p| p.collect::<Vec<_>>()) else {
             log::warn!(
                 "glTF: 网格 `{}` 第 {prim_index} 个 primitive 没有 POSITION，已跳过",
@@ -503,7 +506,9 @@ fn import_mesh<'a>(
         let uvs = reader
             .read_tex_coords(0)
             .map(|t| t.into_f32().collect::<Vec<_>>());
-        let joints = reader.read_joints(0).map(|j| j.into_u16().collect::<Vec<_>>());
+        let joints = reader
+            .read_joints(0)
+            .map(|j| j.into_u16().collect::<Vec<_>>());
         let weights = reader
             .read_weights(0)
             .map(|w| w.into_f32().collect::<Vec<_>>());
@@ -516,9 +521,7 @@ fn import_mesh<'a>(
             gltf::mesh::Mode::TriangleStrip => normalize::triangles_from_strip(&indices),
             gltf::mesh::Mode::TriangleFan => normalize::triangles_from_fan(&indices),
             other => {
-                log::warn!(
-                    "glTF: primitive 模式 {other:?} 不是三角形，已跳过（只支持三角网格）"
-                );
+                log::warn!("glTF: primitive 模式 {other:?} 不是三角形，已跳过（只支持三角网格）");
                 continue;
             }
         };
@@ -538,7 +541,10 @@ fn import_mesh<'a>(
                 .as_ref()
                 .and_then(|n| n.get(i).copied())
                 .unwrap_or([0.0, 0.0, 1.0]);
-            let uv = uvs.as_ref().and_then(|u| u.get(i).copied()).unwrap_or([0.0, 0.0]);
+            let uv = uvs
+                .as_ref()
+                .and_then(|u| u.get(i).copied())
+                .unwrap_or([0.0, 0.0]);
             let mut vertex = Vertex::new(*pos, normal, uv);
             if let (Some(j), Some(w)) = (&joints, &weights) {
                 if let (Some(j), Some(w)) = (j.get(i), w.get(i)) {
@@ -550,8 +556,7 @@ fn import_mesh<'a>(
         }
         // 每个 primitive 一段连续三角形区间，对应一个材质分区。
         let first_triangle = (data.indices.len() / 3) as u32;
-        data.indices
-            .extend(triangles.into_iter().map(|i| base + i));
+        data.indices.extend(triangles.into_iter().map(|i| base + i));
         let triangle_count = (data.indices.len() / 3) as u32 - first_triangle;
         let material = primitive.material();
         parts.push(MaterialPart {
@@ -669,8 +674,8 @@ fn import_animations(
         for channel in animation.channels() {
             let target = channel.target();
             let node = target.node();
-            let reader = channel
-                .reader(|buffer| buffers.get(buffer.index()).map(|bytes| bytes.as_slice()));
+            let reader =
+                channel.reader(|buffer| buffers.get(buffer.index()).map(|bytes| bytes.as_slice()));
             let Some(times) = reader.read_inputs().map(|i| i.collect::<Vec<f32>>()) else {
                 continue;
             };
@@ -696,7 +701,10 @@ fn import_animations(
                     // glTF 输出是 (x, y, z, w)
                     entry.rotation = Some((times, r.into_f32().collect()));
                 }
-                (gltf::animation::Property::Scale, gltf::animation::util::ReadOutputs::Scales(s)) => {
+                (
+                    gltf::animation::Property::Scale,
+                    gltf::animation::util::ReadOutputs::Scales(s),
+                ) => {
                     entry.scale = Some((times, s.collect()));
                 }
                 (property, _) => {

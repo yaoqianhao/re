@@ -86,12 +86,7 @@ fn report(entry: &r3e_asset::AssetEntry) {
     println!("  动画片段: {}", entry.animations.len());
     for clip in entry.animations.iter().take(8) {
         let keys: usize = clip.tracks.iter().map(|t| t.keys.len()).sum();
-        let max_key = clip
-            .tracks
-            .iter()
-            .map(|t| t.keys.len())
-            .max()
-            .unwrap_or(0);
+        let max_key = clip.tracks.iter().map(|t| t.keys.len()).max().unwrap_or(0);
         let t0 = clip
             .tracks
             .iter()

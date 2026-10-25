@@ -192,7 +192,10 @@ fn gltf_and_glb_yield_the_same_air() {
         "\"buffers\": [{",
         "\"buffers\": [{\"uri\": \"air_conformance.bin\", ",
     );
-    assert!(json.contains("air_conformance.bin"), "gltf 未写入 buffer uri");
+    assert!(
+        json.contains("air_conformance.bin"),
+        "gltf 未写入 buffer uri"
+    );
     let gltf_path = dir.join("air_conformance.gltf");
     std::fs::write(&gltf_path, json.as_bytes()).expect("写 gltf 失败");
     std::fs::write(dir.join("air_conformance.bin"), bin).expect("写 bin 失败");

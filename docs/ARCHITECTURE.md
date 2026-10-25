@@ -111,34 +111,43 @@ rust3d-engine/
 - `r3e-render`、`r3e-physics`、`r3e-asset` 三者**互不依赖**：渲染器不认识 Rhai，资产层不认识 wgpu，物理层不认识 ufbx。
 - 唯一的跨子系统依赖是 `r3e-script → r3e-physics`：脚本 API 要直接持有 `Physics` 门面做绑定，这是刻意的（不是环，物理层不反向认识脚本）。
 - `r3e-app` 是唯一的组装层，负责把各子系统接进同一个帧循环。
+- `r3e-editor` 只定义 JSON-RPC 协议与 `EngineApi` trait，**不依赖任何其它 r3e crate**，也不碰图形/窗口；
+  它的唯一实现者是 `r3e-app::editor::LocalEngineApi`（桥接同一份 `Scene` / `Physics` / `ScriptHost`），
+  由 `EngineApp::drain_editor_jobs` 每帧消化至多 `--rpc-max-per-frame` 条请求。
+  依赖方向永远是 `r3e-app → r3e-editor`，编辑器层不认识渲染器。
 
 这条约束是引擎"文本能控制画面"的结构性保证：**所有子系统读写同一份内存中的 `Scene`，而不是通过消息或事件副本通信。**
 
 ### 3.2 代码规模
 
-| crate | src 行数 | tests 行数 | 主要文件 |
-| --- | --- | --- | --- |
-| r3e-core | 4190 | — | `scene.rs` / `air.rs` / `procedural.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 1681 | 85 | `renderer.rs` / `mesh.rs` / `shader.wgsl` |
-| r3e-asset | 2836 | 285 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
-| r3e-physics | 2298 | 461 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
-| r3e-script | 1298 | — | `api.rs` / `lib.rs` |
-| r3e-app | 1957 | — | `app.rs` / `main.rs` |
-| **合计** | **14,260** | **831** | **约 15,100 行（含 WGSL）** |
+| crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
+| --- | --- | --- | --- | --- |
+| r3e-core | 4241 | — | 48 | `scene.rs` / `air.rs` / `procedural.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 1686 | 88 | 7 | `renderer.rs` / `mesh.rs` / `shader.wgsl` |
+| r3e-asset | 2865 | 612 | 13 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-physics | 2548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
+| r3e-script | 1393 | — | 0 | `api.rs` / `lib.rs` |
+| r3e-editor | 928 | — | 3 | `lib.rs`（协议 + `EngineApi`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 2575 | — | 7 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| **合计** | **16,236** | **1,360** | **106** | **约 17,800 行（含 234 行 WGSL）** |
 
-Release 二进制 28.2 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
+Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
 ### 3.3 质量门（每次改动后必过）
 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
-| 单测 | `cargo test --workspace` | 89 passed / 0 failed |
-| 物理契约（Rapier） | `cargo test -p r3e-physics --features rapier` | 13 + 9 passed |
-| 静态检查 | `cargo clippy --workspace --all-targets`（另跑 `--all-features`） | 0 warning |
+| 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
+| 单测（默认特性） | `cargo test --workspace` | 102 passed / 0 failed |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 106 passed / 0 failed |
+| 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
+| CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
 
-静态检查仅保留两处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
-`too_many_arguments`（顶点装配入口参数天然是平行数组）。
+静态检查仅保留三处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
+`too_many_arguments`（顶点装配入口参数天然是平行数组，`r3e-asset` 内两处）。
+工具链固定在 `rust-toolchain.toml`（`stable-x86_64-pc-windows-gnu` + `rustfmt` + `clippy`），
+写全 host triple 的原因见 README §11。
 
 ---
 
@@ -1093,6 +1102,44 @@ update_animations(dt)
 
 ---
 
+### 8.11 编辑器桥：`EngineApi` 的唯一实现与每帧限流（阶段八）
+
+`r3e-editor` 是**纯协议层**：`EngineApi` trait 的 8 个方法 + JSON-RPC 2.0 的请求/响应编解码 + 一个
+`RpcServer`（TCP 监听、连接线程、有界队列）。它不知道 `Scene` 长什么样，也不依赖渲染器——这保证
+"编辑器协议"不会反向污染渲染/物理层。trait 里那 8 个方法留着 `Err(unsupported(..))` 默认实现，
+只是为了让 mock / 未来的第二后端少写样板；**`LocalEngineApi` 全部 8 个方法都覆盖了**——健康检查里"5 个场景方法默认返回 unsupported、trait 无实现者"
+的问题到此为止（实现见 `crates/r3e-app/src/editor.rs`，7 个单测覆盖增删改查与脚本执行）。
+
+真正把协议落到状态上的是 `r3e-app::editor::LocalEngineApi`：它同时持有
+`Rc<RefCell<Scene>>`、`Rc<RefCell<Physics>>`、`Rc<RefCell<ScriptHost>>`，
+每个 trait 方法都是对这三个门面的一次同步调用，**与 REPL、Rhai API 走的是同一批入口**，
+所以编辑器改完物件，下一帧渲染出来的就是改后的样子，不存在消息副本或事件回灌。
+
+```
+TcpListener ──accept──> 连接线程（≤16）──read_until('\n')──> 有界队列 sync_channel(64) ──try_send
+                                                                      │
+step_and_render() 开头：drain_editor_jobs()                            │
+  for _ in 0..rpc_max_per_frame { server.try_recv() }  ←───────────────┘
+      → Job::run(&mut LocalEngineApi) → 结果经每请求的 reply 通道回写连接线程
+```
+
+四条资源上限，全部写死在 `server.rs`（常量名与注释同源）：
+
+| 隐患 | 原写法 | 现写法 |
+| --- | --- | --- |
+| 队列无界（编辑器刷屏能把内存吃穿） | `mpsc::channel()` | `sync_channel(JOB_QUEUE_CAPACITY = 64)` + `try_send`，满则回 `-32002 Server busy`（不阻塞引擎帧、不断连） |
+| 并发连接无上限 | 来一个起一个线程 | `ConnSlot` RAII 计数，`MAX_CONNECTIONS = 16`，超出写一条错误后直接关连接 |
+| 等回包可能永久挂住连接线程 | `waiter.recv()` | `recv_timeout(REPLY_TIMEOUT = 5 s)`，超时回 `-32003` |
+| 逐字节 `read` 拼行（慢且可被长行撑爆） | 单字节循环 | `BufReader` + `read_until` + `take(MAX_LINE_BYTES = 1 MiB)`，一次系统调用覆盖多行，超长行回 `-32600` 并断开 |
+
+另外三点刻意取舍：
+
+- **主线程只做 `try_recv`，永不等待**：编辑器卡死或网络抖动只影响它自己那条连接，帧时间不受外部影响。
+- **`--rpc-max-per-frame`（默认 8）**：即使收到 64 条积压，也摊到多帧消化，避免单帧 >16 ms。
+- **端口占用只警告**：`RpcServer::bind` 失败不阻断引擎启动——编辑器是可选通道，不能让它挡住渲染。
+
+---
+
 ## 9. 端到端数据流
 
 ```
@@ -1212,7 +1259,7 @@ update_animations(dt)
 | **五（已完成：P0–P4）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 / 骨骼蒙皮 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
 | 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
 | **七（已完成：P-CCD）** | **CCD 连续碰撞检测**：契约 `set_ccd`/`ccd_of`/`set_ccd_default`、门面批量接口、场景 `physics.ccd`（全局 + 逐物件，缺省开）、脚本 4 个 API、`--ccd` 命令行、`BackendCaps::EXPOSED` 升到 `CONTACT_CCD`（只留 `joints` 一个禁区）、穿透对照测试 | `r3e-physics` 契约 + 门面 + `rapier_backend` 建体时 `enable_ccd`；`core/scene.rs` 加 `ccd` 字段；`script/api.rs` 实现 `physics_set_ccd` 并新增 `physics_ccd_default`/`body_set_ccd`/`body_ccd`；新增 `tests/ccd_penetration.rs` | 无（场景 JSON 向后兼容：缺省即开；`builtin` 仍如实报 `ccd=false`） |
-| 八 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
+| **八（已完成：编辑器桥）** | **编辑器协议**：从 stdin REPL 升级为 TCP + JSON-RPC 2.0（NDJSON）。新增 `r3e-editor` crate（协议 + `EngineApi` + `RpcServer`），`r3e-app::editor::LocalEngineApi` 作为唯一实现者桥接 `Scene`/`Physics`/`ScriptHost`，主循环每帧限流消化。资源上限：有界队列 64、并发连接 16、单行 1 MiB、等回包 5 s | 新增 `crates/r3e-editor`；`r3e-app` 加 `editor.rs` + `--rpc-port/--rpc-token/--rpc-max-per-frame` | 无（不传 `--rpc-port` 时行为与之前完全一致，端口占用只警告不阻断） |
 
 两条与顺序相关的说明：
 
@@ -1278,6 +1325,9 @@ cargo build --release
 10. REPL 输入会自动暂停脚本驱动，要恢复动画按空格。
 11. 阴影**默认开启**（`light.shadow` 缺省 = `enabled:true`、2048²、正交范围自适应）；要关掉写 `"shadow": { "enabled": false }` 或脚本 `set_shadow(false)`。
 12. `set_shadow_extent` 传 0 表示"跟着场景包围球自适应"；写死一个小的半宽会把远景影子裁掉（表现是远处物件突然没有影子，不是黑块）。
+13. 编辑器 RPC **默认不开**：不带 `--rpc-port` 时连监听都没有；开了也只绑 `127.0.0.1`，不对外网暴露。
+14. 编辑器请求的改动**发生在主线程**（`drain_editor_jobs`），不要指望多线程并发写场景；同一帧内多请求按到达顺序执行。
+15. 队列满回 `-32002`、等回包超时回 `-32003`、无权限回 `-32001`——客户端要按码退避重试，别当成引擎崩溃。
 
 ---
 

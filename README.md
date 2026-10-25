@@ -163,6 +163,58 @@ ok
 
 `let` 定义的变量保存在脚本作用域里，可跨行复用。
 
+### 3.4 编辑器 RPC 通道（TCP + JSON-RPC 2.0）
+
+`r3e-editor` 定义协议与 `EngineApi` trait，`r3e-app` 里的 `LocalEngineApi` 是它的**唯一实现者**，
+直接桥接同一份内存里的 `Scene` / `Physics` / `ScriptHost`，再挂到主循环上——所以外部编辑器改的是画面里
+真正的那份状态，不存在"消息副本"和"事件同步"。
+
+```powershell
+# 开局即开端口；token 可省略（省略则不校验）
+cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
+```
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `--rpc-port <port>` | 关闭 | 绑定 `127.0.0.1:<port>` 并接受外部连接；端口占用只警告、不阻断引擎启动 |
+| `--rpc-token <tok>` | 无 | 每条请求的 `params.token` 都要带对，否则该条回 `-32001`（连接保留，可继续发） |
+| `--rpc-max-per-frame <n>` | `8` | 每帧最多消化多少条请求，防止编辑器刷屏把帧时间顶爆 |
+
+协议：一行一个 JSON-RPC 2.0 请求 / 响应（NDJSON）。方法名大小写与下划线不敏感
+（`scene.setTransform` = `scene.set_transform`），共 9 个：
+
+| 方法 | 作用 |
+| --- | --- |
+| `ping` | 探活，回 `pong` + 协议版本 |
+| `engine.info` | 场景/脚本路径、帧号、FPS、运行时长、暂停状态、物件数 |
+| `scene.list` | 列物件，支持 `filter`（名字子串）与 `limit` |
+| `scene.get` | 单个物件的完整快照（局部 TRS、世界矩阵、父子、颜色、可见性） |
+| `scene.set_transform` | 改 `position` / `rotation` / `scale`，三者至少给一个 |
+| `scene.spawn` | 按物件描述新建，回新节点 id |
+| `scene.remove` | 按名字删除 |
+| `script.eval` | 执行一段 Rhai，返回其求值结果（JSON 化） |
+| `script.reload` | 重载脚本文件 |
+
+除 `ping` 外，每条请求的 `params` 里都要带对 `params.token`（前提是启动时给了 `--rpc-token`）。
+
+资源上限（都是硬上限，写死在 `crates/r3e-editor/src/server.rs`）：
+
+| 项 | 上限 | 超限行为 |
+| --- | --- | --- |
+| 请求队列 | 64 条（有界 `sync_channel`） | 立即回 `-32002 Server busy`，不断连、不阻塞引擎帧 |
+| 并发连接 | 16 条（`ConnSlot` RAII 计数） | 第 17 条回 `-32002` 后立即关闭 |
+| 单行请求体 | 1 MiB（`BufReader` + `read_until` + `take` 限长） | 回 `-32600` 后断开该连接，绝不会把超长行读进内存 |
+| 响应等待 | 5 s（`recv_timeout`） | 超时回 `-32003 RPC timeout`，客户端不会傻等 |
+| 空闲连接 | 30 s 无数据（`READ_TIMEOUT`） | 服务端主动断开，长期挂着的连接不会白占线程 |
+
+```powershell
+# 手动验一发（PowerShell）
+$c = New-Object Net.Sockets.TcpClient('127.0.0.1', 7878)
+$s = $c.GetStream(); $w = New-Object IO.StreamWriter($s); $w.AutoFlush = $true
+$w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"secret"}}')
+(New-Object IO.StreamReader($s)).ReadLine()
+```
+
 ---
 
 ## 4. 脚本 API
@@ -497,3 +549,33 @@ cargo run -- --asset D:\_probe_glb\samples\ironsword.glb
 
 细节与 glb 已知限制（Draco / meshopt / KTX2 / morph 不支持）见
 [`docs/ASSETS.md`](docs/ASSETS.md) 第 18 章。
+
+---
+
+## 11. 工程化：格式化、静态检查与 CI
+
+工具链由 `rust-toolchain.toml` 固定为 `stable-x86_64-pc-windows-gnu`（含 `rustfmt` + `clippy` 组件）。
+之所以写全 host triple：本工程用 MinGW 链接（`.cargo/config.toml` 指定 `build.target`），
+若 rustup 默认 host 是 msvc，只写 `stable` 会切到 msvc 工具链，导致 build script / proc-macro
+这些 host 产物去找 `link.exe` 而整片编译失败。
+
+三道门每次改动后都要过，本地跑法：
+
+```powershell
+cargo fmt --all --check                        # 格式：只检查，不改文件
+cargo fmt --all                                # 需要修格式时
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features rapier -- -D warnings
+cargo test --workspace                         # 默认特性
+cargo test --workspace --features rapier       # Rapier 物理后端
+```
+
+`cargo clippy` 不加 `-D warnings` 等于没跑——本仓库的口径是**零 warning**，
+例外只允许带注释说明的 `#[allow]`，当前全库共三处：`r3e-render/src/renderer.rs` 的
+`arc_with_non_send_sync`（`MeshProvider` 刻意不 `Send`，渲染主线程独占），以及
+`r3e-asset/src/lib.rs`、`r3e-asset/src/gltf_import.rs` 各一处 `too_many_arguments`（顶点装配 / 导入入口参数天然是平行数组）。
+
+CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，三个 job 分别对应
+`rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）`，都跑在 `windows-latest` 上
+（Linux runner 无法完成 MinGW 交叉链接，硬跑只会得到误导性的红），
+并用 PATH 里的 MinGW 覆盖 `.cargo/config.toml` 中的开发者本机绝对路径。

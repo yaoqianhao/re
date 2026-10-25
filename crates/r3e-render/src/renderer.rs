@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
-use r3e_core::mesh::{
-    MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex,
-};
+use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, ProceduralProvider, Scene};
 use winit::window::Window;
 
@@ -606,16 +604,17 @@ impl Renderer {
         // 阴影通道专用布局：group(3) 换成 `shadow_pass_layout`（只有矩阵 uniform），
         // 不含「阴影贴图 + 比较采样器」——深度 pass 不能一边写一边采样同一张图。
         // 注意 wgpu 要求布局里每个组都被 set，所以 0/1/2 仍要在 pass 里逐个绑定。
-        let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("r3e-shadow-pipeline-layout"),
-            bind_group_layouts: &[
-                Some(&camera_layout),
-                Some(&material_cache.layout),
-                Some(&joint_layout),
-                Some(&shadow_pass_layout),
-            ],
-            immediate_size: 0,
-        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("r3e-shadow-pipeline-layout"),
+                bind_group_layouts: &[
+                    Some(&camera_layout),
+                    Some(&material_cache.layout),
+                    Some(&joint_layout),
+                    Some(&shadow_pass_layout),
+                ],
+                immediate_size: 0,
+            });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("r3e-pipeline"),
@@ -956,7 +955,11 @@ impl Renderer {
         };
         let view_proj = light.shadow_view_projection(center, radius * 1.05);
         // ortho_size = 0 表示按场景包围球自适应，否则用用户给定值（仍是半宽）
-        let half = if shadow.ortho_size > 0.0 { shadow.ortho_size } else { radius * 1.05 };
+        let half = if shadow.ortho_size > 0.0 {
+            shadow.ortho_size
+        } else {
+            radius * 1.05
+        };
         let texel_world = (2.0 * half / shadow.size as f32).max(1e-5);
 
         let uniform = ShadowUniform {
@@ -1058,18 +1061,8 @@ impl Renderer {
         let uniform = CameraUniform {
             view_proj: camera.view_projection().to_cols_array_2d(),
             camera_pos: [camera.position.x, camera.position.y, camera.position.z, 1.0],
-            light_dir: [
-                light.direction.x,
-                light.direction.y,
-                light.direction.z,
-                0.0,
-            ],
-            light_color: [
-                light.color.x,
-                light.color.y,
-                light.color.z,
-                light.intensity,
-            ],
+            light_dir: [light.direction.x, light.direction.y, light.direction.z, 0.0],
+            light_color: [light.color.x, light.color.y, light.color.z, light.intensity],
             ambient: [light.ambient.x, light.ambient.y, light.ambient.z, 1.0],
         };
         self.queue
@@ -1376,12 +1369,12 @@ impl MaterialCache {
         };
 
         let (view, has_texture) = match (data.base_color_texture, library) {
-            (Some((asset, index)), Some(library)) => match self
-                .texture_view(device, queue, asset, index, library)
-            {
-                Some(view) => (view, true),
-                None => (self.white.clone(), false),
-            },
+            (Some((asset, index)), Some(library)) => {
+                match self.texture_view(device, queue, asset, index, library) {
+                    Some(view) => (view, true),
+                    None => (self.white.clone(), false),
+                }
+            }
             _ => (self.white.clone(), false),
         };
 
@@ -1481,7 +1474,11 @@ fn upload_texture(
     max_dim: u32,
 ) -> Option<wgpu::TextureView> {
     if !image.is_valid() {
-        log::warn!("贴图像素数据不完整（{}x{}），跳过", image.width, image.height);
+        log::warn!(
+            "贴图像素数据不完整（{}x{}），跳过",
+            image.width,
+            image.height
+        );
         return None;
     }
     if image.width > max_dim || image.height > max_dim {

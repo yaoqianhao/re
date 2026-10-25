@@ -36,7 +36,10 @@ fn truncated_glb_reports_declared_vs_actual_size() {
     let err = r3e_asset::import_glb(&path).expect_err("截断文件必须失败");
     let msg = err.to_string();
     assert!(msg.contains("被截断"), "报错应点明截断：{msg}");
-    assert!(msg.contains("4096") && msg.contains("64"), "报错应含声明/实际字节数：{msg}");
+    assert!(
+        msg.contains("4096") && msg.contains("64"),
+        "报错应含声明/实际字节数：{msg}"
+    );
 }
 
 #[test]
@@ -46,7 +49,10 @@ fn wrong_magic_reports_helpful_hint() {
 
     let err = r3e_asset::import_glb(&path).expect_err("错 magic 必须失败");
     let msg = err.to_string();
-    assert!(msg.contains("GLB") && msg.contains("magic"), "报错应提示 magic：{msg}");
+    assert!(
+        msg.contains("GLB") && msg.contains("magic"),
+        "报错应提示 magic：{msg}"
+    );
 }
 
 #[test]

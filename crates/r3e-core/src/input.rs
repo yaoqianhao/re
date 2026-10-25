@@ -50,14 +50,7 @@ const PAD_BUTTON_NAMES: [&str; PAD_BUTTON_COUNT] = [
 ];
 
 const PAD_AXIS_NAMES: [&str; PAD_AXIS_COUNT] = [
-    "left_x",
-    "left_y",
-    "right_x",
-    "right_y",
-    "lt",
-    "rt",
-    "unused6",
-    "unused7",
+    "left_x", "left_y", "right_x", "right_y", "lt", "rt", "unused6", "unused7",
 ];
 
 /// 单个按键的边沿状态。
@@ -187,7 +180,11 @@ impl InputState {
     }
 
     pub fn pad_pressed(&self, index: usize) -> bool {
-        self.pad.buttons.get(index).map(|b| b.pressed).unwrap_or(false)
+        self.pad
+            .buttons
+            .get(index)
+            .map(|b| b.pressed)
+            .unwrap_or(false)
     }
 
     pub fn pad_released(&self, index: usize) -> bool {

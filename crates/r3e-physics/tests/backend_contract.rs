@@ -1,4 +1,4 @@
-﻿//! 后端契约回归测试：同一批断言跑遍「当前构建可用的每个后端」。
+//! 后端契约回归测试：同一批断言跑遍「当前构建可用的每个后端」。
 //!
 //! 加新后端（Jolt / PhysX …）时只需把它塞进 [`selectable`]，契约不满足立刻红灯。
 //! Rapier 只在 `--features rapier` 时参与；默认构建下本文件验证内置后端的契约。
@@ -19,11 +19,7 @@ fn selectable() -> Vec<PhysicsKind> {
 fn physics_of(kind: PhysicsKind) -> Physics {
     let mut physics = Physics::new();
     physics
-        .apply_config(
-            PhysicsConfig::default()
-                .with_enabled(true)
-                .with_kind(kind),
-        )
+        .apply_config(PhysicsConfig::default().with_enabled(true).with_kind(kind))
         .expect("后端应可选中");
     physics
 }
@@ -87,10 +83,7 @@ fn every_backend_drops_and_rests_on_ground() {
         }
         let y = scene.get(id).expect("node").transform.position.y;
         // 球半径 0.5、地面 0 → 静止在 0.5 附近（rapier 允许极小穿透）
-        assert!(
-            (y - 0.5).abs() < 0.05,
-            "{kind:?}: 期望 y≈0.5，实际 {y}"
-        );
+        assert!((y - 0.5).abs() < 0.05, "{kind:?}: 期望 y≈0.5，实际 {y}");
     }
 }
 
@@ -233,7 +226,10 @@ fn every_backend_raycast_and_overlap_find_nearest_body() {
 
         // 背向打空：朝 -Z 只有空气
         let miss = r3e_physics::Ray::new(Vec3::new(0.0, 2.0, -10.0), -Vec3::Z);
-        assert!(physics.raycast(miss, 100.0).is_none(), "{kind:?}: 背向应打空");
+        assert!(
+            physics.raycast(miss, 100.0).is_none(),
+            "{kind:?}: 背向应打空"
+        );
         // 距离不够也打不中
         assert!(
             physics.raycast(ray, 2.0).is_none(),
@@ -247,15 +243,22 @@ fn every_backend_raycast_and_overlap_find_nearest_body() {
             "{kind:?}: 球心在盒内，重叠查询不应为空"
         );
         assert!(
-            physics.overlap_sphere(Vec3::new(0.0, 2.0, -8.0), 0.5).is_empty(),
+            physics
+                .overlap_sphere(Vec3::new(0.0, 2.0, -8.0), 0.5)
+                .is_empty(),
             "{kind:?}: 两盒之间的空隙不该有重叠"
         );
 
         // 关掉物理后查询立即失效，不残留旧结果
         physics.set_enabled(false);
-        assert!(physics.raycast(ray, 100.0).is_none(), "{kind:?}: 关闭后不查");
         assert!(
-            physics.overlap_sphere(Vec3::new(0.0, 2.0, -4.0), 1.2).is_empty(),
+            physics.raycast(ray, 100.0).is_none(),
+            "{kind:?}: 关闭后不查"
+        );
+        assert!(
+            physics
+                .overlap_sphere(Vec3::new(0.0, 2.0, -4.0), 1.2)
+                .is_empty(),
             "{kind:?}: 关闭后不查"
         );
     }
@@ -269,7 +272,11 @@ fn every_backend_raycast_and_overlap_find_nearest_body() {
 /// `physics_has_capability` 就会拿到一个用不了的承诺。
 #[test]
 fn no_backend_overclaims_capabilities() {
-    for kind in PhysicsKind::ALL.iter().copied().filter(|k| k.is_available()) {
+    for kind in PhysicsKind::ALL
+        .iter()
+        .copied()
+        .filter(|k| k.is_available())
+    {
         let caps = physics_of(kind).capabilities();
         assert!(
             caps.is_within_exposed(),
@@ -282,7 +289,10 @@ fn no_backend_overclaims_capabilities() {
         // 反向守卫：后端说支持 CCD，就必须真能读回状态，不能只改标志位
         if caps.has("ccd") {
             let mut physics = physics_of(kind);
-            assert!(physics.set_ccd_default(true), "{kind:?}: 申报了 ccd 却设不进去");
+            assert!(
+                physics.set_ccd_default(true),
+                "{kind:?}: 申报了 ccd 却设不进去"
+            );
         }
     }
 }
@@ -409,7 +419,10 @@ fn every_backend_shape_cast_reports_nearest_surface() {
             "{kind:?}: 迎面法线应为 -Z，实际 {:?}",
             hit.normal
         );
-        assert!(!hit.started_inside, "{kind:?}: 起点在空气里，不该报初始重叠");
+        assert!(
+            !hit.started_inside,
+            "{kind:?}: 起点在空气里，不该报初始重叠"
+        );
         assert_ne!(hit.node, far, "{kind:?}: 不该跳过近处盒子");
 
         // 盒扫掠：半尺寸 0.5 与球半径同义，距离也应是 4.5
@@ -448,19 +461,25 @@ fn every_backend_shape_cast_reports_nearest_surface() {
         );
         // 距离不够推不到
         assert!(
-            physics.shape_cast_sphere(start, 0.5, Vec3::Z, 2.0).is_none(),
+            physics
+                .shape_cast_sphere(start, 0.5, Vec3::Z, 2.0)
+                .is_none(),
             "{kind:?}: max_distance 应生效"
         );
         // 退化形状查不出有意义结果
         assert!(
-            physics.shape_cast_sphere(start, 0.0, Vec3::Z, 100.0).is_none(),
+            physics
+                .shape_cast_sphere(start, 0.0, Vec3::Z, 100.0)
+                .is_none(),
             "{kind:?}: 零半径应短路"
         );
 
         // 关掉物理后查询立即失效
         physics.set_enabled(false);
         assert!(
-            physics.shape_cast_sphere(start, 0.5, Vec3::Z, 100.0).is_none(),
+            physics
+                .shape_cast_sphere(start, 0.5, Vec3::Z, 100.0)
+                .is_none(),
             "{kind:?}: 关闭后不查"
         );
     }

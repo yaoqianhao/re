@@ -122,7 +122,10 @@ impl ScriptHost {
         // Rhai 的 call_fn 会连同顶层语句一起执行，顶层语句因此会随每次 on_update 重复运行。
         self.ast = Some(ast.clone());
         if has_fn(&ast, "on_start", 0) {
-            if let Err(e) = self.engine.call_fn::<Dynamic>(&mut self.scope, &ast, "on_start", ()) {
+            if let Err(e) = self
+                .engine
+                .call_fn::<Dynamic>(&mut self.scope, &ast, "on_start", ())
+            {
                 self.last_error = Some(format!("on_start 出错: {e}"));
             }
         }
@@ -161,7 +164,10 @@ impl ScriptHost {
         if !has_fn(&ast, "on_update", 1) {
             return;
         }
-        if let Err(e) = self.engine.call_fn::<Dynamic>(&mut self.scope, &ast, "on_update", (dt,)) {
+        if let Err(e) = self
+            .engine
+            .call_fn::<Dynamic>(&mut self.scope, &ast, "on_update", (dt,))
+        {
             let msg = format!("on_update 出错: {e}");
             if self.last_error.as_deref() != Some(msg.as_str()) {
                 println!("[script] {msg}");
@@ -179,8 +185,7 @@ impl ScriptHost {
 
     /// 用新的场景 JSON 重建世界，并重跑当前脚本（IDE 里改 scene.json 也会生效）。
     pub fn rebuild_scene(&mut self, json: &str) -> Result<(), String> {
-        let new_scene =
-            Scene::from_json_str(json).map_err(|e| format!("场景解析失败: {e}"))?;
+        let new_scene = Scene::from_json_str(json).map_err(|e| format!("场景解析失败: {e}"))?;
         let phys_cfg = PhysicsConfig::from_scene(&new_scene.physics);
         *self.scene.borrow_mut() = new_scene;
         {
@@ -199,7 +204,10 @@ impl ScriptHost {
                 .run_ast_with_scope(&mut self.scope, &ast)
                 .map_err(|e| format!("脚本重放失败: {e}"))?;
             if has_fn(&ast, "on_start", 0) {
-                if let Err(e) = self.engine.call_fn::<Dynamic>(&mut self.scope, &ast, "on_start", ()) {
+                if let Err(e) =
+                    self.engine
+                        .call_fn::<Dynamic>(&mut self.scope, &ast, "on_start", ())
+                {
                     self.last_error = Some(format!("on_start 出错: {e}"));
                 }
             }

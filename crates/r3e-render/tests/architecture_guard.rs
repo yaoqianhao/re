@@ -61,7 +61,10 @@ fn render_layer_has_no_source_branch() {
 #[test]
 fn physics_layer_has_no_source_branch() {
     // 物理只看几何：形状由 `infer_shape(&MeshData)` 判定，半尺寸由 AABB 推出。
-    assert_no_tokens("r3e-physics", &["BuiltinMesh", "MeshRef::Builtin", "MeshRef::Asset"]);
+    assert_no_tokens(
+        "r3e-physics",
+        &["BuiltinMesh", "MeshRef::Builtin", "MeshRef::Asset"],
+    );
 }
 
 #[test]

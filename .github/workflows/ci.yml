@@ -1,0 +1,72 @@
+name: CI
+
+# 三道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）。
+# 任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
+#
+# 为什么三个 job 都跑 Windows：本工程是 Windows + MinGW 目标（见 .cargo/config.toml 的 build.target
+# 与 mingw 链接器），Linux runner 上无法完成这套交叉链接，硬跑只会得到误导性的红。
+# 工具链版本以 rust-toolchain.toml 为准（stable-x86_64-pc-windows-gnu），CI 不再另装版本，避免双版本漂移。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 本机 .cargo/config.toml 里的链接器路径是开发者机器上的绝对路径，CI 用 PATH 里的 MinGW 覆盖掉。
+  CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+  CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR: ar
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (-D warnings, ${{ matrix.features || 'default' }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", "rapier"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets ${{ matrix.features == 'rapier' && '--features rapier' || '' }} -- -D warnings
+
+  test:
+    name: test (${{ matrix.features || 'default' }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", "rapier"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace ${{ matrix.features == 'rapier' && '--features rapier' || '' }}

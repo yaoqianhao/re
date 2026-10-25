@@ -1,4 +1,4 @@
-﻿//! 应用层：窗口、事件循环、主循环、终端指令与脚本热重载。
+//! 应用层：窗口、事件循环、主循环、终端指令与脚本热重载。
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -7,21 +7,24 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::{Instant, SystemTime};
 
-use glam::{Mat4, Vec3};
 use gilrs::{Axis, Button};
+use glam::{Mat4, Vec3};
+use r3e_asset::AssetLibrary;
+use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::input::{
     InputState, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT, PAD_AXIS_COUNT,
     PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT, PAD_RIGHT_X, PAD_RIGHT_Y, PAD_RT,
     PAD_START,
 };
-use r3e_asset::AssetLibrary;
-use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::{
     AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance,
 };
+use r3e_editor::RpcServer;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
+
+use crate::editor::LocalEngineApi;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -99,6 +102,12 @@ pub struct CliOptions {
     pub show_bones: bool,
     /// `--run-seconds <s>`：窗口运行指定秒数后自动退出（无人值守验证用）。
     pub run_seconds: Option<f32>,
+    /// `--rpc-port <port>`：编辑器桥监听端口（0 = 由系统分配）；`None` = 不启动桥。
+    pub rpc_port: Option<u16>,
+    /// `--rpc-token <token>`：握手令牌，客户端必须原样带回（缺省不校验）。
+    pub rpc_token: Option<String>,
+    /// `--rpc-max-per-frame <n>`：每帧最多消化的编辑器请求数（默认 8）。
+    pub rpc_max_per_frame: Option<usize>,
 }
 
 impl CliOptions {
@@ -130,7 +139,6 @@ impl CliOptions {
             && self.ground.is_none()
             && self.ccd.is_none()
     }
-
 }
 
 pub struct EngineApp {
@@ -186,6 +194,10 @@ pub struct EngineApp {
     probe_skin_snapshot: Vec<(String, Vec3)>,
     /// 请求在本次事件处理结束后退出事件循环。
     exit_pending: bool,
+    /// 编辑器 RPC 服务端；`--rpc-port` 未指定（或绑定失败）时为 `None`。
+    rpc: Option<RpcServer>,
+    /// 每帧最多消化的编辑器请求数，避免编辑器洪泛把一帧拖成几百毫秒。
+    rpc_max_per_frame: usize,
 }
 
 impl EngineApp {
@@ -210,7 +222,8 @@ impl EngineApp {
         // 资产导入：命令行 `--asset` 与场景文件 `assets` 段合并（命令行排在前面）。
         // 场景里的相对路径按 `--assets-root` 解析，未指定时退回场景文件所在目录；
         // 导入失败不阻断启动。
-        let asset_specs = collect_asset_specs(&scene, &scene_path, cli.assets_root.as_deref(), &cli.assets);
+        let asset_specs =
+            collect_asset_specs(&scene, &scene_path, cli.assets_root.as_deref(), &cli.assets);
         let asset_specs = Rc::new(RefCell::new(asset_specs));
         let assets: Rc<RefCell<Arc<AssetLibrary>>> =
             Rc::new(RefCell::new(Arc::new(load_assets(&asset_specs.borrow()))));
@@ -227,11 +240,19 @@ impl EngineApp {
         }
         log::info!(
             "物理: {} / 后端 {} / 能力 [{}] / CCD 默认 {} / 重力 {:?} / 地面 {}",
-            if physics.enabled() { "启用" } else { "关闭" },
+            if physics.enabled() {
+                "启用"
+            } else {
+                "关闭"
+            },
             physics.kind().name(),
             physics.capabilities().summary(),
             if physics.capabilities().ccd {
-                if physics.ccd_default() { "on" } else { "off" }
+                if physics.ccd_default() {
+                    "on"
+                } else {
+                    "off"
+                }
             } else {
                 "不支持"
             },
@@ -285,7 +306,10 @@ impl EngineApp {
                 log::error!("脚本载入失败: {e}");
             }
         } else {
-            log::warn!("脚本 {} 不存在 (script not found)，跳过", script_path.display());
+            log::warn!(
+                "脚本 {} 不存在 (script not found)，跳过",
+                script_path.display()
+            );
         }
 
         let scene_mtime = std::fs::metadata(&scene_path)
@@ -302,6 +326,31 @@ impl EngineApp {
             }
         };
         let now = Instant::now();
+
+        // 编辑器桥：只在显式给了 `--rpc-port` 时启动。绑定失败不阻断启动——
+        // 端口被占是常见的开发期状况，引擎本身不应该因此起不来。
+        let rpc = match cli.rpc_port {
+            Some(port) => match RpcServer::bind(port, cli.rpc_token.clone()) {
+                Ok(server) => {
+                    log::info!(
+                        "编辑器桥已监听 {}（令牌：{}）",
+                        server.local_addr(),
+                        if cli.rpc_token.is_some() {
+                            "已启用"
+                        } else {
+                            "未设置"
+                        }
+                    );
+                    Some(server)
+                }
+                Err(e) => {
+                    log::error!("编辑器桥监听 127.0.0.1:{port} 失败（{e}），本次运行不提供 RPC");
+                    None
+                }
+            },
+            None => None,
+        };
+
         Self {
             scene_path,
             script_path,
@@ -334,6 +383,8 @@ impl EngineApp {
             probe_snapshot: Vec::new(),
             probe_skin_snapshot: Vec::new(),
             exit_pending: false,
+            rpc,
+            rpc_max_per_frame: cli.rpc_max_per_frame.unwrap_or(8).max(1),
         }
     }
 
@@ -361,8 +412,39 @@ impl EngineApp {
         }
     }
 
+    /// 消化本帧待处理的编辑器请求：一条请求 = 一次 `dispatch`，结果由连接线程回写。
+    ///
+    /// 每帧最多 `rpc_max_per_frame` 条，避免编辑器的高频请求把一帧拖成几百毫秒；
+    /// 剩下的留在服务端有界队列里，溢出时 RPC 线程会明确回 `BUSY` 而不是无限堆内存。
+    fn drain_editor_jobs(&mut self) {
+        let Some(server) = self.rpc.as_ref() else {
+            return;
+        };
+        let fps = if self.last_dt_ms > 0.0 {
+            1000.0 / self.last_dt_ms
+        } else {
+            0.0
+        };
+        for _ in 0..self.rpc_max_per_frame {
+            let Some(job) = server.try_recv() else { break };
+            let mut api = LocalEngineApi {
+                scene: &self.scene,
+                physics: &self.physics,
+                scripts: &mut self.scripts,
+                scene_label: self.scene_path.display().to_string(),
+                script_label: self.script_path.display().to_string(),
+                frames: self.frame_index,
+                fps,
+                uptime_ms: (self.time * 1000.0).round() as u64,
+                paused: self.paused,
+            };
+            job.run(&mut api);
+        }
+    }
+
     fn step_and_render(&mut self) {
         self.pump_console();
+        self.drain_editor_jobs();
         self.poll_gamepad();
 
         let now = Instant::now();
@@ -427,7 +509,11 @@ impl EngineApp {
                 stats.instances,
                 stats.draw_calls,
                 self.last_dt_ms,
-                if self.paused { "已暂停" } else { "运行中" },
+                if self.paused {
+                    "已暂停"
+                } else {
+                    "运行中"
+                },
                 pad_tag,
                 phys_tag
             ));
@@ -616,7 +702,8 @@ impl EngineApp {
             self.probe_skin_snapshot = centroids;
         } else {
             for (name, now) in &centroids {
-                let Some((_, base)) = self.probe_skin_snapshot.iter().find(|(n, _)| n == name) else {
+                let Some((_, base)) = self.probe_skin_snapshot.iter().find(|(n, _)| n == name)
+                else {
                     continue;
                 };
                 log::info!(
@@ -815,7 +902,11 @@ impl EngineApp {
             self.paused = !self.paused;
             log::info!(
                 "{}（手柄 Start）",
-                if self.paused { "已暂停" } else { "继续运行" }
+                if self.paused {
+                    "已暂停"
+                } else {
+                    "继续运行"
+                }
             );
         }
         if reload_script {
@@ -836,7 +927,11 @@ impl EngineApp {
             } else {
                 0.0
             };
-            let dy = if self.cursor_valid { y as f32 - i.mouse_y } else { 0.0 };
+            let dy = if self.cursor_valid {
+                y as f32 - i.mouse_y
+            } else {
+                0.0
+            };
             i.mouse_x = x as f32;
             i.mouse_y = y as f32;
             i.mouse_dx += dx;
@@ -903,7 +998,10 @@ impl EngineApp {
         let unchanged = {
             let current = self.asset_specs.borrow();
             current.len() == fresh.len()
-                && current.iter().zip(fresh.iter()).all(|(a, b)| asset_spec_eq(a, b))
+                && current
+                    .iter()
+                    .zip(fresh.iter())
+                    .all(|(a, b)| asset_spec_eq(a, b))
         };
         if unchanged {
             return;
@@ -938,7 +1036,10 @@ impl EngineApp {
                     // 先看 `assets` 段有没有变：变了就换库，再重建场景（回调会用新库补挂节点）
                     self.refresh_assets_from_json(&json);
                     match self.scripts.rebuild_scene(&json) {
-                        Ok(()) => log::info!("场景文件已热重载 (scene hot-reloaded): {}", self.scene_path.display()),
+                        Ok(()) => log::info!(
+                            "场景文件已热重载 (scene hot-reloaded): {}",
+                            self.scene_path.display()
+                        ),
                         Err(e) => log::error!("场景重载失败: {e}"),
                     }
                 }
@@ -966,7 +1067,14 @@ impl EngineApp {
             }
             Key::Named(NamedKey::Space) => {
                 self.paused = !self.paused;
-                log::info!("{}", if self.paused { "已暂停" } else { "继续运行" });
+                log::info!(
+                    "{}",
+                    if self.paused {
+                        "已暂停"
+                    } else {
+                        "继续运行"
+                    }
+                );
                 self.keys.remove(&key);
                 return;
             }
@@ -1127,7 +1235,8 @@ fn collect_asset_specs(
     assets_root: Option<&Path>,
     cli: &[PathBuf],
 ) -> Vec<AssetSpec> {
-    let base_dir = assets_root.unwrap_or_else(|| scene_path.parent().unwrap_or_else(|| Path::new(".")));
+    let base_dir =
+        assets_root.unwrap_or_else(|| scene_path.parent().unwrap_or_else(|| Path::new(".")));
     let mut specs: Vec<AssetSpec> = cli
         .iter()
         .map(|path| AssetSpec {
@@ -1436,7 +1545,13 @@ fn bind_asset_skins(
             let Some(n) = scene.get(*node) else {
                 continue;
             };
-            inst.add_joint(*node, joint.node_index, joint.path.clone(), n.world, mesh_world);
+            inst.add_joint(
+                *node,
+                joint.node_index,
+                joint.path.clone(),
+                n.world,
+                mesh_world,
+            );
         }
         if inst.is_empty() {
             log::warn!("蒙皮 `{}` 无有效关节，跳过", inst.name);
@@ -1447,7 +1562,10 @@ fn bind_asset_skins(
             inst.name,
             inst.joint_count(),
             mesh.joints.len(),
-            scene.get(mesh_node).map(|n| n.name.clone()).unwrap_or_default()
+            scene
+                .get(mesh_node)
+                .map(|n| n.name.clone())
+                .unwrap_or_default()
         );
         scene.add_skin(inst);
     }
@@ -1512,7 +1630,14 @@ fn spawn_asset_anim(
                 Some(pi) if (pi as usize) < ids.len() => match ids[pi as usize] {
                     Some(_) => {
                         let p = &entry.nodes[pi as usize];
-                        format!("{prefix}/{}", if p.path.is_empty() { p.name.as_str() } else { p.path.as_str() })
+                        format!(
+                            "{prefix}/{}",
+                            if p.path.is_empty() {
+                                p.name.as_str()
+                            } else {
+                                p.path.as_str()
+                            }
+                        )
                     }
                     None => return true, // 父还没建，留到下一轮
                 },
@@ -1623,16 +1748,18 @@ fn spawn_asset_anim(
     // 把该资产的全部片段登记到场景，供脚本 `set_anim_clip` 切换（idle → run → atk）
     for anim in &entry.animations {
         if !anim.is_empty() {
-            scene.register_anim_clip(
-                format!("{prefix}/{}", anim.name),
-                Arc::new(anim.clone()),
-            );
+            scene.register_anim_clip(format!("{prefix}/{}", anim.name), Arc::new(anim.clone()));
         }
     }
 
     // 选片段：声明里的 clip（大小写不敏感）优先，否则第一个
     let decl = spec.anim.clone().unwrap_or_default();
-    let clip = match decl.clip.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let clip = match decl
+        .clip
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(want) => entry
             .animations
             .iter()
@@ -1642,7 +1769,10 @@ fn spawn_asset_anim(
     };
     let Some(clip) = clip else {
         // 只有蒙皮没有动画的资产：骨架已建好，回去绑蒙皮即可
-        log::info!("资产 `{path_str}` 无动画片段，仅建立骨架（{} 个节点）", ids.len());
+        log::info!(
+            "资产 `{path_str}` 无动画片段，仅建立骨架（{} 个节点）",
+            ids.len()
+        );
         return Some(SkeletonSpawn {
             prefix: prefix.clone(),
             ids,
@@ -1679,7 +1809,11 @@ fn spawn_asset_anim(
         "动画实例 `{inst_name}`：{} 条轨道 / {:.2}s / {}",
         tracks,
         duration,
-        if scene.anim_instance(&inst_name).map(|a| a.playing).unwrap_or(false) {
+        if scene
+            .anim_instance(&inst_name)
+            .map(|a| a.playing)
+            .unwrap_or(false)
+        {
             "播放中"
         } else {
             "已暂停"

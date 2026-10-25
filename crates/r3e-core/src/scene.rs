@@ -1,4 +1,4 @@
-﻿//! 场景图：物件容器、生命周期（生成 / 消失）、层次变换与文件加载。
+//! 场景图：物件容器、生命周期（生成 / 消失）、层次变换与文件加载。
 
 use std::collections::HashMap;
 
@@ -342,7 +342,10 @@ impl Scene {
         // P4：蒙皮实例引用节点，节点没了就顺手剪掉，避免悬空 NodeId
         if !self.skins.is_empty()
             && (self.skins.iter().any(|s| s.mesh_node == id)
-                || self.skins.iter().any(|s| s.bindings.iter().any(|b| b.node == id)))
+                || self
+                    .skins
+                    .iter()
+                    .any(|s| s.bindings.iter().any(|b| b.node == id)))
         {
             self.prune_skins();
         }
@@ -426,12 +429,7 @@ impl Scene {
         self.update_skinning();
     }
 
-    fn resolve_world(
-        &self,
-        id: NodeId,
-        depth: u32,
-        cache: &mut HashMap<NodeId, Mat4>,
-    ) -> Mat4 {
+    fn resolve_world(&self, id: NodeId, depth: u32, cache: &mut HashMap<NodeId, Mat4>) -> Mat4 {
         if let Some(m) = cache.get(&id) {
             return *m;
         }
@@ -855,7 +853,12 @@ mod anim_tests {
             })
             .unwrap();
         let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
-        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.bindings = vec![crate::anim::AnimBinding {
+            node: id,
+            node_index: 1,
+            path: "root/arm".to_string(),
+            track: 0,
+        }];
         scene.add_anim_instance(inst);
 
         scene.update_animations(0.25);
@@ -879,7 +882,12 @@ mod anim_tests {
             })
             .unwrap();
         let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
-        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.bindings = vec![crate::anim::AnimBinding {
+            node: id,
+            node_index: 1,
+            path: "root/arm".to_string(),
+            track: 0,
+        }];
         inst.looping = false;
         scene.add_anim_instance(inst);
 
@@ -903,7 +911,12 @@ mod anim_tests {
             })
             .unwrap();
         let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
-        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.bindings = vec![crate::anim::AnimBinding {
+            node: id,
+            node_index: 1,
+            path: "root/arm".to_string(),
+            track: 0,
+        }];
         inst.looping = false;
         scene.add_anim_instance(inst);
 
@@ -950,7 +963,10 @@ mod anim_tests {
         // 从 0 播到 0.5s（片段 1s 循环，直接播 1s 会绕回 0），x 应在 run 的中点 10
         scene.update_animations(0.5);
         let p = scene.get(id).unwrap().transform.position;
-        assert!((p.x - 10.0).abs() < 1e-4, "切片段后应采样新片段，实际 {p:?}");
+        assert!(
+            (p.x - 10.0).abs() < 1e-4,
+            "切片段后应采样新片段，实际 {p:?}"
+        );
     }
 
     /// walk（x: 0→10）与 run（x: 0→20）共用同一节点，用于交叉淡入断言。
@@ -972,7 +988,12 @@ mod anim_tests {
         scene.register_anim_clip("demo/run", std::sync::Arc::new(run));
 
         let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(walk));
-        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.bindings = vec![crate::anim::AnimBinding {
+            node: id,
+            node_index: 1,
+            path: "root/arm".to_string(),
+            track: 0,
+        }];
         scene.add_anim_instance(inst);
         (scene, id)
     }
@@ -1007,7 +1028,11 @@ mod anim_tests {
         scene.update_animations(0.25);
 
         assert!(scene.set_anim_clip_fade("demo/walk", "run", 0.0));
-        assert_eq!(scene.anim_fade_source("demo/walk"), "", "0 时长不应留下过渡");
+        assert_eq!(
+            scene.anim_fade_source("demo/walk"),
+            "",
+            "0 时长不应留下过渡"
+        );
         scene.update_animations(0.2);
         let x = scene.get(id).unwrap().transform.position.x;
         assert!((x - 4.0).abs() < 1e-4, "硬切后直接采样 run，实际 {x}");
@@ -1028,7 +1053,10 @@ mod anim_tests {
         assert!(scene.set_anim_clip_fade("demo/walk", "run", 0.4));
         scene.update_animations(0.2);
         let x = scene.get(id).unwrap().transform.position.x;
-        assert!((x - 4.5).abs() < 1e-3, "缺轨道时应由旧片段驱动到 walk(0.45)=4.5，实际 {x}");
+        assert!(
+            (x - 4.5).abs() < 1e-3,
+            "缺轨道时应由旧片段驱动到 walk(0.45)=4.5，实际 {x}"
+        );
 
         // 过渡结束后不再有轨道驱动，节点停在旧片段最后写入的姿态
         scene.update_animations(0.3);
@@ -1046,15 +1074,17 @@ mod anim_tests {
             })
             .unwrap();
         let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(clip_with_move()));
-        inst.bindings = vec![crate::anim::AnimBinding { node: id, node_index: 1, path: "root/arm".to_string(), track: 0 }];
+        inst.bindings = vec![crate::anim::AnimBinding {
+            node: id,
+            node_index: 1,
+            path: "root/arm".to_string(),
+            track: 0,
+        }];
         scene.add_anim_instance(inst);
 
         scene.despawn("arm");
         scene.prune_anim_bindings();
-        assert_eq!(
-            scene.anim_instance("demo/walk").unwrap().bindings.len(),
-            0
-        );
+        assert_eq!(scene.anim_instance("demo/walk").unwrap().bindings.len(), 0);
         // 没有绑定也不该 panic
         scene.update_animations(0.1);
     }

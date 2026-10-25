@@ -28,13 +28,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use glam::{Quat, Vec3};
+use r3e_core::{NodeId, Scene};
 use rapier3d::na::Unit;
 use rapier3d::parry::query::{
     cast_shapes, intersection_test, Ray as ParryRay, ShapeCastOptions, ShapeCastStatus,
 };
 use rapier3d::parry::shape::{Ball, Cuboid};
 use rapier3d::prelude::*;
-use r3e_core::{NodeId, Scene};
 
 use crate::{
     cast_candidate_better, BackendCaps, BodyDesc, BodyHandle, BodyKind, CastShape, ColliderShape,
@@ -93,7 +93,11 @@ struct EventCollector {
 }
 
 /// 碰撞体 → 所属节点（地面标记为 `None`）。
-fn node_of(bodies: &RigidBodySet, colliders: &ColliderSet, handle: ColliderHandle) -> Option<NodeId> {
+fn node_of(
+    bodies: &RigidBodySet,
+    colliders: &ColliderSet,
+    handle: ColliderHandle,
+) -> Option<NodeId> {
     let parent = colliders.get(handle)?.parent()?;
     let data = bodies.get(parent)?.user_data;
     if data == GROUND_USER_DATA {
@@ -582,7 +586,8 @@ impl PhysicsBackend for RapierBackend {
             ) else {
                 continue;
             };
-            let started_inside = matches!(hit.status, ShapeCastStatus::PenetratingOrWithinTargetDist);
+            let started_inside =
+                matches!(hit.status, ShapeCastStatus::PenetratingOrWithinTargetDist);
             let distance = (hit.time_of_impact * max_distance).max(0.0);
             let normal = if started_inside {
                 // 初始重叠：parry 给的是「最小平移方向」，与推进方向无关（球心在盒心时甚至可能朝上）。

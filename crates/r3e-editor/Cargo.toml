@@ -1,0 +1,13 @@
+[package]
+name = "r3e-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "r3e 编辑器桥：TCP + NDJSON 上的 JSON-RPC 2.0 协议与传输层"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true

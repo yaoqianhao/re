@@ -79,7 +79,8 @@ impl Transform {
         let dir = target - self.position;
         if dir.length_squared() > 1e-8 {
             // look_at_quat 给出的是相机朝向（-Z 前向），物件需取反
-            self.rotation = glam::camera::rh::view::look_at_quat(self.position, target, up).inverse();
+            self.rotation =
+                glam::camera::rh::view::look_at_quat(self.position, target, up).inverse();
         }
     }
 

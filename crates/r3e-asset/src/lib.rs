@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use r3e_core::anim::{AnimClip, AnimTrack};
-use r3e_core::mesh::{
-    MaterialData, MeshData, MeshPartData, TextureImage, Vertex,
-};
+use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, TextureImage, Vertex};
 use r3e_core::skin::{SkinData, SkinJoint};
 use r3e_core::{AssetId, Mat4, MeshRef, Vec3, Vec4};
 use thiserror::Error;
@@ -258,7 +256,6 @@ impl AssetEntry {
         self.animations.first()
     }
 
-
     pub fn triangle_total(&self) -> usize {
         self.meshes.iter().map(|m| m.triangle_count()).sum()
     }
@@ -381,7 +378,12 @@ impl r3e_core::mesh::MeshProvider for AssetLibrary {
     /// 视锥剔除每帧都要问包围盒，绝不能在热路径上重扫顶点。
     fn mesh_aabb(&self, key: MeshRef) -> Option<r3e_core::Aabb> {
         let mesh = self.mesh(key)?;
-        if !mesh.aabb_min.iter().chain(mesh.aabb_max.iter()).all(|v| v.is_finite()) {
+        if !mesh
+            .aabb_min
+            .iter()
+            .chain(mesh.aabb_max.iter())
+            .all(|v| v.is_finite())
+        {
             return None;
         }
         Some(r3e_core::Aabb::new(
@@ -597,7 +599,10 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
     // ---- 3c) 动画烘焙（P3 起） ----
     let animations = extract_animations(&scene, &nodes);
     if !animations.is_empty() {
-        let keys: usize = animations.iter().map(|a| a.tracks.iter().map(|t| t.keys.len()).sum::<usize>()).sum();
+        let keys: usize = animations
+            .iter()
+            .map(|a| a.tracks.iter().map(|t| t.keys.len()).sum::<usize>())
+            .sum();
         log::debug!(
             "asset: `{display}` 动画 {} 段 / 共 {keys} 个关键帧",
             animations.len()
@@ -635,7 +640,11 @@ fn extract_nodes(scene: &ufbx::Scene, node_mesh: &HashMap<u32, u32>) -> Vec<Node
                 .parent
                 .as_ref()
                 .and_then(|p| index_of.get(&p.element.element_id).copied()),
-            position: [lt.translation.x as f32, lt.translation.y as f32, lt.translation.z as f32],
+            position: [
+                lt.translation.x as f32,
+                lt.translation.y as f32,
+                lt.translation.z as f32,
+            ],
             rotation: [
                 lt.rotation.x as f32,
                 lt.rotation.y as f32,
@@ -1042,11 +1051,7 @@ fn decode_image_bytes(bytes: &[u8], name_hint: Option<&str>) -> Option<Arc<Textu
     if width == 0 || height == 0 {
         return None;
     }
-    Some(Arc::new(TextureImage::new(
-        width,
-        height,
-        image.into_raw(),
-    )))
+    Some(Arc::new(TextureImage::new(width, height, image.into_raw())))
 }
 
 /// 从材质槽位里挑一个当 base color：按常见命名优先级取第一个命中的。
@@ -1224,12 +1229,11 @@ fn extract_mesh(
         let tri_count = (face_tris.len() / 3) as u32;
         let tri_offset = (indices.len() / 3) as u32;
         // triangulate_face_vec 输出的是角点号，必须经 corner_to_vertex 转成顶点号
-        indices.extend(face_tris.iter().map(|&c| {
-            corner_to_vertex
-                .get(c as usize)
-                .copied()
-                .unwrap_or(0)
-        }));
+        indices.extend(
+            face_tris
+                .iter()
+                .map(|&c| corner_to_vertex.get(c as usize).copied().unwrap_or(0)),
+        );
 
         // 连续同材质 face 合并为一个分区
         let same_part = match part_mat {
@@ -1255,26 +1259,29 @@ fn extract_mesh(
     let (skin_data, joints, weights) =
         extract_skinning(mesh, &vertex_pos_index, node_index_of, parent_of, name_of);
 
-    Ok((MeshAsset {
-        name: mesh.element.name.to_string(),
-        node_path: node_path_of(node.element.element_id, parent_of, name_of),
-        positions,
-        normals,
-        uvs,
-        indices,
-        material_parts,
-        aabb_min: [aabb_min.x, aabb_min.y, aabb_min.z],
-        aabb_max: [aabb_max.x, aabb_max.y, aabb_max.z],
-        joints,
-        weights,
-        // 真正下标由 import_fbx 在收集骨骼表时回填
-        skin: skin_data.as_ref().map(|_| 0),
-        node_local_matrix: world.to_cols_array_2d(),
-        source_path: source_path.to_string(),
-        source_vertex_count: mesh.num_vertices,
-        source_face_count: mesh.num_faces,
-        source_triangle_count: mesh.num_triangles,
-    }, skin_data))
+    Ok((
+        MeshAsset {
+            name: mesh.element.name.to_string(),
+            node_path: node_path_of(node.element.element_id, parent_of, name_of),
+            positions,
+            normals,
+            uvs,
+            indices,
+            material_parts,
+            aabb_min: [aabb_min.x, aabb_min.y, aabb_min.z],
+            aabb_max: [aabb_max.x, aabb_max.y, aabb_max.z],
+            joints,
+            weights,
+            // 真正下标由 import_fbx 在收集骨骼表时回填
+            skin: skin_data.as_ref().map(|_| 0),
+            node_local_matrix: world.to_cols_array_2d(),
+            source_path: source_path.to_string(),
+            source_vertex_count: mesh.num_vertices,
+            source_face_count: mesh.num_faces,
+            source_triangle_count: mesh.num_triangles,
+        },
+        skin_data,
+    ))
 }
 
 /// 抽取一个网格的蒙皮（P4）。
@@ -1320,7 +1327,10 @@ fn extract_skinning(
             continue;
         };
         if joints.len() >= r3e_core::MAX_JOINT_MATRICES {
-            log::warn!("关节数超过上限 {}，后续关节被丢弃", r3e_core::MAX_JOINT_MATRICES);
+            log::warn!(
+                "关节数超过上限 {}，后续关节被丢弃",
+                r3e_core::MAX_JOINT_MATRICES
+            );
             break;
         }
         slot_of_cluster[ci] = Some(joints.len() as u16);
@@ -1379,10 +1389,16 @@ fn extract_skinning(
     }
 
     if overflow > 0 {
-        log::warn!("网格 `{}` 有 {overflow} 个顶点权重数超过 4，已截断", mesh.element.name);
+        log::warn!(
+            "网格 `{}` 有 {overflow} 个顶点权重数超过 4，已截断",
+            mesh.element.name
+        );
     }
     if orphan > 0 {
-        log::debug!("网格 `{}` 有 {orphan} 个顶点没有有效权重（按静止位置绘制）", mesh.element.name);
+        log::debug!(
+            "网格 `{}` 有 {orphan} 个顶点没有有效权重（按静止位置绘制）",
+            mesh.element.name
+        );
     }
 
     let data = SkinData {
@@ -1415,11 +1431,7 @@ fn material_of(
         .or(Some(raw_material))
 }
 
-fn node_path_of(
-    id: u32,
-    parent_of: &HashMap<u32, u32>,
-    name_of: &HashMap<u32, String>,
-) -> String {
+fn node_path_of(id: u32, parent_of: &HashMap<u32, u32>, name_of: &HashMap<u32, String>) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut cur = Some(id);
     for _ in 0..64 {
@@ -1499,7 +1511,11 @@ pub fn render_dump(entry: &AssetEntry) -> String {
         let _ = writeln!(
             out,
             "   UV: {} (u {:.3}..{:.3}, v {:.3}..{:.3})",
-            if m.uv_valid() { "有效" } else { "无效/全零" },
+            if m.uv_valid() {
+                "有效"
+            } else {
+                "无效/全零"
+            },
             uv_min[0],
             uv_max[0],
             uv_min[1],
@@ -1524,13 +1540,10 @@ pub fn render_dump(entry: &AssetEntry) -> String {
             let _ = writeln!(out, "     (无材质分区)");
         }
         for (pi, part) in m.material_parts.iter().enumerate() {
-            let _ = writeln!(
-                out,
-                "     part {} -> {}",
-                pi,
-                part.material_name
-            );
-            let Some(mi) = part.material_index else { continue };
+            let _ = writeln!(out, "     part {} -> {}", pi, part.material_name);
+            let Some(mi) = part.material_index else {
+                continue;
+            };
             let Some(mat) = entry.materials.get(mi as usize) else {
                 continue;
             };
@@ -1592,7 +1605,13 @@ pub fn render_dump(entry: &AssetEntry) -> String {
     if !entry.skins.is_empty() {
         let _ = writeln!(out, "\n骨骼表:");
         for (i, skin) in entry.skins.iter().enumerate() {
-            let _ = writeln!(out, "  #{} \"{}\"  {} 关节", i, skin.name, skin.joint_count());
+            let _ = writeln!(
+                out,
+                "  #{} \"{}\"  {} 关节",
+                i,
+                skin.name,
+                skin.joint_count()
+            );
         }
     }
 
@@ -1662,7 +1681,11 @@ mod skin_tests {
         let skin = entry.skin(skin_index).expect("蒙皮数据应存在");
 
         assert!(!skin.is_empty(), "关节表不应为空");
-        assert_eq!(mesh.joints.len(), mesh.positions.len(), "每顶点一组关节下标");
+        assert_eq!(
+            mesh.joints.len(),
+            mesh.positions.len(),
+            "每顶点一组关节下标"
+        );
         assert_eq!(mesh.weights.len(), mesh.positions.len(), "每顶点一组权重");
 
         let joint_count = skin.joint_count() as u16;

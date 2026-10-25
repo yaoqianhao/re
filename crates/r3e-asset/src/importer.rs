@@ -150,10 +150,7 @@ impl ImporterRegistry {
                 return Err(AssetError::AirViolation {
                     path: path.display().to_string(),
                     count: issues.len(),
-                    first: issues
-                        .first()
-                        .map(|i| i.to_string())
-                        .unwrap_or_default(),
+                    first: issues.first().map(|i| i.to_string()).unwrap_or_default(),
                 });
             }
         }
@@ -200,7 +197,10 @@ pub fn audit_issues(entry: &AssetEntry) -> Vec<AirIssue> {
     let mut out = Vec::new();
     for mesh in &entry.meshes {
         let data = mesh.to_mesh_data();
-        out.extend(validate_with(&data, entry.skins.first().map(|s| s.joint_count())));
+        out.extend(validate_with(
+            &data,
+            entry.skins.first().map(|s| s.joint_count()),
+        ));
     }
     out
 }
@@ -217,7 +217,11 @@ mod tests {
             .import(&PathBuf::from("model.obj"))
             .expect_err("未知扩展名必须显式报错");
         match err {
-            AssetError::UnsupportedFormat { extension, supported, .. } => {
+            AssetError::UnsupportedFormat {
+                extension,
+                supported,
+                ..
+            } => {
                 assert_eq!(extension, "obj");
                 assert!(supported.contains(&"fbx".to_string()));
             }
@@ -240,11 +244,7 @@ mod tests {
 
     /// 构造一个只含单个三角形的最小 `AssetEntry`，用于审计测试。
     fn triangle_entry(normals: Vec<[f32; 3]>, indices: Vec<u32>) -> AssetEntry {
-        let positions = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
+        let positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let mesh = crate::MeshAsset {
             name: "tri".to_string(),
             node_path: "tri".to_string(),
@@ -283,10 +283,7 @@ mod tests {
 
     #[test]
     fn audit_accepts_a_well_formed_triangle() {
-        let entry = triangle_entry(
-            vec![[0.0, 0.0, 1.0]; 3],
-            vec![0, 1, 2],
-        );
+        let entry = triangle_entry(vec![[0.0, 0.0, 1.0]; 3], vec![0, 1, 2]);
         assert!(audit_entry(&entry).is_empty(), "{:?}", audit_entry(&entry));
     }
 

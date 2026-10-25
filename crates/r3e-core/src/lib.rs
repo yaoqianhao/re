@@ -24,9 +24,7 @@ pub use frustum::Frustum;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use input::{ButtonEdge, InputState, PadState};
 pub use light::{Light, ShadowSettings};
-pub use mesh::{
-    MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex,
-};
+pub use mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use procedural::ProceduralProvider;
 pub use scene::{

@@ -20,7 +20,6 @@
 //! **可切换性是硬约束**：`rapier3d` / `parry` 的类型只允许出现在 `rapier_backend.rs`，
 //! 门面、`app`、脚本层只接触 `glam` 向量与本文件的契约类型。
 
-
 use glam::Vec3;
 use r3e_core::{Aabb, MeshData, Node, NodeId, PhysicsSceneDesc, Scene};
 
@@ -217,7 +216,6 @@ impl PhysicsEvent {
         format!("{}:{}-{}", tag, side(self.a), side(self.b))
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyKind {
@@ -1702,16 +1700,25 @@ mod tests {
         // 资产网格真实尺寸远大于 1：碰撞体应跟着 AABB 走，而不是退化成 scale*0.5
         let (mut scene, id) = scene_with_ball();
         scene.get_mut(id).unwrap().transform.scale = Vec3::new(2.0, 1.0, 0.5);
-        let mesh = air_box(
-            Vec3::new(-1.0, 0.0, -0.5),
-            Vec3::new(1.0, 2.0, 0.5),
-        );
+        let mesh = air_box(Vec3::new(-1.0, 0.0, -0.5), Vec3::new(1.0, 2.0, 0.5));
         let desc = BodyDesc::infer_with(scene.get(id).unwrap(), Some(&mesh));
         assert_eq!(desc.shape, ColliderShape::Box);
         // AABB 半尺寸 (1,1,0.5) × scale (2,1,0.5) = (2,1,0.25)
-        assert!((desc.half_extents.x - 2.0).abs() < 1e-6, "x={}", desc.half_extents.x);
-        assert!((desc.half_extents.y - 1.0).abs() < 1e-6, "y={}", desc.half_extents.y);
-        assert!((desc.half_extents.z - 0.25).abs() < 1e-6, "z={}", desc.half_extents.z);
+        assert!(
+            (desc.half_extents.x - 2.0).abs() < 1e-6,
+            "x={}",
+            desc.half_extents.x
+        );
+        assert!(
+            (desc.half_extents.y - 1.0).abs() < 1e-6,
+            "y={}",
+            desc.half_extents.y
+        );
+        assert!(
+            (desc.half_extents.z - 0.25).abs() < 1e-6,
+            "z={}",
+            desc.half_extents.z
+        );
     }
 
     #[test]
@@ -1727,7 +1734,9 @@ mod tests {
         let mut physics = Physics::new();
         assert!(!physics.enabled());
         let (mut scene, id) = scene_with_ball();
-        assert!(physics.try_create_body(id, ball_desc(Vec3::Y * 5.0)).is_none());
+        assert!(physics
+            .try_create_body(id, ball_desc(Vec3::Y * 5.0))
+            .is_none());
         physics.step(1.0 / 60.0, &mut scene);
         assert_eq!(physics.body_count(), 0);
         assert!((scene.get(id).unwrap().transform.position.y - 5.0).abs() < 1e-6);

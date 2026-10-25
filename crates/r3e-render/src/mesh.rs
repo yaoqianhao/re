@@ -69,9 +69,16 @@ mod tests {
     fn vertex_layout_carries_skinning() {
         let layout = vertex_layout();
         assert_eq!(layout.array_stride as usize, std::mem::size_of::<Vertex>());
-        assert_eq!(layout.array_stride, 56, "pos12+normal12+uv8+joints8+weights16");
+        assert_eq!(
+            layout.array_stride, 56,
+            "pos12+normal12+uv8+joints8+weights16"
+        );
 
-        let locs: Vec<u32> = layout.attributes.iter().map(|a| a.shader_location).collect();
+        let locs: Vec<u32> = layout
+            .attributes
+            .iter()
+            .map(|a| a.shader_location)
+            .collect();
         assert_eq!(locs, vec![0, 1, 2, 3, 4], "顶点属性位置不得与实例属性冲突");
 
         assert_eq!(layout.attributes[3].format, wgpu::VertexFormat::Uint16x4);
@@ -84,7 +91,10 @@ mod tests {
     #[test]
     fn instance_layout_adds_joint_base() {
         let layout = InstanceRaw::layout();
-        assert_eq!(layout.array_stride as usize, std::mem::size_of::<InstanceRaw>());
+        assert_eq!(
+            layout.array_stride as usize,
+            std::mem::size_of::<InstanceRaw>()
+        );
         assert_eq!(layout.array_stride, 96);
         assert_eq!(layout.attributes.len(), 6);
         assert_eq!(layout.attributes[5].shader_location, 10);

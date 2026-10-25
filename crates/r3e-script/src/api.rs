@@ -92,11 +92,7 @@ fn shape_cast_map(hit: Option<ShapeCastHit>) -> Map {
 }
 
 /// 对指定名字的物件做一次可变访问；找不到返回 false。
-fn edit(
-    scene: &Rc<RefCell<Scene>>,
-    name: &str,
-    f: impl FnOnce(&mut r3e_core::Node),
-) -> bool {
+fn edit(scene: &Rc<RefCell<Scene>>, name: &str, f: impl FnOnce(&mut r3e_core::Node)) -> bool {
     let mut s = scene.borrow_mut();
     match s.find_mut(name) {
         Some(node) => {
@@ -150,20 +146,23 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     );
 
     let c = ctx.clone();
-    engine.register_fn("create_node_at_origin", move |name: &str, mesh: &str| -> bool {
-        let desc = ObjectDesc {
-            name: name.to_string(),
-            mesh: Some(mesh.to_string()),
-            ..Default::default()
-        };
-        match c.scene.borrow_mut().spawn(desc) {
-            Ok(_) => true,
-            Err(e) => {
-                println!("[script] create_node 失败: {e}");
-                false
+    engine.register_fn(
+        "create_node_at_origin",
+        move |name: &str, mesh: &str| -> bool {
+            let desc = ObjectDesc {
+                name: name.to_string(),
+                mesh: Some(mesh.to_string()),
+                ..Default::default()
+            };
+            match c.scene.borrow_mut().spawn(desc) {
+                Ok(_) => true,
+                Err(e) => {
+                    println!("[script] create_node 失败: {e}");
+                    false
+                }
             }
-        }
-    });
+        },
+    );
 
     // 用 JSON 描述物件，字段与场景文件一致
     let c = ctx.clone();
@@ -225,18 +224,24 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
 
     // ---------------- 变换 ----------------
     let c = ctx.clone();
-    engine.register_fn("set_pos", move |name: &str, x: f64, y: f64, z: f64| -> bool {
-        edit(&c.scene, name, |n| {
-            n.transform.position = Vec3::new(f32_of(x), f32_of(y), f32_of(z));
-        })
-    });
+    engine.register_fn(
+        "set_pos",
+        move |name: &str, x: f64, y: f64, z: f64| -> bool {
+            edit(&c.scene, name, |n| {
+                n.transform.position = Vec3::new(f32_of(x), f32_of(y), f32_of(z));
+            })
+        },
+    );
 
     let c = ctx.clone();
-    engine.register_fn("move_by", move |name: &str, dx: f64, dy: f64, dz: f64| -> bool {
-        edit(&c.scene, name, |n| {
-            n.transform.position += Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz));
-        })
-    });
+    engine.register_fn(
+        "move_by",
+        move |name: &str, dx: f64, dy: f64, dz: f64| -> bool {
+            edit(&c.scene, name, |n| {
+                n.transform.position += Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz));
+            })
+        },
+    );
 
     let c = ctx.clone();
     engine.register_fn("get_pos", move |name: &str| -> Array {
@@ -252,26 +257,36 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     });
 
     let c = ctx.clone();
-    engine.register_fn("set_rot", move |name: &str, x: f64, y: f64, z: f64| -> bool {
-        edit(&c.scene, name, |n| {
-            n.transform.set_euler_deg(Vec3::new(f32_of(x), f32_of(y), f32_of(z)));
-        })
-    });
+    engine.register_fn(
+        "set_rot",
+        move |name: &str, x: f64, y: f64, z: f64| -> bool {
+            edit(&c.scene, name, |n| {
+                n.transform
+                    .set_euler_deg(Vec3::new(f32_of(x), f32_of(y), f32_of(z)));
+            })
+        },
+    );
 
     let c = ctx.clone();
-    engine.register_fn("rotate", move |name: &str, x: f64, y: f64, z: f64| -> bool {
-        edit(&c.scene, name, |n| {
-            let e = n.transform.euler_deg() + Vec3::new(f32_of(x), f32_of(y), f32_of(z));
-            n.transform.set_euler_deg(e);
-        })
-    });
+    engine.register_fn(
+        "rotate",
+        move |name: &str, x: f64, y: f64, z: f64| -> bool {
+            edit(&c.scene, name, |n| {
+                let e = n.transform.euler_deg() + Vec3::new(f32_of(x), f32_of(y), f32_of(z));
+                n.transform.set_euler_deg(e);
+            })
+        },
+    );
 
     let c = ctx.clone();
-    engine.register_fn("set_scale", move |name: &str, x: f64, y: f64, z: f64| -> bool {
-        edit(&c.scene, name, |n| {
-            n.transform.scale = Vec3::new(f32_of(x), f32_of(y), f32_of(z));
-        })
-    });
+    engine.register_fn(
+        "set_scale",
+        move |name: &str, x: f64, y: f64, z: f64| -> bool {
+            edit(&c.scene, name, |n| {
+                n.transform.scale = Vec3::new(f32_of(x), f32_of(y), f32_of(z));
+            })
+        },
+    );
 
     let c = ctx.clone();
     engine.register_fn("set_scale_uniform", move |name: &str, s: f64| -> bool {
@@ -282,11 +297,14 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
 
     // ---------------- 外观 ----------------
     let c = ctx.clone();
-    engine.register_fn("set_color", move |name: &str, r: f64, g: f64, b: f64| -> bool {
-        edit(&c.scene, name, |n| {
-            n.color = Vec4::new(f32_of(r), f32_of(g), f32_of(b), n.color.w);
-        })
-    });
+    engine.register_fn(
+        "set_color",
+        move |name: &str, r: f64, g: f64, b: f64| -> bool {
+            edit(&c.scene, name, |n| {
+                n.color = Vec4::new(f32_of(r), f32_of(g), f32_of(b), n.color.w);
+            })
+        },
+    );
 
     let c = ctx.clone();
     engine.register_fn(
@@ -376,15 +394,18 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     });
 
     let c = ctx.clone();
-    engine.register_fn("set_anim_looping", move |name: &str, looping: bool| -> bool {
-        match c.scene.borrow_mut().anim_instance_mut(name) {
-            Some(inst) => {
-                inst.looping = looping;
-                true
+    engine.register_fn(
+        "set_anim_looping",
+        move |name: &str, looping: bool| -> bool {
+            match c.scene.borrow_mut().anim_instance_mut(name) {
+                Some(inst) => {
+                    inst.looping = looping;
+                    true
+                }
+                None => false,
             }
-            None => false,
-        }
-    });
+        },
+    );
 
     let c = ctx.clone();
     engine.register_fn("anim_playing", move |name: &str| -> bool {
@@ -479,7 +500,10 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("orbit", move |yaw: f64, pitch: f64| {
-        c.scene.borrow_mut().camera.orbit(f32_of(yaw), f32_of(pitch));
+        c.scene
+            .borrow_mut()
+            .camera
+            .orbit(f32_of(yaw), f32_of(pitch));
     });
 
     let c = ctx.clone();
@@ -793,19 +817,22 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     });
 
     let c = ctx.clone();
-    engine.register_fn("body_impulse", move |name: &str, x: f64, y: f64, z: f64| -> bool {
-        let handle = {
-            let scene = c.scene.borrow();
-            match scene.find(name).and_then(|n| n.body) {
-                Some(h) => BodyHandle(h),
-                None => return false,
-            }
-        };
-        c.physics
-            .borrow_mut()
-            .apply_impulse(handle, Vec3::new(f32_of(x), f32_of(y), f32_of(z)));
-        true
-    });
+    engine.register_fn(
+        "body_impulse",
+        move |name: &str, x: f64, y: f64, z: f64| -> bool {
+            let handle = {
+                let scene = c.scene.borrow();
+                match scene.find(name).and_then(|n| n.body) {
+                    Some(h) => BodyHandle(h),
+                    None => return false,
+                }
+            };
+            c.physics
+                .borrow_mut()
+                .apply_impulse(handle, Vec3::new(f32_of(x), f32_of(y), f32_of(z)));
+            true
+        },
+    );
 
     let c = ctx.clone();
     engine.register_fn("body_count", move || -> i64 {
@@ -913,10 +940,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         move |x: f64, y: f64, z: f64, radius: f64| -> Array {
             c.physics
                 .borrow()
-                .overlap_sphere(
-                    Vec3::new(f32_of(x), f32_of(y), f32_of(z)),
-                    f32_of(radius),
-                )
+                .overlap_sphere(Vec3::new(f32_of(x), f32_of(y), f32_of(z)), f32_of(radius))
                 .iter()
                 .map(|h| Dynamic::from(h.node as i64))
                 .collect()
@@ -933,7 +957,15 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn(
         "physics_shape_cast_sphere",
-        move |ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, radius: f64, max_dist: f64| -> Map {
+        move |ox: f64,
+              oy: f64,
+              oz: f64,
+              dx: f64,
+              dy: f64,
+              dz: f64,
+              radius: f64,
+              max_dist: f64|
+              -> Map {
             let hit = c.physics.borrow().shape_cast(
                 CastShape::sphere(f32_of(radius)),
                 Vec3::new(f32_of(ox), f32_of(oy), f32_of(oz)),
@@ -1010,9 +1042,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         };
         let ok = c.physics.borrow_mut().set_ccd(handle, on);
         if !ok {
-            println!(
-                "[script] body_set_ccd: `{name}` 不是动态刚体，或后端不支持 CCD"
-            );
+            println!("[script] body_set_ccd: `{name}` 不是动态刚体，或后端不支持 CCD");
         }
         ok
     });
