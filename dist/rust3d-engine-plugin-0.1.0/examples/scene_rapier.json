@@ -1,0 +1,81 @@
+{
+  "name": "r3e-rapier-demo",
+  "background": [0.043, 0.049, 0.07, 1.0],
+  "camera": {
+    "position": [12.0, 8.0, 15.0],
+    "target": [0.0, 2.0, 0.0],
+    "fov": 55.0
+  },
+  "light": {
+    "direction": [-0.45, -0.9, -0.35],
+    "color": [1.0, 0.96, 0.9],
+    "intensity": 1.15,
+    "ambient": [0.16, 0.18, 0.23]
+  },
+  "physics": {
+    "enabled": true,
+    "backend": "rapier",
+    "gravity": [0.0, -9.81, 0.0],
+    "ground": 0.0
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [0, 0, 0],
+      "scale": [30, 1, 30],
+      "color": [0.2, 0.22, 0.27, 1.0]
+    },
+    {
+      "name": "platform",
+      "mesh": "cube",
+      "position": [0.0, 0.5, 0.0],
+      "scale": [5.0, 1.0, 5.0],
+      "color": [0.32, 0.36, 0.45, 1.0],
+      "physics": {
+        "body": "static",
+        "collider": "box"
+      }
+    },
+    {
+      "name": "stack_0",
+      "mesh": "cube",
+      "position": [-0.6, 2.0, 0.0],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.95, 0.55, 0.28, 1.0],
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.1, "friction": 0.9 }
+    },
+    {
+      "name": "stack_1",
+      "mesh": "cube",
+      "position": [0.6, 3.2, 0.2],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.35, 0.72, 0.95, 1.0],
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.1, "friction": 0.9 }
+    },
+    {
+      "name": "stack_2",
+      "mesh": "cube",
+      "position": [0.0, 4.4, -0.2],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.45, 0.85, 0.62, 1.0],
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.1, "friction": 0.9 }
+    },
+    {
+      "name": "ball_bouncy",
+      "mesh": "sphere",
+      "position": [-3.5, 6.0, 1.5],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.95, 0.85, 0.35, 1.0],
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.8, "friction": 0.35 }
+    },
+    {
+      "name": "pillar",
+      "mesh": "cylinder",
+      "position": [3.5, 1.5, -1.5],
+      "scale": [1.0, 3.0, 1.0],
+      "color": [0.75, 0.78, 0.85, 1.0],
+      "physics": { "body": "static", "collider": "cylinder" }
+    }
+  ]
+}

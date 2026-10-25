@@ -1,0 +1,60 @@
+{
+  "name": "r3e-ccd-demo",
+  "background": [0.043, 0.049, 0.07, 1.0],
+  "camera": {
+    "position": [2.0, 9.0, 16.0],
+    "target": [0.0, 3.0, 0.0],
+    "fov": 55.0
+  },
+  "light": {
+    "direction": [-0.45, -0.9, -0.35],
+    "color": [1.0, 0.96, 0.9],
+    "intensity": 1.15,
+    "ambient": [0.16, 0.18, 0.23]
+  },
+  "physics": {
+    "enabled": true,
+    "backend": "rapier",
+    "gravity": [0.0, -1.0, 0.0],
+    "ground": 0.0,
+    "ccd": true
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [0, 0, 0],
+      "scale": [40, 1, 40],
+      "color": [0.2, 0.22, 0.27, 1.0]
+    },
+    {
+      "name": "wall",
+      "mesh": "cube",
+      "position": [0.0, 4.0, 0.0],
+      "scale": [0.04, 8.0, 8.0],
+      "color": [0.85, 0.32, 0.32, 1.0],
+      "physics": {
+        "body": "kinematic",
+        "collider": "box",
+        "restitution": 0.0,
+        "friction": 0.0
+      }
+    },
+    {
+      "name": "bullet_ccd",
+      "mesh": "sphere",
+      "position": [-9.0, 4.0, 1.2],
+      "scale": [0.4, 0.4, 0.4],
+      "color": [0.35, 0.72, 0.95, 1.0],
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.0, "friction": 0.0, "ccd": true }
+    },
+    {
+      "name": "bullet_no_ccd",
+      "mesh": "sphere",
+      "position": [-9.0, 4.0, -1.2],
+      "scale": [0.4, 0.4, 0.4],
+      "color": [0.95, 0.85, 0.35, 1.0],
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.0, "friction": 0.0, "ccd": false }
+    }
+  ]
+}

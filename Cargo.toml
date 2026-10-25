@@ -8,6 +8,7 @@ members = [
     "crates/r3e-asset",
     "crates/r3e-app",
     "crates/r3e-editor",
+    "crates/r3e-plugin",
 ]
 
 [workspace.package]
@@ -59,3 +60,14 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# 插件以单个 exe 分发（ai_ide 直接 spawn 它），release 按「瘦二进制」调：
+# 去掉符号、跨 crate 内联，换来更小的包和更快的冷启动。
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+# 插件是子进程：panic 就该整进程退出，让宿主记成崩溃并下架工具，
+# 而不是留一个半死不活的进程挂着工具表。
+panic = "abort"

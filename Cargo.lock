@@ -2120,6 +2120,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-plugin"
+version = "0.1.0"
+dependencies = [
+ "r3e-core",
+ "r3e-physics",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "r3e-render"
 version = "0.1.0"
 dependencies = [

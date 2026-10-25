@@ -1,0 +1,22 @@
+[package]
+name = "r3e-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "rust3d-engine 的 ai_ide 插件入口：原生子进程 + NDJSON over stdio"
+
+[[bin]]
+name = "r3e-plugin"
+path = "src/main.rs"
+
+[features]
+default = []
+# 把 Rapier 物理后端编进插件二进制：`cargo build -p r3e-plugin --features rapier`
+rapier = ["r3e-physics/rapier"]
+
+[dependencies]
+r3e-core.workspace = true
+r3e-physics.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,178 @@
+{
+  "capabilities": [
+    "fs.read"
+  ],
+  "commands": [
+    {
+      "description": "输出引擎信息 + 当前工作区读取能力是否可用，用于排查插件挂载后「读不到场景文件」这类问题。",
+      "name": "engine_diagnostics",
+      "risk": "read",
+      "title": "rust3d-engine：引擎诊断"
+    }
+  ],
+  "description": "把 rust3d-engine 的纯逻辑层（场景、网格、AIR 校验、物理）挂给 ai_ide：原生子进程 + NDJSON over stdio，无需图形栈。",
+  "id": "rust3d-engine",
+  "main": "bin/r3e-plugin.exe",
+  "name": "rust3d-engine",
+  "pluginApi": "1.0",
+  "subscriptions": [],
+  "timeoutMs": 60000,
+  "tools": [
+    {
+      "description": "返回 rust3d-engine 的版本、crate 组成、物理后端可用性、内置图元与插件协议参数。无副作用，可作为连通性自检。",
+      "name": "engine_info",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "description": "解析 r3e 场景（相机/光源/物件/物理配置），返回节点清单、网格引用、世界坐标与物理开关。用于在不启动渲染器的前提下读懂一个场景文件。",
+      "name": "scene_inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "工作区相对路径（如 assets/demo.r3e.json）。经 host/fs.read 读取，需 fs.read 授权；单文件上限 64 KB，超过请用 scene 直接传",
+            "type": "string"
+          },
+          "scene": {
+            "description": "场景：直接给 r3e 场景对象，或它的 JSON 文本（与场景文件同格式）",
+            "type": [
+              "object",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "description": "生成内置图元（cube/sphere/plane/cylinder）网格并返回顶点数、三角形数、AABB、几何指纹与 AIR 网格校验结果。",
+      "name": "mesh_stats",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "divisions": {
+            "description": "平面的细分格数，缺省 1",
+            "maximum": 128,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rings": {
+            "description": "球的纬向分段，缺省 16",
+            "maximum": 256,
+            "minimum": 2,
+            "type": "integer"
+          },
+          "segments": {
+            "description": "球/圆柱的经向分段，缺省 32",
+            "maximum": 256,
+            "minimum": 3,
+            "type": "integer"
+          },
+          "shape": {
+            "description": "内置图元，缺省 cube",
+            "enum": [
+              "cube",
+              "sphere",
+              "plane",
+              "cylinder"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "description": "对场景做几何与结构校验：逐物件跑 AIR 网格校验（退化三角形、法线、权重、AABB 边界等）、检查重名、统计无法解析的外部资产。",
+      "name": "scene_validate",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "工作区相对路径（如 assets/demo.r3e.json）。经 host/fs.read 读取，需 fs.read 授权；单文件上限 64 KB，超过请用 scene 直接传",
+            "type": "string"
+          },
+          "scene": {
+            "description": "场景：直接给 r3e 场景对象，或它的 JSON 文本（与场景文件同格式）",
+            "type": [
+              "object",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "description": "用引擎物理后端对场景做纯头less 步进（不建窗口、不渲染），返回每个刚体的起止位置、位移、物理事件与后端能力。适合验证碰撞/重力配置。",
+      "name": "physics_simulate",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "description": "物理后端；缺省沿用场景声明，再缺省 builtin。后端未编进二进制时报错而不是悄悄降级",
+            "enum": [
+              "builtin",
+              "null",
+              "rapier"
+            ],
+            "type": "string"
+          },
+          "dt": {
+            "description": "单步时长（秒），缺省 1/60",
+            "maximum": 0.1,
+            "minimum": 0.001,
+            "type": "number"
+          },
+          "gravity": {
+            "description": "重力向量，缺省沿用场景声明",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "ground": {
+            "description": "地面平面高度，缺省沿用场景声明",
+            "type": "number"
+          },
+          "maxBodies": {
+            "description": "回包最多列举多少个刚体，缺省 20",
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "工作区相对的场景文件路径（经 host/fs.read，需 fs.read 授权）",
+            "type": "string"
+          },
+          "scene": {
+            "description": "场景对象或 JSON 文本；缺省时用 path 指向的文件",
+            "type": [
+              "object",
+              "string"
+            ]
+          },
+          "steps": {
+            "description": "步进次数，缺省 120",
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "risk": "read"
+    }
+  ],
+  "version": "0.1.0"
+}
