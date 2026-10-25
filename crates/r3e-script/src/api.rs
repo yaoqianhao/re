@@ -969,11 +969,65 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
-    // CCD 开关占位：契约里还没有这个方法（也就没有后端申报 `ccd` 能力位），
-    // 这里明确报「未支持」并返回 false，避免脚本以为设置成功。
-    engine.register_fn("physics_set_ccd", move |_on: bool| -> bool {
-        println!("[script] 当前物理契约未暴露 CCD，physics_set_ccd 未支持（能力位 ccd=false）");
-        false
+    // ---- CCD（连续碰撞检测）----
+
+    // 全局开关：改的是「刚体没显式指定时」的缺省值，并把当前所有刚体一起改掉。
+    // 返回 true 表示后端真的支持 CCD；不支持（如内置后端）时如实返回 false。
+    let c = ctx.clone();
+    engine.register_fn("physics_set_ccd", move |on: bool| -> bool {
+        let mut physics = c.physics.borrow_mut();
+        let supported = physics.set_ccd_default(on);
+        let changed = physics.set_ccd_all(on);
+        if !supported {
+            println!("[script] 当前物理后端不支持 CCD（能力位 ccd=false），physics_set_ccd 无效");
+            return false;
+        }
+        println!(
+            "[script] CCD {}（已更新 {changed} 个刚体，缺省={}）",
+            if on { "已开启" } else { "已关闭" },
+            if physics.ccd_default() { "开" } else { "关" }
+        );
+        true
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("physics_ccd_default", move || -> bool {
+        c.physics.borrow().ccd_default()
+    });
+
+    // 逐刚体开关：目标是动态刚体才有意义（静态 / 运动学由脚本驱动）。
+    let c = ctx.clone();
+    engine.register_fn("body_set_ccd", move |name: &str, on: bool| -> bool {
+        let handle = {
+            let scene = c.scene.borrow();
+            match scene.find(name).and_then(|n| n.body) {
+                Some(h) => BodyHandle(h),
+                None => {
+                    println!("[script] body_set_ccd: 物件 `{name}` 没有刚体");
+                    return false;
+                }
+            }
+        };
+        let ok = c.physics.borrow_mut().set_ccd(handle, on);
+        if !ok {
+            println!(
+                "[script] body_set_ccd: `{name}` 不是动态刚体，或后端不支持 CCD"
+            );
+        }
+        ok
+    });
+
+    // 读回 CCD 状态：无刚体 / 后端不支持时返回 false。
+    let c = ctx.clone();
+    engine.register_fn("body_ccd", move |name: &str| -> bool {
+        let handle = {
+            let scene = c.scene.borrow();
+            match scene.find(name).and_then(|n| n.body) {
+                Some(h) => BodyHandle(h),
+                None => return false,
+            }
+        };
+        c.physics.borrow().ccd_of(handle).unwrap_or(false)
     });
 
     // 取走自上次调用以来的碰撞事件（形如 "started:7-none"）；不支持事件的后端返回空数组。

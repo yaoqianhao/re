@@ -87,6 +87,7 @@ r3e —— Rust 3D Engine
   --physics-backend NAME    物理后端: builtin | null | rapier（rapier 需 --features rapier 构建）
   --gravity x,y,z           重力加速度，默认 0,-9.81,0
   --ground Y                地面平面高度，默认 0
+  --ccd on|off              逐刚体 CCD 缺省值，默认 on（需后端支持，见 --physics-backend）
 
 资产选项（M1 静态网格）:
   --asset PATH              导入 FBX 并按资产内节点路径 spawn（可重复）
@@ -149,6 +150,15 @@ fn main() -> anyhow::Result<()> {
                     match parse_vec3(&v) {
                         Some(g) => cli.gravity = Some(g),
                         None => log::error!("--gravity 取值应为 x,y,z，收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
+            "--ccd" => {
+                if let Some(v) = take_value("--ccd", &mut i) {
+                    match parse_bool(&v) {
+                        Some(b) => cli.ccd = Some(b),
+                        None => log::error!("--ccd 取值应为 on/off，收到 `{v}`"),
                     }
                 }
                 continue;

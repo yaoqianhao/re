@@ -49,6 +49,13 @@ pub struct PhysicsDesc {
     /// 碰撞体半尺寸，缺省由 scale 推导
     #[serde(default)]
     pub half_extents: Option<[f32; 3]>,
+    /// 连续碰撞检测（CCD）：高速物体不穿过薄墙。
+    ///
+    /// 省略表示「跟场景级 `physics.ccd`」（再缺省为开）；显式写 `false` 可让
+    /// 单个物件退出 CCD（例如大量慢速道具，省掉 sweep 开销）。
+    /// 后端不申报 `ccd` 能力时该字段无效。
+    #[serde(default)]
+    pub ccd: Option<bool>,
 }
 
 /// 场景级物理配置：对应场景 JSON 顶层 `physics` 字段。
@@ -69,6 +76,12 @@ pub struct PhysicsSceneDesc {
     /// 地面平面高度，缺省 0.0。
     #[serde(default)]
     pub ground: Option<f32>,
+    /// 所有刚体的 CCD 缺省开关（逐物件 `physics.ccd` 优先）。
+    ///
+    /// 缺省 `true`：后端申报 `ccd` 能力时默认开启，避免「高速物件穿墙」
+    /// 这种一看就是缺陷的表现。脚本可用 `physics_set_ccd(false)` 全局关。
+    #[serde(default)]
+    pub ccd: Option<bool>,
 }
 
 fn default_body_kind() -> String {

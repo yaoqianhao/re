@@ -80,6 +80,8 @@ pub struct CliOptions {
     pub backend: Option<String>,
     pub gravity: Option<[f32; 3]>,
     pub ground: Option<f32>,
+    /// `--ccd on|off`：逐刚体 CCD 的缺省值（场景里逐物件的 `physics.ccd` 仍优先）。
+    pub ccd: Option<bool>,
     /// `--asset <fbx>`（可重复）：启动时导入并 spawn 的静态资产。
     pub assets: Vec<PathBuf>,
     /// `--assets-root <dir>`：场景 `assets` 段内相对路径的解析根目录。
@@ -117,6 +119,7 @@ impl CliOptions {
             kind,
             gravity: self.gravity.map(Vec3::from),
             ground: self.ground,
+            ccd: self.ccd,
         }
     }
 
@@ -125,6 +128,7 @@ impl CliOptions {
             && self.backend.is_none()
             && self.gravity.is_none()
             && self.ground.is_none()
+            && self.ccd.is_none()
     }
 
 }
@@ -222,10 +226,15 @@ impl EngineApp {
             }
         }
         log::info!(
-            "物理: {} / 后端 {} / 能力 [{}] / 重力 {:?} / 地面 {}",
+            "物理: {} / 后端 {} / 能力 [{}] / CCD 默认 {} / 重力 {:?} / 地面 {}",
             if physics.enabled() { "启用" } else { "关闭" },
             physics.kind().name(),
             physics.capabilities().summary(),
+            if physics.capabilities().ccd {
+                if physics.ccd_default() { "on" } else { "off" }
+            } else {
+                "不支持"
+            },
             physics.gravity.to_array(),
             physics.ground()
         );
