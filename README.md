@@ -8,7 +8,7 @@
 - 数学：`glam`（wgpu 兼容的 NDC 深度 0..1 投影）
 - 脚本：`rhai`（Rust 原生嵌入式脚本，语法接近 JS/Rust 混合体）
 - 物理：内置最简实现（重力 / 地面碰撞 / 弹性 / 摩擦 / 休眠），**默认关闭**，可选 `null` 空转；
-  契约固定，随时可换成 `rapier3d`；查询层 `raycast` / `overlap` 后端无关
+  契约固定，随时可换成 `rapier3d`；查询层 `raycast` / `overlap` / `shape_cast` 后端无关
 
 ---
 
@@ -26,7 +26,7 @@ D:\rust3d-engine
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
 │   ├─ input_demo.rhai        # 鼠标 / 手柄演示
 │   ├─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
-│   ├─ query_demo.rhai        # 物理查询演示（raycast 射线 + overlap 球体圈选）
+│   ├─ query_demo.rhai        # 物理查询演示（raycast 射线 + overlap 球体圈选 + 球/盒扫掠）
 │   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
 │   ├─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
 │   └─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
@@ -268,7 +268,10 @@ ok
 | `physics_set_ground(y)` | 设置地面平面高度 |
 | `physics_raycast(ox,oy,oz, dx,dy,dz, max_dist) -> array` | 射线查询，命中返回 `[node, 距离, x, y, z]`，未命中为空数组 |
 | `physics_overlap(x,y,z, radius) -> array` | 球体重叠查询，返回命中节点 id（升序） |
-| `physics_has_capability(name) -> bool` | 查能力位（`body_body` / `rotation` / `events` / `raycast` / `overlap` …） |
+| `physics_raycast_full(ox,oy,oz, dx,dy,dz, max_dist) -> map` | 射线查询具名版：`hit / node / handle / distance / point / normal / inside` |
+| `physics_shape_cast_sphere(ox,oy,oz, dx,dy,dz, radius, max_dist) -> map` | 球扫掠，字段同上（`inside` = 起点已重叠） |
+| `physics_shape_cast_box(ox,oy,oz, dx,dy,dz, hx,hy,hz, max_dist) -> map` | 盒扫掠（半尺寸），字段同上 |
+| `physics_has_capability(name) -> bool` | 查能力位（`body_body` / `rotation` / `events` / `raycast` / `overlap` / `shape_cast` …） |
 
 ---
 
