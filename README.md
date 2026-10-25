@@ -437,3 +437,34 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai
 `阴影通道：draw call X / 主通道实例 Y`，关闭阴影时为 0——这是「阴影通道真的跑了」的数值证据。
 设计细节与踩坑（独立 pipeline layout、深度图不可原地 resize）见
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 5.7 与 [`docs/ASSETS.md`](docs/ASSETS.md) 17。
+
+---
+
+## 10. 统一资产流水线（AIR，S0–S5 已完成）
+
+引擎内**只存一种 3D 资产格式**：AIR（`r3e_core::AssetEntry`）。FBX、glb、gltf 都只是「入口」，
+进来立刻归一成 AIR；渲染、物理、脚本都只消费 AIR，不再各认一套。
+
+| 环节 | 唯一入口 |
+| --- | --- |
+| 导入 | `r3e_asset::ImporterRegistry`（`.fbx` / `.glb` / `.gltf`，未知扩展名显式报错） |
+| 归一 | `r3e_core::air::normalize`（轴系/绕序/索引/法线/权重/分区/AABB 各一份实现） |
+| 存储 | `AssetEntry` + `MeshData`（+Y up、+Z front、CCW、u32 索引、权重≤4 归一） |
+| 输出 | `MeshProvider` 分层：`LayeredProvider` = 资产层 → 内置图元层，同一形态返回 |
+| 消费 | `MeshCache`（单条上传路径）/ `r3e-physics`（按几何推断球/圆柱/盒） |
+
+```powershell
+# 任何支持的格式，同一套报告（含 AIR 不变量审计）
+cargo run -- --dump-asset D:\models\character.fbx
+cargo run -- --dump-asset D:\_probe_glb\samples\BoxAnimated.glb
+
+# 真实样本进窗口
+cargo run -- --asset D:\_probe_glb\samples\ironsword.glb
+```
+
+内置图元（cube / sphere / plane / cylinder）已从渲染层迁到 `r3e_core::procedural`，
+与外部资产走**同一条**上传与绘制路径；`r3e-render/tests/architecture_guard.rs` 会在
+`cargo test` 时扫描源码，任何 `MeshRef::Builtin` 来源分支复活都会直接让测试失败。
+
+细节与 glb 已知限制（Draco / meshopt / KTX2 / morph 不支持）见
+[`docs/ASSETS.md`](docs/ASSETS.md) 第 18 章。

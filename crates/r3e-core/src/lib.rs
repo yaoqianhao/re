@@ -3,6 +3,7 @@
 //! 该 crate 不依赖任何图形 API，可被渲染层、物理层、脚本层同时复用。
 
 pub mod aabb;
+pub mod air;
 pub mod anim;
 pub mod camera;
 pub mod frustum;
@@ -10,11 +11,13 @@ pub mod input;
 pub mod light;
 pub mod mesh;
 pub mod node;
+pub mod procedural;
 pub mod scene;
 pub mod skin;
 pub mod transform;
 
 pub use aabb::Aabb;
+pub use air::{AirIssue, AirIssueKind};
 pub use anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
 pub use camera::Camera;
 pub use frustum::Frustum;
@@ -25,6 +28,7 @@ pub use mesh::{
     MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex,
 };
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
+pub use procedural::ProceduralProvider;
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
 };

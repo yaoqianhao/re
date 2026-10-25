@@ -457,3 +457,33 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 
 - 物理与脚本共用 `RefCell<Scene>`，脚本里不能长期持有 `borrow()` 期间再 `attach_body`（现有 API 已规避）。
 - 切换后端会清空全部刚体并让物件回到场景初始位姿，运行中「换引擎」不是无损操作。
+
+---
+
+## 12. 碰撞体形状：只由几何决定（S4 已落地）
+
+**变化**：早期按 `MeshRef::Builtin(Sphere/Cylinder/...)` 特判形状，外部资产一律退化成长方体。
+统一 AIR 之后，物理层**不再认识 `MeshRef` 来源**，只吃 `MeshData`：
+
+```rust
+BodyDesc::infer_with(&mesh_data, scale)      // 由几何判定形状
+BodyDesc::from_node_with(node, Some(&mesh))  // 场景构建时的默认路径
+```
+
+`infer_shape(&MeshData)` 的判定顺序：
+
+| 判定 | 条件 | 结果 |
+| --- | --- | --- |
+| 球 | AABB 三轴半尺寸两两相对差 ≤ 5%，且全部顶点到中心距离与半径偏差 ≤ 2% 半径 | `Sphere { radius }` |
+| 圆柱 | XZ 两轴半尺寸相对差 ≤ 5%，且「侧壁顶点」（径向距 ≈ 半径，容差 2%）占顶点数一半以上、同时没有顶点落在 5%–95% 半径的中间带 | `Cylinder { radius, half_height }`（轴向 Y） |
+| 其它 | 兜底 | `Box { half_extents }`（= AABB 半尺寸） |
+
+要点：
+
+- 判定只用**顶点分布**，不看名字、不看来源、不看 `MeshRef`；
+- 半尺寸一律乘物件 `scale`，所以「同一网格放大 3 倍」得到的是 3 倍体积的碰撞体；
+- 判定失败不报错，兜底长方体永远可用（导入面永远不因物理而失败）；
+- 网格为空时退化为单位长方体，只告警。
+
+验收：`cargo test -p r3e-physics`（13 + 8 passed），其中
+`shape_inference_reads_geometry_not_source`、`infer_reads_mesh_shape` 覆盖球/圆柱/盒与平移不变性。

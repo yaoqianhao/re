@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 r3e-core.workspace = true
 ufbx = "0.11.5"
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
 log.workspace = true
 thiserror.workspace = true

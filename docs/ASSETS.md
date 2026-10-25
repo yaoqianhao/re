@@ -770,3 +770,95 @@ C 阶段解决的是「切片段会跳」这个观感问题：`set_anim_clip` �
 - **软阴影 / VSM / 接触硬化**：仅 3×3 PCF，无可变半影、无接触硬化。
 - **多光源与阴影图集**：单张深度图，一个方向光。
 - **半透明与自发光投影**：深度 pass 不区分材质，透明物件也会投实影。
+
+---
+
+## 18. 统一资产流水线（AIR）：单一存储格式 + 分级分层输出（S0–S5 已落地）
+
+> 状态：**S0–S5 全部落地**（2026-10-25）。目标是把「引擎内存储的 3D 资产」收敛成
+> **唯一一种格式**，并让「输出到虚拟世界」的过程**逐层分工**，而不是每条支路自己解释数据。
+
+### 18.1 一句话结论
+
+| 层 | 只认什么 | 不认什么 |
+| --- | --- | --- |
+| 导入层（`r3e-asset`） | 输入：`.fbx` / `.glb` / `.gltf` | 输出给下游的一律是 AIR（`AssetEntry`） |
+| 存储层（`r3e-core::AssetEntry`） | **AIR 一种格式**，落盘/内存都只有它 | 不再有「FBX 资产」「glb 资产」之分 |
+| 输出层（`MeshProvider` 分层） | 只问 `mesh_data / mesh_aabb / mesh_parts` | 不问数据是谁生成的 |
+| 消费层（render / physics / script） | `MeshData` 顶点、索引、分区、AABB | `MeshRef::Builtin` 之类的来源判断（已被守卫测试禁止） |
+
+### 18.2 AIR 不变量（`r3e-core::air`）
+
+所有导入器都必须产出满足下列条件的网格，`finalize_mesh()` / `importer::audit_entry()` 在
+**每次导入末尾**统一校验（默认只告警、不拦截，批量导入不会被一条坏数据卡住）：
+
+1. 坐标系：**+Y up、+Z front、右手系**；
+2. 正面：**逆时针（CCW）**；镜像/负行列式变换必须自动翻转绕序；
+3. 索引：`u32` 三角列表，长度是 3 的倍数，且全部落在顶点范围内；
+4. 法线：单位长度、无 NaN；
+5. UV：无 NaN（缺失时补零，不做猜测）；
+6. 蒙皮：每顶点权重 ≤ 4 个，和为 1（`compact_skinning` 负责裁剪并重新归一化）；
+7. 分区：`material_parts` 连续覆盖全部三角形，无空洞、无越界；
+8. AABB：与顶点实际范围一致、非空；
+9. 确定性：同一文件导入两次，顶点/索引/分区逐字节一致。
+
+### 18.3 单份归一化工具箱
+
+`r3e-core::air::normalize`（唯一实现，禁止各导入器各写一套）：
+
+`to_engine_axes` / `bake_transform` / `flip_winding` / `recalc_normals` /
+`ensure_indices` / `strip→triangles` / `fan→triangles` / `compact_skinning` /
+`weld_vertices` / `finalize_mesh`
+
+FBX（ufbx）与 glTF 在各自结尾都调用同一批函数——这就是「同模型换格式，结果不变」的物理基础。
+
+### 18.4 导入器注册表
+
+`r3e_asset::importer::ImporterRegistry` 按扩展名分派（大小写不敏感）：
+
+| 扩展名 | 导入器 | 备注 |
+| --- | --- | --- |
+| `.fbx` | `import_fbx`（ufbx） | 角点拆分、烘焙动画、P4 蒙皮 |
+| `.glb` | `import_glb`（gltf） | 二进制容器，贴图从 BIN 块解码 |
+| `.gltf` | `import_gltf`（gltf） | JSON + 外部 `.bin` / 图片 |
+| 其它 | 显式报错 | 不静默跳过，错误信息列出支持的扩展名 |
+
+新增格式只需实现 `AssetImporter { extensions, import }` 并注册，**下游零改动**。
+
+### 18.5 输出侧分级分层
+
+```
+MeshRef ──▶ LayeredProvider ──┬─▶ AssetLibrary（外部资产，AIR）
+                              └─▶ ProceduralProvider（内置图元，同样产出 AIR）
+                                        │
+                                        ▼
+                       MeshData / MeshParts / AABB（唯一形态）
+                              │                     │
+                              ▼                     ▼
+                    r3e-render::MeshCache    r3e-physics（几何推断碰撞体）
+```
+
+- 内置图元已从渲染层迁到 `r3e-core::procedural`，`MeshCache` 里**只剩一条** `ensure` 路径；
+- 物理不再按 `MeshRef` 猜形状，而是 `infer_shape(&MeshData)` 按顶点分布判定
+  球 / 圆柱（轴向 Y）/ 长方体，半尺寸取 AABB × scale —— 外部导入的球形道具也能滚；
+- 脚本层拿到的是同一份 AIR，`--dump-asset` 的审计段对任何格式输出同一套结论。
+
+### 18.6 验收矩阵
+
+| 测试 | 位置 | 锁死什么 |
+| --- | --- | --- |
+| `procedural_primitives_satisfy_air` | `r3e-core` | 内置图元本身就是合法 AIR |
+| `gltf_and_glb_yield_the_same_air` | `r3e-asset/tests` | 同模型换容器，AIR 逐字段一致 |
+| `import_is_deterministic_and_audited` | `r3e-asset/tests` | 导入确定 + 不变量 0 违规 |
+| `shape_inference_reads_geometry_not_source` | `r3e-physics` | 形状只看几何、平移不影响判定 |
+| `render/physics/app_layer_has_no_source_branch` | `r3e-render/tests` | 源码中不得出现来源分支 |
+| `upload_path_is_single` | `r3e-render/tests` | `MeshCache::ensure` 只走统一 provider |
+
+`cargo test --workspace`：**85 passed / 0 failed**（core 48、asset 6+3、physics 13+8、render 3+4）。
+
+### 18.7 glb 已知限制（明示）
+
+- 不支持 **Draco / meshopt** 压缩几何、**KTX2 / basis** 压缩贴图（需预转普通 PNG/JPEG 或 glTF）；
+- 不支持 morph target（表情/形态键）、多套 UV、`KHR_materials_*` 扩展材质；
+- 动画走 glTF 采样器原始关键帧（不做贝塞尔重采样），与 FBX 的「ufbx 烘焙」路径在极端插值下可能有细微差异；
+- glTF 的右手 `-Z front` 会在导入时镜像到引擎 `+Z front`，并自动翻转绕序；镜像贴图 UV 不做额外翻转。

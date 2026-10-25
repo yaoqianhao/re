@@ -24,17 +24,35 @@ use r3e_core::skin::{SkinData, SkinJoint};
 use r3e_core::{AssetId, Mat4, MeshRef, Vec3, Vec4};
 use thiserror::Error;
 
+pub mod gltf_import;
+pub mod importer;
+
+pub use gltf_import::{import_glb, import_gltf, GltfImporter};
+pub use importer::{audit_entry, audit_issues, AssetImporter, FbxImporter, ImporterRegistry};
+
 /// 目标单位：1.0 = 米。
 pub const TARGET_UNIT_METERS: f64 = 1.0;
 
 #[derive(Debug, Error)]
 pub enum AssetError {
-    #[error("加载 FBX 失败 `{path}`: {message}")]
+    #[error("加载资产失败 `{path}`: {message}")]
     Load { path: String, message: String },
     #[error("资产 {0} 不存在")]
     Unknown(AssetId),
     #[error("资产 {asset} 不包含第 {mesh} 个网格")]
     MeshNotFound { asset: AssetId, mesh: u32 },
+    #[error("没有可处理 `{extension}` 的导入器（`{path}`）；已注册：{supported:?}")]
+    UnsupportedFormat {
+        path: String,
+        extension: String,
+        supported: Vec<String>,
+    },
+    #[error("资产 `{path}` 违反 AIR 不变量 {count} 处，首条：{first}")]
+    AirViolation {
+        path: String,
+        count: usize,
+        first: String,
+    },
 }
 
 /// 一张贴图的元数据与解码结果（P2 起带像素）。
@@ -42,7 +60,7 @@ pub enum AssetError {
 pub struct TextureInfo {
     /// 在 `AssetEntry::textures` 扁平表中的下标（材质引用贴图时用它）。
     pub index: u32,
-    /// ufbx 贴图元素 id，用于跨材质去重。
+    /// 源文件贴图元素 id（FBX 来自 ufbx，glTF 走 URI/内嵌块），用于跨材质去重。
     pub element_id: u32,
     /// FBX 材质槽名，例如 `DiffuseColor` / `BaseColor` / `NormalMap`。
     pub slot: String,
@@ -93,7 +111,7 @@ pub struct MaterialPart {
 /// 资产内的单个网格（世界空间）。
 #[derive(Debug, Clone)]
 pub struct MeshAsset {
-    /// 网格名（ufbx 网格元素名）。
+    /// 网格名（FBX 取 ufbx 元素名，glTF 取 `mesh.name`）。
     pub name: String,
     /// 网格所属节点在资产内的路径，例如 `RootNode/Arm/Hand`。
     pub node_path: String,
@@ -115,7 +133,7 @@ pub struct MeshAsset {
     pub weights: Vec<[f32; 4]>,
     /// 该网格所用骨骼表在 `AssetEntry::skins` 中的下标（P4）；`None` 为静态网格。
     pub skin: Option<u32>,
-    /// ufbx 侧的原始统计，便于和导入结果交叉验证。
+    /// 源文件侧的原始统计，便于和导入后的 AIR 交叉验证（与格式无关）。
     pub source_vertex_count: usize,
     pub source_face_count: usize,
     pub source_triangle_count: usize,
@@ -268,11 +286,27 @@ impl AssetEntry {
 pub struct AssetLibrary {
     entries: HashMap<AssetId, AssetEntry>,
     order: Vec<AssetId>,
+    /// 扩展名 → 导入器。所有来源都必须经此分派，库里不存在「格式专属」旁路。
+    importers: ImporterRegistry,
 }
 
 impl AssetLibrary {
+    /// 默认资产库：注册引擎内置的全部导入器。
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            importers: ImporterRegistry::with_builtin(),
+            ..Self::default()
+        }
+    }
+
+    /// 导入器注册表（只读）。
+    pub fn importers(&self) -> &ImporterRegistry {
+        &self.importers
+    }
+
+    /// 导入器注册表（可变），用于注册自定义格式或开启 strict。
+    pub fn importers_mut(&mut self) -> &mut ImporterRegistry {
+        &mut self.importers
     }
 
     pub fn is_empty(&self) -> bool {
@@ -308,15 +342,27 @@ impl AssetLibrary {
         self.mesh(mesh).map(|m| m.to_mesh_data())
     }
 
-    /// 导入一个 FBX 文件并登记到资产库。
-    pub fn load_fbx(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
-        let path = path.as_ref();
-        let entry = import_fbx(path)?;
+    /// 按扩展名分派导入一个资产文件并登记到资产库。
+    ///
+    /// 这是**唯一**的入库入口：FBX、glb 以及未来任何格式都走这条路径，
+    /// 上层不需要知道自己拿到的是哪种格式。
+    pub fn load(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
+        let entry = self.importers.import(path.as_ref())?;
+        Ok(self.insert(entry))
+    }
+
+    /// 登记一个已导入的条目（供测试与自定义导入器使用）。
+    pub fn insert(&mut self, entry: AssetEntry) -> AssetId {
         let id = entry.id;
         if self.entries.insert(id, entry).is_none() {
             self.order.push(id);
         }
-        Ok(id)
+        id
+    }
+
+    /// 导入一个 FBX 文件并登记到资产库（`load` 的便捷别名）。
+    pub fn load_fbx(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
+        self.load(path)
     }
 
     /// 生成一份人类可读的资产报告（供 `--dump-asset` 使用）。
@@ -385,6 +431,12 @@ impl r3e_core::mesh::MeshProvider for AssetLibrary {
 /// 一次性导入并输出报告（`--dump-asset` 的便捷入口）。
 pub fn dump_fbx(path: impl AsRef<Path>) -> Result<String, AssetError> {
     let entry = import_fbx(path.as_ref())?;
+    Ok(render_dump(&entry))
+}
+
+/// 按扩展名分派导入并输出报告（`--dump-asset` 的格式无关入口）。
+pub fn dump_asset(path: impl AsRef<Path>) -> Result<String, AssetError> {
+    let entry = ImporterRegistry::with_builtin().import(path.as_ref())?;
     Ok(render_dump(&entry))
 }
 
@@ -1397,9 +1449,17 @@ pub fn render_dump(entry: &AssetEntry) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = writeln!(out, "===== FBX 资产报告 =====");
+    let _ = writeln!(out, "===== 资产报告（AIR） =====");
     let _ = writeln!(out, "文件: {}", entry.source_path);
     let _ = writeln!(out, "AssetId: {}", entry.id);
+    let _ = writeln!(
+        out,
+        "来源容器: {}",
+        Path::new(&entry.source_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("<未知>")
+    );
     let _ = writeln!(
         out,
         "网格数: {}  顶点合计: {}  三角合计: {}  材质数: {}  贴图数: {}",
@@ -1417,14 +1477,14 @@ pub fn render_dump(entry: &AssetEntry) -> String {
         let _ = writeln!(out, "   网格名: {}", m.name);
         let _ = writeln!(
             out,
-            "   顶点: {} (ufbx {} 顶点)  三角: {} (ufbx {} 三角)  索引: {}",
+            "   顶点: {} (源文件 {} 顶点)  三角: {} (源文件 {} 三角)  索引: {}",
             m.vertex_count(),
             m.source_vertex_count,
             m.triangle_count(),
             m.source_triangle_count,
             m.indices.len()
         );
-        let _ = writeln!(out, "   ufbx face 数: {}", m.source_face_count);
+        let _ = writeln!(out, "   源文件 face 数: {}", m.source_face_count);
         let _ = writeln!(
             out,
             "   AABB min: ({:.4}, {:.4}, {:.4})",
@@ -1525,6 +1585,43 @@ pub fn render_dump(entry: &AssetEntry) -> String {
                 m.roughness,
                 m.textures.len()
             );
+        }
+    }
+
+    if !entry.skins.is_empty() {
+        let _ = writeln!(out, "\n骨骼表:");
+        for (i, skin) in entry.skins.iter().enumerate() {
+            let _ = writeln!(out, "  #{} \"{}\"  {} 关节", i, skin.name, skin.joint_count());
+        }
+    }
+
+    if !entry.animations.is_empty() {
+        let _ = writeln!(out, "\n动画表:");
+        for clip in &entry.animations {
+            let keys: usize = clip.tracks.iter().map(|t| t.keys.len()).sum();
+            let _ = writeln!(
+                out,
+                "  \"{}\"  {:.2}s  {} 条轨道 / {keys} 关键帧",
+                clip.name,
+                clip.duration,
+                clip.tracks.len()
+            );
+        }
+    }
+
+    // 统一审计段：无论来源格式是什么，报告末尾都给出同一套 AIR 结论。
+    let issues = importer::audit_entry(entry);
+    let _ = writeln!(out, "\nAIR 审计:");
+    if issues.is_empty() {
+        let _ = writeln!(
+            out,
+            "  通过（{} 个网格，不变量 0 违规）",
+            entry.meshes.len()
+        );
+    } else {
+        let _ = writeln!(out, "  {} 处违规:", issues.len());
+        for issue in &issues {
+            let _ = writeln!(out, "   - {issue}");
         }
     }
 

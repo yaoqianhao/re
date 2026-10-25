@@ -237,7 +237,7 @@ fn main() -> anyhow::Result<()> {
     // --dump-asset：无窗口路径，导入后打印报告直接退出
     if let Some(path) = cli.dump_asset.clone() {
         log::info!("资产导入: {}", path.display());
-        match r3e_asset::dump_fbx(&path) {
+        match r3e_asset::dump_asset(&path) {
             Ok(report) => {
                 println!("{report}");
                 return Ok(());

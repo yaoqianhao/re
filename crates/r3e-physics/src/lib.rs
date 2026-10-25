@@ -22,7 +22,7 @@
 
 
 use glam::Vec3;
-use r3e_core::{Aabb, BuiltinMesh, Node, NodeId, PhysicsSceneDesc, Scene};
+use r3e_core::{Aabb, MeshData, Node, NodeId, PhysicsSceneDesc, Scene};
 
 #[cfg(feature = "rapier")]
 mod rapier_backend;
@@ -275,21 +275,17 @@ impl BodyDesc {
         Self::infer_with(node, None)
     }
 
-    /// 同 [`BodyDesc::infer`]，但可用网格真实包围盒推出更贴合的碰撞体尺寸。
+    /// 同 [`BodyDesc::infer`]，但用网格真实几何推出更贴合的碰撞体。
     ///
-    /// `bounds` 是网格**局部**空间的 AABB（来自 `MeshProvider::mesh_aabb`）；给了就按
-    /// `AABB 半尺寸 × scale` 推导，缺失则退回 `scale * 0.5`。
-    pub fn infer_with(node: &Node, bounds: Option<Aabb>) -> Self {
-        let shape = match node.mesh {
-            r3e_core::MeshRef::Builtin(BuiltinMesh::Sphere) => ColliderShape::Sphere,
-            r3e_core::MeshRef::Builtin(BuiltinMesh::Cylinder) => ColliderShape::Cylinder,
-            _ => ColliderShape::Box,
-        };
+    /// `mesh` 是 AIR 网格数据（局部空间）；形状由 [`infer_shape`] 按顶点分布判定，
+    /// 半尺寸按 `AABB 半尺寸 × scale` 推导。缺失则退回 `Box` + `scale * 0.5`。
+    pub fn infer_with(node: &Node, mesh: Option<&MeshData>) -> Self {
+        let shape = mesh.map(infer_shape).unwrap_or(ColliderShape::Box);
         let scale = node.transform.scale.abs();
         Self {
             kind: BodyKind::Dynamic,
             shape,
-            half_extents: half_extents_from(bounds, scale),
+            half_extents: half_extents_from(mesh.map(|m| m.aabb_box()), scale),
             position: node.world_position(),
             rotation: node.transform.rotation,
             scale,
@@ -307,25 +303,21 @@ impl BodyDesc {
 
     /// 同 [`BodyDesc::from_node`]，但可用网格真实包围盒推导碰撞体尺寸。
     ///
-    /// 外部资产网格（`MeshRef::Asset`）的真实尺寸往往远不是 1×1×1，退化成
+    /// 外部导入网格的真实尺寸往往远不是 1×1×1，退化成
     /// `scale * 0.5` 会让碰撞体明显偏小；这里让 AABB 参与推导。
     /// 显式写了 `half_extents` 的场景仍然以场景为准（人工调过的值优先）。
-    pub fn from_node_with(node: &Node, bounds: Option<Aabb>) -> Option<Self> {
+    pub fn from_node_with(node: &Node, mesh: Option<&MeshData>) -> Option<Self> {
         let p = node.physics.as_ref()?;
         let shape = p
             .collider
             .as_deref()
             .map(ColliderShape::parse)
-            .unwrap_or(match node.mesh {
-                r3e_core::MeshRef::Builtin(BuiltinMesh::Sphere) => ColliderShape::Sphere,
-                r3e_core::MeshRef::Builtin(BuiltinMesh::Cylinder) => ColliderShape::Cylinder,
-                _ => ColliderShape::Box,
-            });
+            .unwrap_or_else(|| mesh.map(infer_shape).unwrap_or(ColliderShape::Box));
         let scale = node.transform.scale.abs();
         let half_extents = p
             .half_extents
             .map(|h| Vec3::from(h).abs())
-            .unwrap_or_else(|| half_extents_from(bounds, scale));
+            .unwrap_or_else(|| half_extents_from(mesh.map(|m| m.aabb_box()), scale));
         Some(Self {
             kind: BodyKind::parse(&p.body),
             shape,
@@ -348,6 +340,67 @@ fn half_extents_from(bounds: Option<Aabb>, scale: Vec3) -> Vec3 {
         Some(aabb) => (aabb.half_extents() * scale).max(Vec3::splat(0.001)),
         None => (scale * 0.5).max(Vec3::splat(0.001)),
     }
+}
+
+/// 从 AIR 网格几何推断碰撞体形状——**不看 `MeshRef` 来源**。
+///
+/// 内置图元与外部资产走完全相同的判定，因此 FBX / glb 里导出的球、圆柱也能得到
+/// 与内置图元一致的碰撞体：
+/// * 顶点到 AABB 中心等距且三轴半径相等 → [`ColliderShape::Sphere`]；
+/// * XZ 半径只有「侧壁半径」和「轴心 0」两类（无中间带）且 X/Z 半径相等 →
+///   [`ColliderShape::Cylinder`]（轴向 Y，与引擎图元一致）；
+/// * 其余一律 [`ColliderShape::Box`]，半尺寸由 AABB 给出。
+pub fn infer_shape(data: &MeshData) -> ColliderShape {
+    let points = &data.vertices;
+    if points.len() < 4 {
+        return ColliderShape::Box;
+    }
+
+    let aabb = data.aabb_box();
+    if aabb.is_empty() {
+        return ColliderShape::Box;
+    }
+    let center = aabb.center();
+    let half = aabb.half_extents();
+    let eps = 1e-4f32;
+    if half.min_element() <= eps {
+        return ColliderShape::Box;
+    }
+    let same = |a: f32, b: f32| (a - b).abs() <= 0.05 * a.max(b);
+
+    // ---- 球 ----
+    let radius = half.max_element();
+    if same(half.x, half.y) && same(half.y, half.z) {
+        let tolerance = 0.02 * radius;
+        let is_sphere = points.iter().all(|vertex| {
+            ((Vec3::from(vertex.position) - center).length() - radius).abs() <= tolerance
+        });
+        if is_sphere {
+            return ColliderShape::Sphere;
+        }
+    }
+
+    // ---- 圆柱（轴向 Y）----
+    if same(half.x, half.z) {
+        let radius = half.x.max(half.z);
+        let mut wall = 0usize;
+        let mut middle = 0usize;
+        for vertex in points {
+            let v = Vec3::from(vertex.position);
+            let r = (v.x - center.x).hypot(v.z - center.z);
+            if (r - radius).abs() <= 0.02 * radius {
+                wall += 1;
+            } else if r > 0.05 * radius && r < 0.95 * radius {
+                middle += 1;
+            }
+        }
+        // 侧壁顶点占多数，且没有落在中间半径上的顶点（否则更像球面/圆锥面）。
+        if middle == 0 && wall * 2 >= points.len() {
+            return ColliderShape::Cylinder;
+        }
+    }
+
+    ColliderShape::Box
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,12 +1534,56 @@ mod tests {
         assert_eq!(physics.generation(), g1);
     }
 
+    /// 造一个与网格来源无关的「长方体」AIR 网格，仅由 8 个角点构成。
+    fn air_box(min: Vec3, max: Vec3) -> MeshData {
+        let corners = [
+            Vec3::new(min.x, min.y, min.z),
+            Vec3::new(max.x, min.y, min.z),
+            Vec3::new(max.x, max.y, min.z),
+            Vec3::new(min.x, max.y, min.z),
+            Vec3::new(min.x, min.y, max.z),
+            Vec3::new(max.x, min.y, max.z),
+            Vec3::new(max.x, max.y, max.z),
+            Vec3::new(min.x, max.y, max.z),
+        ];
+        let vertices: Vec<_> = corners
+            .iter()
+            .map(|p| r3e_core::Vertex::new([p.x, p.y, p.z], [0.0, 1.0, 0.0], [0.0, 0.0]))
+            .collect();
+        let indices = vec![
+            0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 1, 5, 6, 1, 6, 2, 2, 6, 7, 2, 7,
+            3, 3, 7, 4, 3, 4, 0,
+        ];
+        MeshData::new(vertices, indices)
+    }
+
+    #[test]
+    fn shape_inference_reads_geometry_not_source() {
+        // 同一套判定：内置图元的几何 → 对应形状；换成外部资产导出的等价几何，结论一致。
+        let sphere = r3e_core::procedural::builtin_mesh(r3e_core::BuiltinMesh::Sphere);
+        let cylinder = r3e_core::procedural::builtin_mesh(r3e_core::BuiltinMesh::Cylinder);
+        let cube = r3e_core::procedural::builtin_mesh(r3e_core::BuiltinMesh::Cube);
+
+        assert_eq!(infer_shape(&sphere), ColliderShape::Sphere);
+        assert_eq!(infer_shape(&cylinder), ColliderShape::Cylinder);
+        assert_eq!(infer_shape(&cube), ColliderShape::Box);
+
+        // 顶点位置整体平移后（等价于带偏移的导入模型）判定不变。
+        let mut shifted = sphere.clone();
+        for vertex in &mut shifted.vertices {
+            vertex.position[0] += 12.5;
+            vertex.position[2] -= 3.0;
+        }
+        assert_eq!(infer_shape(&shifted), ColliderShape::Sphere);
+    }
+
     #[test]
     fn infer_reads_mesh_shape() {
         let (scene, id) = scene_with_ball();
-        let desc = BodyDesc::infer(scene.get(id).unwrap());
+        let sphere = r3e_core::procedural::builtin_mesh(r3e_core::BuiltinMesh::Sphere);
+        let desc = BodyDesc::infer_with(scene.get(id).unwrap(), Some(&sphere));
         assert_eq!(desc.shape, ColliderShape::Sphere);
-        assert!((desc.half_extents.x - 0.5).abs() < 1e-6);
+        assert!((desc.half_extents.x - 0.5).abs() < 1e-3);
     }
 
     #[test]
@@ -1494,8 +1591,12 @@ mod tests {
         // 资产网格真实尺寸远大于 1：碰撞体应跟着 AABB 走，而不是退化成 scale*0.5
         let (mut scene, id) = scene_with_ball();
         scene.get_mut(id).unwrap().transform.scale = Vec3::new(2.0, 1.0, 0.5);
-        let bounds = Aabb::new(Vec3::new(-1.0, 0.0, -0.5), Vec3::new(1.0, 2.0, 0.5));
-        let desc = BodyDesc::infer_with(scene.get(id).unwrap(), Some(bounds));
+        let mesh = air_box(
+            Vec3::new(-1.0, 0.0, -0.5),
+            Vec3::new(1.0, 2.0, 0.5),
+        );
+        let desc = BodyDesc::infer_with(scene.get(id).unwrap(), Some(&mesh));
+        assert_eq!(desc.shape, ColliderShape::Box);
         // AABB 半尺寸 (1,1,0.5) × scale (2,1,0.5) = (2,1,0.25)
         assert!((desc.half_extents.x - 2.0).abs() < 1e-6, "x={}", desc.half_extents.x);
         assert!((desc.half_extents.y - 1.0).abs() < 1e-6, "y={}", desc.half_extents.y);
@@ -1503,9 +1604,10 @@ mod tests {
     }
 
     #[test]
-    fn infer_without_bounds_falls_back_to_scale_half() {
+    fn infer_without_mesh_falls_back_to_scale_half() {
         let (scene, id) = scene_with_ball();
         let desc = BodyDesc::infer_with(scene.get(id).unwrap(), None);
+        assert_eq!(desc.shape, ColliderShape::Box);
         assert!((desc.half_extents.x - 0.5).abs() < 1e-6);
     }
 

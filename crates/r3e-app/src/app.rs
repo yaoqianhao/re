@@ -16,7 +16,9 @@ use r3e_core::input::{
 };
 use r3e_asset::AssetLibrary;
 use r3e_core::anim::{AnimBinding, AnimInstance};
-use r3e_core::{Aabb, AnimDecl, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance};
+use r3e_core::{
+    AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance,
+};
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -645,13 +647,14 @@ impl EngineApp {
         let mut bound = 0usize;
         let assets = self.assets.borrow().clone();
         for id in ids {
-            // 阶段三 A：外部资产用真实几何包围盒定碰撞盒尺寸，而不是 scale * 0.5
-            let bounds = scene
+            // 物理与渲染同源：碰撞体形状/尺寸都从 AIR 网格几何推出，
+            // 内置图元与外部资产走同一条路（S4 去来源分支）。
+            let node_mesh = scene
                 .get(id)
-                .and_then(|node| mesh_bounds(&assets, node.mesh));
+                .and_then(|node| node_mesh_data(&assets, node.mesh));
             let Some(desc) = scene
                 .get(id)
-                .and_then(|node| BodyDesc::from_node_with(node, bounds))
+                .and_then(|node| BodyDesc::from_node_with(node, node_mesh.as_ref()))
             else {
                 continue;
             };
@@ -1173,11 +1176,12 @@ fn asset_spec_eq(a: &AssetSpec, b: &AssetSpec) -> bool {
         }
 }
 
-/// 取网格的局部包围盒（仅外部资产有；内置网格交给物理层按 scale 推导即可）。
+/// 取节点的 AIR 网格数据（资产优先、内置图元兜底），供物理推断碰撞体。
 ///
-/// 通过 `MeshProvider::mesh_aabb` 走资产层已算好的 AABB，不重扫顶点。
-fn mesh_bounds(assets: &AssetLibrary, mesh: MeshRef) -> Option<Aabb> {
-    <AssetLibrary as MeshProvider>::mesh_aabb(assets, mesh)
+/// 与渲染层同一个 `MeshProvider` 语义：谁提供数据不重要，物理只认 `MeshData`。
+fn node_mesh_data(assets: &AssetLibrary, mesh: MeshRef) -> Option<MeshData> {
+    <AssetLibrary as MeshProvider>::mesh_data(assets, mesh)
+        .or_else(|| r3e_core::procedural::ProceduralProvider::new().mesh_data(mesh))
 }
 
 /// 按顺序导入资产；导入失败只记日志，不影响其余资产与启动流程。
@@ -1193,7 +1197,7 @@ fn load_assets(specs: &[AssetSpec]) -> AssetLibrary {
             log::debug!("资产已导入过，跳过重复加载: {key}");
             continue;
         }
-        match library.load_fbx(&spec.path) {
+        match library.load(&spec.path) {
             Ok(id) => {
                 let (meshes, tris) = library
                     .get(id)
@@ -1220,7 +1224,7 @@ fn load_assets(specs: &[AssetSpec]) -> AssetLibrary {
 pub fn dump_anim(path: &Path, want_clip: Option<&str>) -> Result<String, String> {
     let mut library = AssetLibrary::new();
     let id = library
-        .load_fbx(path)
+        .load(path)
         .map_err(|e| format!("资产导入失败: {e}"))?;
     let entry = library
         .get(id)

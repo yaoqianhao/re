@@ -8,11 +8,13 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
-use r3e_core::mesh::{MaterialData, MeshData, MeshProvider, TextureImage, Vertex};
-use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, Scene};
+use r3e_core::mesh::{
+    MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex,
+};
+use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, ProceduralProvider, Scene};
 use winit::window::Window;
 
-use crate::mesh::{builtin_mesh, vertex_layout, InstanceRaw};
+use crate::mesh::{vertex_layout, InstanceRaw};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
@@ -133,21 +135,76 @@ struct GpuPart {
     material: MaterialKey,
 }
 
+/// 分层提供者：**资产优先、程序化兜底**。
+///
+/// 这是「分级分层」在输出侧的唯一实现点——不是两条并行取数路径，而是同一接口上的
+/// 有序回退：上层（导入资产）命中就用，未命中落到下层（内置图元）。
+pub struct LayeredProvider {
+    primary: Arc<dyn MeshProvider>,
+    fallback: Arc<dyn MeshProvider>,
+}
+
+impl LayeredProvider {
+    pub fn new(primary: Arc<dyn MeshProvider>, fallback: Arc<dyn MeshProvider>) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+impl MeshProvider for LayeredProvider {
+    fn mesh_data(&self, key: MeshRef) -> Option<MeshData> {
+        self.primary
+            .mesh_data(key)
+            .or_else(|| self.fallback.mesh_data(key))
+    }
+
+    fn mesh_aabb(&self, key: MeshRef) -> Option<Aabb> {
+        self.primary
+            .mesh_aabb(key)
+            .or_else(|| self.fallback.mesh_aabb(key))
+    }
+
+    fn mesh_parts(&self, key: MeshRef) -> Vec<MeshPartData> {
+        let parts = self.primary.mesh_parts(key);
+        if parts.is_empty() {
+            self.fallback.mesh_parts(key)
+        } else {
+            parts
+        }
+    }
+
+    fn material(&self, asset: AssetId, index: u32) -> Option<MaterialData> {
+        self.primary
+            .material(asset, index)
+            .or_else(|| self.fallback.material(asset, index))
+    }
+
+    fn texture(&self, asset: AssetId, index: u32) -> Option<TextureImage> {
+        self.primary
+            .texture(asset, index)
+            .or_else(|| self.fallback.texture(asset, index))
+    }
+}
+
 /// 网格缓存：按 `MeshRef` 惰性上传 GPU 网格。
 ///
-/// * `MeshRef::Builtin` —— 由 `crate::mesh::builtin_mesh` 程序化生成；
-/// * `MeshRef::Asset` —— 数据来自注入的 `MeshProvider`（由 `r3e-asset` 实现，应用层注入）。
+/// **单一取数通道**：内置图元与导入资产都走 `provider.mesh_data(key)`，渲染层不再按
+/// `MeshRef` 的来源分支。分层只体现在 [`LayeredProvider`] 的有序回退上：
 ///
-/// 渲染层不认识文件 IO：资产必须由应用层加载后通过 `Renderer::set_asset_library` 注入；
-/// 这里的 `dyn MeshProvider` 抽象定义在 `r3e-core`，因此渲染层的依赖图中不含 `ufbx`。
+/// * 应用层未注入资产库 —— 回退层只有 `ProceduralProvider`（内置图元）；
+/// * 注入资产库后 —— 资产优先，未命中再落到内置图元。
+///
+/// 渲染层不认识文件 IO；`dyn MeshProvider` 定义在 `r3e-core`，因此本 crate 的依赖图里
+/// 不含 `ufbx` / `gltf`。
 pub struct MeshCache {
     meshes: HashMap<MeshRef, GpuMesh>,
     /// 网格局部包围盒缓存（视锥剔除与上传都要用）。`None` = 该网格确实取不到包围盒。
     ///
-    /// 缓存的意义：内置网格的包围盒只能靠生成几何再统计得到，资产网格虽然自带 AABB，
-    /// 但每帧走一次 `dyn` 调用也没必要；剔除是热路径，只做一次哈希查找。
+    /// 缓存的意义：包围盒是剔除热路径，只做一次哈希查找，避免每帧走 `dyn` 调用。
     bounds: HashMap<MeshRef, Option<Aabb>>,
-    library: Option<Arc<dyn MeshProvider>>,
+    /// 唯一的数据来源；永不缺席（最底层是内置图元）。
+    provider: Arc<dyn MeshProvider>,
+    /// 已注入的资产层（`None` 表示尚未加载任何外部资产）。
+    assets: Option<Arc<dyn MeshProvider>>,
 }
 
 impl Default for MeshCache {
@@ -157,33 +214,46 @@ impl Default for MeshCache {
 }
 
 impl MeshCache {
+    /// 未注入资产库时的缓存：只有内置图元层。
     pub fn new() -> Self {
         Self {
             meshes: HashMap::new(),
             bounds: HashMap::new(),
-            library: None,
+            provider: Arc::new(ProceduralProvider::new()),
+            assets: None,
         }
     }
 
+    /// 以给定资产库构造（`LayeredProvider`：资产优先、内置兜底）。
     pub fn with_library(library: Arc<dyn MeshProvider>) -> Self {
-        Self {
-            meshes: HashMap::new(),
-            bounds: HashMap::new(),
-            library: Some(library),
-        }
+        let mut cache = Self::new();
+        cache.set_library(library);
+        cache
     }
 
-    /// 注入（或替换）资产库；替换时丢弃此前上传的资产网格与包围盒，避免引用失效。
+    /// 注入（或替换）资产库；替换时丢弃此前上传的**资产**网格与包围盒，避免引用失效。
+    ///
+    /// 内置图元的数据与资产库无关，可以保留缓存（避免重复上传）。
     pub fn set_library(&mut self, library: Arc<dyn MeshProvider>) {
-        self.library = Some(library);
-        self.meshes
-            .retain(|key, _| matches!(key, MeshRef::Builtin(_)));
-        self.bounds
-            .retain(|key, _| matches!(key, MeshRef::Builtin(_)));
+        self.assets = Some(library.clone());
+        self.provider = Arc::new(LayeredProvider::new(
+            library,
+            Arc::new(ProceduralProvider::new()),
+        ));
+        // 单一 upload 路径下不再按来源判断能否复用：整表清空，由 `ensure` 重新上传。
+        // 代价只是几个内置图元的顶点数据重传（微秒级），换来零来源分支。
+        self.meshes.clear();
+        self.bounds.clear();
     }
 
-    pub fn library(&self) -> Option<&Arc<dyn MeshProvider>> {
-        self.library.as_ref()
+    /// 当前的数据来源（分层后的组合提供者）。材质 / 贴图也经它取。
+    pub fn provider(&self) -> &Arc<dyn MeshProvider> {
+        &self.provider
+    }
+
+    /// 已注入的资产层。
+    pub fn assets(&self) -> Option<&Arc<dyn MeshProvider>> {
+        self.assets.as_ref()
     }
 
     pub fn len(&self) -> usize {
@@ -200,27 +270,17 @@ impl MeshCache {
 
     /// 网格局部包围盒（几何空间）。取不到时返回 `None`，调用方必须按「不剔除」处理。
     ///
-    /// 顺序：缓存 → 资产层 `mesh_aabb`（零拷贝）→ 兜底 `mesh_data` 现算（仅当提供者
-    /// 没有实现 `mesh_aabb`，且只会发生一次）。
+    /// 顺序：缓存 → `mesh_aabb`（零拷贝）→ 兜底 `mesh_data` 现算（仅当提供者没有实现
+    /// `mesh_aabb`，且只会发生一次）。
     pub fn bounds(&mut self, key: MeshRef) -> Option<Aabb> {
         if let Some(cached) = self.bounds.get(&key) {
             return *cached;
         }
-        let computed = match key {
-            MeshRef::Builtin(kind) => {
-                let aabb = builtin_mesh(kind).aabb_box();
-                (!aabb.is_empty()).then_some(aabb)
-            }
-            MeshRef::Asset { .. } => {
-                let library = self.library.clone();
-                library.and_then(|library| {
-                    library
-                        .mesh_aabb(key)
-                        .or_else(|| library.mesh_data(key).map(|data| data.aabb_box()))
-                        .filter(|aabb| !aabb.is_empty())
-                })
-            }
-        };
+        let provider = self.provider.clone();
+        let computed = provider
+            .mesh_aabb(key)
+            .or_else(|| provider.mesh_data(key).map(|data| data.aabb_box()))
+            .filter(|aabb| !aabb.is_empty());
         self.bounds.insert(key, computed);
         computed
     }
@@ -230,53 +290,32 @@ impl MeshCache {
         if self.meshes.contains_key(&key) {
             return true;
         }
-        let data = match key {
-            MeshRef::Builtin(kind) => builtin_mesh(kind),
-            MeshRef::Asset { asset, mesh } => {
-                let Some(library) = self.library.as_ref() else {
-                    log::warn!("资产 {} 未注册，网格 {} 跳过绘制", asset, mesh);
-                    return false;
-                };
-                match library.mesh_data(key) {
-                    Some(data) => data,
-                    None => {
-                        log::warn!("资产 {} 中不存在网格 {}，跳过绘制", asset, mesh);
-                        return false;
-                    }
-                }
-            }
+        let Some(data) = self.provider.mesh_data(key) else {
+            log::warn!("网格 {key:?} 数据不可用，跳过绘制");
+            return false;
         };
 
-        // 材质分区：沿用资产层给的三角形区间；没有分区信息时整网格一段默认材质。
-        let parts: Vec<GpuPart> = match key {
-            MeshRef::Asset { .. } => self
-                .library
-                .as_ref()
-                .map(|library| library.mesh_parts(key))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|part| GpuPart {
-                    first_index: part.first_index,
-                    index_count: part.index_count,
-                    material: match part.material {
-                        Some((asset, index)) => MaterialKey::Asset { asset, index },
-                        None => MaterialKey::Default,
-                    },
-                })
-                .collect(),
-            MeshRef::Builtin(_) => Vec::new(),
-        };
+        // 材质分区：由提供者给出三角形区间；空表示整网格一段默认材质。
+        let parts: Vec<GpuPart> = self
+            .provider
+            .mesh_parts(key)
+            .into_iter()
+            .map(|part| GpuPart {
+                first_index: part.first_index,
+                index_count: part.index_count,
+                material: match part.material {
+                    Some((asset, index)) => MaterialKey::Asset { asset, index },
+                    None => MaterialKey::Default,
+                },
+            })
+            .collect();
 
         let gpu = upload_mesh(device, queue, &data, parts);
-        if let MeshRef::Asset { asset, mesh } = key {
-            log::info!(
-                "资产网格已上传 GPU: asset {} mesh {} — {} 顶点 / {} 三角",
-                asset,
-                mesh,
-                data.vertices.len(),
-                data.indices.len() / 3
-            );
-        }
+        log::debug!(
+            "网格已上传 GPU: {key:?} — {} 顶点 / {} 三角",
+            data.vertices.len(),
+            data.indices.len() / 3
+        );
         self.meshes.insert(key, gpu);
         true
     }
@@ -989,14 +1028,10 @@ impl Renderer {
                 }
             }
         }
-        let library = self.mesh_cache.library().cloned();
+        let library = self.mesh_cache.provider().clone();
         for key in keys {
-            self.material_cache.ensure(
-                &self.device,
-                &self.queue,
-                library.as_ref(),
-                key,
-            );
+            self.material_cache
+                .ensure(&self.device, &self.queue, Some(&library), key);
         }
     }
 
