@@ -217,7 +217,7 @@ pub fn parse_pad_button(name: &str) -> Option<usize> {
     PAD_BUTTON_NAMES
         .iter()
         .position(|n| *n == key)
-        .or_else(|| match key.as_str() {
+        .or(match key.as_str() {
             "south" | "cross" => Some(PAD_A),
             "east" | "circle" => Some(PAD_B),
             "west" | "square" => Some(PAD_X),
@@ -240,7 +240,7 @@ pub fn parse_pad_button(name: &str) -> Option<usize> {
 /// 手柄轴名 → 索引。
 pub fn parse_pad_axis(name: &str) -> Option<usize> {
     let key = name.trim().to_ascii_lowercase();
-    PAD_AXIS_NAMES.iter().position(|n| *n == key).or_else(|| {
+    PAD_AXIS_NAMES.iter().position(|n| *n == key).or({
         match key.as_str() {
             "lx" | "lstick_x" => Some(PAD_LEFT_X),
             "ly" | "lstick_y" => Some(PAD_LEFT_Y),

@@ -136,9 +136,8 @@ fn validate(scene: &ufbx::Scene) {
                 let mut max_disp = [0.0f32; 2];
                 let mut sum_disp = [0.0f64; 2];
                 let mut moved = [0usize; 2];
-                for vi in 0..skin.vertices.len().min(statics.len()) {
-                    let v: &ufbx::SkinVertex = &skin.vertices[vi];
-                    let p = statics[vi];
+                for (v, p) in skin.vertices.iter().zip(statics.iter()) {
+                    let p = *p;
                     let mut acc = [Vec3::ZERO; 2];
                     for k in 0..v.num_weights as usize {
                         let w: &ufbx::SkinWeight = &skin.weights[v.weight_begin as usize + k];

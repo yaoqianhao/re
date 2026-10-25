@@ -692,7 +692,7 @@ fn extract_nodes(scene: &ufbx::Scene, node_mesh: &HashMap<u32, u32>) -> Vec<Node
 /// 并开启关键帧精简，避免常量通道产生冗长数据。
 fn extract_animations(scene: &ufbx::Scene, nodes: &[NodeAsset]) -> Vec<AnimClip> {
     let mut out: Vec<AnimClip> = Vec::new();
-    if scene.anim_stacks.len() == 0 {
+    if scene.anim_stacks.is_empty() {
         return out;
     }
 
@@ -705,7 +705,7 @@ fn extract_animations(scene: &ufbx::Scene, nodes: &[NodeAsset]) -> Vec<AnimClip>
     for si in 0..scene.anim_stacks.len() {
         let stack: &ufbx::AnimStack = &scene.anim_stacks[si];
         let name = stack.element.name.to_string();
-        if stack.layers.len() == 0 {
+        if stack.layers.is_empty() {
             // 空栈（只有名字没有 layer）没有可求值内容，按规划直接降级跳过
             log::debug!("动画栈 `{name}` 无 layer，跳过");
             continue;
@@ -972,7 +972,8 @@ fn decode_texture(tex: &ufbx::Texture, base_dir: &Path) -> Option<Arc<TextureIma
     // 1) 内嵌在 FBX 里的二进制
     if !tex.content.is_empty() {
         let bytes: &[u8] = &tex.content;
-        if let Some(image) = decode_image_bytes(bytes, Some(&tex.filename.to_string())) {
+        let name_hint = tex.filename.to_string();
+        if let Some(image) = decode_image_bytes(bytes, Some(&name_hint)) {
             return Some(image);
         }
         log::warn!(
@@ -1103,7 +1104,7 @@ fn extract_mesh(
     let mut aabb_min = Vec3::splat(f32::INFINITY);
     let mut aabb_max = Vec3::splat(f32::NEG_INFINITY);
 
-    for c in 0..corner_count {
+    for (c, slot) in corner_to_vertex.iter_mut().enumerate() {
         let pos_ix = mesh.vertex_indices.get(c).copied().unwrap_or(0);
         let nrm_ix = if has_normal {
             mesh.vertex_normal.indices.get(c).copied().unwrap_or(0)
@@ -1117,7 +1118,7 @@ fn extract_mesh(
         };
         let key = (pos_ix, nrm_ix, uv_ix);
         if let Some(&out) = dedup.get(&key) {
-            corner_to_vertex[c] = out;
+            *slot = out;
             continue;
         }
 
@@ -1185,7 +1186,7 @@ fn extract_mesh(
         normals.push([n.x, n.y, n.z]);
         uvs.push([u, v]);
         dedup.insert(key, out);
-        corner_to_vertex[c] = out;
+        *slot = out;
     }
 
     if !aabb_min.is_finite() || !aabb_max.is_finite() {

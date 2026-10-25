@@ -19,6 +19,9 @@ use rhai::{Array, Dynamic, Engine, Scope, AST};
 pub use api::Clock;
 
 /// 脚本宿主：持有 Rhai 引擎、编译后的 AST 与持久作用域。
+/// 场景重建后的补挂回调（P3）：宿主用它把资产节点与动画实例重新 spawn 回场景。
+type RebuildHook = Box<dyn FnMut(&mut Scene)>;
+
 pub struct ScriptHost {
     engine: Engine,
     clock: Rc<RefCell<Clock>>,
@@ -31,7 +34,7 @@ pub struct ScriptHost {
     script_mtime: Option<SystemTime>,
     base_scene_json: Option<String>,
     /// 场景重建后的补挂回调（P3）：宿主用它把资产节点与动画实例重新 spawn 回场景。
-    rebuild_hook: Option<Box<dyn FnMut(&mut Scene)>>,
+    rebuild_hook: Option<RebuildHook>,
     /// 脚本运行期错误，供 HUD / 控制台观察。
     pub last_error: Option<String>,
 }
@@ -259,7 +262,7 @@ impl ScriptHost {
 /// AST 中是否存在指定名字与参数个数的函数。
 fn has_fn(ast: &AST, name: &str, arity: usize) -> bool {
     ast.iter_functions()
-        .any(|f| f.name.to_string() == name && f.params.len() == arity)
+        .any(|f| f.name == name && f.params.len() == arity)
 }
 
 /// 便捷：把脚本里 `names()` 返回的数组转成字符串列表。

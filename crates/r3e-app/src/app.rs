@@ -777,8 +777,8 @@ impl EngineApp {
                     if st.pad.name != name {
                         st.pad.name = name.clone();
                     }
-                    for i in 0..PAD_BUTTON_COUNT {
-                        st.pad.buttons[i].set(buttons[i]);
+                    for (slot, down) in st.pad.buttons.iter_mut().zip(buttons.iter()) {
+                        slot.set(*down);
                     }
                     st.pad.axes = axes;
                     toggle_pause = st.pad.buttons[PAD_START].pressed;

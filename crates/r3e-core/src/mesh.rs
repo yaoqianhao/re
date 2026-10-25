@@ -97,11 +97,11 @@ impl MeshData {
     ) -> Self {
         let count = positions.len().min(normals.len());
         let mut vertices = Vec::with_capacity(count);
-        for i in 0..count {
+        for (i, (pos, nrm)) in positions.iter().zip(normals.iter()).enumerate() {
             let uv = uvs
                 .and_then(|u| u.get(i).copied())
                 .unwrap_or([0.0, 0.0]);
-            vertices.push(Vertex::new(positions[i], normals[i], uv));
+            vertices.push(Vertex::new(*pos, *nrm, uv));
         }
         Self { vertices, indices }
     }
@@ -124,14 +124,14 @@ impl MeshData {
     ) -> Self {
         let count = positions.len();
         let mut vertices = Vec::with_capacity(count);
-        for i in 0..count {
+        for (i, pos) in positions.iter().enumerate() {
             let uv = uvs.and_then(|u| u.get(i).copied()).unwrap_or([0.0, 0.0]);
             let j = joints.and_then(|j| j.get(i).copied()).unwrap_or([0; 4]);
             let w = weights
                 .and_then(|w| w.get(i).copied())
                 .unwrap_or([0.0; 4]);
             let normal = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
-            vertices.push(Vertex::skinned(positions[i], normal, uv, j, w));
+            vertices.push(Vertex::skinned(*pos, normal, uv, j, w));
         }
         Self { vertices, indices }
     }

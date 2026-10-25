@@ -31,9 +31,9 @@ fn report(entry: &r3e_asset::AssetEntry) {
 
     // 层级深度统计
     let mut depth: Vec<u32> = vec![0; entry.nodes.len()];
-    for i in 0..entry.nodes.len() {
+    for (i, node) in entry.nodes.iter().enumerate() {
         let mut d = 0;
-        let mut cur = entry.nodes[i].parent;
+        let mut cur = node.parent;
         while let Some(p) = cur {
             d += 1;
             cur = entry.nodes[p as usize].parent;

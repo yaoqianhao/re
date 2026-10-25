@@ -219,7 +219,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .borrow()
             .find_all(prefix)
             .into_iter()
-            .map(|n| Dynamic::from(n))
+            .map(Dynamic::from)
             .collect()
     });
 
@@ -323,7 +323,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .borrow()
             .anim_names()
             .into_iter()
-            .map(|n| Dynamic::from(n))
+            .map(Dynamic::from)
             .collect()
     });
 

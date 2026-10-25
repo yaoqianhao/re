@@ -234,6 +234,9 @@ impl MeshCache {
     /// 注入（或替换）资产库；替换时丢弃此前上传的**资产**网格与包围盒，避免引用失效。
     ///
     /// 内置图元的数据与资产库无关，可以保留缓存（避免重复上传）。
+    // 渲染器整体在主线程上跑，`MeshProvider` 刻意不加 `Send + Sync`：
+    // 内部持有 `Rc<RefCell<..>>` 共享场景/资源，跨线程共享本就不成立。
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn set_library(&mut self, library: Arc<dyn MeshProvider>) {
         self.assets = Some(library.clone());
         self.provider = Arc::new(LayeredProvider::new(
@@ -369,6 +372,9 @@ pub struct Renderer {
     shadow_pipeline: wgpu::RenderPipeline,
     stats: RenderStats,
 }
+
+/// `prepare_instances` 的返回值：绘制分组 `(网格, 实例区间)` + 本帧剔除统计。
+type InstancePlan = (Vec<(MeshRef, std::ops::Range<u32>)>, u32, u32, Option<Aabb>);
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self, String> {
@@ -1044,15 +1050,7 @@ impl Renderer {
     /// 返回值附带本帧的剔除统计
     /// `(绘制分组, 剔除数, 缺包围盒数, 全部可见物件的世界包围盒)`；
     /// 最后一项供阴影通道生成光源正交相机（阶段 D）。
-    fn prepare_instances(
-        &mut self,
-        scene: &Scene,
-    ) -> (
-        Vec<(MeshRef, std::ops::Range<u32>)>,
-        u32,
-        u32,
-        Option<Aabb>,
-    ) {
+    fn prepare_instances(&mut self, scene: &Scene) -> InstancePlan {
         // 更新相机 / 光照 uniform
         let mut camera = scene.camera;
         camera.aspect = self.aspect();

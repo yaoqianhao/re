@@ -533,13 +533,13 @@ fn import_mesh<'a>(
         let base = data.vertices.len() as u32;
         let has_skin = joints.is_some() && weights.is_some();
         skinned |= has_skin;
-        for i in 0..positions.len() {
+        for (i, pos) in positions.iter().enumerate() {
             let normal = normals
                 .as_ref()
                 .and_then(|n| n.get(i).copied())
                 .unwrap_or([0.0, 0.0, 1.0]);
             let uv = uvs.as_ref().and_then(|u| u.get(i).copied()).unwrap_or([0.0, 0.0]);
-            let mut vertex = Vertex::new(positions[i], normal, uv);
+            let mut vertex = Vertex::new(*pos, normal, uv);
             if let (Some(j), Some(w)) = (&joints, &weights) {
                 if let (Some(j), Some(w)) = (j.get(i), w.get(i)) {
                     vertex.joints = *j;
