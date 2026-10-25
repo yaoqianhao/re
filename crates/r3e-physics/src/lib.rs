@@ -53,6 +53,8 @@ pub struct BackendCaps {
     pub raycast: bool,
     /// 形状重叠查询（`overlap_sphere`）：给定球体覆盖范围内的刚体。
     pub overlap: bool,
+    /// 扫掠查询（`shape_cast`）：把球 / 盒沿方向推过去，拿到最近的一次接触。
+    pub shape_cast: bool,
 }
 
 impl BackendCaps {
@@ -65,6 +67,7 @@ impl BackendCaps {
         collision_events: false,
         raycast: false,
         overlap: false,
+        shape_cast: false,
     };
 
     /// 内置后端：只有「刚体 vs 地面」这一条接触规则，无旋转、无事件、无 CCD，
@@ -77,6 +80,7 @@ impl BackendCaps {
         collision_events: false,
         raycast: true,
         overlap: true,
+        shape_cast: true,
     };
 
     /// 有真实约束求解器的档位：刚体互撞 + 旋转动力学 + 碰撞事件（Rapier 当前落在这一档）。
@@ -88,6 +92,7 @@ impl BackendCaps {
         collision_events: true,
         raycast: true,
         overlap: true,
+        shape_cast: true,
     };
 
     /// 门面（`PhysicsBackend` trait + 脚本 `physics_*`）当前真正暴露给上层的上限。
@@ -108,6 +113,7 @@ impl BackendCaps {
         collision_events: true,
         raycast: true,
         overlap: true,
+        shape_cast: true,
     };
 
     /// 申报是否落在门面已暴露的能力范围内（越界即虚报）。
@@ -138,6 +144,9 @@ impl BackendCaps {
         }
         if self.overlap {
             keys.push("overlap");
+        }
+        if self.shape_cast {
+            keys.push("shape_cast");
         }
         keys
     }
@@ -486,6 +495,66 @@ pub struct OverlapHit {
     pub node: NodeId,
 }
 
+/// 扫掠（shape-cast）用的查询形状。
+///
+/// 与 `ColliderShape` 刻意分开：查询形状是「临时探针」，不需要建刚体、不需要写回场景，
+/// 也不受 `BodyDesc` 那一堆质量 / 摩擦字段牵连。内置后端不旋转，因此这里没有朝向字段。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CastShape {
+    /// 球体：`radius` 取绝对值，`<= 0` 视为查不到。
+    Sphere { radius: f32 },
+    /// 轴对齐盒：`half` 为半尺寸（与 `BodyDesc::half_extents` 同口径）。
+    Box { half: Vec3 },
+}
+
+impl CastShape {
+    /// 球体构造（负半径取绝对值）。
+    pub fn sphere(radius: f32) -> Self {
+        Self::Sphere {
+            radius: radius.abs(),
+        }
+    }
+
+    /// 盒体构造（半尺寸取绝对值）。
+    pub fn boxed(half: Vec3) -> Self {
+        Self::Box { half: half.abs() }
+    }
+
+    /// 该形状的半尺寸：解析法用它把目标 AABB 做 Minkowski 展开。
+    pub fn half_extents(&self) -> Vec3 {
+        match *self {
+            Self::Sphere { radius } => Vec3::splat(radius.abs()),
+            Self::Box { half } => half.abs(),
+        }
+    }
+
+    /// 尺寸退化到 ~0 时任何后端都查不出有意义的结果，门面直接短路。
+    pub fn is_degenerate(&self) -> bool {
+        self.half_extents().max_element() <= 1e-6
+    }
+}
+
+/// 扫掠命中：把 `shape` 从 `origin` 沿 `dir` 推多远会撞上某个刚体。
+///
+/// 语义与 `RayHit` 对齐（`distance` 同为「沿方向的世界距离」），区别只在
+/// 「接触的是形状表面而非一个点」——所以 `point` 给的是命中瞬间**查询形状质心**的位置。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeCastHit {
+    pub handle: BodyHandle,
+    pub node: NodeId,
+    /// 沿 `dir` 需要推进的距离（世界单位，`>= 0`）；`0` 表示起点已经重叠。
+    pub distance: f32,
+    /// 命中瞬间查询形状质心的世界坐标（接触点 = `point + normal * 形状半尺寸`）。
+    pub point: Vec3,
+    /// 接触法线（世界空间、已归一化，指向查询形状一侧）；初始重叠时取 `-dir`。
+    pub normal: Vec3,
+    /// 起点即与目标重叠：`distance == 0`、`normal == -dir`。
+    ///
+    /// 单独给一位而不是靠 `distance == 0` 猜，是因为「贴面」与「已在体内」对
+    /// 脚本的后续动作（推出 / 放弃）完全不同。
+    pub started_inside: bool,
+}
+
 /// 物理后端契约。实现者负责积分、碰撞与把结果写回场景。
 pub trait PhysicsBackend {
     fn name(&self) -> &'static str;
@@ -546,6 +615,22 @@ pub trait PhysicsBackend {
     /// 默认实现返回空表；能查的后端需把 `capabilities().overlap` 置真。
     fn overlap_sphere(&self, _center: Vec3, _radius: f32) -> Vec<OverlapHit> {
         Vec::new()
+    }
+
+    /// 可选：扫掠查询（shape-cast），把 `shape` 从 `origin` 沿 `dir` 推 `max_distance`，
+    /// 返回最近的一次接触。
+    ///
+    /// 三者（raycast / overlap / shape_cast）共用一套口径：`dir` 会归一化、
+    /// `distance` 是世界距离、起点已重叠时距离为 0。默认实现返回 `None`；
+    /// 能查的后端需把 `capabilities().shape_cast` 置真。
+    fn shape_cast(
+        &self,
+        _shape: CastShape,
+        _origin: Vec3,
+        _dir: Vec3,
+        _max_distance: f32,
+    ) -> Option<ShapeCastHit> {
+        None
     }
 }
 
@@ -877,6 +962,60 @@ impl PhysicsBackend for BuiltinBackend {
         hits.sort_by_key(|h| h.node);
         hits
     }
+
+    /// 解析法扫掠：把目标 AABB 按查询形状的半尺寸做 **Minkowski 展开**，再用射线 slab 求交。
+    ///
+    /// 盒 vs 盒是精确的（两个 AABB 的和仍是 AABB）；球用「半径立方体」展开，
+    /// 因此在盒子棱角处偏保守（把圆角当方角），需要精确球面接触就走 Rapier。
+    /// 这与 `raycast` 的近似口径保持一致，不额外引入第三套几何假设。
+    fn shape_cast(
+        &self,
+        shape: CastShape,
+        origin: Vec3,
+        dir: Vec3,
+        max_distance: f32,
+    ) -> Option<ShapeCastHit> {
+        if max_distance <= 0.0 || shape.is_degenerate() {
+            return None;
+        }
+        let ray = Ray::new(origin, dir);
+        let inflate = shape.half_extents();
+        let mut best: Option<ShapeCastHit> = None;
+        for rb in self.bodies.iter() {
+            let (min, max) = body_aabb(rb.shape, rb.position, rb.half);
+            let (min, max) = (min - inflate, max + inflate);
+            // 起点已在膨胀盒内 → 初始重叠：距离 0，法线朝来向（与 raycast 内部起点口径一致）
+            if point_in_aabb(ray.origin, min, max) {
+                let cand = ShapeCastHit {
+                    handle: rb.handle,
+                    node: rb.node,
+                    distance: 0.0,
+                    point: ray.origin,
+                    normal: -ray.dir,
+                    started_inside: true,
+                };
+                if cast_candidate_better(&cand, best.as_ref()) {
+                    best = Some(cand);
+                }
+                continue;
+            }
+            let Some((t, normal)) = ray_aabb(&ray, min, max, max_distance) else {
+                continue;
+            };
+            let cand = ShapeCastHit {
+                handle: rb.handle,
+                node: rb.node,
+                distance: t,
+                point: ray.point_at(t),
+                normal,
+                started_inside: false,
+            };
+            if cast_candidate_better(&cand, best.as_ref()) {
+                best = Some(cand);
+            }
+        }
+        best
+    }
 }
 
 /// 刚体在世界空间的轴对齐包围盒（内置后端不旋转，AABB 精确）。
@@ -943,6 +1082,26 @@ fn aabb_distance_sq(p: Vec3, min: Vec3, max: Vec3) -> f32 {
         d2 += e * e;
     }
     d2
+}
+
+/// 点是否落在 AABB 内（含边界）。
+fn point_in_aabb(p: Vec3, min: Vec3, max: Vec3) -> bool {
+    (0..3).all(|axis| p[axis] >= min[axis] && p[axis] <= max[axis])
+}
+
+/// 扫掠候选的择优规则，两个后端共用同一套，保证换后端不换「谁更近」的判定：
+/// 初始重叠优先 → 距离更近优先 → `node` 升序兜底（后端内部表顺序不保证稳定）。
+pub(crate) fn cast_candidate_better(cand: &ShapeCastHit, best: Option<&ShapeCastHit>) -> bool {
+    let Some(best) = best else {
+        return true;
+    };
+    if cand.started_inside != best.started_inside {
+        return cand.started_inside;
+    }
+    if (cand.distance - best.distance).abs() > 1e-4 {
+        return cand.distance < best.distance;
+    }
+    cand.node < best.node
 }
 
 /// 统一推导碰撞体半尺寸：优先 BodyDesc.half_extents，退化到 scale * 0.5。
@@ -1148,6 +1307,45 @@ impl Physics {
             return Vec::new();
         }
         self.backend.overlap_sphere(center, radius)
+    }
+
+    /// 扫掠查询：把 `shape` 从 `origin` 沿 `dir` 推 `max_distance`，返回最近的一次接触。
+    ///
+    /// 物理关闭或后端不申报 `shape_cast` 时返回 `None`。`dir` 自动归一化；
+    /// 起点已与目标重叠时返回 `distance = 0` 且 `started_inside = true`。
+    pub fn shape_cast(
+        &self,
+        shape: CastShape,
+        origin: Vec3,
+        dir: Vec3,
+        max_distance: f32,
+    ) -> Option<ShapeCastHit> {
+        if !self.enabled || !self.backend.capabilities().shape_cast {
+            return None;
+        }
+        self.backend.shape_cast(shape, origin, dir, max_distance)
+    }
+
+    /// `shape_cast` 的球体便捷版：脚本 / IDE 里最常用的一种（角色胶囊近似、推箱检测）。
+    pub fn shape_cast_sphere(
+        &self,
+        center: Vec3,
+        radius: f32,
+        dir: Vec3,
+        max_distance: f32,
+    ) -> Option<ShapeCastHit> {
+        self.shape_cast(CastShape::sphere(radius), center, dir, max_distance)
+    }
+
+    /// `shape_cast` 的盒体便捷版（AABB 平移检测）。
+    pub fn shape_cast_box(
+        &self,
+        center: Vec3,
+        half: Vec3,
+        dir: Vec3,
+        max_distance: f32,
+    ) -> Option<ShapeCastHit> {
+        self.shape_cast(CastShape::boxed(half), center, dir, max_distance)
     }
 
     /// 创建刚体；物理关闭时返回 `None`，由调用方决定如何提示。

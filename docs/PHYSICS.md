@@ -18,7 +18,7 @@ cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai
 # 后端运行时切换演示：3s 降 builtin、6s 升回 rapier，观察堆叠行为与重绑日志
 cargo run --features rapier -- assets/scene_rapier.json scripts/backend_switch_demo.rhai
 
-# 查询层演示：射线自上而下打、球体圈选附近的刚体（两后端结果应一致）
+# 查询层演示：射线自上而下打、球体圈选附近的刚体、球/盒扫掠（两后端结果应一致）
 cargo run -- assets/scene.json scripts/query_demo.rhai --physics on
 cargo run --features rapier -- assets/scene.json scripts/query_demo.rhai --physics on --physics-backend rapier
 
@@ -174,6 +174,9 @@ else:
 | `physics_take_events()` | array | 取走本帧碰撞事件（每条形如 `started:2-3`），无 events 能力时恒为空数组 |
 | `physics_raycast(ox,oy,oz, dx,dy,dz, max_dist)` | array | 射线查询，命中返回 `[node, 距离, x, y, z]`，未命中返回空数组（见 7.4） |
 | `physics_overlap(x,y,z, radius)` | array | 球体重叠查询，返回命中节点 id 数组（升序），无命中为空（见 7.4） |
+| `physics_raycast_full(ox,oy,oz, dx,dy,dz, max_dist)` | map | 射线查询**具名版**：`{hit, node, handle, distance, point, normal, inside}`，按名取值，IDE 可补全（见 7.4） |
+| `physics_shape_cast_sphere(ox,oy,oz, dx,dy,dz, radius, max_dist)` | map | 球扫掠：球心从起点沿方向推进，返回首次接触信息（同上字段，见 7.4） |
+| `physics_shape_cast_box(ox,oy,oz, dx,dy,dz, hx,hy,hz, max_dist)` | map | 盒扫掠（半尺寸 `hx,hy,hz`），字段同上（见 7.4） |
 | `physics_gravity()` | f64 | 取 `y` 分量 |
 | `physics_set_gravity(x,y,z)` | void | 设置重力向量 |
 | `physics_ground()` | f64 | 地面平面高度 |
@@ -271,9 +274,11 @@ rapier = ["r3e-physics/rapier"]
 | `events`（`collision_events`） | false | true |
 | `raycast` | true | true |
 | `overlap` | true | true |
+| `shape_cast` | true | true |
 
-`raycast` / `overlap` 是查询层能力：builtin 用解析法查 AABB，rapier 走 parry 的
-`cast_ray_and_get_normal` / `intersection_test`，两侧都真能查出结果，因此都如实报 `true`。
+`raycast` / `overlap` / `shape_cast` 是查询层能力：builtin 用解析法查 AABB（`shape_cast` 靠
+Minkowski 展开 + slab），rapier 走 parry 的 `cast_ray_and_get_normal` / `intersection_test` /
+`cast_shapes`，两侧都真能查出结果，因此都如实报 `true`。
 
 申报口径：**能力位只报门面真能用到的能力**（`BackendCaps::EXPOSED`）。Rapier 底层确实有
 `ccd_solver` / `impulse_joints` / `multibody_joints`，但 `PhysicsBackend` 契约里既没有打开 CCD 的
@@ -286,15 +291,20 @@ rapier = ["r3e-physics/rapier"]
 脚本侧：`physics_capabilities()` 拿整串（全 false 时为 `none`），`physics_has_capability("events")` 查单个。
 **不要在脚本里判断 `physics_backend() == "rapier"`** —— 那会把「后端名」和「能力」绑死，将来接入第三个后端就又要改脚本。
 
-### 7.4 查询层：raycast / overlap
+### 7.4 查询层：raycast / overlap / shape-cast
 
-查询是**后端无关**的：`PhysicsBackend` 上两个带默认实现的可选方法，门面 `Physics::raycast` /
-`Physics::overlap_sphere` 再做一次能力位与开关过滤（物理关闭时直接返回空，不会拿旧数据糊弄）。
+查询是**后端无关**的：`PhysicsBackend` 上三个带默认实现的可选方法，门面 `Physics::raycast` /
+`Physics::overlap_sphere` / `Physics::shape_cast`（另有 `shape_cast_sphere` / `shape_cast_box` 便捷版）
+再做一次能力位与开关过滤（物理关闭时直接返回空，不会拿旧数据糊弄）。
 
 | 方法 | 参数 | 返回 |
 | --- | --- | --- |
 | `PhysicsBackend::raycast` | `Ray`, `max_distance` | `Option<RayHit>`（`handle` / `node` / `distance` / `point` / `normal`） |
 | `PhysicsBackend::overlap_sphere` | `center`, `radius` | `Vec<OverlapHit>`（按 `node` 升序） |
+| `PhysicsBackend::shape_cast` | `origin`, `dir`, `CastShape`, `max_distance` | `Option<ShapeCastHit>`（同上 + `started_inside`） |
+
+`CastShape` 是查询形状（不是刚体形状）：`CastShape::Sphere { radius }` / `CastShape::Box { half }`，
+未来加胶囊/圆柱只扩这个枚举，不动 trait。
 
 两个后端的实现差异：
 
@@ -303,6 +313,7 @@ rapier = ["r3e-physics/rapier"]
 | 射线 | 刚体世界 AABB 做 slab 测试，取最近 | parry `cast_ray_and_get_normal` 逐碰撞体窄相，取最近 |
 | 覆盖形状 | 精确（builtin 不旋转，AABB 即包围体；球按半径立方体近似） | 精确（球 / 盒 / 胶囊 / 圆柱真实窄相） |
 | 球重叠 | 球心到 AABB 最近距离 ≤ 半径 | parry `intersection_test`（Ball vs 碰撞体） |
+| 扫掠 | Minkowski 展开：把目标 AABB 各轴外扩查询形状半尺寸后复用 slab，取 `t_enter` | parry `cast_shapes`，`vel = dir × max_distance`、`max_toi = 1`，`time_of_impact` 再折回世界距离 |
 | 地面 | 不参与（地面不是刚体） | 不参与（半空间不在 `records` 里） |
 
 约定：
@@ -310,6 +321,13 @@ rapier = ["r3e-physics/rapier"]
 - `Ray::new(origin, dir)` **自动归一化方向**，零向量退化为 `+Y`，脚本不用自己除长度；
 - `max_distance` 用世界单位，`<= 0` 视为「查不到」；
 - 射线起点在物体内部时 `distance = 0`、法线取 `-dir`（与常见引擎口径一致）；
+- **扫掠起点已经重叠**时同样 `distance = 0`、`started_inside = true`、法线 `-dir`。
+  Rapier 的穿透法线是「最小平移方向」，与推进方向无关（球心正对盒心时甚至可能朝上），
+  门面统一改写成 `-dir`，保证两后端只认一条规则；
+- 扫掠的 `distance` / `max_distance` 都是**沿推进方向的世界距离**（不是时间比例），
+  脚本拿它和实际米数比较即可；方向由 `dir` 自动归一化，零向量直接返回未命中；
+- builtin 的球扫掠用**立方膨胀**近似：沿盒面推进与 Rapier 完全一致，只在对角线方向略保守
+  （提前一点点命中），属内置后端的已知口径；
 - 查不到返回 `None` / 空数组，不返回哨兵节点；
 - 暂不支持过滤（layers / mask / 排除自身），需要在脚本里拿 `node` 二筛。
 - **位姿一致性**：`attach_body` 会先 `update_world_transforms()` 再取 `world_position()`。脚本里
@@ -319,12 +337,22 @@ rapier = ["r3e-physics/rapier"]
 脚本示例见 `scripts/query_demo.rhai`：
 
 ```rhai
-let hit = physics_raycast(0.0, 8.0, 0.0, 0.0, -1.0, 0.0, 20.0);
-if hit.len() > 0 {
-    log("命中节点 " + hit[0] + " 距离 " + hit[1]);
+// 具名 Map：IDE 能补全字段，未命中时字段照样齐备（hit=false / node=-1），不用先判长度
+let hit = physics_raycast_full(0.0, 8.0, 0.0, 0.0, -1.0, 0.0, 20.0);
+if hit.hit {
+    log("命中节点 " + hit.node + " 距离 " + hit.distance + " 法线 y=" + hit.normal[1]);
 }
 let inside = physics_overlap(0.0, 2.0, 0.0, 3.0);
+
+// 扫掠：半径 0.4 的球从 y=6 往下推 20 米
+if physics_has_capability("shape_cast") {
+    let cast = physics_shape_cast_sphere(0.0, 6.0, 0.0, 0.0, -1.0, 0.0, 0.4, 20.0);
+    log("推进 " + cast.distance + " 米后接触节点 " + cast.node);
+}
 ```
+
+旧的 `physics_raycast`（返回 `[node, 距离, x, y, z]` 数组）保留不动，老脚本不受影响；
+新脚本建议用 `_full` 具名版——按名取值不会被下标顺序绑架。
 
 ### 7.5 运行时切换
 
@@ -392,11 +420,15 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 | `scripts/backend_switch_demo.rhai`（同场景，运行中切换） | 3s `physics_set_backend("builtin")` → true、刚体数归 0、能力变 `none`，引擎打印「物理后端 -> builtin」并重新绑定 6 个场景刚体；6s 切回 rapier 同样成功，碰撞事件恢复 |
 | `assets/scene.json scripts/query_demo.rhai --physics on` | 两后端一致：`命中节点 8 / 距离 5.6 / 命中点 (0, 2.4, 0)`（自上而下打静态方块顶面），球体重叠 `半径 3 内共 3 个物体`（方块 + 自建地板盒 + 场景地面） |
 | 同场景 `--physics off` 跑 query_demo | `physics_has_capability("raycast")` = false，脚本直接跳过查询 |
+| `assets/scene.json scripts/query_demo.rhai --physics on --run-seconds 4`（后端 builtin） | 日志 `能力 = [raycast,overlap,shape_cast]`；`physics_raycast_full` 命中节点 8 / 距离 5.6 / 命中点 (0, 2.4, 0) / 法线 (0, 1, 0)；球扫掠（r=0.4 自 y=6 下推）距离 **3.1999998**、接触点 (0, 2.8, 0)、法线 (0, 1, 0)；盒扫掠（half=0.5）距离 **3.0999999**、接触点 (0, 2.9, 0) |
+| 同场景换 `--physics-backend rapier` | 同脚本同参数：射线距离 5.6、法线 (0, 1, 0) 一致；球扫掠距离 **3.2000022**、盒扫掠 **3.0999999**、节点同为 8——两后端在轴对齐面上仅差浮点末位，验证 Minkowski 解析法与 parry `cast_shapes` 同解 |
 
 测试：`cargo test --workspace` 全绿；`cargo test -p r3e-physics --features rapier` 额外跑 Rapier 契约用例
 （落体、销毁回收、后端切换清空、能力矩阵，`every_backend_raycast_and_overlap_find_nearest_body`
-——两后端都命中最近的盒子、背向打空、`max_distance` 截断、球重叠与关闭后失效，以及
-`rapier_stacks_bodies_and_reports_collision_events`——球落平台触发真实互撞事件）。
+——两后端都命中最近的盒子、背向打空、`max_distance` 截断、球重叠与关闭后失效，
+`every_backend_shape_cast_reports_nearest_surface`——球/盒扫掠命中近表面（距离 4.5、法线 -Z）、
+起始重叠报 `distance=0 + started_inside + 法线 -dir`、背向打空、`max_distance` 截断、零半径短路、
+关闭后失效，以及 `rapier_stacks_bodies_and_reports_collision_events`——球落平台触发真实互撞事件）。
 
 ---
 
@@ -409,6 +441,8 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 - 物件互不碰撞，所以「一堆球掉进箱子」只会全部穿到地面。
 - 无旋转，盒子落地不会侧翻，斜坡上不会滚动。
 - 高速度（>~50 m/s）可能单帧穿过地面（无 CCD）。
+- 扫掠查询只有球 / 盒两种形状，且球按立方 Minkowski 膨胀近似：沿盒面对齐方向与 Rapier 一致，
+  斜向略保守（提前一点命中）。
 
 **`rapier`**
 
@@ -416,6 +450,8 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 - CCD 底层有 `ccd_solver`，但契约里没有开关，能力位 `ccd=false`，高速物体仍可能穿透；脚本调
   `physics_set_ccd()` 会拿到 `false` 与「未支持」日志。
 - 静态 `plane` 只是装饰，物理地面永远是 `ground` 定义的无限平面，没有地形 / 网格碰撞。
+- 初始重叠时 parry 报的是「最小平移方向」，门面统一改写成 `-dir`（契约口径，见 7.4），
+  想拿真实分离向量得用 overlap + 自己算。
 
 **通用**
 

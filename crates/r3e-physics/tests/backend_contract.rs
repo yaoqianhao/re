@@ -153,8 +153,8 @@ fn capability_matrix_is_honest() {
     assert!(!caps.rotational_dynamics, "内置后端不旋转");
     assert!(!caps.collision_events, "内置后端不产事件");
     assert!(
-        caps.raycast && caps.overlap,
-        "内置后端用解析法查 AABB，必须申报 raycast/overlap"
+        caps.raycast && caps.overlap && caps.shape_cast,
+        "内置后端用解析法查 AABB，必须申报 raycast/overlap/shape_cast"
     );
 
     #[cfg(feature = "rapier")]
@@ -163,7 +163,10 @@ fn capability_matrix_is_honest() {
         let caps = rapier.capabilities();
         assert_eq!(caps, BackendCaps::CONTACT);
         assert!(caps.body_body_contacts && caps.rotational_dynamics && caps.collision_events);
-        assert!(caps.raycast && caps.overlap, "Rapier 走 parry 查询管线");
+        assert!(
+            caps.raycast && caps.overlap && caps.shape_cast,
+            "Rapier 走 parry 查询管线"
+        );
         assert!(caps.has("events") && !caps.has("ccd") && !caps.has("joints"));
         assert_eq!(rapier.kind(), PhysicsKind::Rapier);
         assert_eq!(rapier.backend_name(), "rapier");
@@ -339,4 +342,120 @@ fn rapier_stacks_bodies_and_reports_collision_events() {
         (y - 1.75).abs() < 0.12,
         "球应停在平台顶面 y≈1.75（互撞生效），实际 {y}"
     );
+}
+
+/// 查询层契约（shape-cast）：扫掠查询必须与 raycast 同口径——
+/// 撞到最近的表面、起点重叠单独上报、背向 / 距离不够打空、关掉物理立即失效。
+///
+/// 场景与 raycast 用例同构：两个静态盒子在 z=0 与 z=-4（半尺寸 1），
+/// 球心从 z=-10 沿 +Z 推过去。近处盒子的正面在 z=-5，
+/// 所以半径 0.5 的球推 4.5 就碰上，命中瞬间球心在 z≈-5.5。
+#[test]
+fn every_backend_shape_cast_reports_nearest_surface() {
+    for kind in selectable() {
+        let mut physics = physics_of(kind);
+        let mut scene = Scene::new();
+        let mut spawn = |name: &str, z: f32| {
+            let id = scene
+                .spawn(ObjectDesc {
+                    name: name.into(),
+                    mesh: Some("box".into()),
+                    position: Some([0.0, 2.0, z]),
+                    ..Default::default()
+                })
+                .expect("spawn");
+            physics
+                .try_create_body(
+                    id,
+                    BodyDesc {
+                        kind: r3e_physics::BodyKind::Static,
+                        shape: ColliderShape::Box,
+                        half_extents: Vec3::splat(1.0),
+                        position: Vec3::new(0.0, 2.0, z),
+                        ..Default::default()
+                    },
+                )
+                .expect("static body");
+            id
+        };
+        spawn("near", -4.0);
+        let far = spawn("far", 0.0);
+        scene.update_world_transforms();
+
+        let start = Vec3::new(0.0, 2.0, -10.0);
+
+        // 球扫掠：半径 0.5，推 4.5 碰到 z=-5 的面
+        let hit = physics
+            .shape_cast_sphere(start, 0.5, Vec3::Z, 100.0)
+            .unwrap_or_else(|| panic!("{kind:?}: 球扫掠应命中盒子"));
+        assert!(
+            (hit.distance - 4.5).abs() < 0.05,
+            "{kind:?}: 球扫掠距离应为 4.5，实际 {}",
+            hit.distance
+        );
+        assert!(
+            (hit.point.z + 5.5).abs() < 0.05,
+            "{kind:?}: 命中时球心应在 z≈-5.5，实际 {}",
+            hit.point.z
+        );
+        assert!(
+            hit.normal.z < -0.9,
+            "{kind:?}: 迎面法线应为 -Z，实际 {:?}",
+            hit.normal
+        );
+        assert!(!hit.started_inside, "{kind:?}: 起点在空气里，不该报初始重叠");
+        assert_ne!(hit.node, far, "{kind:?}: 不该跳过近处盒子");
+
+        // 盒扫掠：半尺寸 0.5 与球半径同义，距离也应是 4.5
+        let box_hit = physics
+            .shape_cast_box(start, Vec3::splat(0.5), Vec3::Z, 100.0)
+            .unwrap_or_else(|| panic!("{kind:?}: 盒扫掠应命中盒子"));
+        assert!(
+            (box_hit.distance - 4.5).abs() < 0.05,
+            "{kind:?}: 盒扫掠距离应为 4.5，实际 {}",
+            box_hit.distance
+        );
+        assert!(
+            box_hit.normal.z < -0.9,
+            "{kind:?}: 盒扫掠法线应为 -Z，实际 {:?}",
+            box_hit.normal
+        );
+
+        // 起点就在目标体内：distance=0 + started_inside + 法线朝来向
+        let inside = physics
+            .shape_cast_sphere(Vec3::new(0.0, 2.0, -4.0), 0.5, Vec3::Z, 100.0)
+            .unwrap_or_else(|| panic!("{kind:?}: 起点重叠应上报而不是打空"));
+        assert_eq!(inside.distance, 0.0, "{kind:?}: 初始重叠距离应为 0");
+        assert!(inside.started_inside, "{kind:?}: 应标记初始重叠");
+        assert!(
+            inside.normal.z < -0.9,
+            "{kind:?}: 初始重叠法线应朝来向 -Z，实际 {:?}",
+            inside.normal
+        );
+
+        // 背向只有空气
+        assert!(
+            physics
+                .shape_cast_sphere(start, 0.5, -Vec3::Z, 100.0)
+                .is_none(),
+            "{kind:?}: 背向应打空"
+        );
+        // 距离不够推不到
+        assert!(
+            physics.shape_cast_sphere(start, 0.5, Vec3::Z, 2.0).is_none(),
+            "{kind:?}: max_distance 应生效"
+        );
+        // 退化形状查不出有意义结果
+        assert!(
+            physics.shape_cast_sphere(start, 0.0, Vec3::Z, 100.0).is_none(),
+            "{kind:?}: 零半径应短路"
+        );
+
+        // 关掉物理后查询立即失效
+        physics.set_enabled(false);
+        assert!(
+            physics.shape_cast_sphere(start, 0.5, Vec3::Z, 100.0).is_none(),
+            "{kind:?}: 关闭后不查"
+        );
+    }
 }

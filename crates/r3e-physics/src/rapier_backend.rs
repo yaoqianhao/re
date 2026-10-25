@@ -25,14 +25,16 @@ use std::sync::{Arc, Mutex};
 
 use glam::{Quat, Vec3};
 use rapier3d::na::Unit;
-use rapier3d::parry::query::{intersection_test, Ray as ParryRay};
-use rapier3d::parry::shape::Ball;
+use rapier3d::parry::query::{
+    cast_shapes, intersection_test, Ray as ParryRay, ShapeCastOptions, ShapeCastStatus,
+};
+use rapier3d::parry::shape::{Ball, Cuboid};
 use rapier3d::prelude::*;
 use r3e_core::{NodeId, Scene};
 
 use crate::{
-    BackendCaps, BodyDesc, BodyHandle, BodyKind, ColliderShape, OverlapHit, PhysicsBackend,
-    PhysicsEvent, PhysicsEventKind, Ray, RayHit,
+    cast_candidate_better, BackendCaps, BodyDesc, BodyHandle, BodyKind, CastShape, ColliderShape,
+    OverlapHit, PhysicsBackend, PhysicsEvent, PhysicsEventKind, Ray, RayHit, ShapeCastHit,
 };
 
 /// 地面半空间的 `user_data` 标记：它不是场景节点，事件里应报 `None`。
@@ -462,5 +464,97 @@ impl PhysicsBackend for RapierBackend {
             .collect();
         hits.sort_by_key(|h| h.node);
         hits
+    }
+
+    /// 用 parry 的 `cast_shapes` 做真实窄相扫掠（球 / 盒 vs 任意碰撞体），取最近接触。
+    ///
+    /// TOI 归一化技巧：速度取 `dir * max_distance` 且 `max_time_of_impact = 1.0`，
+    /// 于是 `time_of_impact ∈ [0,1]`，乘回 `max_distance` 就是世界距离，
+    /// 与 `raycast` 的 `distance` 同口径（上层不需要知道这是 TOI）。
+    fn shape_cast(
+        &self,
+        shape: CastShape,
+        origin: Vec3,
+        dir: Vec3,
+        max_distance: f32,
+    ) -> Option<ShapeCastHit> {
+        if max_distance <= 0.0 || shape.is_degenerate() {
+            return None;
+        }
+        let d = dir.normalize_or_zero();
+        if d == Vec3::ZERO {
+            return None;
+        }
+
+        // parry 的查询形状要活到循环结束，这里用局部变量托住所有权
+        let ball;
+        let cuboid;
+        let probe: &dyn Shape = match shape {
+            CastShape::Sphere { radius } => {
+                ball = Ball::new(radius.abs());
+                &ball
+            }
+            CastShape::Box { half } => {
+                let h = half.abs();
+                cuboid = Cuboid::new(to_rapier(h));
+                &cuboid
+            }
+        };
+
+        let pose = Pose3::translation(origin.x, origin.y, origin.z);
+        let vel = to_rapier(d * max_distance);
+        let options = ShapeCastOptions {
+            max_time_of_impact: 1.0,
+            target_distance: 0.0,
+            // 允许 t=0 命中也上报：起始重叠对脚本是有效信息（`started_inside`）
+            stop_at_penetration: true,
+            // 穿透时也要给出可用法线，否则 over 内物体拿不到推出方向
+            compute_impact_geometry_on_penetration: true,
+        };
+
+        let mut best: Option<ShapeCastHit> = None;
+        for (handle, rec) in self.records.iter() {
+            let Some(collider) = self.colliders.get(rec.collider) else {
+                continue;
+            };
+            let Ok(Some(hit)) = cast_shapes(
+                &pose,
+                vel,
+                probe,
+                collider.position(),
+                Vector::new(0.0, 0.0, 0.0),
+                collider.shape(),
+                options,
+            ) else {
+                continue;
+            };
+            let started_inside = matches!(hit.status, ShapeCastStatus::PenetratingOrWithinTargetDist);
+            let distance = (hit.time_of_impact * max_distance).max(0.0);
+            let normal = if started_inside {
+                // 初始重叠：parry 给的是「最小平移方向」，与推进方向无关（球心在盒心时甚至可能朝上）。
+                // 契约规定这种情况下法线统一取 `-dir`，与内置后端完全一致，脚本只认一条规则。
+                d * -1.0
+            } else {
+                let g = to_glam(hit.normal2).normalize_or_zero();
+                if g.length_squared() > 0.5 {
+                    g
+                } else {
+                    // 数值退化（面重合 / 深度穿透）时退回「朝向来的方向」
+                    d * -1.0
+                }
+            };
+            let cand = ShapeCastHit {
+                handle: *handle,
+                node: rec.node,
+                distance: if started_inside { 0.0 } else { distance },
+                point: origin + d * if started_inside { 0.0 } else { distance },
+                normal,
+                started_inside,
+            };
+            if cast_candidate_better(&cand, best.as_ref()) {
+                best = Some(cand);
+            }
+        }
+        best
     }
 }

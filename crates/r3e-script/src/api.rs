@@ -8,9 +8,11 @@ use std::rc::Rc;
 
 use glam::{Vec3, Vec4};
 use r3e_core::input::{parse_mouse_button, parse_pad_axis, parse_pad_button};
-use r3e_core::{InputState, MeshRef, ObjectDesc, Scene};
-use r3e_physics::{BodyDesc, BodyHandle, BodyKind, Physics, PhysicsKind, Ray};
-use rhai::{Array, Dynamic, Engine};
+use r3e_core::{InputState, MeshRef, NodeId, ObjectDesc, Scene};
+use r3e_physics::{
+    BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
+};
+use rhai::{Array, Dynamic, Engine, Map};
 
 /// 引擎递给脚本的运行时时钟。
 #[derive(Debug, Clone, Copy, Default)]
@@ -32,6 +34,61 @@ pub struct ScriptContext {
 
 fn f32_of(v: f64) -> f32 {
     v as f32
+}
+
+fn vec3_array(v: Vec3) -> Array {
+    vec![
+        Dynamic::from(v.x as f64),
+        Dynamic::from(v.y as f64),
+        Dynamic::from(v.z as f64),
+    ]
+}
+
+/// 查询结果的空模板：字段名必须与命中版本**完全一致**。
+/// 这样脚本里 `if r.hit { r.node }` 不会因为「没命中就缺键」而报错，IDE 也能一次补全。
+fn empty_query_map() -> Map {
+    let mut m = Map::new();
+    m.insert("hit".into(), Dynamic::from(false));
+    m.insert("node".into(), Dynamic::from(-1_i64));
+    m.insert("handle".into(), Dynamic::from(-1_i64));
+    m.insert("distance".into(), Dynamic::from(-1.0_f64));
+    m.insert("point".into(), Dynamic::from(Array::new()));
+    m.insert("normal".into(), Dynamic::from(Array::new()));
+    m.insert("inside".into(), Dynamic::from(false));
+    m
+}
+
+/// 命中结果 → 脚本 Map（raycast / shape-cast 共用同一套字段名）。
+fn hit_map(hit: Option<(NodeId, BodyHandle, f32, Vec3, Vec3, bool)>) -> Map {
+    let Some((node, handle, distance, point, normal, inside)) = hit else {
+        return empty_query_map();
+    };
+    let mut m = Map::new();
+    m.insert("hit".into(), Dynamic::from(true));
+    m.insert("node".into(), Dynamic::from(node as i64));
+    m.insert("handle".into(), Dynamic::from(handle.0 as i64));
+    m.insert("distance".into(), Dynamic::from(distance as f64));
+    m.insert("point".into(), Dynamic::from(vec3_array(point)));
+    m.insert("normal".into(), Dynamic::from(vec3_array(normal)));
+    m.insert("inside".into(), Dynamic::from(inside));
+    m
+}
+
+fn ray_hit_map(hit: Option<RayHit>) -> Map {
+    hit_map(hit.map(|h| (h.node, h.handle, h.distance, h.point, h.normal, false)))
+}
+
+fn shape_cast_map(hit: Option<ShapeCastHit>) -> Map {
+    hit_map(hit.map(|h| {
+        (
+            h.node,
+            h.handle,
+            h.distance,
+            h.point,
+            h.normal,
+            h.started_inside,
+        )
+    }))
 }
 
 /// 对指定名字的物件做一次可变访问；找不到返回 false。
@@ -832,6 +889,23 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 射线查询的**具名**版本：字段与 shape-cast 完全一致
+    // （hit / node / handle / distance / point / normal / inside），
+    // 老脚本继续用数组版 `physics_raycast`（行为不变），新代码 / IDE 侧建议用这个：
+    // 两者返回同一套语义，只是取值方式不同，迁移时把下标换成 `r.node` / `r.distance` 即可。
+    let c = ctx.clone();
+    engine.register_fn(
+        "physics_raycast_full",
+        move |ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, max_dist: f64| -> Map {
+            let ray = Ray::new(
+                Vec3::new(f32_of(ox), f32_of(oy), f32_of(oz)),
+                Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz)),
+            );
+            let hit = c.physics.borrow().raycast(ray, f32_of(max_dist));
+            ray_hit_map(hit)
+        },
+    );
+
     // 球体重叠：返回命中节点的 id 数组（按 id 升序），空数组即没碰到。
     let c = ctx.clone();
     engine.register_fn(
@@ -846,6 +920,52 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
                 .iter()
                 .map(|h| Dynamic::from(h.node as i64))
                 .collect()
+        },
+    );
+
+    // 形状查询（shape-cast）：把「球 / 盒」沿方向推过去，回答「推多远会撞到谁」。
+    //
+    // 返回**具名 Map**（不是下标数组），IDE 补全 / 脚本按名取值都不用记顺序：
+    //   #{ hit: bool, node: int, handle: int, distance: float,
+    //      point: [x, y, z], normal: [x, y, z], inside: bool }
+    // 未命中时字段齐备：hit=false、node/handle=-1、distance=-1、point/normal 为空数组，
+    // 脚本统一写 `if r.hit { ... }` 即可，不需要先判长度。
+    let c = ctx.clone();
+    engine.register_fn(
+        "physics_shape_cast_sphere",
+        move |ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, radius: f64, max_dist: f64| -> Map {
+            let hit = c.physics.borrow().shape_cast(
+                CastShape::sphere(f32_of(radius)),
+                Vec3::new(f32_of(ox), f32_of(oy), f32_of(oz)),
+                Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz)),
+                f32_of(max_dist),
+            );
+            shape_cast_map(hit)
+        },
+    );
+
+    // 盒扫掠：hx / hy / hz 是**半尺寸**（不是整尺寸，别把整宽填进来）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "physics_shape_cast_box",
+        move |ox: f64,
+              oy: f64,
+              oz: f64,
+              dx: f64,
+              dy: f64,
+              dz: f64,
+              hx: f64,
+              hy: f64,
+              hz: f64,
+              max_dist: f64|
+              -> Map {
+            let hit = c.physics.borrow().shape_cast(
+                CastShape::boxed(Vec3::new(f32_of(hx), f32_of(hy), f32_of(hz))),
+                Vec3::new(f32_of(ox), f32_of(oy), f32_of(oz)),
+                Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz)),
+                f32_of(max_dist),
+            );
+            shape_cast_map(hit)
         },
     );
 
