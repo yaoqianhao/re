@@ -11,9 +11,13 @@
 //!
 //! 能力申报口径（见 `BackendCaps::EXPOSED`）：本后端**只申报门面真能用的能力**。
 //! Rapier 底层本来就有 CCD 与关节（`ccd_solver` / `impulse_joints` / `multibody_joints`
-//! 都已在求解器里接好），但 `PhysicsBackend` 契约里还没有打开 CCD 的开关，也没有
-//! 建关节的方法，脚本更没有任何入口——所以 `joints` / `ccd` 两位一律报 `false`。
-//! 等门面补齐接口后再把 `capabilities()` 提升到 `CONTACT` 之外的档位。
+//! 都已在求解器里接好）。CCD 一侧的门面接口（`set_ccd` / `ccd_of` / `set_ccd_default`）
+//! 已补齐，所以本后端申报 `CONTACT_CCD`；关节仍没有建关节的方法、脚本也没有入口，
+//! `joints` 继续报 `false`。
+//!
+//! CCD 口径提醒：rapier 0.36 对**固定**碰撞体本来就做自动扫掠（`max_ccd_substeps != 0` 时），
+//! `enable_ccd(true)` 额外把扫掠范围扩到**运动学 / 动态**刚体。所以「子弹穿静态墙」
+//! 在关掉 CCD 时未必会穿——做穿透对照必须让靶体是运动学或动态体。
 //!
 //! 语义对齐点（与内置后端保持一致，避免换后端后脚本行为跳变）：
 //! * `BodyKind::Static` 完全不动，`Kinematic` 每帧从场景节点推位置，`Dynamic` 由物理积分
@@ -142,6 +146,8 @@ struct Record {
     collider: ColliderHandle,
     node: NodeId,
     kind: BodyKind,
+    /// 该刚体建体时的 CCD 解析结果（`BodyDesc::continuous` 或后端默认）。
+    continuous: bool,
 }
 
 /// Rapier 后端。所有 Rapier 状态集中在这里，不向上层泄漏。
@@ -164,6 +170,8 @@ pub struct RapierBackend {
     collector: EventCollector,
     events: Arc<Mutex<Vec<PhysicsEvent>>>,
     records: HashMap<BodyHandle, Record>,
+    /// 刚体未显式指定 CCD 时的缺省值（`Physics::ccd_default` 推下来）。
+    ccd_default: bool,
 }
 
 impl RapierBackend {
@@ -210,6 +218,8 @@ impl RapierBackend {
             collector,
             events,
             records: HashMap::new(),
+            // 与 `Physics::ccd_default` 的缺省保持一致：开
+            ccd_default: true,
         }
     }
 
@@ -241,8 +251,8 @@ impl PhysicsBackend for RapierBackend {
     }
 
     fn capabilities(&self) -> BackendCaps {
-        // 只报门面已暴露的三位；joints / ccd 见文件头「能力申报口径」。
-        BackendCaps::CONTACT
+        // 刚体互撞 + 旋转 + 事件 + CCD；关节仍无门面入口，故不报 `joints`。
+        BackendCaps::CONTACT_CCD
     }
 
     fn create_body(&mut self, node: NodeId, desc: BodyDesc) -> BodyHandle {
@@ -257,9 +267,14 @@ impl PhysicsBackend for RapierBackend {
         .translation(to_rapier(desc.position))
         .user_data(node as u128);
 
+        let continuous = desc.continuous.unwrap_or(self.ccd_default);
         let rb = self.bodies.insert(builder);
         if let Some(body) = self.bodies.get_mut(rb) {
             body.set_rotation(quat_to_rapier(desc.rotation), false);
+            // 静态 / 运动学刚体由脚本驱动，CCD 对它们没有意义；只在动态体上开
+            if continuous && matches!(desc.kind, BodyKind::Dynamic) {
+                body.enable_ccd(true);
+            }
         }
         let collider = self
             .colliders
@@ -272,6 +287,7 @@ impl PhysicsBackend for RapierBackend {
                 collider,
                 node,
                 kind: desc.kind,
+                continuous,
             },
         );
         handle
@@ -318,6 +334,44 @@ impl PhysicsBackend for RapierBackend {
         if let Some(body) = self.bodies.get_mut(self.ground_body) {
             body.set_translation(Vector::new(0.0, ground, 0.0), true);
         }
+    }
+
+    fn set_ccd(&mut self, handle: BodyHandle, on: bool) -> bool {
+        let Some(rec) = self.records.get_mut(&handle) else {
+            return false;
+        };
+        // 静态 / 运动学刚体由脚本驱动，不存在「自己高速飞过去」的情况，改它没意义
+        if !matches!(rec.kind, BodyKind::Dynamic) {
+            return false;
+        }
+        rec.continuous = on;
+        if let Some(body) = self.bodies.get_mut(rec.body) {
+            // `enable_ccd` 只升级「扫掠运动学 / 动态体」；
+            // 对固定碰撞体的自动 CCD（rapier 自带）不受它控制，属预期行为
+            body.enable_ccd(on);
+        }
+        true
+    }
+
+    fn ccd_of(&self, handle: BodyHandle) -> Option<bool> {
+        let rec = self.records.get(&handle)?;
+        if !matches!(rec.kind, BodyKind::Dynamic) {
+            return Some(false);
+        }
+        Some(
+            self.bodies
+                .get(rec.body)
+                .map(|b| b.is_ccd_enabled())
+                .unwrap_or(false),
+        )
+    }
+
+    fn set_ccd_default(&mut self, on: bool) {
+        self.ccd_default = on;
+    }
+
+    fn ccd_default(&self) -> bool {
+        self.ccd_default
     }
 
     fn step(&mut self, dt: f32) {

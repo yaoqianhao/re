@@ -95,13 +95,30 @@ impl BackendCaps {
         shape_cast: true,
     };
 
-    /// 门面（`PhysicsBackend` trait + 脚本 `physics_*`）当前真正暴露给上层的上限。
+    /// 在 [`BackendCaps::CONTACT`] 之上再点亮 CCD：高速刚体不穿透薄壁。
     ///
-    /// 关节与 CCD 还没有 trait 方法与脚本入口，所以任何后端都**不得**申报它们，
-    /// 否则脚本通过 `physics_has_capability` 拿到的是一个无法使用的承诺。
-    pub const EXPOSED: Self = Self::CONTACT;
+    /// 目前只有 Rapier 落在这一档（`ccd_solver` 每帧都参与 `pipeline.step`，
+    /// 只差逐刚体的 `enable_ccd`）。
+    pub const CONTACT_CCD: Self = Self {
+        body_body_contacts: true,
+        rotational_dynamics: true,
+        joints: false,
+        ccd: true,
+        collision_events: true,
+        raycast: true,
+        overlap: true,
+        shape_cast: true,
+    };
 
-    /// 完整能力，仅作「等门面补齐关节与 CCD 接口后」的目标档位预留。
+    /// 门面（`PhysicsBackend` trait + 脚本 `physics_*` / `body_*`）当前真正暴露给上层的上限。
+    ///
+    /// CCD 已补齐（`set_ccd` / `ccd_of` / `physics_set_ccd` / `body_set_ccd`），
+    /// 所以这一档允许申报 `ccd`；关节仍没有 trait 方法与脚本入口，
+    /// 任何后端都**不得**申报 `joints`，否则脚本通过 `physics_has_capability`
+    /// 拿到的是一个无法使用的承诺。
+    pub const EXPOSED: Self = Self::CONTACT_CCD;
+
+    /// 完整能力，仅作「等门面补齐关节接口后」的目标档位预留。
     ///
     /// 当前没有任何后端可以返回它：申报能力必须以门面已暴露的接口为准，
     /// 详见 [`BackendCaps::EXPOSED`]。
@@ -117,8 +134,10 @@ impl BackendCaps {
     };
 
     /// 申报是否落在门面已暴露的能力范围内（越界即虚报）。
+    ///
+    /// 只剩 `joints` 一个禁区：CCD 已有完整入口，可以申报。
     pub fn is_within_exposed(&self) -> bool {
-        !self.joints && !self.ccd
+        !self.joints
     }
 
     /// 能力键名（稳定标识，供日志与脚本消费）。
@@ -250,6 +269,14 @@ pub struct BodyDesc {
     pub position: Vec3,
     pub rotation: glam::Quat,
     pub scale: Vec3,
+    /// 连续碰撞检测（CCD）。
+    ///
+    /// * `None` —— 跟随后端默认（`Physics::ccd_default`，缺省开）；
+    /// * `Some(true/false)` —— 这个刚体显式开关，压过后端默认。
+    ///
+    /// 三态而非 `bool`，是为了让「场景没写」与「场景写 false」区分开：
+    /// 前者应当听全局，后者必须能真正退出 CCD。
+    pub continuous: Option<bool>,
 }
 
 impl Default for BodyDesc {
@@ -264,6 +291,7 @@ impl Default for BodyDesc {
             position: Vec3::ZERO,
             rotation: glam::Quat::IDENTITY,
             scale: Vec3::ONE,
+            continuous: None,
         }
     }
 }
@@ -328,6 +356,7 @@ impl BodyDesc {
             position: node.world_position(),
             rotation: node.transform.rotation,
             scale,
+            continuous: p.ccd,
         })
     }
 }
@@ -466,6 +495,8 @@ pub struct PhysicsConfig {
     pub kind: Option<PhysicsKind>,
     pub gravity: Option<Vec3>,
     pub ground: Option<f32>,
+    /// 逐刚体 CCD 的缺省值（`BodyDesc::continuous = None` 时生效），缺省视为 `true`。
+    pub ccd: Option<bool>,
 }
 
 impl PhysicsConfig {
@@ -475,6 +506,7 @@ impl PhysicsConfig {
             kind: desc.backend.as_deref().and_then(PhysicsKind::parse),
             gravity: desc.gravity.map(Vec3::from),
             ground: desc.ground,
+            ccd: desc.ccd,
         }
     }
 
@@ -488,6 +520,11 @@ impl PhysicsConfig {
         self
     }
 
+    pub fn with_ccd(mut self, ccd: bool) -> Self {
+        self.ccd = Some(ccd);
+        self
+    }
+
     /// `other` 中已明确指定的字段覆盖 `self`。
     pub fn merge_over(&self, other: &PhysicsConfig) -> PhysicsConfig {
         PhysicsConfig {
@@ -495,6 +532,7 @@ impl PhysicsConfig {
             kind: other.kind.or(self.kind),
             gravity: other.gravity.or(self.gravity),
             ground: other.ground.or(self.ground),
+            ccd: other.ccd.or(self.ccd),
         }
     }
 }
@@ -640,6 +678,29 @@ pub trait PhysicsBackend {
 
     /// 可选：设置地面平面高度（仅内置后端消费）。
     fn set_ground(&mut self, _ground: f32) {}
+
+    /// 可选：给单个刚体开关 CCD（连续碰撞检测）。
+    ///
+    /// 返回 `true` 表示真的改到了；不支持 CCD 的后端返回 `false`，
+    /// 调用方（脚本 / IDE）据此如实回报，不要假装设置成功。
+    fn set_ccd(&mut self, _handle: BodyHandle, _on: bool) -> bool {
+        false
+    }
+
+    /// 可选：读回某刚体当前的 CCD 状态；不支持的后端返回 `None`。
+    fn ccd_of(&self, _handle: BodyHandle) -> Option<bool> {
+        None
+    }
+
+    /// 可选：设置「刚体没显式指定时」的 CCD 默认值（`BodyDesc::continuous = None`）。
+    ///
+    /// 不需要重建刚体：已有刚体由脚本 / 上层用 [`PhysicsBackend::set_ccd`] 逐个改。
+    fn set_ccd_default(&mut self, _on: bool) {}
+
+    /// 可选：当前 CCD 默认值。不支持 CCD 的后端恒为 `false`。
+    fn ccd_default(&self) -> bool {
+        false
+    }
 
     /// 可选：如实申报本后端能做什么。默认「什么都不做」。
     ///
@@ -1181,6 +1242,8 @@ pub struct Physics {
     ground: f32,
     /// 高优先级强制项（命令行等）：每次 apply_config 都会覆盖到最终配置上。
     overrides: PhysicsConfig,
+    /// 逐刚体 CCD 的缺省开关（`BodyDesc::continuous = None` 时生效），缺省开。
+    ccd_default: bool,
     /// 配置世代号：开关 / 后端 / 刚体表的任何重置都会自增，
     /// 供上层（app）判断是否需要重新绑定场景里声明的刚体。
     generation: u64,
@@ -1215,6 +1278,7 @@ impl Physics {
             kind: PhysicsKind::Null,
             ground: 0.0,
             overrides: PhysicsConfig::default(),
+            ccd_default: true,
             generation: 1,
         }
     }
@@ -1228,6 +1292,7 @@ impl Physics {
             kind: PhysicsKind::Builtin,
             ground: 0.0,
             overrides: PhysicsConfig::default(),
+            ccd_default: true,
             generation: 1,
         }
     }
@@ -1269,6 +1334,47 @@ impl Physics {
         self.backend.set_ground(ground);
     }
 
+    /// 逐刚体 CCD 的缺省开关（场景 `physics.ccd` / 命令行 `--ccd` 落到这里）。
+    ///
+    /// 返回值是「当前后端是否支持 CCD」：`false` 表示这个开关在后端层面无效，
+    /// 上层（脚本 / IDE）应如实告知用户，而不是假装生效。
+    pub fn set_ccd_default(&mut self, on: bool) -> bool {
+        self.ccd_default = on;
+        self.backend.set_ccd_default(on);
+        self.backend.capabilities().ccd
+    }
+
+    /// 当前 CCD 缺省开关。
+    pub fn ccd_default(&self) -> bool {
+        self.ccd_default
+    }
+
+    /// 给单个刚体开关 CCD；后端不支持时返回 `false`。
+    pub fn set_ccd(&mut self, handle: BodyHandle, on: bool) -> bool {
+        self.backend.set_ccd(handle, on)
+    }
+
+    /// 读回单个刚体当前 CCD 状态；后端不支持时返回 `None`。
+    pub fn ccd_of(&self, handle: BodyHandle) -> Option<bool> {
+        self.backend.ccd_of(handle)
+    }
+
+    /// 把 CCD 开关应用到**所有**现存刚体（脚本 `physics_set_ccd` 用）。
+    ///
+    /// 返回实际改到的刚体数：后端没有句柄表或不支持 CCD 时为 0。
+    pub fn set_ccd_all(&mut self, on: bool) -> usize {
+        let Some(handles) = self.backend.take_all_handles() else {
+            return 0;
+        };
+        let mut n = 0;
+        for h in handles {
+            if self.backend.set_ccd(h, on) {
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// 运行时切换后端（会清空已有刚体、`generation` 自增，脚本需重新 attach）。
     pub fn set_kind(&mut self, kind: PhysicsKind) -> Result<(), String> {
         if !kind.is_available() {
@@ -1301,6 +1407,10 @@ impl Physics {
         if let Some(e) = merged.enabled {
             self.set_enabled(e);
         }
+        if let Some(ccd) = merged.ccd {
+            // 只改「缺省值」：场景里显式写了 `physics.ccd` 的刚体仍以逐物件为准
+            self.set_ccd_default(ccd);
+        }
         Ok(())
     }
 
@@ -1318,6 +1428,7 @@ impl Physics {
         };
         self.backend.set_gravity(self.gravity);
         self.backend.set_ground(self.ground);
+        self.backend.set_ccd_default(self.ccd_default);
         self.generation += 1;
     }
 
@@ -1725,6 +1836,7 @@ mod tests {
                 kind: Some(PhysicsKind::Builtin),
                 gravity: None,
                 ground: Some(2.0),
+                ccd: None,
             })
             .unwrap();
         let (mut scene, id) = scene_with_ball();
@@ -1734,5 +1846,75 @@ mod tests {
         }
         let y = scene.get(id).unwrap().transform.position.y;
         assert!((y - 2.5).abs() < 1e-3, "y = {y}");
+    }
+
+    #[test]
+    fn exposed_caps_allow_ccd_but_still_forbid_joints() {
+        // 门面已暴露 CCD：这一档必须能申报，且关节仍是禁区（编译期就钉死）
+        const _: () = assert!(BackendCaps::EXPOSED.ccd);
+        const _: () = assert!(!BackendCaps::EXPOSED.joints);
+        assert!(BackendCaps::CONTACT_CCD.is_within_exposed());
+        assert!(BackendCaps::CONTACT.is_within_exposed());
+        // 关节没入口，谁申报谁虚报
+        assert!(!BackendCaps::FULL.is_within_exposed());
+        // 档位是逐位叠加：CONTACT_CCD 比 CONTACT 只多 `ccd` 一位
+        assert!(BackendCaps::CONTACT_CCD.has("ccd"));
+        assert!(!BackendCaps::CONTACT.has("ccd"));
+        assert!(BackendCaps::CONTACT_CCD.has("body_body"));
+    }
+
+    #[test]
+    fn builtin_backend_honestly_reports_no_ccd() {
+        let mut physics = Physics::new();
+        physics
+            .apply_config(PhysicsConfig::default().with_enabled(true))
+            .unwrap();
+        assert_eq!(physics.kind(), PhysicsKind::Builtin);
+        assert!(!physics.capabilities().ccd);
+        // 不支持就得如实回 false，别让脚本以为设置成功
+        assert!(!physics.set_ccd_default(true));
+        assert!(!physics.ccd_default() || !physics.capabilities().ccd);
+        assert_eq!(physics.set_ccd_all(true), 0);
+    }
+
+    #[test]
+    fn scene_ccd_flows_into_body_desc_and_config() {
+        use r3e_core::scene::{PhysicsDesc, PhysicsSceneDesc};
+
+        let mut scene = Scene::new();
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "fast".into(),
+                mesh: Some("sphere".into()),
+                position: Some([0.0, 1.0, 0.0]),
+                physics: Some(PhysicsDesc {
+                    body: "dynamic".into(),
+                    mass: 1.0,
+                    restitution: None,
+                    friction: None,
+                    collider: None,
+                    half_extents: None,
+                    ccd: Some(false),
+                }),
+                ..Default::default()
+            })
+            .expect("spawn");
+        scene.update_world_transforms();
+        // 逐物件显式 false 必须原样传下去（不能和「没写」混为一谈）
+        assert_eq!(
+            BodyDesc::from_node(scene.get(id).unwrap())
+                .unwrap()
+                .continuous,
+            Some(false)
+        );
+
+        // 场景级开关进 PhysicsConfig，再落到后端缺省值
+        let cfg = PhysicsConfig::from_scene(&PhysicsSceneDesc {
+            ccd: Some(false),
+            ..Default::default()
+        });
+        assert_eq!(cfg.ccd, Some(false));
+        let merged = PhysicsConfig::default().merge_over(&cfg);
+        assert_eq!(merged.ccd, Some(false));
     }
 }
