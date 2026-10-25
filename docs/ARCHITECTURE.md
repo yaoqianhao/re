@@ -1211,7 +1211,8 @@ update_animations(dt)
 | **四（已完成：D）** | **D 方向光阴影贴图**：`ShadowSettings` 进 `Light`、场景 `light.shadow` 段、`ShadowPassUniform` 独立绑定、`vs_shadow` 深度 pass、3×3 PCF + 法线偏移、4 个脚本 API | `core/light.rs` 加 `ShadowSettings` / `shadow_view_projection`；`render` 加深度纹理 + 第二 pass + 独立 pipeline layout；`script/api.rs` 注册 `set_shadow*` / `shadow_enabled`；`assets/scene_shadow.json` + `scripts/shadow_demo.rhai` | 着色器与 uniform 布局变化（场景 JSON 向后兼容：`light.shadow` 缺省即默认开启阴影，可用 `enabled:false` 关闭） |
 | **五（已完成：P0–P4）** | **FBX 资产加载**：模型 / 贴图 / 材质 / 节点级动画 / 骨骼蒙皮 | 新增 `r3e-asset` crate；`Vertex`/`MeshData` 下沉 `r3e-core`；`MeshKind` 扩展为资源句柄；render 分组键改为 `MeshKey` 并新增材质 bind group；场景 JSON `assets` 段；脚本新增 `load_asset` / `play_anim` | **需改 `MeshKind` 语义**（枚举 → 资源句柄）；场景 JSON 向后兼容 |
 | 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
-| 七 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
+| **七（已完成：P-CCD）** | **CCD 连续碰撞检测**：契约 `set_ccd`/`ccd_of`/`set_ccd_default`、门面批量接口、场景 `physics.ccd`（全局 + 逐物件，缺省开）、脚本 4 个 API、`--ccd` 命令行、`BackendCaps::EXPOSED` 升到 `CONTACT_CCD`（只留 `joints` 一个禁区）、穿透对照测试 | `r3e-physics` 契约 + 门面 + `rapier_backend` 建体时 `enable_ccd`；`core/scene.rs` 加 `ccd` 字段；`script/api.rs` 实现 `physics_set_ccd` 并新增 `physics_ccd_default`/`body_set_ccd`/`body_ccd`；新增 `tests/ccd_penetration.rs` | 无（场景 JSON 向后兼容：缺省即开；`builtin` 仍如实报 `ccd=false`） |
+| 八 | 编辑器协议 | 从 stdin REPL 升级为 TCP/WebSocket JSON-RPC | 无（复用同一套 API） |
 
 两条与顺序相关的说明：
 

@@ -45,10 +45,10 @@ cargo run --features rapier -- assets/scene_physics.json scripts/physics_demo.rh
 
 | 层级 | 入口 | 写法 | 特点 |
 | --- | --- | --- | --- |
-| 命令行 | `--physics` / `--physics-backend` / `--gravity` / `--ground` | `--physics on` | 最高优先级，且**粘住**热重载（`Physics.overrides`） |
+| 命令行 | `--physics` / `--physics-backend` / `--gravity` / `--ground` / `--ccd` | `--physics on` | 最高优先级，且**粘住**热重载（`Physics.overrides`） |
 | 场景文件 | `scene.json` 的 `physics` 段 | `"physics": { "enabled": true }` | 随场景走，热重载时重新读取 |
 | 脚本 | `physics_set_enabled()` / `physics_set_backend()` 等 | `physics_set_enabled(true)` | 运行时任意时刻生效，热重载后回到场景值 |
-| 内置默认 | 代码常量 | `enabled=false`、`gravity=(0,-9.81,0)`、`ground=0`、后端 `null` | 缺省即「与物理未接入时的行为完全一致」 |
+| 内置默认 | 代码常量 | `enabled=false`、`gravity=(0,-9.81,0)`、`ground=0`、`ccd=true`、后端 `null` | 缺省即「与物理未接入时的行为完全一致」 |
 
 几条关键语义：
 
@@ -65,7 +65,8 @@ cargo run --features rapier -- assets/scene_physics.json scripts/physics_demo.rh
     "enabled": true,
     "backend": "builtin",
     "gravity": [0, -9.81, 0],
-    "ground": 0.0
+    "ground": 0.0,
+    "ccd": true
   },
   "objects": [
     { "name": "ground", "mesh": "plane", "scale": [30, 1, 30] },
@@ -97,6 +98,7 @@ cargo run --features rapier -- assets/scene_physics.json scripts/physics_demo.rh
 | `restitution` | f32 | `0.2` | 0 = 完全不弹，1 = 完全弹性 |
 | `friction` | f32 | `0.6` | 落地时的切向速度衰减系数 |
 | `half_extents` | [f32;3] | `scale * 0.5` | 显式覆盖碰撞体半尺寸 |
+| `ccd` | bool | 跟场景级 `physics.ccd`（再缺省为 `true`） | 逐物件开关连续碰撞检测；后端不申报 `ccd` 时该字段无效（见 7.6） |
 
 **只有声明了 `physics` 的物件才会被自动绑定成刚体**。没声明的（纯装饰）永远由脚本驱动。
 
@@ -152,7 +154,7 @@ else:
 
 - **物件之间不碰撞**：只与地面平面相交，球不会撞球、盒子不会压柱子。
 - **无旋转动力学**：物体平移、不翻滚、不受力矩。
-- **无关节、无堆叠求解、无 CCD**：不做金字塔堆叠，不防高速穿透。
+- **无关节、无堆叠求解、无 CCD**：不做金字塔堆叠，也不做连续碰撞检测（高速物体会单帧跨过地面）。
 
 需要这些能力时走第 8 节的切换路径，而不是继续往内置后端加。
 
@@ -170,7 +172,8 @@ else:
 | `physics_set_backend(name)` | bool | 运行时切后端，会**清空已有刚体**；`rapier` 未编译时返回 false |
 | `physics_capabilities()` | string | 当前后端能力位，逗号分隔（见 7.3） |
 | `physics_has_capability(name)` | bool | 单个能力位查询，脚本据此分支而非硬编码后端名 |
-| `physics_set_ccd(on)` | bool | **恒返回 false** 并打印「未支持」：契约里还没有 CCD 开关，能力位 `ccd=false` |
+| `physics_set_ccd(on)` | bool | 设置**缺省** CCD 并批量应用到现存刚体；返回后端是否支持（`builtin` 返回 false 并打印「未支持」） |
+| `physics_ccd_default()` | bool | 当前缺省 CCD 开关（新建刚体继承该值） |
 | `physics_take_events()` | array | 取走本帧碰撞事件（每条形如 `started:2-3`），无 events 能力时恒为空数组 |
 | `physics_raycast(ox,oy,oz, dx,dy,dz, max_dist)` | array | 射线查询，命中返回 `[node, 距离, x, y, z]`，未命中返回空数组（见 7.4） |
 | `physics_overlap(x,y,z, radius)` | array | 球体重叠查询，返回命中节点 id 数组（升序），无命中为空（见 7.4） |
@@ -189,6 +192,8 @@ else:
 | `attach_body(name, kind, mass)` | bool | 为节点创建刚体；物理关闭时返回 false；重复调用会先回收旧刚体 |
 | `detach_body(name)` | bool | 销毁该节点的刚体并清空 `Node::body` |
 | `body_impulse(name, x, y, z)` | bool | 施加瞬时冲量（会唤醒休眠体） |
+| `body_set_ccd(name, on)` | bool | 逐刚体开关 CCD；无该刚体或后端不支持时返回 false（见 7.6） |
+| `body_ccd(name)` | bool | 读回该刚体当前 CCD 状态；无该刚体或后端不支持时返回 false |
 | `body_count()` | i64 | 当前刚体数；物理关闭时恒为 0 |
 
 `attach_body` 的碰撞形状优先取节点 `physics.collider`，没有则按 `mesh` 推导（球 → 球、柱 → 柱、其余 → 盒），
@@ -248,7 +253,7 @@ rapier = ["r3e-physics/rapier"]
 | 刚体 vs 刚体 | **无** | 有，可堆叠、可互相推挤 |
 | 旋转 / 翻滚 / 力矩 | 无 | 有，`sync_to_scene` 写回 `transform.rotation` |
 | 碰撞事件 | 无 | 有（`started` / `stopped`） |
-| CCD（高速防穿透） | 无 | 底层有能力，门面未暴露 → 能力位 `false`，高速物体仍可能穿透 |
+| CCD（高速防穿透） | 无（能力位 `false`） | 有，**默认开**；运动学 / 动态刚体有效，固定体由 rapier 自动扫掠（见 7.6） |
 | 关节 | 无 | 底层支持，门面暂不暴露 |
 | 子步策略 | 1/60 切分，最多 6 步 | 同左，`MAX_SUBSTEPS = 6` 保持一致节奏 |
 | 静态 `plane` | 装饰用，碰撞由 `ground` 平面负责 | 同左（不做网格碰撞） |
@@ -270,7 +275,7 @@ rapier = ["r3e-physics/rapier"]
 | `body_body`（`body_body_contacts`） | false | true |
 | `rotation`（`rotational_dynamics`） | false | true |
 | `joints` | false | **false** |
-| `ccd` | false | **false** |
+| `ccd` | false | **true** |
 | `events`（`collision_events`） | false | true |
 | `raycast` | true | true |
 | `overlap` | true | true |
@@ -280,13 +285,14 @@ rapier = ["r3e-physics/rapier"]
 Minkowski 展开 + slab），rapier 走 parry 的 `cast_ray_and_get_normal` / `intersection_test` /
 `cast_shapes`，两侧都真能查出结果，因此都如实报 `true`。
 
-申报口径：**能力位只报门面真能用到的能力**（`BackendCaps::EXPOSED`）。Rapier 底层确实有
-`ccd_solver` / `impulse_joints` / `multibody_joints`，但 `PhysicsBackend` 契约里既没有打开 CCD 的
-开关、也没有建关节的方法，脚本更没有任何入口——这种情况下报 `true` 就是虚报，脚本会拿着
-`physics_has_capability("joints") == true` 去调用并不存在的接口。所以这两位一律为 `false`，
-等门面补齐接口（trait 方法 + 脚本入口 + 契约测试）后再一起点亮。
-`BackendCaps::CONTACT` 是当前上限档，`BackendCaps::FULL`（含 joints/ccd）只是给未来预留的档位，
-`tests/backend_contract.rs::no_backend_overclaims_capabilities` 会拦住任何越界申报。
+申报口径：**能力位只报门面真能用到的能力**（`BackendCaps::EXPOSED` = `CONTACT_CCD`）。
+Rapier 底层确实还有 `impulse_joints` / `multibody_joints`，但 `PhysicsBackend` 契约里没有建关节的方法，
+脚本更没有任何入口——这种情况下报 `true` 就是虚报，脚本会拿着 `physics_has_capability("joints") == true`
+去调用并不存在的接口。所以 `joints` 一律为 `false`；CCD 则因为门面已有
+`set_ccd` / `ccd_of` / `set_ccd_default` 与脚本三件套（`physics_set_ccd` / `body_set_ccd` / `body_ccd`），
+已经点亮为 `true`。`BackendCaps::FULL`（含 joints）仍只是给未来预留的档位，
+`tests/backend_contract.rs::no_backend_overclaims_capabilities` 会拦住任何越界申报，
+并反向校验「报了 `ccd` 就必须真能设进去」。
 
 脚本侧：`physics_capabilities()` 拿整串（全 false 时为 `none`），`physics_has_capability("events")` 查单个。
 **不要在脚本里判断 `physics_backend() == "rapier"`** —— 那会把「后端名」和「能力」绑死，将来接入第三个后端就又要改脚本。
@@ -364,6 +370,47 @@ if physics_has_capability("shape_cast") {
 
 切换是「换引擎」而非「改参数」，飞行中的物件会回到场景初始位姿重新下落 —— 这是预期行为，文档与日志都如实写明。
 
+### 7.6 CCD（连续碰撞检测）
+
+**要解决的问题**：离散检测只在每帧末尾判重叠。`dt=0.05`、初速 300 m/s 的子弹一帧走 15 m，
+一面 4 cm 厚的墙会被整帧跨过去——先穿透、再「已经出去了」，永远测不到接触。
+
+**四层入口，缺一不可**：
+
+| 层 | 入口 | 语义 |
+| --- | --- | --- |
+| 契约 | `PhysicsBackend::set_ccd` / `ccd_of` / `set_ccd_default` / `ccd_default` | 带默认实现（`false` / `None` / 不做事），新后端不实现也能编译，能力位如实报 `false` |
+| 门面 | `Physics::set_ccd` / `ccd_of` / `set_ccd_default` / `set_ccd_all` | `set_ccd_all` 批量刷已存在的刚体并返回改动数量 |
+| 场景 | 全局 `physics.ccd` + 逐物件 `physics.ccd` | 逐物件优先；两级都省 = 开（默认防穿透，而不是默认放穿透） |
+| 脚本 / CLI | `physics_set_ccd(on)` / `physics_ccd_default()` / `body_set_ccd(name, on)` / `body_ccd(name)`、`--ccd on\|off` | 运行时改缺省值会同时刷现存刚体，避免「改了开关但老刚体没变」的半生效 |
+
+**生效范围（rapier 0.36 的真实行为，别想当然）**：
+
+| 刚体类型 | `enable_ccd(true)` 的效果 |
+| --- | --- |
+| `dynamic` | 有效：按 TOI 截断本步位移 |
+| `kinematic` | 有效：快速移动的运动学体不再穿过动态体 |
+| `static` / 固定体 | **无效也不必要**：rapier 对固定碰撞体本来就做自动扫掠（`ccd_solver` 非空时） |
+
+所以 `ccd_of()` 对固定体一律返回 `false` —— 它报的是「这一位真的被设上了吗」，不是「这个物体会不会穿」。
+门面对非动态体调用 `set_ccd` 会返回 `false`，不假装成功。
+
+**穿透对照测试**（`crates/r3e-physics/tests/ccd_penetration.rs`，无窗口、纯数值）：
+
+- 靶体用**运动学**薄板（半厚 0.02 m），不用静态墙——静态墙本来就有自动扫掠，观察不到差异；
+- 子弹是 0.05 m 半径动态球，`dt=0.05`、初速 300 m/s，单步位移 5 m；
+- 地面沉到 `y=-100`，避免无限地面蹭掉子弹动量（这是写这个用例时踩到的坑）；
+- 断言：关 CCD 时 `x > 1.0`（穿过去了），开 CCD 时 `x < 0.0`（停在板前）；另有一例校验
+  `set_ccd_default` / `set_ccd_all` / `set_ccd` / `ccd_of` 的读回一致性，以及无效句柄如实返回失败。
+
+**肉眼可见的对照**：`cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.rhai`
+—— 一面 4 cm 厚运动学薄墙 + 两颗只差 `ccd` 一位的球（120 m/s，即每帧 2 m）。蓝色 `bullet_ccd` 停在
+墙前 `x ≈ -0.22` 且不再前进；黄色 `bullet_no_ccd` 头也不回地飞向 +x。脚本会把两组 x 每 0.5 秒打一次日志，
+并给出「被墙挡住 / 穿墙」的结论行。墙用 `kinematic` 是因为静态墙本来就自动扫掠，开关两边都挡得住。
+
+**代价**：CCD 会让每个高速动态体做一次扫掠，密集子弹场景下开销可见；因此才保留「逐物件关掉」这一档
+（大量慢速道具可以省下来），而不是简单地全局硬开。默认开是为了修掉「高速物件穿地」这种一看就是缺陷的表现。
+
 ---
 
 ## 8. 与帧循环 / 热重载的配合
@@ -416,8 +463,11 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 | 静止与休眠 | 盒子从 `y=12` 落到 `y=0.6999…`（half=0.7）后数值恒定不再抖动 |
 | 运行时开关 | `physics_set_enabled(false/true)`、`physics_set_backend("null"/"builtin")` 均生效 |
 | 默认构建 `physics_set_backend("rapier")` | 返回 false 并打印「未编译进本构建」，不静默降级 |
-| `cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai` | 日志「物理: 启用 / 后端 rapier / 能力 [body_body,rotation,events]」，绑定 6 个场景刚体；脚本打印碰撞事件（如 `started:none-9` 砸地、`stopped:10-11` 方块分离），方块在平台上堆住不倒 |
+| `cargo run --features rapier -- assets/scene_rapier.json scripts/rapier_demo.rhai` | 日志「物理: 启用 / 后端 rapier / 能力 [body_body,rotation,ccd,events,raycast,overlap,shape_cast] / CCD 默认 on」，绑定 6 个场景刚体；脚本打印碰撞事件（如 `started:none-9` 砸地、`stopped:10-11` 方块分离），方块在平台上堆住不倒 |
 | `scripts/backend_switch_demo.rhai`（同场景，运行中切换） | 3s `physics_set_backend("builtin")` → true、刚体数归 0、能力变 `none`，引擎打印「物理后端 -> builtin」并重新绑定 6 个场景刚体；6s 切回 rapier 同样成功，碰撞事件恢复 |
+| `--physics on --physics-backend rapier --run-seconds 2`（实测日志） | 「能力 [body_body,rotation,ccd,events,raycast,overlap,shape_cast] / **CCD 默认 on**」；加 `--ccd off` 后同一行变「CCD 默认 off」，能力位仍是 `ccd`（能力 = 有没有，不是开没开） |
+| `cargo test -p r3e-physics --features rapier --test ccd_penetration` | 3 passed：关 CCD 子弹穿板 `x > 1.0`、开 CCD 停在板前 `x < 0.0`、`set_ccd_default`/`set_ccd_all`/`ccd_of` 读回一致且非法句柄返回 false |
+| `assets/scene_ccd.json scripts/ccd_demo.rhai`（实测） | 日志「bullet_ccd ccd=true / bullet_no_ccd ccd=false」；0.5s 时 ccd 球 `x ≈ -0.218`（墙前）、无 ccd 球 `x ≈ 45.4`；2s 时 ccd 球稳在 `-0.2199…`、无 ccd 球到 `225.8` —— 结论行「ccd球 被墙挡住 / 无ccd球 穿墙」 |
 | `assets/scene.json scripts/query_demo.rhai --physics on` | 两后端一致：`命中节点 8 / 距离 5.6 / 命中点 (0, 2.4, 0)`（自上而下打静态方块顶面），球体重叠 `半径 3 内共 3 个物体`（方块 + 自建地板盒 + 场景地面） |
 | 同场景 `--physics off` 跑 query_demo | `physics_has_capability("raycast")` = false，脚本直接跳过查询 |
 | `assets/scene.json scripts/query_demo.rhai --physics on --run-seconds 4`（后端 builtin） | 日志 `能力 = [raycast,overlap,shape_cast]`；`physics_raycast_full` 命中节点 8 / 距离 5.6 / 命中点 (0, 2.4, 0) / 法线 (0, 1, 0)；球扫掠（r=0.4 自 y=6 下推）距离 **3.1999998**、接触点 (0, 2.8, 0)、法线 (0, 1, 0)；盒扫掠（half=0.5）距离 **3.0999999**、接触点 (0, 2.9, 0) |
@@ -440,15 +490,15 @@ Rapier 专属的堆叠 + 碰撞事件用例单独用 `#[cfg(feature = "rapier")]
 
 - 物件互不碰撞，所以「一堆球掉进箱子」只会全部穿到地面。
 - 无旋转，盒子落地不会侧翻，斜坡上不会滚动。
-- 高速度（>~50 m/s）可能单帧穿过地面（无 CCD）。
+- 高速度（>~50 m/s）可能单帧穿过地面（无 CCD，能力位如实 `false`）；需要防穿透请切 `rapier` 后端。
 - 扫掠查询只有球 / 盒两种形状，且球按立方 Minkowski 膨胀近似：沿盒面对齐方向与 Rapier 一致，
   斜向略保守（提前一点命中）。
 
 **`rapier`**
 
 - 关节（joint）底层支持但门面未暴露，脚本暂不能建约束，能力位 `joints=false`。
-- CCD 底层有 `ccd_solver`，但契约里没有开关，能力位 `ccd=false`，高速物体仍可能穿透；脚本调
-  `physics_set_ccd()` 会拿到 `false` 与「未支持」日志。
+- CCD 已支持且默认开，但只对动态 / 运动学刚体生效（固定体靠 rapier 自动扫掠）；高速物件的扫掠有开销，
+  密集弹幕这类场景建议用 `physics_set_ccd(false)` 或逐物件 `body_set_ccd` 关掉。
 - 静态 `plane` 只是装饰，物理地面永远是 `ground` 定义的无限平面，没有地形 / 网格碰撞。
 - 初始重叠时 parry 报的是「最小平移方向」，门面统一改写成 `-dir`（契约口径，见 7.4），
   想拿真实分离向量得用 overlap + 自己算。
@@ -485,5 +535,5 @@ BodyDesc::from_node_with(node, Some(&mesh))  // 场景构建时的默认路径
 - 判定失败不报错，兜底长方体永远可用（导入面永远不因物理而失败）；
 - 网格为空时退化为单位长方体，只告警。
 
-验收：`cargo test -p r3e-physics`（13 + 8 passed），其中
+验收：`cargo test -p r3e-physics --features rapier`（16 单测 + 9 契约 + 3 穿透 = 28 passed），其中
 `shape_inference_reads_geometry_not_source`、`infer_reads_mesh_shape` 覆盖球/圆柱/盒与平移不变性。

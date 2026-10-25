@@ -21,11 +21,15 @@ D:\rust3d-engine
 ├─ assets/
 │   ├─ scene.json             # 场景描述（纯文本，可随时改）
 │   ├─ scene_physics.json     # 物理演示场景（已启用物理）
+│   ├─ scene_rapier.json      # Rapier 演示场景（堆叠 / 弹跳 / 圆柱）
+│   ├─ scene_ccd.json         # CCD 穿透对照场景（薄墙 + 两颗只差 ccd 一位的子弹）
 │   └─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
 ├─ scripts/
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
 │   ├─ input_demo.rhai        # 鼠标 / 手柄演示
 │   ├─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
+│   ├─ rapier_demo.rhai       # Rapier 演示（持续丢方块堆叠 + 碰撞事件）
+│   ├─ ccd_demo.rhai          # CCD 演示（开/关 CCD 两球射同一面薄墙）
 │   ├─ query_demo.rhai        # 物理查询演示（raycast 射线 + overlap 球体圈选 + 球/盒扫掠）
 │   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
 │   ├─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
@@ -271,7 +275,11 @@ ok
 | `physics_raycast_full(ox,oy,oz, dx,dy,dz, max_dist) -> map` | 射线查询具名版：`hit / node / handle / distance / point / normal / inside` |
 | `physics_shape_cast_sphere(ox,oy,oz, dx,dy,dz, radius, max_dist) -> map` | 球扫掠，字段同上（`inside` = 起点已重叠） |
 | `physics_shape_cast_box(ox,oy,oz, dx,dy,dz, hx,hy,hz, max_dist) -> map` | 盒扫掠（半尺寸），字段同上 |
-| `physics_has_capability(name) -> bool` | 查能力位（`body_body` / `rotation` / `events` / `raycast` / `overlap` / `shape_cast` …） |
+| `physics_has_capability(name) -> bool` | 查能力位（`body_body` / `rotation` / `ccd` / `events` / `raycast` / `overlap` / `shape_cast` …） |
+| `physics_set_ccd(on) -> bool` | 设置 CCD 缺省值并同步刷新现存刚体，返回是否被后端接受 |
+| `physics_ccd_default() -> bool` | 当前 CCD 缺省值 |
+| `body_set_ccd(name, on) -> bool` | 逐刚体开关 CCD（固定体返回 false） |
+| `body_ccd(name) -> bool` | 查询某刚体的 CCD 是否真开着 |
 
 ---
 
@@ -299,15 +307,16 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 | `--physics-backend` | `builtin` / `null` / `rapier` | 后端；`rapier` 未编译进本构建，选它会提示并拒绝 |
 | `--gravity` | `x,y,z` | 重力加速度，默认 `0,-9.81,0` |
 | `--ground` | 浮点数 | 地面平面高度，默认 `0` |
+| `--ccd` | `on` / `off` | CCD 连续碰撞检测缺省值，默认 `on`（仅 `rapier` 后端支持） |
 
 场景文件里的写法（`physics` 段可整体省略）：
 
 ```json
 {
-  "physics": { "enabled": true, "backend": "builtin", "gravity": [0, -9.81, 0], "ground": 0.0 },
+  "physics": { "enabled": true, "backend": "builtin", "gravity": [0, -9.81, 0], "ground": 0.0, "ccd": true },
   "objects": [
     { "name": "ball", "mesh": "sphere", "position": [-3, 6, 0],
-      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.85, "friction": 0.3 } }
+      "physics": { "body": "dynamic", "mass": 1.0, "restitution": 0.85, "friction": 0.3, "ccd": true } }
   ]
 }
 ```
@@ -321,14 +330,33 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 
 ### 换成 Rapier
 
-契约（`PhysicsBackend` 的 8 个必需方法）与开关层已经就位，改动面固定三处：
+Rapier 后端已落地（`crates/r3e-physics/src/rapier_backend.rs`，`rapier = ["dep:rapier3d"]` feature），
+加 `--features rapier` 构建后 `--physics-backend rapier` 即可切换，随时切回 `builtin`：
 
-1. 新增 `crates/r3e-physics/src/rapier_backend.rs` 实现 `PhysicsBackend`；
-2. `crates/r3e-physics/Cargo.toml` 打开 `rapier = ["dep:rapier3d"]` feature；
-3. `Physics::rebuild_backend` 里把 `PhysicsKind::Rapier` 指向新实例。
+```powershell
+cargo run --release --features rapier -- --physics on --physics-backend rapier
+```
 
-场景 JSON、脚本 API、`app` 层、`core::Scene` **零改动**；
-之后 `--physics-backend rapier` 即可切换，随时切回 `builtin`。
+Rapier 后端额外提供：刚体互撞与堆叠、旋转动力学、碰撞事件、**CCD 高速防穿透**（默认开）、
+射线 / 重叠 / 扫掠查询。能力位由后端自报，脚本用 `physics_has_capability("ccd")` 判断，
+**不要用 `physics_backend() == "rapier"` 判**——那会把后端名和能力绑死。
+
+`joints` 仍是唯一禁区：底层支持，门面与脚本都没接口，因此两边都如实报 `false`。
+
+### CCD 穿透对照
+
+```powershell
+cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.rhai
+```
+
+同一面 4 cm 厚运动学薄墙，两颗只差 `ccd` 一位的球同时以 120 m/s 射出（每帧走 2 m）：
+
+| 物件 | `ccd` | 结果 |
+| --- | --- | --- |
+| `bullet_ccd`（蓝） | `true` | 停在墙前 `x ≈ -0.22`，不再前进 |
+| `bullet_no_ccd`（黄） | `false` | 整帧跨过墙，飞向 +x 无穷远 |
+
+墙刻意用 `kinematic` 而非 `static`：rapier 对固定碰撞体本来就做自动扫掠，静态墙下开关两边都挡得住，看不出差别。
 
 ---
 
@@ -353,7 +381,8 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
-- 物理：物件互不碰撞、无旋转、无地形碰撞、高速可能穿地（无 CCD）；默认关闭。
+- 物理：内置后端物件互不碰撞、无旋转、无地形碰撞（无 CCD，高速可能穿地），默认关闭；
+  换 Rapier 后端后支持互撞 / 旋转 / 碰撞事件 / **CCD 高速防穿透**（默认开，可逐物件关掉）。
 
 ---
 
