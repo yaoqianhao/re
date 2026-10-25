@@ -74,54 +74,71 @@ rust3d-engine/
 ├─ docs/
 │  ├─ ARCHITECTURE.md          # 本文档
 │  ├─ PHYSICS.md               # 物理子系统完整说明
-│  └─ ASSETS.md                # 下一步：FBX 资产加载规划（未实现）
+│  └─ ASSETS.md                # 资产管线：FBX / glTF 导入、AIR 统一格式、已知限制
 └─ crates/
    ├─ r3e-core/                # 内核：数学、变换、节点、场景图、相机、光照
    ├─ r3e-render/              # 渲染：wgpu 设备、管线、程序化网格、WGSL
-   ├─ r3e-physics/             # 物理：后端契约 + Null / 内置最简实现
+   ├─ r3e-physics/             # 物理：后端契约 + Null / 内置最简 / Rapier（可选 feature）
    ├─ r3e-script/              # 脚本：Rhai 宿主 + 引擎 API 绑定
+   ├─ r3e-asset/               # 资产：FBX / glTF / GLB 导入，统一输出 AIR
    └─ r3e-app/                 # 应用：窗口、事件循环、主循环、REPL、热重载
 ```
 
 ### 3.1 依赖关系（严格单向，无环）
 
 ```
-                       ┌──────────────┐
-                       │  r3e-app     │  可执行体
-                       └──┬────┬───┬──┘
-                 ┌────────┘    │   └────────┐
-                 ▼             ▼            ▼
-          ┌────────────┐ ┌────────────┐ ┌────────────┐
-          │ r3e-render │ │ r3e-script │ │r3e-physics │
-          └─────┬──────┘ └────┬───┬───┘ └─────┬──────┘
-                │             │   │           │
-                └─────────────┴───┴───────────┘
-                              ▼
-                       ┌──────────────┐
-                       │  r3e-core    │  无图形/窗口依赖
-                       └──────────────┘
+                        ┌──────────────────┐
+                        │  r3e-app         │  可执行体（唯一组装层）
+                        └─┬────┬────┬────┬─┘
+              ┌───────────┘    │    │    └───────────┐
+              ▼                ▼    ▼                ▼
+      ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐
+      │ r3e-render │  │ r3e-script │  │r3e-physics │  │ r3e-asset  │
+      └─────┬──────┘  └────┬───┬───┘  └─────┬──────┘  └─────┬──────┘
+            │              │   │            │               │
+            │              │   └────────────┘               │
+            │              │        （physics API 绑定）      │
+            └──────────────┴────────────┴───────────────────┘
+                                   ▼
+                            ┌──────────────┐
+                            │  r3e-core    │  无图形/窗口依赖
+                            └──────────────┘
 ```
 
 依赖约束及其意义：
 
 - `r3e-core` **不依赖任何图形 API、窗口库或脚本引擎**，只依赖 `glam` + `serde`。因此它是可测试、可无头运行的真源层。
-- `r3e-render`、`r3e-script`、`r3e-physics` 三者**互不依赖**：渲染器不认识 Rhai，脚本引擎不认识 wgpu。它们唯一的交点是 `r3e-core::Scene`。
-- `r3e-app` 是唯一的组装层，负责把三方接进同一个帧循环。
+- `r3e-render`、`r3e-physics`、`r3e-asset` 三者**互不依赖**：渲染器不认识 Rhai，资产层不认识 wgpu，物理层不认识 ufbx。
+- 唯一的跨子系统依赖是 `r3e-script → r3e-physics`：脚本 API 要直接持有 `Physics` 门面做绑定，这是刻意的（不是环，物理层不反向认识脚本）。
+- `r3e-app` 是唯一的组装层，负责把各子系统接进同一个帧循环。
 
 这条约束是引擎"文本能控制画面"的结构性保证：**所有子系统读写同一份内存中的 `Scene`，而不是通过消息或事件副本通信。**
 
 ### 3.2 代码规模
 
-| crate | 主要文件 | 行数量级 |
-| --- | --- | --- |
-| r3e-core | `scene.rs`(343) / `input.rs`(219) / `transform.rs`(86) / `node.rs`(76) / `camera.rs`(65) / `light.rs`(19) | ~824 |
-| r3e-render | `renderer.rs`(423) / `mesh.rs`(213) / `shader.wgsl`(55) | ~639 |
-| r3e-physics | `lib.rs`(858) | ~858 |
-| r3e-script | `api.rs`(577) / `lib.rs`(218) | ~795 |
-| r3e-app | `app.rs`(668) / `main.rs`(164) | ~832 |
-| **合计** | | **约 3950 行 Rust + 55 行 WGSL** |
+| crate | src 行数 | tests 行数 | 主要文件 |
+| --- | --- | --- | --- |
+| r3e-core | 4190 | — | `scene.rs` / `air.rs` / `procedural.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 1681 | 85 | `renderer.rs` / `mesh.rs` / `shader.wgsl` |
+| r3e-asset | 2836 | 285 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-physics | 2298 | 461 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
+| r3e-script | 1298 | — | `api.rs` / `lib.rs` |
+| r3e-app | 1957 | — | `app.rs` / `main.rs` |
+| **合计** | **14,260** | **831** | **约 15,100 行（含 WGSL）** |
 
-Release 二进制 21.8 MB（含 wgpu 后端静态链接与调试符号剥离前的体积）。
+Release 二进制 28.2 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
+
+### 3.3 质量门（每次改动后必过）
+
+| 门 | 命令 | 当前口径 |
+| --- | --- | --- |
+| 单测 | `cargo test --workspace` | 89 passed / 0 failed |
+| 物理契约（Rapier） | `cargo test -p r3e-physics --features rapier` | 13 + 9 passed |
+| 静态检查 | `cargo clippy --workspace --all-targets`（另跑 `--all-features`） | 0 warning |
+| 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
+
+静态检查仅保留两处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
+`too_many_arguments`（顶点装配入口参数天然是平行数组）。
 
 ---
 
@@ -1275,11 +1292,17 @@ cargo build --release
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
 | `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass + 主 pass）、`resize`、`RenderStats` |
 | `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样 |
-| `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面 |
+| `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BackendCaps`、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面、查询层契约（`Ray` / `OverlapHit` / `CastShape`） |
+| `crates/r3e-physics/src/rapier_backend.rs` | Rapier 后端：刚体/碰撞体映射、接触求解、碰撞事件回传、parry 窄相查询（raycast / overlap / shape-cast） |
+| `crates/r3e-core/src/air.rs` | AIR 契约与 12 条不变量、`finalize` / `audit_entry` 统一校验 |
+| `crates/r3e-core/src/procedural.rs` | 内置程序化图元（cube / sphere / plane / cylinder）统一产出 `MeshData` |
+| `crates/r3e-asset/src/lib.rs` | FBX 导入（ufbx）、材质/贴图元数据、动画与蒙皮数据、`AssetLibrary` |
+| `crates/r3e-asset/src/importer.rs` | `AssetImporter` + `ImporterRegistry`：按扩展名分派，未知扩展名显式报错 |
+| `crates/r3e-asset/src/gltf_import.rs` | glTF / GLB 导入（gltf 1.4.1）与 GLB 头完整性校验 |
 | `crates/r3e-script/src/lib.rs` | `ScriptHost`、加载/每帧/热重载/重放、`has_fn` |
 | `crates/r3e-script/src/api.rs` | 全部 Rhai API 绑定、`Clock`、`ScriptContext`、xorshift 随机 |
 | `crates/r3e-app/src/app.rs` | `EngineApp`、帧循环、输入、文件监视、REPL 通道 |
 | `crates/r3e-app/src/main.rs` | 参数解析、项目根三级兜底、事件循环启动 |
 | `docs/PHYSICS.md` | 物理子系统完整说明：三层开关、场景字段、脚本 API、内置规则、实测与限制 |
-| `docs/ASSETS.md` | 下一步规划：FBX 资产加载（模型 / 贴图 / 材质 / 节点级动画）的改动面与阶段拆分 |
+| `docs/ASSETS.md` | 资产管线完整说明：FBX / glTF 导入、AIR 统一格式与不变量、动画/蒙皮、分阶段验收与已知限制 |
 *（内容由AI生成，仅供参考）*
