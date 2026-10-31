@@ -115,6 +115,8 @@ pub struct CliOptions {
     pub dump_asset: Option<PathBuf>,
     /// `--dump-anim <fbx>`：打印动画栈的采样表后退出（P3 的数值验收手段）。
     pub dump_anim: Option<PathBuf>,
+    /// `--save-scene <json>`：读入场景后按引擎写法保存到该路径并退出（无窗口）。
+    pub save_scene: Option<PathBuf>,
     /// `--anim-clip <name>`：配合 `--dump-anim` 只看某个片段。
     pub anim_clip: Option<String>,
     /// `--show-bones`：把骨架节点画成小方块，用于肉眼确认 P3 的节点动画。
@@ -1045,6 +1047,27 @@ impl EngineApp {
         }
     }
 
+    /// 把内存里的场景写回磁盘（`None` = 写回本场景文件，即编辑器里「保存」的语义）。
+    ///
+    /// 保存的同时刷新 `scene_mtime`：写回被监视的场景文件时，`watch_files` 会把它
+    /// 当成外部改动去做一次热重载（场景回放到刚写的那份 JSON、脚本重跑、动画重置）。
+    /// 内容确实等价，但副作用没有必要，所以这里直接把 mtime 记成新值。
+    ///
+    /// 返回值：实际写入的绝对路径（规范化失败时退回原路径）。
+    pub fn save_scene(&mut self, path: Option<&Path>) -> Result<PathBuf, String> {
+        let target = path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.scene_path.clone());
+        {
+            let scene = self.scene.borrow();
+            scene.save_to_path(&target)?;
+        }
+        self.scene_mtime = std::fs::metadata(&self.scene_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        Ok(std::fs::canonicalize(&target).unwrap_or(target))
+    }
+
     fn watch_files(&mut self) {
         if self.last_watch.elapsed().as_millis() < 400 {
             return;
@@ -1288,6 +1311,10 @@ impl EngineApp {
                     }
                 );
             }
+            Key::Named(NamedKey::F2) => match self.save_scene(None) {
+                Ok(path) => log::info!("场景已保存 (scene saved): {}", path.display()),
+                Err(e) => log::error!("场景保存失败: {e}"),
+            },
             Key::Named(NamedKey::F5) => {
                 let path = self.script_path.clone();
                 if let Err(e) = self.scripts.load_file(&path) {
@@ -1547,6 +1574,22 @@ fn load_assets(specs: &[AssetSpec]) -> AssetLibrary {
         }
     }
     library
+}
+
+/// 无窗口的「加载 → 规范化保存」：把场景读进内存再按引擎写法写回 `out`。
+///
+/// 给 CI / 脚本批量把手写的场景 JSON 规范成统一格式用（`--save-scene <out>`）。
+/// 不应用命令行物理覆盖——保存的是**文件里声明的源数据**，不是进程运行期状态。
+///
+/// 返回 `(物件数, 写入字节数)`。
+pub fn save_scene_file(scene_path: &Path, out: &Path) -> Result<(usize, u64), String> {
+    let src = std::fs::read_to_string(scene_path)
+        .map_err(|e| format!("读取场景 {} 失败: {e}", scene_path.display()))?;
+    let scene = Scene::from_json_str(&src).map_err(|e| format!("场景解析失败: {e}"))?;
+    let nodes = scene.len();
+    scene.save_to_path(out)?;
+    let bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    Ok((nodes, bytes))
 }
 
 /// P3 数值验收：打印每个片段的轨道统计，并在若干时刻采样「位移最大的轨道」。

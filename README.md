@@ -101,6 +101,7 @@ cargo run --release -- assets\scene.json scripts\main.rhai
 | 手柄 `Start` | 暂停 / 继续 |
 | 手柄 `Back` | 重载脚本（等同 `F5`） |
 | `空格` | 暂停 / 继续（暂停时脚本不推进） |
+| `F2` | 把内存中的场景保存回场景 JSON（也可用 `--save-scene` 无窗口规范化保存） |
 | `F5` | 手动重载脚本 |
 | `Esc` | 退出 |
 | 终端输入一行代码 | 立即执行一行 Rhai，作用于当前场景 |
@@ -213,6 +214,7 @@ cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
 | `scene.set_transform` | 改 `position` / `rotation` / `scale`，三者至少给一个 |
 | `scene.spawn` | 按物件描述新建，回新节点 id |
 | `scene.remove` | 按名字删除 |
+| `scene.save` | 把内存场景写回 JSON（`path` 省略时为原场景文件），回 `{path, objects, bytes}` |
 | `script.eval` | 执行一段 Rhai，返回其求值结果（JSON 化） |
 | `script.reload` | 重载脚本文件 |
 

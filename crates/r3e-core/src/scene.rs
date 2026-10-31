@@ -1,60 +1,65 @@
 //! 场景图：物件容器、生命周期（生成 / 消失）、层次变换与文件加载。
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use glam::{Mat4, Vec3, Vec4};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
 
 use crate::skin::SkinInstance;
 use crate::{AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, Transform};
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ObjectDesc {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 4]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
     /// 物理描述：只做数据承载，真正生效取决于启用的 `PhysicsBackend`。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physics: Option<PhysicsDesc>,
 }
 
 /// 物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PhysicsDesc {
     /// "dynamic" | "static" | "kinematic"
-    #[serde(default = "default_body_kind")]
+    #[serde(
+        default = "default_body_kind",
+        skip_serializing_if = "is_default_body_kind"
+    )]
     pub body: String,
-    #[serde(default = "default_mass")]
+    #[serde(default = "default_mass", skip_serializing_if = "is_default_mass")]
     pub mass: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restitution: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub friction: Option<f32>,
     /// "box" | "sphere" | "cylinder"，缺省由 mesh 推导
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collider: Option<String>,
     /// 碰撞体半尺寸，缺省由 scale 推导
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub half_extents: Option<[f32; 3]>,
     /// 连续碰撞检测（CCD）：高速物体不穿过薄墙。
     ///
     /// 省略表示「跟场景级 `physics.ccd`」（再缺省为开）；显式写 `false` 可让
     /// 单个物件退出 CCD（例如大量慢速道具，省掉 sweep 开销）。
     /// 后端不申报 `ccd` 能力时该字段无效。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ccd: Option<bool>,
 }
 
@@ -62,25 +67,25 @@ pub struct PhysicsDesc {
 ///
 /// 所有字段都是可选的，缺省值由 `r3e_physics::PhysicsConfig` 决定：
 /// 默认 enabled=false（物理关闭）、backend="builtin"、重力 -9.81、地面 y=0。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PhysicsSceneDesc {
     /// 是否启用物理模拟。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// "builtin"（内置最简物理）| "null"（空转，只登记刚体）| "rapier"（需构建时启用）
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     /// 重力加速度向量，缺省 [0.0, -9.81, 0.0]。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity: Option<[f32; 3]>,
     /// 地面平面高度，缺省 0.0。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ground: Option<f32>,
     /// 所有刚体的 CCD 缺省开关（逐物件 `physics.ccd` 优先）。
     ///
     /// 缺省 `true`：后端申报 `ccd` 能力时默认开启，避免「高速物件穿墙」
     /// 这种一看就是缺陷的表现。脚本可用 `physics_set_ccd(false)` 全局关。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ccd: Option<bool>,
 }
 
@@ -91,48 +96,58 @@ fn default_mass() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// `PhysicsDesc::body` 的缺省值是 `"dynamic"`：等于缺省值时不写进 JSON。
+fn is_default_body_kind(body: &str) -> bool {
+    body == "dynamic"
+}
+
+/// `PhysicsDesc::mass` 的缺省值是 `1.0`：等于缺省值时不写进 JSON。
+fn is_default_mass(mass: &f32) -> bool {
+    *mass == 1.0
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CameraDesc {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fov: Option<f32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LightDesc {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intensity: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<[f32; 3]>,
     /// 阴影配置（阶段 D）；省略时沿用引擎默认（开启，2048²，自适应半宽）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ShadowDesc>,
 }
 
 /// 场景文件里的阴影配置（阶段 D）。字段都可省略，省略即沿用默认值。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ShadowDesc {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u32>,
     /// 正交相机半宽；省略或 0 表示按场景包围球自适应
-    #[serde(default, alias = "ortho_size")]
+    #[serde(default, alias = "ortho_size", skip_serializing_if = "Option::is_none")]
     pub ortho: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bias: Option<f32>,
-    #[serde(default, alias = "normalBias")]
+    #[serde(default, alias = "normalBias", skip_serializing_if = "Option::is_none")]
     pub normal_bias: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f32>,
 }
 
@@ -140,22 +155,22 @@ pub struct ShadowDesc {
 ///
 /// 写在场景 `assets[]` 项里，语义是「导入后立刻给这个资产实例挂一个播放器」。
 /// `clip` 省略时取该资产动画栈里的第一个片段。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AnimDecl {
     /// 片段名（大小写不敏感）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip: Option<String>,
     /// 播放速度，缺省 1.0；负值为倒放。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f32>,
     /// 是否循环，缺省 true。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub looping: Option<bool>,
     /// 起始时间（秒），缺省 0。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time: Option<f32>,
     /// 是否立即播放，缺省 true。false 时实例存在但处于暂停状态。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub play: Option<bool>,
 }
 
@@ -163,43 +178,43 @@ pub struct AnimDecl {
 ///
 /// 声明后由应用层导入并在导入成功后按资产内网格 spawn 物件；
 /// 物件也可以通过 `"mesh": "asset:<路径>#<序号>"` 直接引用同一资产。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AssetDecl {
     /// 资产路径（FBX 等）。
     pub path: String,
     /// 该资产下所有网格的整体偏移。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<[f32; 3]>,
     /// 整体缩放（三轴相同时即可当作单位换算，例如 FBX 以厘米建模就填 0.01）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<[f32; 3]>,
     /// 只导入不 spawn（供脚本 / 其它物件的 `asset:` 引用使用）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn: Option<bool>,
     /// 导入后自动挂载的动画播放器（P3 起）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anim: Option<AnimDecl>,
 }
 
 /// 场景文件结构（JSON）。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SceneFile {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<[f32; 4]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<CameraDesc>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light: Option<LightDesc>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physics: Option<PhysicsSceneDesc>,
     /// 外部资产声明（应用层负责真正导入）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<AssetDecl>,
 }
 
@@ -809,6 +824,131 @@ impl Scene {
         scene.update_world_transforms();
         Ok(scene)
     }
+
+    // ---------- 保存 ----------
+
+    /// 把当前场景的**源数据**导回 [`SceneFile`]，与 [`Scene::from_file`] 严格对称。
+    ///
+    /// 只写「场景文件里本来就有的东西」：场景名、背景、相机、光照、场景级物理声明、
+    /// 物件描述与资产声明。运行时派生状态一律不写：
+    ///
+    /// - 每帧由 [`Scene::update_world_transforms`] 算出的 `world` / `world_normal` 矩阵缓存；
+    /// - 物理后端的刚体句柄 `body`（句柄只对本次运行的 `Physics` 有效）；
+    /// - `next_id` / `children` / `time` / `frame` 这类引擎内部记账；
+    /// - 动画实例、蒙皮实例、GPU 侧资源与实例索引——它们由应用层按资产声明在加载后重建。
+    ///
+    /// 于是 `load -> save -> load` 得到的场景与第一次加载语义等价。
+    pub fn to_scene_file(&self) -> SceneFile {
+        SceneFile {
+            name: Some(self.name.clone()),
+            background: Some(self.background.to_array()),
+            camera: Some(CameraDesc {
+                position: Some(self.camera.position.to_array()),
+                target: Some(self.camera.target.to_array()),
+                fov: Some(self.camera.fov_deg),
+            }),
+            light: Some(self.light_desc()),
+            objects: self
+                .order
+                .iter()
+                .filter_map(|id| self.nodes.get(id))
+                .map(|node| self.node_desc(node))
+                .collect(),
+            physics: if physics_desc_is_empty(&self.physics) {
+                None
+            } else {
+                Some(self.physics.clone())
+            },
+            assets: self.assets.clone(),
+        }
+    }
+
+    /// 场景 → 紧凑 JSON 文本（`Scene::from_json_str` 的逆操作）。
+    pub fn to_json_string(&self) -> Result<String, String> {
+        serde_json::to_string(&self.to_scene_file()).map_err(|e| format!("场景序列化失败: {e}"))
+    }
+
+    /// 场景 → 带缩进、末尾带换行的 JSON 文本（给人读 / 进版本库的形态）。
+    pub fn to_json_pretty(&self) -> Result<String, String> {
+        let mut text = serde_json::to_string_pretty(&self.to_scene_file())
+            .map_err(|e| format!("场景序列化失败: {e}"))?;
+        text.push('\n');
+        Ok(text)
+    }
+
+    /// 把场景写回文件；父目录不存在时自动创建，写入是整体覆盖。
+    ///
+    /// 返回的错误是给人看的中文串，与应用层其它读场景处的风格一致。
+    pub fn save_to_path(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| format!("创建场景目录 {} 失败: {e}", dir.display()))?;
+            }
+        }
+        let text = self.to_json_pretty()?;
+        std::fs::write(path, text).map_err(|e| format!("写入场景 {} 失败: {e}", path.display()))
+    }
+
+    /// 光照 → `light` 段。方向光方向统一写成单位向量（加载侧也会归一化）。
+    fn light_desc(&self) -> LightDesc {
+        let direction = self.light.direction;
+        let direction = if direction.length_squared() > 1e-12 {
+            direction.normalize()
+        } else {
+            Vec3::NEG_Y
+        };
+        let shadow = self.light.shadow;
+        LightDesc {
+            direction: Some(direction.to_array()),
+            color: Some(self.light.color.to_array()),
+            intensity: Some(self.light.intensity),
+            ambient: Some(self.light.ambient.to_array()),
+            shadow: Some(ShadowDesc {
+                enabled: Some(shadow.enabled),
+                size: Some(shadow.size),
+                // 0 是「按包围球自适应」的哨兵值，写 0 与省略等价，省掉噪声
+                ortho: (shadow.ortho_size > 0.0).then_some(shadow.ortho_size),
+                bias: Some(shadow.bias),
+                normal_bias: Some(shadow.normal_bias),
+                distance: Some(shadow.distance),
+                strength: Some(shadow.strength),
+            }),
+        }
+    }
+
+    /// 单个物件 → `objects[]` 项。
+    ///
+    /// 旋转按欧拉角写回（场景文件的可读形态），退回时 `set_euler_deg` 还原成同一旋转；
+    /// 身份旋转（欧拉角恰为 0）与 `visible = true` 这类缺省值省略，保持文件干净。
+    fn node_desc(&self, node: &Node) -> ObjectDesc {
+        let transform = &node.transform;
+        let euler = transform.euler_deg();
+        ObjectDesc {
+            name: node.name.clone(),
+            mesh: Some(node.mesh.as_string()),
+            position: Some(transform.position.to_array()),
+            rotation: (euler.length_squared() > 0.0).then_some(euler.to_array()),
+            scale: Some(transform.scale.to_array()),
+            color: Some(node.color.to_array()),
+            parent: node
+                .parent
+                .and_then(|id| self.nodes.get(&id))
+                .map(|parent| parent.name.clone()),
+            visible: (!node.visible).then_some(false),
+            physics: node.physics.clone(),
+        }
+    }
+}
+
+/// 场景级物理配置是否「什么都没声明」：全 None 时整段省略，JSON 更干净。
+fn physics_desc_is_empty(desc: &PhysicsSceneDesc) -> bool {
+    desc.enabled.is_none()
+        && desc.backend.is_none()
+        && desc.gravity.is_none()
+        && desc.ground.is_none()
+        && desc.ccd.is_none()
 }
 
 #[cfg(test)]
@@ -1087,5 +1227,263 @@ mod anim_tests {
         assert_eq!(scene.anim_instance("demo/walk").unwrap().bindings.len(), 0);
         // 没有绑定也不该 panic
         scene.update_animations(0.1);
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    //! 场景保存（save）的往返测试：`load -> save -> load` 必须语义等价。
+    //!
+    //! 覆盖仓库里随包发布的全部场景文件；用 `include_str!` 内联，测试不依赖工作目录。
+
+    use std::collections::BTreeSet;
+
+    use serde_json::Value;
+
+    use super::*;
+
+    /// 随仓库发布的场景：(文件名, 文本)。
+    const SHIPPED_SCENES: [(&str, &str); 6] = [
+        ("scene.json", include_str!("../../../assets/scene.json")),
+        (
+            "scene_physics.json",
+            include_str!("../../../assets/scene_physics.json"),
+        ),
+        (
+            "scene_rapier.json",
+            include_str!("../../../assets/scene_rapier.json"),
+        ),
+        (
+            "scene_ccd.json",
+            include_str!("../../../assets/scene_ccd.json"),
+        ),
+        (
+            "scene_shadow.json",
+            include_str!("../../../assets/scene_shadow.json"),
+        ),
+        (
+            "scene_anim.json",
+            include_str!("../../../assets/scene_anim.json"),
+        ),
+    ];
+
+    /// 浮点比较的相对容差：`quat -> euler -> quat` 之类的换算会带来末位噪声。
+    const EPS: f64 = 1e-5;
+
+    /// 递归比较两个 JSON 值：数字按容差比较，其它类型严格比较，键集合必须一致。
+    fn assert_json_close(a: &Value, b: &Value, path: &str) {
+        match (a, b) {
+            (Value::Number(x), Value::Number(y)) => {
+                let (x, y) = (
+                    x.as_f64().expect("数字必须能转 f64"),
+                    y.as_f64().expect("数字必须能转 f64"),
+                );
+                assert!(
+                    (x - y).abs() <= EPS * x.abs().max(1.0),
+                    "`{path}` 数值不一致: {x} vs {y}"
+                );
+            }
+            (Value::Array(xs), Value::Array(ys)) => {
+                assert_eq!(xs.len(), ys.len(), "`{path}` 数组长度不一致");
+                for (i, (x, y)) in xs.iter().zip(ys.iter()).enumerate() {
+                    assert_json_close(x, y, &format!("{path}[{i}]"));
+                }
+            }
+            (Value::Object(xs), Value::Object(ys)) => {
+                let xk: BTreeSet<&String> = xs.keys().collect();
+                let yk: BTreeSet<&String> = ys.keys().collect();
+                assert_eq!(xk, yk, "`{path}` 字段集合不一致");
+                for (k, x) in xs {
+                    assert_json_close(x, &ys[k], &format!("{path}.{k}"));
+                }
+            }
+            _ => assert_eq!(a, b, "`{path}` 不一致"),
+        }
+    }
+
+    /// 场景的可保存投影（`SceneFile` 序列化后的 JSON），用于整体比对。
+    fn scene_projection(scene: &Scene) -> Value {
+        serde_json::to_value(scene.to_scene_file()).expect("SceneFile 必须可序列化")
+    }
+
+    /// 断言两个场景的源数据等价。
+    fn assert_scene_equivalent(a: &Scene, b: &Scene, label: &str) {
+        assert_json_close(&scene_projection(a), &scene_projection(b), label);
+        assert_eq!(a.len(), b.len(), "`{label}` 物件数量不一致");
+        assert_eq!(
+            a.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
+            b.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
+            "`{label}` 物件顺序不一致"
+        );
+    }
+
+    #[test]
+    fn shipped_scenes_round_trip() {
+        for (name, src) in SHIPPED_SCENES {
+            let loaded =
+                Scene::from_json_str(src).unwrap_or_else(|e| panic!("{name} 加载失败: {e}"));
+            let saved = loaded
+                .to_json_string()
+                .unwrap_or_else(|e| panic!("{name} 序列化失败: {e}"));
+            assert!(!saved.trim().is_empty(), "{name} 序列化结果为空");
+            let reloaded = Scene::from_json_str(&saved)
+                .unwrap_or_else(|e| panic!("{name} 回读失败: {e}\n{saved}"));
+
+            assert_eq!(loaded.name, reloaded.name, "{name} 场景名丢失");
+            assert_scene_equivalent(&loaded, &reloaded, name);
+        }
+    }
+
+    #[test]
+    fn resave_after_reload_is_byte_stable() {
+        // 第一次 save 会把文件规范成「引擎的写法」（欧拉角、省略缺省字段）；
+        // 再 load -> save 应当逐字节一致，否则说明往返里还有未收敛的噪声。
+        for (name, src) in SHIPPED_SCENES {
+            let once = Scene::from_json_str(src)
+                .unwrap_or_else(|e| panic!("{name} 加载失败: {e}"))
+                .to_json_pretty()
+                .expect("序列化");
+            let twice = Scene::from_json_str(&once)
+                .unwrap_or_else(|e| panic!("{name} 回读失败: {e}\n{once}"))
+                .to_json_pretty()
+                .expect("序列化");
+            assert_eq!(once, twice, "{name} 规范化后应逐字节稳定");
+        }
+    }
+
+    #[test]
+    fn save_omits_runtime_state() {
+        let src = include_str!("../../../assets/scene.json");
+        let scene = Scene::from_json_str(src).expect("scene.json 必须合法");
+        let value: Value = serde_json::from_str(&scene.to_json_string().expect("序列化"))
+            .expect("序列化结果必须是合法 JSON");
+
+        // 顶层不得出现运行时记账
+        let top: BTreeSet<&String> = value.as_object().expect("场景必须是对象").keys().collect();
+        for forbidden in [
+            "time",
+            "frame",
+            "skins",
+            "animations",
+            "anim_clips",
+            "next_id",
+        ] {
+            assert!(
+                !top.contains(&forbidden.to_string()),
+                "顶层不应写 `{forbidden}`"
+            );
+        }
+
+        // 物件不得写世界矩阵缓存、刚体句柄、子节点索引
+        let objects = value["objects"].as_array().expect("objects 必须是数组");
+        assert!(!objects.is_empty(), "scene.json 应当有物件");
+        for object in objects {
+            let keys: BTreeSet<&String> =
+                object.as_object().expect("物件必须是对象").keys().collect();
+            for forbidden in ["id", "world", "world_normal", "body", "children"] {
+                assert!(
+                    !keys.contains(&forbidden.to_string()),
+                    "物件不应写 `{forbidden}`：{object}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn save_reflects_runtime_edits() {
+        let mut scene = Scene::from_json_str(include_str!("../../../assets/scene.json"))
+            .expect("scene.json 必须合法");
+
+        // 运行时改动：新增物件、移动、隐藏、挂物理描述、改相机与光
+        let id = scene
+            .spawn(ObjectDesc {
+                name: "saved_probe".to_string(),
+                mesh: Some("sphere".to_string()),
+                position: Some([1.5, 2.5, -3.5]),
+                rotation: Some([0.0, 45.0, 0.0]),
+                scale: Some([0.5, 0.5, 0.5]),
+                visible: Some(false),
+                physics: Some(PhysicsDesc {
+                    body: "dynamic".to_string(),
+                    mass: 2.5,
+                    restitution: None,
+                    friction: None,
+                    collider: None,
+                    half_extents: None,
+                    ccd: Some(true),
+                }),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+        scene.get_mut(id).expect("物件应存在").visible = false;
+        scene.camera.position = Vec3::new(1.0, 2.0, 3.0);
+        scene.light.intensity = 0.75;
+        scene.name = "edited".to_string();
+        scene.update_world_transforms();
+
+        let text = scene.to_json_pretty().expect("序列化");
+        let back = Scene::from_json_str(&text).expect("回读必须成功");
+        assert_scene_equivalent(&scene, &back, "edited");
+
+        let probe = back.find("saved_probe").expect("新增物件必须写回");
+        assert_eq!(probe.mesh, MeshRef::Builtin(crate::BuiltinMesh::Sphere));
+        assert!(!probe.visible, "隐藏状态必须写回");
+        assert_eq!(probe.transform.position, Vec3::new(1.5, 2.5, -3.5));
+        assert_eq!(probe.transform.scale, Vec3::splat(0.5));
+        let physics = probe.physics.as_ref().expect("物理描述必须写回");
+        assert_eq!(physics.mass, 2.5);
+        assert_eq!(physics.ccd, Some(true));
+    }
+
+    #[test]
+    fn save_to_path_writes_readable_file() {
+        let scene = Scene::from_json_str(include_str!("../../../assets/scene_shadow.json"))
+            .expect("scene_shadow.json 必须合法");
+        let dir = std::env::temp_dir().join(format!("r3e-save-{}", std::process::id()));
+        let path = dir.join("nested/scene_out.json");
+
+        scene
+            .save_to_path(&path)
+            .unwrap_or_else(|e| panic!("保存失败: {e}"));
+        let text = std::fs::read_to_string(&path).expect("写入后必须能读回");
+        assert_eq!(
+            text,
+            scene.to_json_pretty().expect("序列化"),
+            "落盘内容应与内存序列化一致"
+        );
+        assert!(text.ends_with("}\n"), "落盘文件应以换行结尾");
+        let back = Scene::from_json_str(&text).expect("落盘内容必须能回读");
+        assert_scene_equivalent(&scene, &back, "scene_shadow.json/disk");
+
+        std::fs::remove_file(&path).expect("清理临时文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hierarchy_parent_survives_round_trip() {
+        let mut scene = Scene::new();
+        scene
+            .spawn(ObjectDesc {
+                name: "root".to_string(),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+        scene
+            .spawn(ObjectDesc {
+                name: "child".to_string(),
+                parent: Some("root".to_string()),
+                position: Some([0.0, 1.0, 0.0]),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+        scene.update_world_transforms();
+
+        let back = Scene::from_json_str(&scene.to_json_string().expect("序列化")).expect("回读");
+        let child = back.find("child").expect("子物件必须存在");
+        let parent = back.find("root").expect("父物件必须存在");
+        assert_eq!(child.parent, Some(parent.id), "父子关系必须写回");
+        assert!(parent.children.contains(&child.id), "父节点应列出子节点");
+        // 世界矩阵是算出来的，不是写出来的
+        assert!((child.world.w_axis.y - 1.0).abs() < 1e-6);
     }
 }

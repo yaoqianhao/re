@@ -532,6 +532,33 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow_mut().light.ambient = Vec3::new(f32_of(r), f32_of(g), f32_of(b));
     });
 
+    // ---------------- 场景保存（M1） ----------------
+    // 只读导出：当前场景 → JSON 文本（相对路径无关，可赋值给变量做 diff / 打印）。
+    // 失败返回空串并打印原因——与 create_node 一类写接口的返回风格保持一致。
+    let c = ctx.clone();
+    engine.register_fn("scene_json", move || -> String {
+        match c.scene.borrow().to_json_string() {
+            Ok(text) => text,
+            Err(e) => {
+                println!("[script] scene_json 失败: {e}");
+                String::new()
+            }
+        }
+    });
+
+    // 落盘：把内存里的当前场景写回 path（相对路径按进程工作目录解析）。
+    // 成功返回 true；失败返回 false 并打印原因。
+    let c = ctx.clone();
+    engine.register_fn("save_scene", move |path: &str| -> bool {
+        match c.scene.borrow().save_to_path(path) {
+            Ok(()) => true,
+            Err(e) => {
+                println!("[script] save_scene 失败: {e}");
+                false
+            }
+        }
+    });
+
     // ---------------- 阶段 D：方向光阴影 ----------------
     // 开关：set_shadow(true/false)。关闭后渲染器整帧跳过阴影通道，零开销。
     let c = ctx.clone();

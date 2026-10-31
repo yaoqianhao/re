@@ -279,6 +279,72 @@ pub fn array_to_strings(arr: Array) -> Vec<String> {
         .filter_map(|d| d.into_string().ok())
         .collect()
 }
+
+#[cfg(test)]
+mod save_script_tests {
+    use super::*;
+    use r3e_core::ObjectDesc;
+
+    /// 空场景 + 物理/输入句柄的脚本宿主。
+    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        (ScriptHost::new(scene.clone(), physics, input), scene)
+    }
+
+    #[test]
+    fn script_exports_scene_json() {
+        let (mut host, scene) = host();
+        scene
+            .borrow_mut()
+            .spawn(ObjectDesc {
+                name: "probe".to_string(),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+
+        let json = host
+            .eval("scene_json()")
+            .expect("scene_json 应可调用")
+            .into_string()
+            .expect("应返回字符串");
+        assert!(json.contains("probe"), "导出的 JSON 应含物件名: {json}");
+        assert!(!json.contains("world_normal"), "不应写运行时矩阵缓存");
+    }
+
+    #[test]
+    fn script_saves_scene_to_disk() {
+        let (mut host, scene) = host();
+        scene
+            .borrow_mut()
+            .spawn(ObjectDesc {
+                name: "probe".to_string(),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+
+        let dir = std::env::temp_dir().join(format!("r3e-script-save-{}", std::process::id()));
+        let path = dir.join("scene_out.json");
+        // Rhai 字符串里用正斜杠，避开 Windows 路径反斜杠的转义问题
+        let literal = path.display().to_string().replace('\\', "/");
+        let ok = host
+            .eval(&format!(r#"save_scene("{literal}")"#))
+            .expect("save_scene 应可调用")
+            .as_bool()
+            .expect("应返回 bool");
+        assert!(ok, "save_scene 应返回 true");
+
+        let text = std::fs::read_to_string(&path).expect("文件应已落盘");
+        assert!(text.contains("probe"), "落盘内容应含物件名: {text}");
+        let back = Scene::from_json_str(&text).expect("落盘内容必须能回读");
+        assert_eq!(back.len(), 1, "回读后物件数应一致");
+
+        std::fs::remove_file(&path).expect("清理临时文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(test)]
 mod key_script_tests {
     use super::*;

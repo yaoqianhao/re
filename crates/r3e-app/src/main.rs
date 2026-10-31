@@ -95,12 +95,15 @@ r3e —— Rust 3D Engine
   --assets-root DIR         场景 assets 段相对路径的解析根（默认场景文件所在目录）
   --dump-asset PATH         导入 FBX 打印资产报告后退出（不建窗口）
 
+场景选项（M1 场景保存）:
+  --save-scene PATH         读入场景后按引擎写法保存到 PATH 并退出（不建窗口）
+
 动画选项（P3 节点动画）:
   --dump-anim PATH          导入 FBX 打印各动画片段采样表后退出（不建窗口）
   --anim-clip NAME          配合 --dump-anim 只看指定片段
   --show-bones              把骨架节点画成小方块，肉眼确认节点动画
   --run-seconds SEC         窗口运行指定秒数后自动退出（无人值守验证）
-  -h, --help                显示本帮助
+
 
 编辑器桥选项（r3e-editor 的 JSON-RPC 2.0 over TCP + NDJSON）:
   --rpc-port PORT           监听端口，0 = 由系统分配；不指定则不启动桥
@@ -204,6 +207,16 @@ fn main() -> anyhow::Result<()> {
                 }
                 continue;
             }
+            "--save-scene" => {
+                if let Some(v) = take_value("--save-scene", &mut i) {
+                    if v.trim().is_empty() {
+                        log::error!("--save-scene 需要非空输出路径");
+                    } else {
+                        cli.save_scene = Some(PathBuf::from(v));
+                    }
+                }
+                continue;
+            }
             "--dump-anim" => {
                 if let Some(v) = take_value("--dump-anim", &mut i) {
                     cli.dump_anim = Some(PathBuf::from(v));
@@ -302,6 +315,23 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 eprintln!("动画导入失败: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // --save-scene：无窗口路径，读入场景后规范化保存直接退出
+    if let Some(out) = cli.save_scene.clone() {
+        match app::save_scene_file(&scene_path, &out) {
+            Ok((nodes, bytes)) => {
+                println!(
+                    "场景已保存: {}（物件 {nodes} 个，{bytes} 字节）",
+                    out.display()
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("场景保存失败: {e}");
                 std::process::exit(1);
             }
         }
