@@ -286,6 +286,12 @@ pub trait EngineApi {
         Err(RpcFailure::unsupported("scene.remove"))
     }
 
+    /// 把内存中的当前场景写回磁盘（`path` 为 `None` 时由宿主决定默认路径，
+    /// 例如「写回本场景的原始文件」）。实现方应返回落盘后的绝对路径与物件数量。
+    fn scene_save(&mut self, _path: Option<&str>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.save"))
+    }
+
     fn script_eval(&mut self, _source: &str) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("script.eval"))
     }
@@ -421,6 +427,22 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             Ok(r) => Response::ok(id, r),
             Err(f) => Response::fail(id, f),
         },
+        "scene.save" => {
+            let path = match param(&req.params, "path") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if !s.trim().is_empty() => Some(s.as_str()),
+                Some(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `path` 应为非空字符串（可省略）"),
+                    )
+                }
+            };
+            match api.scene_save(path) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "script.eval" => {
             let source = match require_str(&req.params, "source")
                 .or_else(|_| require_str(&req.params, "code"))
@@ -455,4 +477,87 @@ fn with_node<T>(
         return Err(RpcFailure::invalid_params("参数 `node` 不能为空"));
     }
     f(node)
+}
+
+#[cfg(test)]
+mod save_rpc_tests {
+    use super::*;
+
+    /// 只关心 `scene.save` 的桩：记录收到的路径，回报固定应答。
+    #[derive(Default)]
+    struct SaveStub {
+        seen: Option<Option<String>>,
+    }
+
+    impl EngineApi for SaveStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+
+        fn scene_save(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
+            self.seen = Some(path.map(str::to_string));
+            Ok(json!({ "path": path.unwrap_or("<default>"), "objects": 0 }))
+        }
+    }
+
+    /// 什么都没实现的宿主：验证 trait 缺省实现拒绝 `scene.save`。
+    struct BareStub;
+
+    impl EngineApi for BareStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+    }
+
+    fn request(method: &str, params: Value) -> Request {
+        Request {
+            jsonrpc: JSONRPC.to_string(),
+            id: Some(json!(1)),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[test]
+    fn scene_save_passes_path_through() {
+        let mut api = SaveStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("scene.save", json!({ "path": "out/scene.json" })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(
+            api.seen,
+            Some(Some("out/scene.json".to_string())),
+            "路径应原样传给宿主"
+        );
+        assert_eq!(res.result.unwrap()["path"], json!("out/scene.json"));
+    }
+
+    #[test]
+    fn scene_save_defaults_to_none_when_path_absent() {
+        let mut api = SaveStub::default();
+        // 方法名大小写不敏感：`Scene.Save` 与 `scene.save` 等价
+        let res = dispatch(&mut api, &request("Scene.Save", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.seen, Some(None), "省略 path 时应交给宿主决定默认路径");
+    }
+
+    #[test]
+    fn scene_save_rejects_blank_path() {
+        let mut api = SaveStub::default();
+        let res = dispatch(&mut api, &request("scene.save", json!({ "path": "   " })));
+        let err = res.error.expect("空路径应报错");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(api.seen, None, "参数非法时不应调用宿主");
+    }
+
+    #[test]
+    fn scene_save_unsupported_by_default() {
+        let mut api = BareStub;
+        let res = dispatch(&mut api, &request("scene.save", json!({})));
+        let err = res.error.expect("缺省实现应报未实现");
+        assert_eq!(err.code, METHOD_NOT_FOUND);
+        assert!(err.message.contains("scene.save"), "错误消息应点名方法");
+    }
 }

@@ -183,6 +183,32 @@ impl EngineApi for LocalEngineApi<'_> {
         Ok(dynamic_to_json(&value))
     }
 
+    fn scene_save(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
+        // 目标路径：显式给了就用它，否则写回本场景的原始文件（编辑器「Ctrl+S」语义）。
+        let target = match path.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(p) => p.to_string(),
+            None => {
+                if self.scene_label.trim().is_empty() {
+                    return Err(RpcFailure::invalid_params(
+                        "当前没有场景文件路径，请显式给出 `path`",
+                    ));
+                }
+                self.scene_label.clone()
+            }
+        };
+        let scene = self.scene.borrow();
+        scene.save_to_path(&target).map_err(RpcFailure::engine)?;
+        // 相对路径按进程工作目录解析：回给调用方的是绝对路径与实际字节数
+        let abs =
+            std::fs::canonicalize(&target).unwrap_or_else(|_| std::path::PathBuf::from(&target));
+        let bytes = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
+        Ok(json!({
+            "path": plain_abs_path(&abs),
+            "objects": scene.len(),
+            "bytes": bytes,
+        }))
+    }
+
     fn script_reload(&mut self) -> Result<Value, RpcFailure> {
         let path = self
             .scripts
@@ -257,6 +283,21 @@ fn dynamic_to_json(value: &rhai::Dynamic) -> Value {
     match rhai::serde::from_dynamic::<Value>(value) {
         Ok(v) => v,
         Err(_) => Value::String(value.to_string()),
+    }
+}
+
+/// 把 Windows 上 `canonicalize` 得到的 `\\?\` 逐字前缀去掉。
+///
+/// 编辑器客户端拿到 `\\?\D:\a\b.json` 这种路径无法直接展示 / 再拼接，
+/// 而 `\\?\UNC\` 前缀则需要还原成 `\\`。
+fn plain_abs_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        text
     }
 }
 
@@ -382,6 +423,54 @@ mod tests {
             },
         );
         assert!(missing.is_err(), "不存在的物件必须报错");
+    }
+
+    #[test]
+    fn scene_save_writes_requested_path() {
+        let (scene, physics, mut scripts) = fixture();
+        let expected = scene.borrow().len();
+        let dir = std::env::temp_dir().join(format!("r3e-editor-save-{}", std::process::id()));
+        let path = dir.join("nested/out.json");
+        let literal = path.display().to_string().replace('\\', "/");
+
+        let mut api = api(&scene, &physics, &mut scripts);
+        let saved = api.scene_save(Some(&literal)).expect("显式路径保存应成功");
+        assert_eq!(saved["objects"], json!(expected), "物件数应与场景一致");
+        assert!(saved["bytes"].as_u64().unwrap_or(0) > 0, "应报告写入字节数");
+        let reported = saved["path"].as_str().unwrap_or_default();
+        assert!(
+            !reported.contains(r"\\?\"),
+            "回报路径不应带 Windows 逐字前缀: {reported}"
+        );
+        assert!(
+            reported.ends_with("out.json"),
+            "回报路径应是绝对路径: {reported}"
+        );
+
+        let text = std::fs::read_to_string(&path).expect("文件应已落盘");
+        assert!(text.contains("cube"), "落盘内容应含物件名");
+        assert!(!text.contains("world"), "不应写入运行时派生状态");
+        let back = Scene::from_json_str(&text).expect("落盘内容必须能回读");
+        assert_eq!(back.len(), expected, "回读后物件数应一致");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scene_save_without_path_needs_label() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.scene_label = String::new();
+        let err = api
+            .scene_save(None)
+            .expect_err("无路径且无场景文件时应报错");
+        assert!(
+            format!("{err:?}").contains("path"),
+            "错误信息应提示需要 path: {err:?}"
+        );
+
+        // 空白路径等同未给
+        assert!(api.scene_save(Some("   ")).is_err(), "空白 path 应被拒绝");
     }
 
     #[test]
