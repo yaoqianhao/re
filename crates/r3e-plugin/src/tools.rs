@@ -1,4 +1,4 @@
-﻿//! 工具实现：全部是纯计算 + 只读宿主能力，没有一条代码会写盘或执行外部命令。
+//! 工具实现：全部是纯计算 + 只读宿主能力，没有一条代码会写盘或执行外部命令。
 //!
 //! 设计约定：
 //!
@@ -9,9 +9,7 @@
 //!   并显式给出 `truncated` 标记，不假装全量。
 
 use r3e_core::procedural::builtin_mesh;
-use r3e_core::{
-    air, scene::SceneFile, BuiltinMesh, MeshData, NodeId, Scene, Vec3,
-};
+use r3e_core::{air, scene::SceneFile, BuiltinMesh, MeshData, NodeId, Scene, Vec3};
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use serde_json::{json, Value};
 
@@ -293,7 +291,10 @@ fn scene_validate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, To
     if scene.is_empty() {
         warnings.push("场景没有任何节点".to_string());
     }
-    if reports.iter().any(|report| report["air"]["skipped"] == json!(true)) {
+    if reports
+        .iter()
+        .any(|report| report["air"]["skipped"] == json!(true))
+    {
         warnings.push(
             "部分节点使用外部资产网格，AIR 校验需要资产管线（r3e-asset），本插件跳过".to_string(),
         );
@@ -394,7 +395,10 @@ fn physics_simulate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, 
     let mut bodies = Vec::new();
     let mut max_displacement = 0.0f32;
     for (id, name, start) in &bound {
-        let end = scene.get(*id).map(|node| node.world_position()).unwrap_or(*start);
+        let end = scene
+            .get(*id)
+            .map(|node| node.world_position())
+            .unwrap_or(*start);
         let displacement = (end - *start).length();
         max_displacement = max_displacement.max(displacement);
         if bodies.len() < max_bodies {
@@ -677,9 +681,8 @@ mod tests {
         assert_eq!(info["plugin"]["id"], json!(crate::spec::PLUGIN_ID));
         let backends = info["physics"]["backends"].as_array().expect("backends");
         assert!(backends.iter().any(|item| item["name"] == json!("builtin")));
-        assert!(backends
-            .iter()
-            .any(|item| item["name"] == json!("rapier") && item["available"] == json!(cfg!(feature = "rapier"))));
+        assert!(backends.iter().any(|item| item["name"] == json!("rapier")
+            && item["available"] == json!(cfg!(feature = "rapier"))));
     }
 
     #[test]
@@ -710,13 +713,21 @@ mod tests {
         assert_eq!(cube["triangles"], json!(12));
         assert_eq!(cube["air"]["ok"], json!(true));
 
-        let sphere = invoke("mesh_stats", &json!({ "shape": "sphere", "segments": 8, "rings": 4 }), &mut NoHost)
-            .expect("sphere");
+        let sphere = invoke(
+            "mesh_stats",
+            &json!({ "shape": "sphere", "segments": 8, "rings": 4 }),
+            &mut NoHost,
+        )
+        .expect("sphere");
         assert_eq!(sphere["shape"], json!("sphere"));
         assert!(sphere["vertices"].as_u64().expect("vertices") > 0);
         // 同参数两次生成必须同指纹
-        let again = invoke("mesh_stats", &json!({ "shape": "sphere", "segments": 8, "rings": 4 }), &mut NoHost)
-            .expect("sphere again");
+        let again = invoke(
+            "mesh_stats",
+            &json!({ "shape": "sphere", "segments": 8, "rings": 4 }),
+            &mut NoHost,
+        )
+        .expect("sphere again");
         assert_eq!(sphere["fingerprint"], again["fingerprint"]);
     }
 
@@ -749,7 +760,8 @@ mod tests {
             "name": "asset",
             "objects": [ { "name": "hero", "mesh": "asset:models/hero.fbx#0" } ]
         });
-        let report = invoke("scene_validate", &json!({ "scene": scene }), &mut NoHost).expect("validate");
+        let report =
+            invoke("scene_validate", &json!({ "scene": scene }), &mut NoHost).expect("validate");
         assert_eq!(report["nodes"][0]["air"]["skipped"], json!(true));
         assert_eq!(report["nodes"][0]["air"]["reason"], json!("external-asset"));
         assert_eq!(report["nodes"][0]["air"]["ok"], Value::Null);
@@ -799,7 +811,11 @@ mod tests {
         } else {
             let error = result.expect_err("未编入必须返回错误");
             assert_eq!(error.code, -32010, "场景数据问题走 -32010");
-            assert!(error.message.contains("rapier"), "错误信息要点明后端名：{}", error.message);
+            assert!(
+                error.message.contains("rapier"),
+                "错误信息要点明后端名：{}",
+                error.message
+            );
         }
     }
 
@@ -813,8 +829,16 @@ mod tests {
         args["backend"] = json!("rapier");
         let error = invoke("physics_simulate", &args, &mut NoHost).expect_err("未编入必须报错");
         assert_eq!(error.code, -32602);
-        assert!(error.message.contains("--features rapier"), "{}", error.message);
-        assert!(error.message.contains("builtin"), "错误里要列出可用后端：{}", error.message);
+        assert!(
+            error.message.contains("--features rapier"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("builtin"),
+            "错误里要列出可用后端：{}",
+            error.message
+        );
     }
 
     #[test]
@@ -827,8 +851,12 @@ mod tests {
 
     #[test]
     fn path_without_permission_surfaces_host_error() {
-        let error = invoke("scene_inspect", &json!({ "path": "assets/demo.json" }), &mut NoHost)
-            .expect_err("无授权必须报错");
+        let error = invoke(
+            "scene_inspect",
+            &json!({ "path": "assets/demo.json" }),
+            &mut NoHost,
+        )
+        .expect_err("无授权必须报错");
         assert_eq!(error.code, -32010);
         assert!(error.message.contains("6103"));
     }

@@ -58,7 +58,11 @@ fn main() {
 }
 
 fn print_help() {
-    println!("r3e-plugin {}（ai_ide 插件，pluginApi {}）", env!("CARGO_PKG_VERSION"), spec::PLUGIN_API);
+    println!(
+        "r3e-plugin {}（ai_ide 插件，pluginApi {}）",
+        env!("CARGO_PKG_VERSION"),
+        spec::PLUGIN_API
+    );
     println!("用法：");
     println!("  r3e-plugin                 以服务模式运行（NDJSON over stdio，宿主调用方式）");
     println!("  r3e-plugin --emit-manifest 输出 plugin.json 到 stdout");
@@ -287,7 +291,10 @@ mod tests {
             "params": { "tool": "engine_info", "arguments": {} }
         })]);
         assert_eq!(replies[0]["id"], json!(7));
-        assert_eq!(replies[0]["result"]["engine"]["name"], json!("rust3d-engine"));
+        assert_eq!(
+            replies[0]["result"]["engine"]["name"],
+            json!("rust3d-engine")
+        );
     }
 
     #[test]

@@ -180,7 +180,8 @@ pub const TOOLS: &[ToolSpec] = &[
 pub const COMMANDS: &[CommandSpec] = &[CommandSpec {
     name: "engine_diagnostics",
     title: "rust3d-engine：引擎诊断",
-    description: "输出引擎信息 + 当前工作区读取能力是否可用，用于排查插件挂载后「读不到场景文件」这类问题。",
+    description:
+        "输出引擎信息 + 当前工作区读取能力是否可用，用于排查插件挂载后「读不到场景文件」这类问题。",
     risk: "read",
 }];
 
@@ -191,7 +192,10 @@ pub fn tool_names() -> Vec<String> {
 
 /// 命令名列表。
 pub fn command_names() -> Vec<String> {
-    COMMANDS.iter().map(|command| command.name.to_string()).collect()
+    COMMANDS
+        .iter()
+        .map(|command| command.name.to_string())
+        .collect()
 }
 
 /// 生成工具的 JSON 声明（清单与握手共用同一份结构）。

@@ -1,4 +1,4 @@
-﻿//! 打包自检：拉起**自己**当宿主，完整走一遍真实协议。
+//! 打包自检：拉起**自己**当宿主，完整走一遍真实协议。
 //!
 //! 为什么不用单测代替：单测只能验证函数，验证不了「宿主 spawn 一个 exe、按行写帧、
 //! 按行读回包」这条链路。打包脚本在组装完包之后会跑一次 `--smoke-test`，
@@ -181,10 +181,7 @@ fn check_handshake(harness: &mut Harness) -> Check {
 
     eprintln!(
         "[smoke] 握手通过：{}，工具 {} 个，命令 {} 个",
-        reply
-            .get("version")
-            .and_then(Value::as_str)
-            .unwrap_or("?"),
+        reply.get("version").and_then(Value::as_str).unwrap_or("?"),
         reported.len(),
         commands.len()
     );
@@ -212,7 +209,10 @@ fn check_tools(harness: &mut Harness) -> Check {
     }
     eprintln!("[smoke] scene_inspect 通过（3 个节点）");
 
-    let mesh = harness.invoke("mesh_stats", json!({ "shape": "sphere", "segments": 12, "rings": 6 }))?;
+    let mesh = harness.invoke(
+        "mesh_stats",
+        json!({ "shape": "sphere", "segments": 12, "rings": 6 }),
+    )?;
     if mesh["vertices"].as_u64().unwrap_or(0) == 0 {
         return Err("mesh_stats 生成了空网格".to_string());
     }
@@ -292,8 +292,11 @@ impl Harness {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.next_id += 1;
         let id = json!(self.next_id);
-        protocol::write_frame(&mut self.writer, &protocol::request_frame(id.clone(), method, params))
-            .map_err(|err| format!("写请求失败：{err}"))?;
+        protocol::write_frame(
+            &mut self.writer,
+            &protocol::request_frame(id.clone(), method, params),
+        )
+        .map_err(|err| format!("写请求失败：{err}"))?;
 
         loop {
             let frame = match self.frames.recv_timeout(REPLY_TIMEOUT) {

@@ -238,7 +238,9 @@ mod tests {
         })]);
         let mut client = HostClient::new();
         client.begin_call();
-        let error = client.fs_read(&mut host, "a.json", None).expect_err("必须报错");
+        let error = client
+            .fs_read(&mut host, "a.json", None)
+            .expect_err("必须报错");
         assert!(matches!(error, HostError::Remote { .. }));
     }
 
