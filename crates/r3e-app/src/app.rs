@@ -123,6 +123,11 @@ pub struct CliOptions {
     pub show_bones: bool,
     /// `--run-seconds <s>`：窗口运行指定秒数后自动退出（无人值守验证用）。
     pub run_seconds: Option<f32>,
+    /// `--font <path>`（可重复）：覆盖文本通道的字体集，第一个文件优先匹配字形。
+    ///
+    /// 不指定时渲染层自动按平台常见路径找中文字体（`msyh.ttc` 等），
+    /// 所以默认就能画中文；这里用于明确指定字形更好看的字体或图标字体。
+    pub fonts: Vec<PathBuf>,
     /// `--rpc-port <port>`：编辑器桥监听端口（0 = 由系统分配）；`None` = 不启动桥。
     pub rpc_port: Option<u16>,
     /// `--rpc-token <token>`：握手令牌，客户端必须原样带回（缺省不校验）。
@@ -198,6 +203,8 @@ pub struct EngineApp {
     asset_specs: Rc<RefCell<Vec<AssetSpec>>>,
     /// 命令行 `--asset`（热重载重算资产声明时仍需带上）。
     cli_assets: Vec<PathBuf>,
+    /// 命令行 `--font`（M1 文字渲染）：显式指定的文本字体，空表示用系统字体。
+    cli_fonts: Vec<PathBuf>,
     /// `--assets-root`：场景内相对资产路径的解析根；`None` 时用场景文件所在目录。
     assets_root: Option<PathBuf>,
     /// 从资产 spawn 出来的节点（共享给场景重建回调，热重载时同步刷新）。
@@ -394,6 +401,7 @@ impl EngineApp {
             assets,
             asset_specs,
             cli_assets: cli.assets.clone(),
+            cli_fonts: cli.fonts.clone(),
             assets_root: cli.assets_root.clone(),
             asset_nodes,
             run_seconds: cli.run_seconds,
@@ -477,7 +485,13 @@ impl EngineApp {
             self.frame_index += 1;
 
             // 1) 脚本：可能生成 / 销毁 / 修改物件
-            self.scripts.tick(dt as f64, self.time, self.frame_index);
+            let fps = if self.last_dt_ms > 0.0 {
+                1000.0 / self.last_dt_ms as f64
+            } else {
+                0.0
+            };
+            self.scripts
+                .tick(dt as f64, self.time, self.frame_index, fps);
 
             // 2) 键盘驱动的相机移动
             self.apply_camera_input(dt);
@@ -583,6 +597,18 @@ impl EngineApp {
             "[{tag}] 阴影通道：draw call {} / 主通道实例 {}",
             stats.shadow_draws,
             stats.instances
+        );
+        // 文本探针：glyphs > 0 说明字形真的排版并提交了；missing > 0 说明有字符
+        // 当前字体集合里找不到（中文变方框的主因），据此可判断字体是否加载成功。
+        let text_nodes = self.scene.borrow().texts.len();
+        log::info!(
+            "[{tag}] 文本通道：节点 {text_nodes} / 字形 {} / draw call {} / 缺字 {} / 图集 {} 页 占用 {:.1}% / 开关 {}",
+            stats.text_glyphs,
+            stats.text_draws,
+            stats.text_missing,
+            renderer.text().atlas_pages(),
+            renderer.text().atlas_occupancy() * 100.0,
+            self.scene.borrow().text_enabled
         );
     }
 
@@ -1357,6 +1383,20 @@ impl ApplicationHandler for EngineApp {
                         self.asset_nodes.borrow().len()
                     );
                 }
+                // --font：显式指定字体（不指定时 TextPass 已自动加载系统中文字体）
+                if !self.cli_fonts.is_empty() {
+                    match renderer.load_text_fonts(&self.cli_fonts) {
+                        Ok(()) => {
+                            log::info!("文本字体已替换: {:?}", renderer.text().font_sources())
+                        }
+                        Err(e) => log::warn!("--font 加载失败，继续用系统字体: {e}"),
+                    }
+                }
+                log::info!(
+                    "文本通道就绪（字体 {:?}，图集 {} 页）",
+                    renderer.text().font_sources(),
+                    renderer.text().atlas_pages()
+                );
                 self.renderer = Some(renderer);
             }
             Err(e) => {

@@ -293,6 +293,7 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | --- | --- |
 | `time() -> f64` | 启动至今秒数 |
 | `dt() -> f64` | 上一帧时长 |
+| `fps() -> f64` | 上一帧瞬时帧率（`1/dt`，首帧为 0），HUD 直接显示用 |
 | `frame() -> int` | 帧序号 |
 | `rand(min, max) -> f64` | 均匀随机 |
 | `log(text)` | 输出到控制台 |
@@ -347,8 +348,52 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 手柄轴名：`left_x`(`lx`) `left_y`(`ly`) `right_x`(`rx`) `right_y`(`ry`) `lt`(`l2`) `rt`(`r2`)。
 
 边沿语义：`pressed` / `released` 只在状态翻转的那一帧为 true，帧末由引擎清空；
-所以判定"按一下"请用 `*_pressed`，判定"按住"请用 `*_down`。
-示例见 `scripts/input_demo.rhai`（左键生成方块、右键清空、摇杆驱动探针）。
+所以判定"按一下"请用 `*_pressed`，判定"按住"请用 `*_down`。键盘的 `key_pressed` 即使按住不放
+（系统的自动重复）也只在该帧为 true，可直接写 `if key_pressed("space")` 做开关。
+示例见 `scripts/input_demo.rhai`（左键生成方块、右键清空、摇杆驱动探针、键盘 WASD 驱动探针移动）。
+
+### 文本：屏幕空间 HUD（M1）
+
+文本节点存在 `Scene::texts` 里，和物件共享"场景是唯一真源"的规则：脚本改完下一帧自动重排重画，
+不需要任何刷新调用。坐标单位是**窗口像素**，原点在左上角；`(x, y)` 是文本框第一行**行顶**的锚点
+（对齐方式只改 x 的含义，y 恒为行顶）。所有接口按 `key` 定位，**同名即覆盖**，每帧调用不会堆积节点。
+
+| 函数 | 说明 |
+| --- | --- |
+| `text_add(key, content, x, y, size, r, g, b) -> bool` | 新建文本；`key` 已存在时只更新内容/位置/字号/颜色（保留对齐、换行、行高），返回 `false` |
+| `text_set(key, content) -> bool` | 只改文字内容 |
+| `text_set_pos(key, x, y) -> bool` | 改屏幕坐标 |
+| `text_set_size(key, size) -> bool` | 改字号（自动夹到 1..512） |
+| `text_set_color(key, r, g, b) -> bool` | 改 RGB（0..1），alpha 保持不变 |
+| `text_set_alpha(key, a) -> bool` | 改透明度（0..1，走 alpha 混合） |
+| `text_set_align(key, mode) -> bool` | `left` / `center` / `right`（别名 `l` `c` `r` `start` `end`）；未知值返回 `false` |
+| `text_set_wrap(key, px) -> bool` | 自动换行宽度（像素）；`0` = 只按 `\n` 硬换行。设了宽度后对齐相对整个块宽计算 |
+| `text_set_line_height(key, factor) -> bool` | 行高倍数（相对字号）；`0` = 字体自然行高 |
+| `text_set_visible(key, on) -> bool` | 显示 / 隐藏 |
+| `text_remove(key) -> bool` | 删除该文本，返回是否真的删掉了 |
+| `text_clear()` | 清空全部文本（换场景 / 清 HUD 用） |
+| `text_exists(key) -> bool` | 是否存在 |
+| `text_content(key) -> string` | 读回内容（不存在返回空串） |
+| `text_count() -> int` | 文本节点数 |
+| `text_keys() -> array` | 全部 key |
+| `set_text_enabled(on)` / `text_enabled() -> bool` | 文本通道总开关；关掉后渲染层整帧跳过文本 pass，3D 通道行为不变 |
+| `text_width(content, size) -> f64` | 像素宽度估算（不加载字体，排版预算用，不是精确值） |
+| `text_height(content, size) -> f64` | 像素高度估算 |
+
+示例（`scripts/main.rhai` 里就是这套写法，左上角固定一行中文 + 实时帧率）：
+
+```rhai
+fn on_start() {
+    text_add("hud_title", "r3e 引擎 · 屏幕空间文字", 24.0, 20.0, 30.0, 1.0, 0.92, 0.72);
+    text_add("hud_status", "", 24.0, 96.0, 16.0, 0.62, 0.70, 0.80);
+}
+
+fn on_update(dt) {
+    text_set("hud_status", "帧率 " + ((fps() * 10.0).round() / 10.0).to_string()
+        + " / 帧号 " + frame().to_string());
+}
+```
+
 
 ### 物理
 
@@ -623,3 +668,62 @@ CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，三个 job
 `rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）`，都跑在 `windows-latest` 上
 （Linux runner 无法完成 MinGW 交叉链接，硬跑只会得到误导性的红），
 并用 PATH 里的 MinGW 覆盖 `.cargo/config.toml` 中的开发者本机绝对路径。
+
+---
+
+## 12. 文字渲染（M1 GPU 上屏）
+
+**目标**：窗口里能画出任意 UTF-8 文本，含中文。
+
+CPU 侧（`r3e-core`）负责"字 → 位图 + 度量 + 排版"，GPU 侧（`r3e-render`）只负责"把四边形画上去"：
+
+| 层 | 模块 | 职责 |
+| --- | --- | --- |
+| `r3e-core` | `text.rs` | fontdue 字形栅格化、`layout_text`（换行 / 对齐 / 基线 / 缺字）、`FontSet` 多字体面回退 |
+| `r3e-core` | `glyph_atlas.rs` | 货架式图集分配，键 = `(face, glyph, 量化字号)`，页满自动开新页（不丢字） |
+| `r3e-render` | `text.rs` | `build_text` 建批（每字形一实例）、`TextPass`（pipeline + 图集纹理 + 实例缓冲） |
+| `r3e-render` | `text.wgsl` | 实例化四边形 + 图集采样，片元只取 R8 覆盖度做 alpha |
+
+**单帧顺序**：阴影通道 → 3D 主通道 → **文本通道**。文本是独立的 `RenderPass`，
+`LoadOp::Load` 叠加在已画好的画面上，**自己的 pipeline 且不带深度附件** —— 所以文本永远在最上层，
+不受 3D 深度测试影响，也不会写脏主通道的深度缓冲。
+
+**图集按需增长**：图集初始 1 页（1024×1024 R8）；新字形分配不下时开新页并即时创建纹理 + bind group，
+页数上限 8 页（`MAX_ATLAS_PAGES`）。同一字符同一字号第二次出现直接命中缓存，零上传——
+所以每帧重排只上传"这一帧新出现的字"，稳态下通常是 0。
+
+**上限与降级**：单帧字形实例上限 32768（`MAX_TEXT_INSTANCES`），超出的字只计入 `overflow` 不绘制，
+不会 panic 也不会爆显存；字体文件找不到时通道存在但画不出字（`text_stats()` 里 `has_font = false`），
+3D 渲染完全不受影响。
+
+**字体查找顺序**（`r3e_core::text::system_font_candidates()`）：Windows 依次尝试 `msyh.ttc` / `msyh.ttf` /
+`msyhbd.ttc` / `simhei.ttf` / `msyhl.ttc` / `Deng.ttf` / `simsun.ttc` / `segoeui.ttf`，macOS 与 Linux 各有一组
+等宽 CJK 候选（PingFang / 文泉驿 / Noto CJK）。第一个存在的即用，失败不影响 3D 渲染；
+也可用 `Renderer::load_text_fonts(&[路径])` 显式指定。
+
+**人工验证**（需要真实窗口，CI 里跑不到）：
+
+```powershell
+cargo run
+```
+
+窗口左上角应出现三行中文：标题「r3e 引擎 · 屏幕空间文字」、副标题（含英文与数字，宽度超过 520px 自动折行）、
+以及每帧刷新的状态行「帧率 xx.x / 帧号 … / 时间 …」；右上角是右对齐两行、顶部居中是对齐示例。
+控制台会打印 `文本：已加载系统字体 [...]`。若逐帧观察状态行的帧率在 55~62 之间跳动且文字清晰不糊，
+说明实例缓冲、图集上传与 alpha 混合都正常。
+
+脚本侧关掉文本通道做对照：在 REPL 里执行 `set_text_enabled(false)`，文字立刻消失、3D 场景不变；
+再 `set_text_enabled(true)` 恢复。这一步验证的是"文本与主通道完全解耦"。
+
+**测试覆盖**（`cargo test -p r3e-render`，不依赖 GPU 与系统字体——用纯算术假字体）：
+
+- 顶点生成数量与位置：`builds_one_quad_per_visible_glyph`、`multiline_text_offsets_baselines`
+- 对齐换算：`align_shifts_quads_within_wrap_block`（left/center/right 相对块宽右移 0 / 一半 / 全部）
+- 空串不产生 draw：`empty_or_invisible_text_produces_nothing`
+- 超长文本不 panic：`very_long_text_does_not_panic`（3200 字）、`glyph_cap_drops_extra_instances_without_panic`（超限只记 overflow）
+- 图集复用 / 分页 / 缺字：`repeated_glyphs_reuse_atlas_slot`、`full_atlas_spills_to_second_page`、`missing_glyph_is_counted_but_not_drawn`
+- 脚本每帧提交不泄漏（`cargo test -p r3e-script`）：`per_frame_text_add_does_not_accumulate`（同一 key 连提交 10 帧，节点数恒为 1）、
+  `text_set_on_missing_key_reports_false`、`text_clear_and_channel_switch`
+
+---
+

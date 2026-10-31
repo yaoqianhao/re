@@ -13,6 +13,7 @@ use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, ProceduralProvider, Scene
 use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
+use crate::text::{TextPass, TextStats};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
@@ -334,6 +335,12 @@ pub struct RenderStats {
     /// 本帧阴影通道提交的 draw call 数（阶段 D）。0 表示阴影关闭或贴图未就绪。
     pub shadow_draws: u32,
     pub frame_index: u64,
+    /// 本帧文本通道画出的字形四边形数（M1 文字渲染）。
+    pub text_glyphs: u32,
+    /// 本帧文本通道的 draw call 数。0 表示文本关闭 / 无字体 / 无文本。
+    pub text_draws: u32,
+    /// 本帧缺字数（该字符所有已加载字体面都没有），这些字符只占位不绘制。
+    pub text_missing: u32,
 }
 
 pub struct Renderer {
@@ -368,6 +375,8 @@ pub struct Renderer {
     shadow_pass_bind_group: wgpu::BindGroup,
     shadow_pass_uniform: wgpu::Buffer,
     shadow_pipeline: wgpu::RenderPipeline,
+    /// M1 文字渲染：屏幕空间 2D 文本通道，与 3D 主通道完全独立。
+    text: TextPass,
     stats: RenderStats,
 }
 
@@ -698,6 +707,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let text = TextPass::new(&device, config.format);
         Ok(Self {
             device,
             queue,
@@ -725,6 +735,7 @@ impl Renderer {
             shadow_pass_bind_group,
             shadow_pass_uniform,
             shadow_pipeline,
+            text,
             stats: RenderStats::default(),
         })
     }
@@ -739,6 +750,30 @@ impl Renderer {
 
     pub fn stats(&self) -> RenderStats {
         self.stats
+    }
+
+    /// 文本通道（只读）：查统计、查字体来源。
+    pub fn text(&self) -> &TextPass {
+        &self.text
+    }
+
+    /// 文本通道（可变）：开关、换字体。
+    pub fn text_mut(&mut self) -> &mut TextPass {
+        &mut self.text
+    }
+
+    pub fn text_stats(&self) -> TextStats {
+        self.text.stats()
+    }
+
+    /// 独立开关 2D 文本通道；关掉后主通道 / 阴影通道行为完全不变。
+    pub fn set_text_enabled(&mut self, enabled: bool) {
+        self.text.set_enabled(enabled);
+    }
+
+    /// 用指定字体文件（可多个）替换文本字体集，CJK 字体走这里。
+    pub fn load_text_fonts(&mut self, paths: &[std::path::PathBuf]) -> Result<(), String> {
+        self.text.load_fonts(paths)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -922,9 +957,29 @@ impl Renderer {
                 cull_unknown,
                 shadow_draws,
                 frame_index: scene.frame,
+                text_glyphs: 0,
+                text_draws: 0,
+                text_missing: 0,
             };
         }
 
+        // M1 文字渲染：主通道画完后叠加屏幕空间文本。
+        // 独立 pass（LoadOp::Load）+ 独立管线，不共享深度与相机，关掉即彻底不跑。
+        // 场景开关（脚本 set_text_enabled）优先：关掉时只传空切片，通道一次 GPU 命令都不发
+        let texts = if scene.text_enabled {
+            &scene.texts[..]
+        } else {
+            &[][..]
+        };
+
+            self.text.render(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &view,
+                texts,
+                self.size,
+            );
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
     }

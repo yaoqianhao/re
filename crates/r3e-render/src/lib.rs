@@ -5,6 +5,7 @@
 
 pub mod mesh;
 pub mod renderer;
+pub mod text;
 
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use renderer::{LayeredProvider, MeshCache, RenderStats, Renderer};

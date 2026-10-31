@@ -6,6 +6,7 @@ use std::path::Path;
 use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
+use crate::text::ScreenText;
 
 use crate::skin::SkinInstance;
 use crate::{AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, Transform};
@@ -211,6 +212,9 @@ pub struct SceneFile {
     pub light: Option<LightDesc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
+    /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<ScreenText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physics: Option<PhysicsSceneDesc>,
     /// 外部资产声明（应用层负责真正导入）。
@@ -244,6 +248,12 @@ pub struct Scene {
     /// 场景内的蒙皮实例（P4 起）。每个带蒙皮的网格实例一条，每帧由
     /// `update_skinning` 求解关节矩阵，渲染层直接上传。
     pub skins: Vec<SkinInstance>,
+    /// 2D 屏幕空间文本（M1 文字渲染）。渲染层每帧据此重新排版，是文本的唯一真源。
+    /// 顺序即绘制顺序（后画的盖住先画的）。
+    pub texts: Vec<ScreenText>,
+    /// 2D 文本通道总开关（脚本 `set_text_enabled`）。false 时渲染层整帧跳过文本通道，
+    /// 场景里的文本数据保留，再打开即原样恢复。
+    pub text_enabled: bool,
 }
 
 impl Default for Scene {
@@ -270,6 +280,8 @@ impl Scene {
             animations: Vec::new(),
             anim_clips: HashMap::new(),
             skins: Vec::new(),
+            texts: Vec::new(),
+            text_enabled: true,
         }
     }
 
@@ -821,6 +833,7 @@ impl Scene {
         for obj in file.objects {
             scene.spawn(obj)?;
         }
+        scene.texts = file.texts.into_iter().map(|t| t.sanitized()).collect();
         scene.update_world_transforms();
         Ok(scene)
     }
@@ -860,6 +873,7 @@ impl Scene {
                 Some(self.physics.clone())
             },
             assets: self.assets.clone(),
+            texts: self.texts.clone(),
         }
     }
 

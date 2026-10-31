@@ -45,6 +45,9 @@ gilrs = "0.11"
 # 物理后端（可选）：r3e-physics 的 `rapier` feature 打开时才真正编译
 rapier3d = "0.36"
 
+# 文本排版（字形栅格化，纯 CPU；不引入图形 API）
+fontdue = "0.9"
+
 # 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

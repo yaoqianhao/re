@@ -9,6 +9,28 @@ fn on_start() {
         attach_body("orbiter", "dynamic", 1.5);
         body_impulse("orbiter", 2.2, 0.0, 0.0);
     }
+    // ---- 2D 屏幕空间文本（M1 文字渲染）----
+    // 屏幕坐标单位是像素，原点在左上角；(x, y) 是文本框第一行行顶的锚点。
+    text_add("hud_title", "r3e 引擎 · 屏幕空间文字", 24.0, 20.0, 30.0, 1.0, 0.92, 0.72);
+    text_add("hud_sub", "中文 / English / 数字 0123456789 都能画", 24.0, 60.0, 18.0, 0.78, 0.85, 0.95);
+    text_set_wrap("hud_sub", 520.0);        // 超过 520px 自动折行
+    text_add("hud_status", "", 24.0, 96.0, 16.0, 0.62, 0.70, 0.80);
+    // 右对齐版本：x 是右边界
+    text_add("hud_right", "对齐：右\n第二行", 1240.0, 20.0, 16.0, 0.55, 0.62, 0.72);
+    text_set_align("hud_right", "right");
+    // 居中版本：x 是水平中心
+    text_add("hud_center", "居中对齐", 640.0, 20.0, 16.0, 0.55, 0.62, 0.72);
+    text_set_align("hud_center", "center");
+    log("文本节点数 = " + text_count());
+    text_add("hp_text", "HP 100 / 100", 30.0, 135.0, 14.0, 1.0, 0.96, 0.96);
+    ui_set_layer("hp_bg", 0);
+    ui_set_layer("hp_fill", 1);
+
+    text_add("dlg_text", "（对话框）这里的台词由 text_* 画在 UI 之上。", 640.0, 556.0, 18.0, 0.94, 0.95, 0.98);
+    text_set_align("dlg_text", "center");
+
+    text_add("audio_hud", "", 24.0, 120.0, 16.0, 0.55, 0.78, 0.62);
+    text_set_wrap("audio_hud", 900.0);
     log("物理后端 = " + physics_backend()
         + " / 开关 = " + physics_enabled()
         + " / 刚体数 = " + body_count());
@@ -47,6 +69,14 @@ fn on_update(dt) {
     if age > 4.0 {
         remove_node(name);
     }
+
+    // ---- 文本 HUD 每帧刷新（同名 text_set 只改内容，不会新增节点）----
+    text_set("hud_status",
+        "帧率 " + ((fps() * 10.0).round() / 10.0).to_string()
+        + " / 帧号 " + frame().to_string()
+        + " / 时间 " + (t * 1.0).to_string()
+        + " / 物件 " + count().to_string()
+        + " / 文本 " + text_count().to_string());
 
     // 5) 相机极缓慢环绕（不干扰手动操作时可注释掉）
     // orbit(6.0 * dt * 60.0, 0.0);

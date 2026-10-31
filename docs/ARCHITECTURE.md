@@ -166,6 +166,14 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | `scene.rs` | 场景容器、生命周期、层次变换、文件加载 | `Scene`, `ObjectDesc`, `SceneFile` |
 | `camera.rs` | 透视相机与轨道控制 | `Camera` |
 | `light.rs` | 单方向光 + 环境光 | `Light` |
+| `text.rs` | 字体加载、字形位图接口、排版（换行 / 对齐 / 缺字回退）、屏幕文本节点 | `FontSet`, `GlyphSource`, `TextLayout`, `ScreenText`, `TextAlign` |
+| `glyph_atlas.rs` | 字形图集的货架式分配与分页 | `GlyphAtlas`, `ShelfAllocator`, `GlyphKey` |
+
+**为什么文本在 core 而不是 render**：字形栅格化（fontdue）与排版是纯 CPU 计算，与 wgpu 无关。
+放 core 有两个直接好处——① `r3e-core` 保持零 GPU 依赖，`architecture_guard` 测试守着这条线；
+② 排版、对齐、缺字回退这些逻辑可以用假字体在无 GPU 环境跑单测，不必起窗口。
+`r3e-render` 只消费 `TextLayout`（每字形的位图 + 位置 + 尺寸），把它翻译成实例数据。
+
 
 `lib.rs` 只做 re-export：`pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4}`，让上层 crate 不必各自引入 `glam`。
 
@@ -222,7 +230,24 @@ pub struct Scene {
     pub frame: u64,     // 帧序号
     pub camera: Camera,
     pub light: Light,
-    pub background: Vec4,
+    pub background: Vec4,   // RGBA
+    // …… physics / assets / animations / anim_clips / skins（见 6~8 章）
+    // M1：屏幕空间文本与文本通道开关
+    pub texts: Vec<ScreenText>,   // 按 key 寻址、同名覆盖；顺序即绘制顺序
+    pub text_enabled: bool,       // false 时渲染层整帧跳过文本通道，数据保留
+}
+
+/// 一条屏幕空间文本节点（`r3e_core::SceneText`）
+pub struct ScreenText {
+    pub key: String,        // 脚本侧寻址用，场景内唯一
+    pub content: String,    // 任意 UTF-8
+    pub x: f32, pub y: f32, // 第一行行顶锚点（窗口像素，原点左上）
+    pub size: f32,          // 像素字号
+    pub color: [f32; 4],    // 含 alpha
+    pub align: TextAlign,   // Left / Center / Right
+    pub wrap: f32,          // 自动换行宽度像素，0 = 只按 \n
+    pub line_height: f32,   // 行高倍数，0 = 字体自然行高
+    pub visible: bool,
 }
 ```
 
@@ -433,7 +458,62 @@ render(scene):
 
 **Draw call 数 = 实际使用的网格种类数**（≤ 4）。1000 个立方体是 1 个 draw call，不是 1000 个。
 
-### 5.5 着色器（shader.wgsl）
+### 5.5 文本通道（M1：文字 GPU 上屏）
+
+文本是唯一"内容每帧可能变"的绘制通道，设计目标是：**CPU 只重排、GPU 只重传新字形**。
+
+**位置与解耦**：文本 pass 排在**阴影与 3D 主通道之后**，是独立 `RenderPass`：
+
+- **不共享深度**：`depth_stencil_attachment: None`。文本永远在最上层，既不受 3D 深度遮挡，
+  也不会把深度写脏（主通道 `StoreOp::Store` 的深度结果保持原样）。
+- **`LoadOp::Load`**：不 clear 颜色，直接叠在 3D 画面上；混合走 `ALPHA_BLENDING`，
+  字形边缘覆盖率来自 R8 图集采样值（sRGB 目标已由管线 format 决定，着色器不做 gamma 反转）。
+- **前置门控**：`scene.text_enabled == false` 或 `scene.texts` 为空时 `TextPass::render` 直接 return，
+  encoder 里一条文本命令都没有 —— 这是"关掉文本后主通道行为与加文本前完全一致"的实现级保证。
+
+**职责切分**：`r3e-core` 出位图与度量（`FontSet` + `GlyphAtlas` + `layout_text`），
+`r3e-render` 一个字形都不解析——它只把 `TextLayout` 的每个字形翻译成一个 `TextInstance`：
+
+```
+// text.wgsl 的 Instance（@location 0..4），与 text.rs 的 TextInstance 一一对应
+struct Instance {                  // 48 字节 = 12 个 f32，array_stride 取 size_of
+    origin:  vec2<f32>,            // 四边形左上角，屏幕像素，原点在左上，已含对齐位移
+    size:    vec2<f32>,            // 四边形尺寸（像素）
+    uv_min:  vec2<f32>,            // 图集归一化 uv 左上角
+    uv_max:  vec2<f32>,            // 图集归一化 uv 右下角
+    color:   vec4<f32>,            // 含 alpha
+}
+```
+
+顶点阶段**不用顶点缓冲**：`@builtin(vertex_index)` 拼出两个三角形（6 顶点），
+位置＝`origin + corner * size`，再折算到 NDC（`x = 2x/w − 1`，`y = 1 − 2y/h`），
+所以整批文本是"每图集页一次 `draw(0..6, 实例区间)`"，除实例缓冲外无任何上传。
+
+片元阶段只取图集 R 通道当覆盖度：`vec4(color.rgb, color.a * coverage)`，靠 `ALPHA_BLENDING` 叠加。
+uv 各向内收半个纹素（`UV_INSET`），避免线性采样吃到邻格字形。
+
+**图集上传**：页格式 `R8Unorm`（纯覆盖率，不含颜色），1024×1024，初始 1 页，
+`MAX_ATLAS_PAGES = 8`。键是 `(face, glyph_id, 量化字号)`：同字号重复出现直接命中，
+因此稳态帧的上传表为空（这是"每帧全量重排但不重复上传"的关键）。某页分配不下即开新页，
+新页当场 `create_texture` + `write_texture` + `create_bind_group`，绘制时按页分组。
+
+**容量与安全阀**：
+
+| 项 | 值 | 超限行为 |
+| --- | --- | --- |
+| 单帧字形实例 | `MAX_TEXT_INSTANCES = 32768` | 超出部分只累加 `overflow`，不绘制、不 panic |
+| 图集页 | `MAX_ATLAS_PAGES = 8` | 分配失败的字形计入 `overflow`，不绘制 |
+| 实例缓冲 | 首次 1 页容量，不足时 2 倍扩容 | 重建 buffer（每帧全量重写，无需保留旧内容） |
+
+**测试策略**：`r3e-render/src/text.rs` 的单测全部跑在 `FakeFont`（纯算术假字形）上，
+不加载系统字体、不建 `wgpu::Device`，因此无 GPU 的 CI 环境也能覆盖
+"顶点数量与位置、对齐位移、空串不产生实例、超长文本不 panic、图集分页与复用"。
+
+脚本层的"每帧提交不累积"语义由 `r3e-script/src/lib.rs::text_script_tests` 覆盖：
+同一 `key` 连续 `text_add` 10 帧后 `Scene::texts.len()` 必须仍为 1（只有首帧返回 `true`），
+另有 `text_set` 对缺失 key 返回 `false`、`text_clear` 与 `set_text_enabled` 互不干扰两条。
+真实字体与上屏效果只由 `cargo run` 的人工验证覆盖（见第 13 章）。
+
 
 **Uniform 布局（128 字节，16 字节对齐）**
 
@@ -490,6 +570,9 @@ pub struct RenderStats {
     pub culled: u32,       // 被视锥剔除的实例
     pub cull_unknown: u32, // 缺包围盒而 fail-open 放行的实例
     pub frame_index: u64,
+    pub text_glyphs: u32,  // 文本通道四边形数
+    pub text_draws: u32,   // 文本通道 draw call；0 = 关闭 / 无字体 / 无文本
+    pub text_missing: u32, // 缺字数（只占位不绘制）
 }
 ```
 
@@ -794,13 +877,31 @@ pub fn reload_if_changed(&mut self) -> bool {
 
 随机数用自实现的 xorshift64（种子 `0x2545F4914F6CDD1D`）而非 `rand` crate，是为了不引入额外依赖并保证可复现——种子固定，每次启动的随机序列相同。
 
+**屏幕空间文本（M1）**
 
+写入 `Scene::texts`，渲染层下一帧自动重排重画；**按 `key` 寻址、同名即覆盖**，所以脚本每帧调用也不会堆积节点。
+坐标单位是窗口像素、原点左上；`(x, y)` 是文本框第一行的**行顶**锚点。
 
 | 函数 | 说明 |
 | --- | --- |
+| `text_add(key, content, x, y, size, r, g, b)` | 新建；key 已存在时只更新内容/位置/字号/颜色并返回 `false`（保留对齐、换行、行高） |
+| `text_set(key, content)` | 改内容（最常用，单独给最简签名） |
+| `text_set_pos(key, x, y)` / `text_set_size(key, size)` | 改位置 / 字号（字号夹到 1..512） |
+| `text_set_color(key, r, g, b)` / `text_set_alpha(key, a)` | 改 RGB（保留 alpha）/ 改 alpha |
+| `text_set_align(key, mode)` | `left` / `center` / `right`（别名 `l` `c` `r` `start` `end`）；未知值返回 `false` |
+| `text_set_wrap(key, px)` | 自动换行宽度；`0` = 只按 `\n` 硬换行。设宽度后对齐相对整个块宽 |
+| `text_set_line_height(key, f)` | 行高倍数（相对字号），`0` = 字体自然行高 |
+| `text_set_visible(key, on)` | 显隐 |
+| `text_remove(key)` / `text_clear()` | 删一条 / 清空 |
+| `text_exists(key)` / `text_content(key)` / `text_count()` / `text_keys()` | 查询 |
+| `set_text_enabled(on)` / `text_enabled()` | 文本通道总开关；关掉后整帧跳过文本 pass |
+| `text_width(content, size)` / `text_height(content, size)` | 像素尺寸估算（不加载字体，仅供排版预算，非精确值） |
+
+命名刻意避开 Rhai 保留字（`text` / `draw` / `font` 都不做前缀裸名），并保持本仓库"短动词 + 按名寻址"的一致性：
+`text_*` 是数据操作，`set_text_enabled` 是通道级开关，与 `set_shadow(on)` 同一个写法。
 
 
-
+元素存在 `Scene::ui`，与 `texts` 同构：脚本是唯一入口，渲染层每帧全量重建。
 单位以字符串给：`"24px"` / `"50%"` / `"12"`（等价 `"12px"`）；锚点为 9 种
 （`topleft` `topcenter` `topright` `midleft` `center` `midright` `bottomleft` `bottomcenter` `bottomright`，
 兼容 `top_left`、`bottom-center` 等写法）。
@@ -808,6 +909,7 @@ pub fn reload_if_changed(&mut self) -> bool {
 | 函数 | 说明 |
 | --- | --- |
 
+`uv`（与 `text_add` 语义一致），返回 `false`。因此 `on_update` 里每帧重复提交不会累积节点，
 
 
 
@@ -1360,6 +1462,9 @@ cargo build --release
 | REPL | 输入指令后自动暂停脚本，指令立即反映到画面 |
 | 物理 | 默认关：`attach_body` 返回 false、`body_count()` 为 0；`--physics on` 后 5 个刚体落地反弹并进入休眠 |
 | 编译 | `cargo build --release` 零 warning |
+| 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
+| 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
+| 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
 
 ---
 

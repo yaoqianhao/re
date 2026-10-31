@@ -7,6 +7,7 @@ pub mod air;
 pub mod anim;
 pub mod camera;
 pub mod frustum;
+pub mod glyph_atlas;
 pub mod input;
 pub mod light;
 pub mod mesh;
@@ -14,6 +15,7 @@ pub mod node;
 pub mod procedural;
 pub mod scene;
 pub mod skin;
+pub mod text;
 pub mod transform;
 
 pub use aabb::Aabb;
@@ -22,6 +24,10 @@ pub use anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
 pub use camera::Camera;
 pub use frustum::Frustum;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
+pub use glyph_atlas::{
+    AtlasInsert, AtlasSlot, GlyphAtlas, GlyphKey, ShelfAllocator, DEFAULT_MAX_PAGES,
+    DEFAULT_PAGE_SIZE,
+};
 pub use input::{ButtonEdge, InputState, KeyCode, KeyboardState, PadState};
 pub use light::{Light, ShadowSettings};
 pub use mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
@@ -32,5 +38,10 @@ pub use scene::{
 };
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,
+};
+pub use text::{
+    estimate_text_height, estimate_text_width, layout_text, measure_text, ApproxMetrics, FontSet,
+    GlyphBitmap, GlyphMetric, GlyphSource, LaidOutLine, LineMetrics, MetricsSource, PlacedGlyph,
+    ScreenText, TextAlign, TextLayout, TextMeasure,
 };
 pub use transform::Transform;

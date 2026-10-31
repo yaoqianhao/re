@@ -104,11 +104,15 @@ r3e —— Rust 3D Engine
   --show-bones              把骨架节点画成小方块，肉眼确认节点动画
   --run-seconds SEC         窗口运行指定秒数后自动退出（无人值守验证）
 
+文本选项（M1 文字渲染）:
+  --font PATH               指定文本字体（.ttf/.otf/.ttc，可重复，先给的优先）；不指定则自动找系统中文字体
 
 编辑器桥选项（r3e-editor 的 JSON-RPC 2.0 over TCP + NDJSON）:
   --rpc-port PORT           监听端口，0 = 由系统分配；不指定则不启动桥
   --rpc-token TOKEN         握手令牌，客户端须原样带回（不指定则不校验）
   --rpc-max-per-frame N     每帧最多处理的请求数，默认 8
+
+  -h, --help                显示本帮助
 ";
 
 fn main() -> anyhow::Result<()> {
@@ -239,6 +243,16 @@ fn main() -> anyhow::Result<()> {
                     match v.trim().parse::<f32>() {
                         Ok(secs) if secs > 0.0 => cli.run_seconds = Some(secs),
                         _ => log::error!("--run-seconds 取值应为正数秒，收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
+            "--font" => {
+                if let Some(v) = take_value("--font", &mut i) {
+                    if v.trim().is_empty() {
+                        log::error!("--font 需要非空的字体文件路径");
+                    } else {
+                        cli.fonts.push(PathBuf::from(v));
                     }
                 }
                 continue;

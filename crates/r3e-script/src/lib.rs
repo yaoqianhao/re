@@ -152,12 +152,13 @@ impl ScriptHost {
     }
 
     /// 每帧调用脚本的 `on_update(dt)`。
-    pub fn tick(&mut self, dt: f64, time: f64, frame: u64) {
+    pub fn tick(&mut self, dt: f64, time: f64, frame: u64, fps: f64) {
         {
             let mut c = self.clock.borrow_mut();
             c.dt = dt;
             c.time = time;
             c.frame = frame;
+            c.fps = fps;
         }
 
         let Some(ast) = self.ast.clone() else { return };
@@ -459,3 +460,78 @@ mod key_script_tests {
     }
 }
 
+#[cfg(test)]
+mod text_script_tests {
+    use super::*;
+
+    /// 空场景宿主 + 场景句柄（文本要直接查 `Scene::texts` 验证）。
+    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        (ScriptHost::new(scene.clone(), physics, input), scene)
+    }
+
+    fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_bool()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回 bool"))
+    }
+
+    /// 每帧提交的语义：同一 key 反复 `text_add` 只覆盖，节点数恒为 1（不跨帧累积）。
+    #[test]
+    fn per_frame_text_add_does_not_accumulate() {
+        let (mut host, scene) = host();
+        for frame in 0..10 {
+            let src = format!(r#"text_add("hud", "帧 {frame}", 24.0, 20.0, 16.0, 1.0, 1.0, 1.0)"#);
+            let created = eval_bool(&mut host, &src);
+            assert_eq!(created, frame == 0, "只有首帧是新建，之后都是覆盖");
+            assert_eq!(
+                scene.borrow().texts.len(),
+                1,
+                "第 {frame} 帧后节点数应仍为 1"
+            );
+        }
+        assert_eq!(scene.borrow().texts[0].content, "帧 9", "内容应是最新一帧");
+    }
+
+    /// `text_set*` 对不存在的 key 返回 false，脚本据此决定要不要补 `text_add`。
+    #[test]
+    fn text_set_on_missing_key_reports_false() {
+        let (mut host, scene) = host();
+        assert!(!eval_bool(&mut host, r#"text_set("nope", "x")"#));
+        assert!(!eval_bool(&mut host, r#"text_set_align("nope", "center")"#));
+        assert!(
+            !eval_bool(&mut host, r#"text_set_align("nope", "middle")"#),
+            "未知对齐值也应返回 false"
+        );
+        assert!(scene.borrow().texts.is_empty(), "失败的写入不应造出节点");
+    }
+
+    /// `text_clear` 清空全部；通道开关只翻 `text_enabled`，两者互不干扰。
+    #[test]
+    fn text_clear_and_channel_switch() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"text_add("a", "甲", 0.0, 0.0, 16.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert!(eval_bool(
+            &mut host,
+            r#"text_add("b", "乙", 0.0, 20.0, 16.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert_eq!(scene.borrow().texts.len(), 2);
+
+        let _ = host
+            .eval("set_text_enabled(false)")
+            .expect("set_text_enabled 应可调用");
+        assert!(!scene.borrow().text_enabled, "开关应已关闭");
+        assert_eq!(scene.borrow().texts.len(), 2, "关通道不清数据");
+
+        let _ = host.eval("text_clear()").expect("text_clear 应可调用");
+        assert!(scene.borrow().texts.is_empty(), "清空后应为 0 条");
+        assert!(!scene.borrow().text_enabled, "清空不应顺带打开通道开关");
+    }
+
+}
