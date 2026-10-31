@@ -1,0 +1,202 @@
+{
+  "format": "air",
+  "air_version": 1,
+  "generator": "ai-ide asset3d 0.1.0",
+  "source": {
+    "path": "quad.fbx",
+    "container": "fbx",
+    "bytes": 1983,
+    "native_unit_meters": 0.01,
+    "native_up_axis": "+Y",
+    "creator": "asset3d-fixture"
+  },
+  "units": {
+    "meters_per_unit": 1.0,
+    "up_axis": "+Y",
+    "front_axis": "+Z",
+    "right_axis": "+X",
+    "uv_origin": "top-left",
+    "winding": "ccw"
+  },
+  "nodes": [
+    {
+      "index": 0,
+      "name": "",
+      "path": "node0",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        0.01,
+        0.01,
+        0.01
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Pivot",
+      "path": "node0/Pivot",
+      "parent": 0,
+      "position": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Quad",
+      "path": "node0/Pivot/Quad",
+      "parent": 1,
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Quad",
+      "node": "node0/Pivot/Quad",
+      "positions": [
+        [
+          -0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.5,
+          1.0,
+          0.0
+        ],
+        [
+          -0.5,
+          1.0,
+          0.0
+        ]
+      ],
+      "normals": [
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "uvs": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        2,
+        3,
+        0
+      ],
+      "material_parts": [
+        {
+          "material_name": "",
+          "triangle_offset": 0,
+          "triangle_count": 2
+        }
+      ],
+      "aabb_min": [
+        -0.5,
+        0.0,
+        0.0
+      ],
+      "aabb_max": [
+        0.5,
+        1.0,
+        0.0
+      ],
+      "source_vertex_count": 4,
+      "source_face_count": 1,
+      "source_triangle_count": 2
+    }
+  ],
+  "materials": [],
+  "textures": [],
+  "skins": [],
+  "animations": [],
+  "stats": {
+    "node_count": 3,
+    "mesh_count": 1,
+    "vertex_count": 4,
+    "triangle_count": 2,
+    "material_count": 0,
+    "texture_count": 0,
+    "skin_count": 0,
+    "joint_count": 0,
+    "animation_count": 0,
+    "geometry_bytes": 152
+  },
+  "issues": []
+}

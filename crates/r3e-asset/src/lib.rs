@@ -19,12 +19,22 @@ use std::sync::Arc;
 use r3e_core::anim::{AnimClip, AnimTrack};
 use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, TextureImage, Vertex};
 use r3e_core::skin::{SkinData, SkinJoint};
-use r3e_core::{AssetId, Mat4, MeshRef, Vec3, Vec4};
+use r3e_core::{Mat4, MeshRef, Vec3, Vec4};
+// 对外重新导出 `AssetId`：插件生成的加载器只依赖 `r3e-asset` 一个 crate，
+// 不应该为了一个 id 类型再去 `use r3e_core`。纯新增导出，不改变既有 API。
+pub use r3e_core::AssetId;
 use thiserror::Error;
 
+pub mod air_import;
 pub mod gltf_import;
 pub mod importer;
 
+pub use air_import::{
+    import_air, load_air_bytes, load_air_file, AirAnimation, AirDoc, AirImporter, AirLoadError,
+    AirMaterial, AirMaterialPart, AirMesh, AirNode, AirSkin, AirSource, AirStats, AirTexture,
+    AirTrack, AirUnits, AirbMeta, MeshSpans, Span, AIRB_HEADER_LEN, AIRB_MAGIC, AIRB_VERSION,
+    AIR_FORMAT_TAG, AIR_VERSION,
+};
 pub use gltf_import::{import_glb, import_gltf, GltfImporter};
 pub use importer::{audit_entry, audit_issues, AssetImporter, FbxImporter, ImporterRegistry};
 
@@ -345,6 +355,18 @@ impl AssetLibrary {
     /// 上层不需要知道自己拿到的是哪种格式。
     pub fn load(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
         let entry = self.importers.import(path.as_ref())?;
+        Ok(self.insert(entry))
+    }
+
+    /// 按**内容**读取 AIR 落盘文件（`.air.json` / `.air.bin`）并入库。
+    ///
+    /// 为什么不走 [`Self::load`]：`.air.json` / `.air.bin` 的扩展名分别是 `json` / `bin`，
+    /// 靠扩展名分派既不可靠、也会和普通 JSON 撞车，所以这条入口先用 `AIRB` magic /
+    /// JSON 首字符嗅探再解析（见 [`air_import::parse_bytes`]）。
+    ///
+    /// 这是一条**新增**入口：`.fbx` / `.glb` / `.gltf` 的既有分派逻辑一字未动。
+    pub fn load_air(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
+        let entry = air_import::load_air_file(path.as_ref())?;
         Ok(self.insert(entry))
     }
 

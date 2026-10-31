@@ -1,0 +1,293 @@
+{
+  "format": "air",
+  "air_version": 1,
+  "generator": "ai-ide asset3d 0.1.0",
+  "source": {
+    "path": "cube.gltf",
+    "container": "gltf",
+    "bytes": 3528,
+    "native_unit_meters": 1.0,
+    "native_up_axis": "+Y",
+    "creator": "asset3d-fixture"
+  },
+  "units": {
+    "meters_per_unit": 1.0,
+    "up_axis": "+Y",
+    "front_axis": "+Z",
+    "right_axis": "+X",
+    "uv_origin": "top-left",
+    "winding": "ccw"
+  },
+  "nodes": [
+    {
+      "index": 0,
+      "name": "Pivot",
+      "path": "Pivot",
+      "position": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Cube",
+      "path": "Pivot/Cube",
+      "parent": 0,
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.38268352,
+        0.0,
+        0.9238795
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "CubeMesh",
+      "node": "Pivot/Cube",
+      "positions": [
+        [
+          -0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          0.5,
+          0.5,
+          0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          0.5,
+          -0.5
+        ]
+      ],
+      "normals": [
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0
+        ]
+      ],
+      "uvs": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          1.0,
+          1.0
+        ],
+        [
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0
+        ],
+        [
+          1.0,
+          1.0
+        ],
+        [
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        1,
+        4,
+        7,
+        1,
+        7,
+        2,
+        5,
+        0,
+        3,
+        5,
+        3,
+        6,
+        3,
+        2,
+        7,
+        3,
+        7,
+        6,
+        5,
+        4,
+        1,
+        5,
+        1,
+        0
+      ],
+      "material_parts": [
+        {
+          "material": 0,
+          "material_name": "Checker",
+          "triangle_offset": 0,
+          "triangle_count": 12
+        }
+      ],
+      "aabb_min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "aabb_max": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "source_vertex_count": 8,
+      "source_face_count": 12,
+      "source_triangle_count": 12
+    }
+  ],
+  "materials": [
+    {
+      "index": 0,
+      "name": "Checker",
+      "base_color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "metallic": 0.0,
+      "roughness": 0.8,
+      "base_color_texture": 0,
+      "double_sided": true
+    }
+  ],
+  "textures": [
+    {
+      "index": 0,
+      "name": "checker",
+      "slot": "baseColorTexture",
+      "mime_type": "image/png",
+      "width": 8,
+      "height": 8,
+      "bytes": 74,
+      "embedded": true
+    }
+  ],
+  "skins": [],
+  "animations": [],
+  "stats": {
+    "node_count": 2,
+    "mesh_count": 1,
+    "vertex_count": 8,
+    "triangle_count": 12,
+    "material_count": 1,
+    "texture_count": 1,
+    "skin_count": 0,
+    "joint_count": 0,
+    "animation_count": 0,
+    "geometry_bytes": 400
+  },
+  "issues": []
+}
