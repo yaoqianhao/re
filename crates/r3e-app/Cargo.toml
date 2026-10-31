@@ -20,6 +20,7 @@ rapier = ["r3e-physics/rapier"]
 [dependencies]
 r3e-core.workspace = true
 r3e-asset.workspace = true
+r3e-audio.workspace = true
 r3e-render.workspace = true
 r3e-physics.workspace = true
 r3e-script.workspace = true

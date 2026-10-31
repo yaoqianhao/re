@@ -7,6 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use glam::{Vec3, Vec4};
+use r3e_audio::Audio;
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
 use r3e_core::ui::{Anchor, UiElement, UiKind, UiValue};
@@ -32,6 +33,7 @@ pub struct ScriptContext {
     pub scene: Rc<RefCell<Scene>>,
     pub physics: Rc<RefCell<Physics>>,
     pub input: Rc<RefCell<InputState>>,
+    pub audio: Rc<RefCell<Audio>>,
     pub clock: Rc<RefCell<Clock>>,
     pub rng: Rc<Cell<u64>>,
 }
@@ -1603,6 +1605,134 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow().ui_above_text
     });
 
+    // ------------------------------------------------------------------
+    // 音频（非空间化）：只做常规音效 / 音乐，没有 3D 衰减与多普勒。
+    //
+    // 统一约定：
+    // * 参数 key 是调用方自己起的**声音名字**（不是文件路径），同名 key 重播 = 停掉旧实例从头播，
+    //   不会叠加第二份；想同时放两份同一文件，就起两个 key。
+    // * 所有函数都不 panic：无设备 / 文件打不开 / 解码失败 一律返回 false，并把原因留在
+    //   `audio_last_error()`，主循环继续跑。
+    // ------------------------------------------------------------------
+
+    let c = ctx.clone();
+    engine.register_fn("audio_play", move |key: &str, path: &str| -> bool {
+        c.audio.borrow_mut().play_default(key, path).is_ok()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "audio_play_ex",
+        move |key: &str, path: &str, volume: f64, looping: bool| -> bool {
+            c.audio
+                .borrow_mut()
+                .play(key, path, f32_of(volume), looping)
+                .is_ok()
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("audio_stop", move |key: &str| -> bool {
+        c.audio.borrow_mut().stop(key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_stop_all", move || {
+        c.audio.borrow_mut().stop_all();
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_pause", move |key: &str| -> bool {
+        c.audio.borrow_mut().pause(key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_resume", move |key: &str| -> bool {
+        c.audio.borrow_mut().resume(key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_set_volume", move |key: &str, volume: f64| -> bool {
+        c.audio.borrow_mut().set_volume(key, f32_of(volume))
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_set_loop", move |key: &str, looping: bool| -> bool {
+        c.audio.borrow_mut().set_loop(key, looping)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_is_playing", move |key: &str| -> bool {
+        c.audio.borrow_mut().is_playing(key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_is_paused", move |key: &str| -> bool {
+        c.audio.borrow().is_paused(key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_count", move || -> i64 {
+        c.audio.borrow().active_count() as i64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_keys", move || -> Array {
+        c.audio
+            .borrow()
+            .keys()
+            .into_iter()
+            .map(Dynamic::from)
+            .collect()
+    });
+
+    // 总音量：与单条音量相乘后下发给混音器，0 也合法（等于静音）。
+    let c = ctx.clone();
+    engine.register_fn("audio_set_master_volume", move |volume: f64| {
+        c.audio.borrow_mut().set_master_volume(f32_of(volume));
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_master_volume", move || -> f64 {
+        c.audio.borrow().master_volume() as f64
+    });
+
+    // 总开关：关掉后新建的播放请求直接拒绝（返回 false），已有声音全部停掉。
+    let c = ctx.clone();
+    engine.register_fn("audio_set_enabled", move |on: bool| {
+        c.audio.borrow_mut().set_enabled(on);
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_enabled", move || -> bool {
+        c.audio.borrow().enabled()
+    });
+
+    // 探针：有真实设备 = true；静默降级 = false。脚本可据此不显示音量控件。
+    let c = ctx.clone();
+    engine.register_fn("audio_available", move || -> bool {
+        c.audio.borrow().device_available()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_backend", move || -> String {
+        c.audio.borrow().backend_name().to_string()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_last_error", move || -> String {
+        c.audio.borrow().last_error().unwrap_or("").to_string()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_error_count", move || -> i64 {
+        c.audio.borrow().error_count() as i64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("audio_status", move || -> String {
+        c.audio.borrow_mut().status_line()
+    });
 }
 
 /// 解析带单位的 UI 数值："24px" / "50%" / "12"（默认像素）。

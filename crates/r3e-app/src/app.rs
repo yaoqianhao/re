@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime};
 use gilrs::{Axis, Button};
 use glam::{Mat4, Vec3};
 use r3e_asset::AssetLibrary;
+use r3e_audio::Audio;
 use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::input::{
     key_from_char, InputState, KeyCode, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE,
@@ -205,6 +206,9 @@ pub struct EngineApp {
     scene: Rc<RefCell<Scene>>,
     physics: Rc<RefCell<Physics>>,
     scripts: ScriptHost,
+    /// 音频门面（非空间化）。无设备时内部已是静默后端，这里是同一份句柄的 app 侧引用，
+    /// 主循环每帧驱动 `update()` 回收播完的实例。
+    audio: Rc<RefCell<Audio>>,
     /// 输入快照：app 层写入，脚本层读取。
     input: Rc<RefCell<InputState>>,
     /// 手柄子系统；初始化失败时为 None（引擎其余功能不受影响）。
@@ -318,7 +322,21 @@ impl EngineApp {
         let scene = Rc::new(RefCell::new(scene));
         let physics = Rc::new(RefCell::new(physics));
         let input = Rc::new(RefCell::new(InputState::default()));
-        let mut scripts = ScriptHost::new(scene.clone(), physics.clone(), input.clone());
+
+        // 音频：只有 app 层碰设备。拿不到设备就静默降级（Audio 内部已兜底），
+        // 引擎不会因为没声卡 / 驱动异常起不来。
+        let audio = Rc::new(RefCell::new(Audio::open_default()));
+        {
+            let mut a = audio.borrow_mut();
+            log::info!("音频: {}", a.status_line());
+        }
+
+        let mut scripts = ScriptHost::new_with_audio(
+            scene.clone(),
+            physics.clone(),
+            input.clone(),
+            audio.clone(),
+        );
         scripts.set_base_scene(scene_src);
 
         // 资产节点：按资产内节点路径 spawn，重名自动加 `#N` 后缀
@@ -414,6 +432,7 @@ impl EngineApp {
             scene,
             physics,
             scripts,
+            audio,
             input,
             gilrs,
             cursor_valid: false,
@@ -546,6 +565,15 @@ impl EngineApp {
             self.scene.borrow_mut().update_world_transforms();
         }
 
+        // 音频回收：播完的实例在这里清账。放在暂停分支之外——暂停时也要回收，
+        // 否则停掉的声音会一直占着「在播」名额。
+        {
+            let reaped = self.audio.borrow_mut().update();
+            if !reaped.is_empty() {
+                log::debug!("音频实例播完回收: {:?}", reaped);
+            }
+        }
+
         if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
             renderer.render(&self.scene.borrow());
             let stats = renderer.stats();
@@ -565,8 +593,16 @@ impl EngineApp {
                     "物理关".to_string()
                 }
             };
+            let audio_tag = {
+                let a = self.audio.borrow();
+                if a.device_available() {
+                    format!("音频 {} 实例", a.active_count())
+                } else {
+                    "音频静默".to_string()
+                }
+            };
             window.set_title(&format!(
-                "r3e — Rust 3D Engine  |  {} 物件 / {} draw / {:.1} ms  |  {}  |  {}  |  {}",
+                "r3e — Rust 3D Engine  |  {} 物件 / {} draw / {:.1} ms  |  {}  |  {}  |  {}  |  {}",
                 stats.instances,
                 stats.draw_calls,
                 self.last_dt_ms,
@@ -576,7 +612,8 @@ impl EngineApp {
                     "运行中"
                 },
                 pad_tag,
-                phys_tag
+                phys_tag,
+                audio_tag
             ));
         }
 
@@ -654,6 +691,8 @@ impl EngineApp {
             ui.missing_images,
             ui.skipped
         );
+        // 音频探针：设备不可用 = 静默降级（引擎照常跑，只是不出声）；「在播」数来自门面账本。
+        log::info!("[{tag}] 音频：{}", self.audio.borrow_mut().status_line());
     }
 
     /// 打印动画实例状态与骨架节点的世界位置。

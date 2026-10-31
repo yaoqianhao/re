@@ -54,11 +54,15 @@ r3e 是一个用纯 Rust 实现的**最小可用 3D 游戏引擎**，核心命�
 | GPU 数据转换 | `bytemuck` | 1.21（`derive`） | `Pod` / `Zeroable` 派生，顶点与实例数据零成本转字节 |
 | 异步桥接 | `pollster` | 0.4 | 把 `request_adapter` / `request_device` 的异步调用同步化 |
 | 日志 | `log` + `env_logger` | 0.4 / 0.11 | 分级日志，默认 `info`，`RUST_LOG=debug` 看细节 |
+| 音频播放 | `rodio`（含 `cpal` + `symphonia`） | 0.23（`default-features = false`，只开 `playback` / `wav` / `vorbis` / `mp3`） | 设备与解码全封装，上层零 `unsafe`；与 `Physics` 门面同构的 `Audio` 门面可直接替换真后端 / 静默后端 |
 | 错误 | `anyhow` / `thiserror` | 1.0 / 2.0 | 应用层用 anyhow，库层返回 `String` 错误保持 API 简单 |
 
 编译配置：`[profile.dev] opt-level = 1`，且依赖统一 `opt-level = 3`——调试构建下 `wgpu` / `glam` 仍按优化编译，否则帧率会低到无法交互。
 
-Rust 版本要求：`1.79`（`rust-version` 字段）。
+Rust 版本要求：workspace 声明 `rust-version = 1.79`（core / 渲染 / 脚本链路的底线）；
+`crates/r3e-audio` 因 `rodio 0.23` 自身要求 rustc ≥ 1.87，单独声明 `rust-version = 1.87`。
+两者不冲突（crate 级声明覆盖 workspace 默认值），但**编译整个 workspace 需要 ≥ 1.87 的工具链**；
+本机实测工具链为 `rustc 1.99.1`。若用 1.79–1.86 的工具链，`cargo build` 会在 `r3e-audio` 处报 MSRV 错误。
 
 ---
 
@@ -83,10 +87,14 @@ rust3d-engine/
    ├─ r3e-core/                # 内核：数学、变换、节点、场景图、相机、光照
    ├─ r3e-render/              # 渲染：wgpu 设备、管线、程序化网格、WGSL
    ├─ r3e-physics/             # 物理：后端契约 + Null / 内置最简 / Rapier（可选 feature）
-   ├─ r3e-script/              # 脚本：Rhai 宿主 + 引擎 API 绑定
+   ├─ r3e-script/              # 脚本：Rhai 宿主 + 引擎 API 绑定（含 audio_*）
+   ├─ r3e-audio/               # 音频：Audio 门面 + rodio / silent 后端（非空间化）
    ├─ r3e-asset/               # 资产：FBX / glTF / GLB 导入，统一输出 AIR
    └─ r3e-app/                 # 应用：窗口、事件循环、主循环、REPL、热重载
 ```
+
+音频演示资产在 `assets/audio/`：`blip.wav`（0.18s 短音效）与 `ambience.wav`（2.0s 循环环境音），
+均为脚本合成的正弦波，非第三方版权素材。
 
 ### 3.1 依赖关系（严格单向，无环）
 
@@ -102,18 +110,24 @@ rust3d-engine/
             │              │   │            │               │
             │              │   └────────────┘               │
             │              │        （physics API 绑定）      │
-            └──────────────┴────────────┴───────────────────┘
-                                   ▼
-                            ┌──────────────┐
-                            │  r3e-core    │  无图形/窗口依赖
-                            └──────────────┘
+            │        ┌─────┴───────┐                        │
+            │        ▼             │                        │
+            │  ┌────────────┐      │  仅 r3e-script /       │
+            │  │ r3e-audio  │      │  r3e-app 认识它        │
+            │  └─────┬──────┘      │                        │
+            └────────┼─────────────┴────────────────────────┘
+                     ▼
+              ┌──────────────┐
+              │  r3e-core    │  无图形/窗口/音频设备依赖
+              └──────────────┘
 ```
 
 依赖约束及其意义：
 
-- `r3e-core` **不依赖任何图形 API、窗口库或脚本引擎**，只依赖 `glam` + `serde`。因此它是可测试、可无头运行的真源层。
-- `r3e-render`、`r3e-physics`、`r3e-asset` 三者**互不依赖**：渲染器不认识 Rhai，资产层不认识 wgpu，物理层不认识 ufbx。
-- 唯一的跨子系统依赖是 `r3e-script → r3e-physics`：脚本 API 要直接持有 `Physics` 门面做绑定，这是刻意的（不是环，物理层不反向认识脚本）。
+- `r3e-core` **不依赖任何图形 API、窗口库、脚本引擎或音频设备**，只依赖 `glam` + `serde`。因此它是可测试、可无头运行的真源层。
+- `r3e-render`、`r3e-physics`、`r3e-asset`、`r3e-audio` 四者**互不依赖**：渲染器不认识 Rhai，资产层不认识 wgpu，物理层不认识 ufbx，音频层不认识场景图。
+- `r3e-audio` **连 `r3e-core` 都不依赖**（只用 `rodio` + `log`）：它管的是"key → 声音实例"的账本，与节点、相机、场景完全无关，因此可以被任意宿主复用。
+- 唯一的跨子系统依赖是 `r3e-script → r3e-physics` 与 `r3e-script → r3e-audio`：脚本 API 要直接持有 `Physics` / `Audio` 门面做绑定，这是刻意的（不是环，两个被依赖层都不反向认识脚本）。
 - `r3e-app` 是唯一的组装层，负责把各子系统接进同一个帧循环。
 - `r3e-editor` 只定义 JSON-RPC 协议与 `EngineApi` trait，**不依赖任何其它 r3e crate**，也不碰图形/窗口；
   它的唯一实现者是 `r3e-app::editor::LocalEngineApi`（桥接同一份 `Scene` / `Physics` / `ScriptHost`），
@@ -126,14 +140,16 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 4241 | — | 48 | `scene.rs` / `air.rs` / `procedural.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 1686 | 88 | 7 | `renderer.rs` / `mesh.rs` / `shader.wgsl` |
-| r3e-asset | 2865 | 612 | 13 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
-| r3e-physics | 2548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
-| r3e-script | 1393 | — | 0 | `api.rs` / `lib.rs` |
-| r3e-editor | 928 | — | 3 | `lib.rs`（协议 + `EngineApi`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 2575 | — | 7 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
-| **合计** | **16,236** | **1,360** | **106** | **约 17,800 行（含 234 行 WGSL）** |
+| r3e-core | 6,928 | 371 | 108 | `scene.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 3,672 | 80 | 30 | `renderer.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 4,619 | 277 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-physics | 2,286 | 622 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
+| r3e-audio | 907 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
+| r3e-script | 2,577 | — | 18 | `api.rs` / `lib.rs`（含文本、UI、音频语义单测） |
+| r3e-editor | 945 | — | 7 | `lib.rs`（协议 + `EngineApi`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 2,977 | — | 14 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-plugin | 2,253 | — | 38 | `lib.rs`（插件宿主与 ABI） |
+| **合计** | **27,164** | **1,350** | **292** | **约 2.9 万行（含 WGSL）；`cargo test --workspace` 合计 292 passed** |
 
 Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
@@ -142,7 +158,7 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 102 passed / 0 failed |
+| 单测（默认特性） | `cargo test --workspace` | 292 passed / 0 failed（其中原有 278 项语义未改，音频新增 14 项） |
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 106 passed / 0 failed |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
@@ -1000,10 +1016,26 @@ pub fn reload_if_changed(&mut self) -> bool {
 `uv`（与 `text_add` 语义一致），返回 `false`。因此 `on_update` 里每帧重复提交不会累积节点，
 由 `r3e-script` 的 `per_frame_ui_rect_does_not_accumulate` 单测锁住。
 
+**音频（M1 非空间化）**
 
+音频**不进 `Scene`**：实例由脚本自己起 key 管理，账本在 `r3e_audio::Audio` 里（见 §15）。
+所有函数都不 panic，失败一律返回 `false` 并写进 `audio_last_error()`。
 
 | 函数 | 说明 |
 | --- | --- |
+| `audio_play(key, path)` | 默认音量 0.8、不循环；同名 key = 停旧实例后从头重播 |
+| `audio_play_ex(key, path, volume, looping)` | 指定音量（夹到 `0..1`）与循环 |
+| `audio_stop(key)` / `audio_stop_all()` | 停一条 / 全停 |
+| `audio_pause(key)` / `audio_resume(key)` | 暂停（保留位置）/ 续播 |
+| `audio_set_volume(key, v)` | 单条音量；改总音量时会与总音量一起重算下发 |
+| `audio_set_loop(key, on)` | 改循环（循环标志在源构造时确定，切换会从头播） |
+| `audio_is_playing(key)` / `audio_is_paused(key)` | 查询状态（静默后端恒 `false`） |
+| `audio_count()` / `audio_keys()` | 在播实例数 / 全部 key |
+| `audio_set_master_volume(v)` / `audio_master_volume()` | 总音量（乘到每条上） |
+| `audio_set_enabled(on)` / `audio_enabled()` | 音频通道开关；关闭时停掉全部并拒绝新播放 |
+| `audio_available()` / `audio_backend()` | 是否有真设备 / 后端名（`rodio` 或 `silent`） |
+| `audio_last_error()` / `audio_error_count()` | 最近失败原因 / 累计失败次数 |
+| `audio_status()` | 一行状态串（后端、设备、总音量、在播明细），HUD 与日志复用 |
 
 **物理**
 
@@ -1058,6 +1090,7 @@ pub struct EngineApp {
     renderer: Option<Renderer>,          // resumed 后才存在
     scene: Rc<RefCell<Scene>>,
     physics: Rc<RefCell<Physics>>,
+    audio: Rc<RefCell<Audio>>,           // 门面：内部可能是 rodio 真设备，也可能是 silent 降级
     scripts: ScriptHost,
     last_frame: Instant,
     last_watch: Instant,                 // 文件监视节流
@@ -1094,6 +1127,7 @@ pub struct EngineApp {
    3.45 sync_physics_bindings()          ← 物理世代号变了才重绑场景声明的刚体
    3.5 physics.step(dt, &mut scene)     ← 开关关闭时内部直接返回
    3.6 scene.update_world_transforms()  ← 必须在脚本与物理之后！
+   3.65 audio.update()                  ← 回收已播完的实例（暂停时也跑，避免恢复后残留空 Player）
 4. renderer.render(&scene)              ← 从 world 矩阵组装实例并绘制
 5. 更新窗口标题 HUD（含手柄连接状态）
 6. input.end_frame()                    ← 清边沿与增量，down 状态保留
@@ -1461,6 +1495,7 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；**无上半身 mask/分层混合**、无 additive、无 morph target |
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
+| 音频 | 非空间化：wav / ogg / mp3 一次性解码播放、多路混音 + 总音量、暂停/循环 | **无 3D 声源**（距离衰减、多普勒、HRTF 都不做）；无流式/边下载边播；无 DSP 效果链（混响、EQ）；单文件整体解码进内存，长音乐占内存 |
 
 ### 11.2 性能特征
 
@@ -1501,6 +1536,9 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | 六（已完成，并入阶段五 P4） | 骨骼蒙皮 | 顶点属性加 `joints`/`weights`、关节层级 + 逆绑定矩阵、顶点着色器 skinning 路径 | 着色器与顶点布局变化（阶段五已预留位置） |
 | **七（已完成：P-CCD）** | **CCD 连续碰撞检测**：契约 `set_ccd`/`ccd_of`/`set_ccd_default`、门面批量接口、场景 `physics.ccd`（全局 + 逐物件，缺省开）、脚本 4 个 API、`--ccd` 命令行、`BackendCaps::EXPOSED` 升到 `CONTACT_CCD`（只留 `joints` 一个禁区）、穿透对照测试 | `r3e-physics` 契约 + 门面 + `rapier_backend` 建体时 `enable_ccd`；`core/scene.rs` 加 `ccd` 字段；`script/api.rs` 实现 `physics_set_ccd` 并新增 `physics_ccd_default`/`body_set_ccd`/`body_ccd`；新增 `tests/ccd_penetration.rs` | 无（场景 JSON 向后兼容：缺省即开；`builtin` 仍如实报 `ccd=false`） |
 | **八（已完成：编辑器桥）** | **编辑器协议**：从 stdin REPL 升级为 TCP + JSON-RPC 2.0（NDJSON）。新增 `r3e-editor` crate（协议 + `EngineApi` + `RpcServer`），`r3e-app::editor::LocalEngineApi` 作为唯一实现者桥接 `Scene`/`Physics`/`ScriptHost`，主循环每帧限流消化。资源上限：有界队列 64、并发连接 16、单行 1 MiB、等回包 5 s | 新增 `crates/r3e-editor`；`r3e-app` 加 `editor.rs` + `--rpc-port/--rpc-token/--rpc-max-per-frame` | 无（不传 `--rpc-port` 时行为与之前完全一致，端口占用只警告不阻断） |
+
+| **九（已完成：M1 收尾）** | **非空间化音频**：后端 `rodio`（cpal + symphonia），`r3e-audio` 门面（key 账本 / 单条 × 总音量 / 通道开关 / 错误记账 / 静默降级），21 个 `audio_*` 脚本 API，`assets/audio/` 两个合成 wav + `main.rhai` 按键演示 | 新增 `crates/r3e-audio`；`r3e-script` 加 `new_with_audio` 与音频绑定；`r3e-app` 持句柄并每帧 `update()` | 无（`ScriptHost::new` 仍为静默后端，旧调用不受影响） |
+| 十（待做） | **3D 空间化音频**：声源挂场景节点、按距离衰减 + 多普勒 + 听者由活动相机推导 | `r3e-audio` 增 `SpatialSource`，`r3e-core::Scene` 不动（声源仍走运行时注册表），`AudioBackend` 契约复用 | 无（纯增量；`kira` 届时可作为第二后端接入同一契约） |
 
 两条与顺序相关的说明：
 
@@ -1576,6 +1614,115 @@ cargo build --release
 13. 编辑器 RPC **默认不开**：不带 `--rpc-port` 时连监听都没有；开了也只绑 `127.0.0.1`，不对外网暴露。
 14. 编辑器请求的改动**发生在主线程**（`drain_editor_jobs`），不要指望多线程并发写场景；同一帧内多请求按到达顺序执行。
 15. 队列满回 `-32002`、等回包超时回 `-32003`、无权限回 `-32001`——客户端要按码退避重试，别当成引擎崩溃。
+16. 屏幕文本按 **`key` 寻址**：同一 key 重复 `text_add` 是**覆盖**（位置/字号/颜色被刷新，对齐与换行保留），不是叠加；要画多行就换 key 或用 `\n` 换行。
+17. 文本坐标是**屏幕像素**原点在左上角、Y 向下，与 `set_resolution` 无关；窗口缩放后按新尺寸重算，别把坐标写成 0~1 的比例值。
+18. 文本通道**不吃深度**：文字永远在最上层，不存在"被物体挡住"；反过来也无法用文本做贴墙标牌。
+19. 找不到中文字体时文本**不报错只是不出字**（图集为空），先看启动日志里的"文本：已加载系统字体 / 未找到可用字体"。
+20. UI 元素同样按 **`key` 寻址**：重复 `ui_rect` / `ui_border` / `ui_image` 是覆盖（保留 `layer` / `visible` / `uv`），不是叠加。
+21. UI 坐标是**锚点 + 偏移**，不是左上角绝对坐标：写 `topright` 就该给负的 x 偏移把元素往里收；尺寸/偏移都可写 `%`，窗口 resize 后自动跟随。
+22. `ui_border` 的矩形是**外框**：边框画在给定矩形之外，所以要和同尺寸的 `ui_rect` 对齐时两者给一样的几何参数即可，不需要减厚度。
+23. 图片加载失败**不崩也不刷日志**：该元素退化成纯色块、同一路径只尝试一次；换图用 `ui_set_image` 或改名后热重载脚本。
+24. UI 与文本的前后关系是**通道级**开关（`set_ui_above_text`），不是逐元素：需要"某块 UI 盖住文字"时整体切换，或把该元素画成图片/自绘。
+25. 音频 key 与文本/UI 的 key 是**两套命名空间**，互不影响；但音频 key 重复播放是**重播**（停旧播新），不是覆盖刷新，也不是叠加。
+26. 音频音量两层相乘：`audio_set_volume` 是单条，`audio_set_master_volume` 是总音量，最终有效音量 = 两者乘积，别指望其中一个能"盖住"另一个。
+27. `audio_set_loop` 改循环会**从头重播**（rodio 的循环在解码源构造时确定），不要用它做"无缝切换当前播放位置"。
+28. 没有声卡时引擎**不报错也不崩**：`audio_available()` 返回 `false`、`audio_backend()` 返回 `"silent"`，`audio_play` 仍返回 `true`（文件解码通过）但不会出声——排查"为什么没声音"先看这两个值。
+
+---
+
+## 15. 音频层：r3e-audio（M1 非空间化）
+
+M1 的收尾项。目标只有一句：**让脚本能放出声音，而且放不出声音时引擎不许崩。**
+
+### 15.1 后端选型
+
+候选三个，最终选 **`rodio`**（其内部就是 `cpal` 播放 + `symphonia` 解码）：
+
+| 方案 | 取舍 | 结论 |
+| --- | --- | --- |
+| `kira` | 功能最强（tween、mixer、clock、未来直接上 3D 声源），但是异步/时钟架构，需要独立的 `AudioManager` 生命周期与 `update()` 时间推进，和本仓库"同步、单线程、每帧显式 tick"的写法正好相反；依赖树也更重 | 否。等真要做空间化/复杂音效图时再考虑，届时 `AudioBackend` 契约可直接对接 |
+| `cpal` + `symphonia` 手搓 | 零中间层、最可控，但要自己写回调、样本格式转换、重采样、混音累加与断点续播，一次性代码量数百行且极易出爆音/欠载 | 否。这是 `rodio` 已经做完的事，自己写等于重造且更容易出 bug |
+| **`rodio`** | **同步 API**（`Player::append` 即播）、纯 Rust 无 unsafe（`#![forbid(unsafe_code)]` 级别的依赖约束）、解码格式由 symphonia 覆盖 wav/ogg/mp3/flac，`Player` 天然支持每实例音量与暂停 —— 与本工程"门面管策略、后端只出声"的分层高度契合 | **选它**。`rodio 0.23` + `cpal 0.18`，全 workspace 因此新增 25 个传递依赖，仍在"轻依赖"可接受范围 |
+
+### 15.2 分层
+
+```
+script/api.rs   audio_play/...            ← 只做参数转换与错误转 bool
+   ↑
+r3e-audio::Audio（门面）                    ← 策略全在这里：账本 HashMap、总音量、开关、错误计数、降级
+   ↑ trait AudioBackend
+r3e-audio::backend::RodioBackend / SilentBackend
+   ↑
+rodio → cpal（设备） + symphonia（解码）
+```
+
+- **`AudioBackend` 契约**：`play/stop/stop_all/pause/resume/set_volume/is_playing/is_paused/active_keys/update`。
+  后端**不知道**总音量与 key 语义，只接收"已经算好的有效音量"，因此可以被 `MockBackend` 整体替换——9 个单测全在无声卡环境跑。
+- **`r3e-audio` 不依赖 `r3e-core`**：音频实例不进 `Scene`（音频不是场景数据，是运行时状态），
+  依赖方向只有 `r3e-app → r3e-audio`、`r3e-script → r3e-audio`，core 依旧零设备依赖。
+- **主循环接入点**：`EngineApp::new` 里 `Audio::open_default()` 一次，`ScriptHost::new_with_audio` 注入同一份 `Rc<RefCell<Audio>>`；
+  `step_and_render` 每帧 `audio.update()` 回收播完的实例（暂停时也跑，避免恢复后残留空 `Player`）。
+
+### 15.3 音量模型与混音
+
+- **有效音量 = 单条音量 × 总音量**，每次下发前算好；`set_master_volume` 会遍历账本逐条重算，
+  所以后端不需要支持 master 音量，换成任何后端语义都不变。
+- **多路混音**：一个 key 一个 `rodio::Player`，全部接到同一个 `MixerDeviceSink` 的 mixer 上，由 rodio 做样本累加。
+  这就是"简单混音"——没有总线、没有效果器、没有优先级抢占。
+- **音量清洗**：`sanitize_volume` 统一处理 NaN → 0、负数 → 0、>1 → 1。
+  脚本侧与门面共用同一个函数，不存在两套 clamp。`0` 是合法的（静音但不停止，仍算在播）。
+
+### 15.4 降级策略（关键：引擎不因音频崩）
+
+| 情况 | 行为 |
+| --- | --- |
+| 打开设备失败（无声卡 / 被独占 / 驱动异常） | `Audio::open_default` 捕获错误 → 换 `SilentBackend` → `warn!` 一行 + 记 `last_error`；**引擎照常启动**，`audio_available()` 返回 `false`，`audio_backend()` 返回 `"silent"` |
+| 静默模式下的 `play` | **仍会真正解码一次文件**：解码成功返回 `true`（脚本逻辑不用改写），解码失败返回 `false` 并记错。这样"没声卡"和"文件坏了"是两种可区分的情况，不会互相掩盖 |
+| 文件不存在 / 解码失败 | `play` 返回 `false`，`last_error` 记"打开/解码失败 + 路径 + 原因"，`error_count += 1`；不 panic、不中断脚本 |
+| 音频通道被 `audio_set_enabled(false)` | 先停掉全部实例并清空账本，之后 `play` 直接返回 `false` 并记一条错误（避免"明明关了还在响"） |
+| 空 key | 拒绝播放，返回 `false` 并记错（空 key 无法寻址，静默丢弃比崩掉好） |
+| 正常退出 | `log_on_drop(false)` 关掉 rodio 退出时的提示行，收尾日志保持干净 |
+
+### 15.5 同名 key 语义（写进文档的行为约定）
+
+**同名 key 再次播放 = 停掉旧实例、从头重播。** 既不叠加（不会出现两份声音），也不拒绝（不返回错误）。
+
+理由：脚本里最典型的用法是"按键触发音效"，连打时必须只响最新的那一份；
+若采用叠加语义，玩家狂按键盘会瞬间堆出几十个 `Player` 把内存和混音推爆。
+脚本层 `audio_play` / `audio_play_ex` 与门面 `Audio::play`、`set_loop`（改循环同样是重播）共用这一条语义，
+由 `audio_duplicate_key_does_not_stack_or_log_errors` 单测锁住。
+
+### 15.6 格式与素材
+
+- **格式**：wav / ogg（Vorbis）/ mp3 —— 由 `Cargo.toml` 里显式开启的 rodio feature 决定：
+  `default-features = false` + `playback` / `wav` / `vorbis` / `mp3`。
+  **未开 flac / aac / opus**：`default-features = false` 关掉了 `symphonia-all`，
+  这些格式的 `Decoder` 会在构造时报错（`play` 返回 `false` 并记入 `audio_last_error`），不是静默忽略。
+  需要加格式时，在 workspace `Cargo.toml` 的 rodio features 里补对应项再重编。
+- **素材来源**：仓库原本没有音频资产，因此 `assets/audio/` 下的两个 wav 由脚本合成（16-bit PCM 单声道，
+  非第三方素材，无版权问题）：
+  - `blip.wav`：880 Hz 指数衰减短音效（约 0.18 s），用于按键触发；
+  - `ambience.wav`：220 Hz + 330 Hz 双音铺底（44.1 kHz 单声道 2.0 s，首尾相接无明显接缝），用于循环播放演示。
+- **路径解析**：脚本里给相对路径（`assets/audio/blip.wav`），由 `r3e-app` 的工作目录兜底解析，与 `ui_image` 的路径规则一致。
+
+### 15.7 测试覆盖与未验证项
+
+单测 9（`r3e-audio`）+ 5（`r3e-script` 脚本语义）：
+
+1. 缺失文件 → `Err`，不 panic，`error_count` 递增；
+2. 非法内容（随机字节伪装 `.bin`）→ 解码失败 `Err`，不 panic；
+3. 音量边界：`-1 → 0`、`2 → 1`、`NaN → 0`；
+4. 默认音量与 `play_default` 的下发值；
+5. 同名 key 重播：`plays` 计数递增但实例数恒为 1；
+6. 静默后端：`device_available() == false`，`play` 仍返回 `Ok`（解码通过），但 `is_playing()` 恒 `false`、在播数不虚高；
+7. 禁用通道：`play` 被拒 + 停掉全部；
+8. 空 key 被拒；
+9. `update()` 回收播完实例（`MockBackend` 驱动）；
+10. 脚本侧 5 项：静默降级、加载失败返 false 并记账、音量夹取、重复 key 不堆叠、开关切换阻止播放。
+
+**待人工验证**：真实出声无法自动断言 —— 自动化只能证明"调用链不 panic、状态机正确"，
+音量是否合适、`blip` 是否刺耳、循环 `ambience` 接缝是否可闻，需要人带着耳朵跑一次
+`cargo run` 后按 J/K/L/M 听。
 
 ---
 
@@ -1585,14 +1732,23 @@ cargo build --release
 | --- | --- |
 | `crates/r3e-core/src/transform.rs` | `Transform`、欧拉角互转、`look_at`（含取逆）、`local_matrix`、`normal_matrix` |
 | `crates/r3e-core/src/node.rs` | `NodeId`、`MeshKind`（含别名解析）、`Node` 字段与 `world_position` |
-| `crates/r3e-core/src/scene.rs` | `ObjectDesc` / `PhysicsDesc` / `CameraDesc` / `LightDesc` / `SceneFile`、`Scene` 三索引、生命周期、`resolve_world`、`from_json_str` |
+| `crates/r3e-core/src/scene.rs` | `ObjectDesc` / `PhysicsDesc` / `CameraDesc` / `LightDesc` / `SceneFile`、`Scene` 三索引、生命周期、`resolve_world`、`from_json_str` / `to_scene_file` / `save_to_path`（加载与保存严格对称） |
 | `crates/r3e-core/src/camera.rs` | `Camera`、DirectX 风格投影、`orbit` |
+| `crates/r3e-core/src/text.rs` | `FontSet`（系统字体查找 / 指定字体加载）、`GlyphSource` 抽象、`layout_text`（换行 / 对齐 / 缺字回退）、`ScreenText` / `TextAlign` |
+| `crates/r3e-core/src/ui.rs` | `UiElement` / `UiKind` / `Anchor` / `UiUnit` / `UiValue`、`resolve_rect`（锚点 + 像素/百分比解析）、`sort_by_layer`（稳定排序） |
+| `crates/r3e-core/src/glyph_atlas.rs` | `GlyphAtlas` 分页图集、`ShelfAllocator` 货架分配、`GlyphKey`（face+glyph+像素量化） |
 | `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机 |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
 | `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass + 主 pass）、`resize`、`RenderStats` |
+| `crates/r3e-render/src/text.rs` | `TextPass`（独立无深度管线）、`build_text` 顶点装配、图集动态纹理按需扩容、`MAX_TEXT_INSTANCES` 安全阀 |
+| `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀、`UiStats` |
+| `crates/r3e-render/src/ui.wgsl` | UI 着色器：屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |
+| `crates/r3e-render/src/text.wgsl` | 文本着色器：屏幕像素 → NDC、图集 R8 采样、alpha 混合 |
 | `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样 |
 | `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BackendCaps`、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面、查询层契约（`Ray` / `OverlapHit` / `CastShape`） |
 | `crates/r3e-physics/src/rapier_backend.rs` | Rapier 后端：刚体/碰撞体映射、接触求解、碰撞事件回传、parry 窄相查询（raycast / overlap / shape-cast） |
+| `crates/r3e-audio/src/lib.rs` | `Audio` 门面：实例账本、单条 × 总音量、通道开关、错误计数、`sanitize_volume`、静默降级、9 个单测（含 `MockBackend`） |
+| `crates/r3e-audio/src/backend.rs` | `AudioBackend` 契约、`RodioBackend`（一 key 一 `Player` + mixer 混音）、`SilentBackend`（解码校验但不出声） |
 | `crates/r3e-core/src/air.rs` | AIR 契约与 12 条不变量、`finalize` / `audit_entry` 统一校验 |
 | `crates/r3e-core/src/procedural.rs` | 内置程序化图元（cube / sphere / plane / cylinder）统一产出 `MeshData` |
 | `crates/r3e-asset/src/lib.rs` | FBX 导入（ufbx）、材质/贴图元数据、动画与蒙皮数据、`AssetLibrary` |
@@ -1604,4 +1760,6 @@ cargo build --release
 | `crates/r3e-app/src/main.rs` | 参数解析、项目根三级兜底、事件循环启动 |
 | `docs/PHYSICS.md` | 物理子系统完整说明：三层开关、场景字段、脚本 API、内置规则、实测与限制 |
 | `docs/ASSETS.md` | 资产管线完整说明：FBX / glTF 导入、AIR 统一格式与不变量、动画/蒙皮、分阶段验收与已知限制 |
+*（内容由AI生成，仅供参考）*
+*（内容由AI生成，仅供参考）*
 *（内容由AI生成，仅供参考）*

@@ -37,6 +37,9 @@ D:\rust3d-engine
 │   ├─ scene_rapier.json      # Rapier 演示场景（堆叠 / 弹跳 / 圆柱）
 │   ├─ scene_ccd.json         # CCD 穿透对照场景（薄墙 + 两颗只差 ccd 一位的子弹）
 │   ├─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
+│   ├─ audio/
+│   │   ├─ blip.wav           # 0.18s 短音效（880Hz 指数衰减，脚本合成，无版权素材）
+│   │   └─ ambience.wav       # 2.0s 可无缝循环环境音（220Hz + 330Hz，脚本合成）
 │   └─ ui/icon.png            # UI 演示图标（右上角 HUD，可换任意 png）
 ├─ scripts/
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
@@ -53,6 +56,7 @@ D:\rust3d-engine
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
+│   ├─ r3e-audio/             # 非空间化音频（rodio 后端 + 静默降级 + 混音门面）
 │   └─ r3e-app/               # 主循环、窗口事件、终端指令
 └─ docs/
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
@@ -67,6 +71,10 @@ D:\rust3d-engine
 ## 2. 构建与运行
 
 本机已配置 MinGW-w64 + `stable-x86_64-pc-windows-gnu` 工具链：
+
+> **工具链版本**：workspace 声明 `rust-version = 1.79`，但 `crates/r3e-audio` 依赖的 `rodio 0.23`
+> 要求 rustc ≥ 1.87，该 crate 单独声明了 `rust-version = 1.87`。因此**编整个 workspace 需要 ≥ 1.87**
+> （本机实测 `rustc 1.99.1`）；只有 1.79–1.86 的工具链会在 `r3e-audio` 处报 MSRV 错误。
 
 ```powershell
 cd D:\rust3d-engine
@@ -104,6 +112,10 @@ cargo run --release -- assets\scene.json scripts\main.rhai
 | `空格` | 暂停 / 继续（暂停时脚本不推进） |
 | `F2` | 把内存中的场景保存回场景 JSON（也可用 `--save-scene` 无窗口规范化保存） |
 | `F5` | 手动重载脚本 |
+| `J` | 播放一次短音效（`audio_play("blip", …)`，连按只重启同一实例，不叠加） |
+| `K` | 暂停 / 继续环境音（暂停保留播放位置；没在播则重新开始） |
+| `L` | 停止 / 重新开始环境音 |
+| `M` | 总音量在 `0.8` / `0.2` 之间切换 |
 | `Esc` | 退出 |
 | 终端输入一行代码 | 立即执行一行 Rhai，作用于当前场景 |
 
@@ -454,6 +466,55 @@ fn on_update(dt) {
 底框与描边、右上角金色圆形图标；拖动窗口改变大小时对话框保持居中贴底、血条保持左上贴边。
 把 `assets/ui/icon.png` 改名再热重载，图标位置会退化成纯色块（渲染层只记录一次加载失败，不刷日志、不崩）。
 
+### 音频：音效 / 音乐（M1，非空间化）
+
+音频走独立 crate `r3e-audio`，**不碰场景图**：`core` 里没有任何声音对象，脚本用「自己起的 key」管理实例。
+范围严格限定在非空间化播放——没有 3D 声源衰减、没有多普勒、没有听者朝向。
+
+**同名 key 的语义（写死在这里，避免踩坑）**：再次 `play` 同一个 key = **停掉旧实例、从头重播**，
+既不是拒绝，也不是叠加第二份。想要同一文件同时响两份，就起两个不同的 key（`hit_a` / `hit_b`）。
+改为 `set_loop` 同理——循环标志在解码源构造时确定，切换会从头开始。
+
+| 函数 | 说明 |
+| --- | --- |
+| `audio_play(key, path) -> bool` | 用默认音量 `0.8`、不循环播放；成功返回 `true` |
+| `audio_play_ex(key, path, volume, looping) -> bool` | 指定音量（`0–1`，自动夹取）与是否循环 |
+| `audio_stop(key) -> bool` | 停止单条；该 key 不存在返回 `false` |
+| `audio_stop_all()` | 停掉全部 |
+| `audio_pause(key) -> bool` | 暂停，保留播放位置（静默降级时返回 `false`） |
+| `audio_resume(key) -> bool` | 从暂停处继续 |
+| `audio_set_volume(key, volume) -> bool` | 单条音量（`0–1`，NaN → 0，超界夹取） |
+| `audio_set_loop(key, looping) -> bool` | 改循环标志（会从头重播） |
+| `audio_is_playing(key) -> bool` / `audio_is_paused(key) -> bool` | 查询状态 |
+| `audio_count() -> int` / `audio_keys() -> array` | 在播实例数 / 全部 key |
+| `audio_set_master_volume(v)` / `audio_master_volume() -> f64` | 总音量（乘到每条声音上，`0` = 静音） |
+| `audio_set_enabled(on)` / `audio_enabled() -> bool` | 音频通道总开关；关闭时停掉全部并拒绝新的播放请求 |
+| `audio_available() -> bool` | 是否有真实设备（`false` = 静默降级中，可据此隐藏音量控件） |
+| `audio_backend() -> string` | `rodio` / `silent` |
+| `audio_last_error() -> string` / `audio_error_count() -> int` | 最近一次失败原因 / 累计失败次数 |
+| `audio_status() -> string` | 一行状态串（后端、设备、总音量、在播明细） |
+
+降级规则：设备打不开（无声卡 / 独占被占）→ 整个引擎切到 `silent`，`play` 仍然会**解码校验**文件
+（所以坏文件照样返回 `false` 并记账），只是不出声；任何音频错误都不会 panic，也不阻断主循环。
+
+示例（`scripts/main.rhai` 里的按键演示）：
+
+```rhai
+fn on_start() {
+    audio_set_master_volume(0.8);
+    audio_play_ex("ambience", "assets/audio/ambience.wav", 0.35, true);   // 背景循环
+}
+
+fn on_update(dt) {
+    if key_pressed("j") {
+        audio_play("blip", "assets/audio/blip.wav");                      // 连按只重启，不叠加
+    }
+    if key_pressed("k") {
+        if audio_is_paused("ambience") { audio_resume("ambience"); }
+        else if !audio_pause("ambience") { audio_play_ex("ambience", "assets/audio/ambience.wav", 0.35, true); }
+    }
+}
+```
 
 ### 物理
 
@@ -834,3 +895,78 @@ cargo run                      # 看窗口
 - 脚本每帧提交不累积（`per_frame_ui_rect_does_not_accumulate`）、同名覆盖保留 `layer`/`visible`/`uv`、
   通道开关与前后关系（`r3e-script/src/lib.rs`）
 
+## 14. 音频播放（M1：非空间化音效与音乐）
+
+**目标**：能放背景音乐、能敲音效、能同时响多条，并且**没声卡也绝不崩**。3D 声源衰减 / 多普勒不在本阶段范围。
+
+| 层 | 模块 | 职责 |
+| --- | --- | --- |
+| `r3e-audio` | `lib.rs` | `Audio` 门面：key 账本、单条音量 × 总音量、开关、错误记账、`update()` 回收 |
+| `r3e-audio` | `backend.rs` | `AudioBackend` 契约 + `RodioBackend`（cpal 设备 + symphonia 解码）+ `SilentBackend` |
+| `r3e-script` | `api.rs` | `audio_*` 绑定，全部返回 `bool` / 数值 / 字符串，不 panic |
+| `r3e-app` | `app.rs` | `EngineApp::audio` 持有唯一设备句柄，主循环每帧 `update()` 回收播完的实例 |
+
+**后端选型：`rodio`（内含 `cpal` + `symphonia`）**，理由：
+
+- **无 `unsafe` 代码到我们这一层**：`rodio` 把 cpal 的设备线程、symphonia 的解码器封装成 `Sink` / `Decoder`，
+  上层不需要写任何平台代码；`r3e-core` 仍然零音频依赖。
+- **依赖面小且可控**：`default-features = false` + 只开 `playback` / `wav` / `vorbis` / `mp3`，
+  不把 flac / AAC 等用不上的解码器拖进二进制；相对 `cpal + symphonia` 手搓，省掉自己写环形缓冲、
+  重采样与设备热切换的那几百行容易出错的代码。
+- **与现有风格一致**：`Audio` 门面 + `AudioBackend` trait 的写法，与 `Physics` 门面 + `PhysicsBackend`
+  完全同构（真后端 / Null 后端 / 可替换 / 单测用替身），团队不需要学第二套心智模型。
+- 未选 `kira`：它的强项是音轨时钟、参数自动化与空间化，本阶段用不上，反而带来更大的配置面。
+
+**支持的格式**：`.wav`（PCM）、`.ogg`（Vorbis）、`.mp3` —— 由 symphonia 解码并统一重采样到设备采样率。
+解码是**整文件进内存**，不是流式；演示素材只有几十 KB，够用。
+
+**混音**：多条声音各自一个 `Sink`，由 cpal 设备混音；门面维护"单条音量"，
+每次下发的有效音量 = `单条音量 × 总音量`，改总音量时逐条重算——后端不需要支持 master。
+
+**降级策略（关键）**：
+
+| 情况 | 行为 |
+| --- | --- |
+| 打不开默认设备 | `log::warn!` + 门面切 `SilentBackend`，`audio_available() = false`，引擎照常跑 |
+| 文件不存在 / 不是音频 / 解码失败 | `play` 返回 `Err` → 脚本侧 `false`，原因写进 `audio_last_error()`，`error_count` 递增 |
+| key 为空 | 拒绝并记账，不 panic |
+| 音频通道关闭 | 停掉全部并拒绝新的播放请求 |
+| 音量 NaN / < 0 / > 1 | `sanitize_volume`：NaN → 0，其余夹到 `[0, 1]` |
+
+静默模式下 `play` 仍然会**打开并解码校验**文件——所以"文件坏了"和"没声卡"是两件可分的事：
+前者返回 `false`，后者返回 `true` 但不出声。静默后端不会登记实例，因此 `audio_count()` 不会虚高。
+
+**回收**：播完的实例不会自己消失，主循环每帧调用 `Audio::update()`，把后端已播完的 key 从账本里摘掉。
+摘账发生在实例播完的那一帧（暂停时也照跑，避免恢复后残留空实例），`RUST_LOG=debug` 下会打印
+`音频实例播完回收: [...]`；收尾探针里的"在播 N"是回收后的实时账本，不是累计播放次数。
+
+**演示素材来源**：`assets/audio/blip.wav` 与 `ambience.wav` 都是**用脚本合成**的正弦波
+（880Hz 指数衰减 / 220Hz + 330Hz 叠加，16-bit 单声道 44.1kHz），不是第三方版权素材，可随仓库分发。
+
+**人工验证**（真实出声只能人工听，CI 无法自动验证）：
+
+```powershell
+cargo run                 # 启动即循环播放环境音
+cargo run -- --run-seconds 3   # 看控制台音频探针
+```
+
+控制台应打印 `音频：后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；
+窗口标题末尾显示 `音频 N 实例`（无设备时显示 `音频静默`）。按 `J` 应听到短促「嗒」声，
+连按不会变成一片叠加的噪音；`K` 暂停后环境音停在原处、再按从原处继续；`L` 停止 / 重新开始；
+`M` 把总音量在 0.8 / 0.2 之间切换（音效与环境音同时变小）。
+把某个 wav 改名热重载，`audio_last_error()` 里会出现 `打开音频文件失败（…）`，窗口照常运行、不崩。
+
+**测试覆盖**：
+
+- `cargo test -p r3e-audio`（9 个）：缺失文件 / 非音频内容 → `Err` 而非 panic、音量边界（0 / 1 / 超界 / NaN）、
+  静默后端不登记实例、通道关闭拒绝播放、空 key 拒绝、同名 key 重播停止旧实例不叠加、
+  `set_loop` 切换重播且幂等、播完回收。
+- `cargo test -p r3e-script`（`audio_script_tests`，5 个）：静默降级路径（`audio_available() == false` 时
+  播放返回 `true` 但不占实例）、加载失败返回 `false` 并记账、音量上下界夹取、重复 key 不叠加且不算错误、
+  通道开关拦截播放。
+- 真实出声、mp3 / ogg 的实际听感、设备热插拔：**待人工验证**（无法自动化）。
+
+---
+
+*（内容由AI生成，仅供参考）*
+*（内容由AI生成，仅供参考）*

@@ -52,8 +52,21 @@ fn on_start() {
 
     log("UI 节点数 = " + ui_count());
 
+    // ---- 音频（M1 非空间化音频：常规音效 + 背景音乐，没有 3D 衰减 / 多普勒）----
+    // 第一个参数是自己起的声音名字（key），不是文件名：
+    // 同名 key 再次 play = 停掉旧实例、从头重播，不会叠加成两层；想同时放两份就起两个 key。
+    // 仓库自带两个素材（合成正弦波形，非第三方版权素材）：
+    //   assets/audio/blip.wav      0.18s 短音效，880Hz 指数衰减
+    //   assets/audio/ambience.wav  2.0s  可无缝循环，220Hz+330Hz 叠加
+    audio_set_master_volume(0.8);
+    let amb_ok = audio_play_ex("ambience", "assets/audio/ambience.wav", 0.35, true);
+    log("音频后端 = " + audio_backend()
+        + " / 设备可用 = " + audio_available().to_string()
+        + " / 环境音启动 = " + amb_ok.to_string()
+        + " / 在播实例 = " + audio_count().to_string());
     text_add("audio_hud", "", 24.0, 120.0, 16.0, 0.55, 0.78, 0.62);
     text_set_wrap("audio_hud", 900.0);
+
     log("物理后端 = " + physics_backend()
         + " / 开关 = " + physics_enabled()
         + " / 刚体数 = " + body_count());
@@ -110,6 +123,38 @@ fn on_update(dt) {
         + " / 时间 " + (t * 1.0).to_string()
         + " / 物件 " + count().to_string()
         + " / 文本 " + text_count().to_string());
+
+    // ---- 音频演示（按键触发）----
+    // J 敲一下音效：连按只是重启同一个 key 的实例，不会叠成十几层
+    if key_pressed("j") {
+        audio_play("blip", "assets/audio/blip.wav");
+    }
+    // K 暂停 / 从暂停处继续环境音；没在播就重新拉起来
+    if key_pressed("k") {
+        if audio_is_paused("ambience") {
+            audio_resume("ambience");
+        } else if !audio_pause("ambience") {
+            audio_play_ex("ambience", "assets/audio/ambience.wav", 0.35, true);
+        }
+    }
+    // L 停止 / 重新开始环境音
+    if key_pressed("l") {
+        if audio_is_playing("ambience") {
+            audio_stop("ambience");
+        } else {
+            audio_play_ex("ambience", "assets/audio/ambience.wav", 0.35, true);
+        }
+    }
+    // M 总音量在 0.8 / 0.2 之间切换（乘到每条声音的音量上）
+    if key_pressed("m") {
+        let v = audio_master_volume();
+        if v > 0.5 {
+            audio_set_master_volume(0.2);
+        } else {
+            audio_set_master_volume(0.8);
+        }
+    }
+    text_set("audio_hud", audio_status() + " | J 音效 / K 暂停续 / L 停起 / M 总音量");
 
     // 5) 相机极缓慢环绕（不干扰手动操作时可注释掉）
     // orbit(6.0 * dt * 60.0, 0.0);

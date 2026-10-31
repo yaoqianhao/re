@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
+use r3e_audio::Audio;
 use r3e_core::{InputState, Scene};
 use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Array, Dynamic, Engine, Scope, AST};
@@ -28,6 +29,8 @@ pub struct ScriptHost {
     scene: Rc<RefCell<Scene>>,
     physics: Rc<RefCell<Physics>>,
     input: Rc<RefCell<InputState>>,
+    /// 音频门面。脚本层**不**自己开设备：句柄由 app 注入，或退化成静默后端（编辑器 / 单测）。
+    audio: Rc<RefCell<Audio>>,
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: Option<PathBuf>,
@@ -45,11 +48,28 @@ impl ScriptHost {
         physics: Rc<RefCell<Physics>>,
         input: Rc<RefCell<InputState>>,
     ) -> Self {
+        // 默认静默后端：单测 / 编辑器不需要真设备，也不该因为没声卡就报错。
+        Self::new_with_audio(
+            scene,
+            physics,
+            input,
+            Rc::new(RefCell::new(Audio::silent("脚本宿主未接入音频设备"))),
+        )
+    }
+
+    /// 带音频门面的构造：app 层把持有真实设备的 `Audio` 句柄交进来，脚本与 app 共用同一混音器。
+    pub fn new_with_audio(
+        scene: Rc<RefCell<Scene>>,
+        physics: Rc<RefCell<Physics>>,
+        input: Rc<RefCell<InputState>>,
+        audio: Rc<RefCell<Audio>>,
+    ) -> Self {
         let clock = Rc::new(RefCell::new(Clock::default()));
         let ctx = api::ScriptContext {
             scene: scene.clone(),
             physics: physics.clone(),
             input: input.clone(),
+            audio: audio.clone(),
             clock: clock.clone(),
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
         };
@@ -64,6 +84,7 @@ impl ScriptHost {
             scene,
             physics,
             input,
+            audio,
             ast: None,
             scope: Scope::new(),
             script_path: None,
@@ -96,6 +117,11 @@ impl ScriptHost {
 
     pub fn scene_handle(&self) -> Rc<RefCell<Scene>> {
         self.scene.clone()
+    }
+
+    /// 音频门面句柄，供 app 层每帧驱动 `Audio::update` 并读取错误。
+    pub fn audio_handle(&self) -> Rc<RefCell<Audio>> {
+        self.audio.clone()
     }
 
     /// 记录基础场景 JSON，供热重载时重放。
@@ -645,5 +671,179 @@ mod text_script_tests {
         let _ = host.eval("ui_clear()").unwrap();
         assert!(scene.borrow().ui.is_empty());
         assert!(!scene.borrow().ui_enabled, "清空不应顺带打开通道开关");
+    }
+}
+
+#[cfg(test)]
+mod audio_script_tests {
+    use super::*;
+
+    /// 静默音频后端 + 空场景：等价于「这台机器没有声卡」的运行环境。
+    fn host_silent() -> ScriptHost {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        // ScriptHost::new 内部就是 Audio::silent —— 单测不碰真设备。
+        ScriptHost::new(scene, physics, input)
+    }
+
+    fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_bool()
+            .expect("应返回 bool")
+    }
+
+    fn eval_int(host: &mut ScriptHost, src: &str) -> i64 {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_int()
+            .expect("应返回整数")
+    }
+
+    fn eval_float(host: &mut ScriptHost, src: &str) -> f64 {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_float()
+            .expect("应返回浮点")
+    }
+
+    /// 仓库自带素材的绝对路径；Rhai 字符串里统一用正斜杠。
+    fn asset_wav() -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/audio/blip.wav")
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    #[test]
+    fn audio_api_degrades_silently_without_device() {
+        let mut host = host_silent();
+        assert!(
+            !eval_bool(&mut host, "audio_available()"),
+            "静默后端应报告设备不可用"
+        );
+        assert_eq!(eval_int(&mut host, "audio_count()"), 0, "初始没有在播实例");
+        let backend = host.eval("audio_backend()").unwrap().into_string().unwrap();
+        assert_eq!(backend, "silent", "无设备时后端名应回落为 silent");
+
+        // 解码能过就返回 true，但不会登记成「在播」，也不会 panic
+        let wav = asset_wav();
+        assert!(
+            eval_bool(
+                &mut host,
+                &format!(r#"audio_play_ex("hit", "{wav}", 0.8, true)"#)
+            ),
+            "素材存在时播放请求应返回 true"
+        );
+        assert_eq!(
+            eval_int(&mut host, "audio_count()"),
+            0,
+            "静默后端不占实例名额"
+        );
+        assert!(!eval_bool(&mut host, r#"audio_is_playing("hit")"#));
+        assert!(!eval_bool(&mut host, r#"audio_is_paused("hit")"#));
+
+        let status = host.eval("audio_status()").unwrap().into_string().unwrap();
+        assert!(status.contains("silent"), "状态行应带后端名: {status}");
+    }
+
+    #[test]
+    fn audio_load_failure_returns_false_and_records_error() {
+        let mut host = host_silent();
+        let before = eval_int(&mut host, "audio_error_count()");
+        assert!(
+            !eval_bool(
+                &mut host,
+                r#"audio_play("ghost", "assets/audio/no_such_file.wav")"#
+            ),
+            "缺文件必须返回 false 而不是 panic"
+        );
+        assert!(
+            eval_int(&mut host, "audio_error_count()") > before,
+            "失败必须记账（error_count 递增）"
+        );
+        let err = host
+            .eval("audio_last_error()")
+            .unwrap()
+            .into_string()
+            .unwrap();
+        assert!(err.contains("no_such_file.wav"), "错误应带上路径: {err}");
+    }
+
+    #[test]
+    fn audio_volume_bounds_are_clamped() {
+        let mut host = host_silent();
+        let _ = host.eval("audio_set_master_volume(5.0)").unwrap();
+        assert!(
+            (eval_float(&mut host, "audio_master_volume()") - 1.0).abs() < 1e-6,
+            "上界应夹到 1"
+        );
+        let _ = host.eval("audio_set_master_volume(-2.0)").unwrap();
+        assert_eq!(
+            eval_float(&mut host, "audio_master_volume()"),
+            0.0,
+            "下界应夹到 0"
+        );
+        let _ = host.eval("audio_set_master_volume(0.25)").unwrap();
+        assert!((eval_float(&mut host, "audio_master_volume()") - 0.25).abs() < 1e-6);
+
+        // 未知 key 改音量 / 改循环：返回 false，不 panic
+        assert!(!eval_bool(&mut host, r#"audio_set_volume("nobody", 0.5)"#));
+        assert!(!eval_bool(&mut host, r#"audio_set_loop("nobody", true)"#));
+    }
+
+    #[test]
+    fn audio_duplicate_key_does_not_stack_or_log_errors() {
+        let mut host = host_silent();
+        let wav = asset_wav();
+        let before = eval_int(&mut host, "audio_error_count()");
+        assert!(eval_bool(
+            &mut host,
+            &format!(r#"audio_play("sfx", "{wav}")"#)
+        ));
+        // 同名 key 再播 = 重播，不是错误、也不是第二层
+        assert!(eval_bool(
+            &mut host,
+            &format!(r#"audio_play("sfx", "{wav}")"#)
+        ));
+        assert_eq!(
+            eval_int(&mut host, "audio_error_count()"),
+            before,
+            "重播不该被记成错误"
+        );
+        assert_eq!(
+            eval_int(&mut host, "audio_count()"),
+            0,
+            "同名 key 不会堆成两个实例"
+        );
+        // 空 key 视为非法参数：返回 false 并记账，不 panic
+        assert!(!eval_bool(
+            &mut host,
+            &format!(r#"audio_play("  ", "{wav}")"#)
+        ));
+        assert!(eval_int(&mut host, "audio_error_count()") > before);
+    }
+
+    #[test]
+    fn audio_enable_switch_blocks_play() {
+        let mut host = host_silent();
+        let wav = asset_wav();
+        let _ = host.eval("audio_set_enabled(false)").unwrap();
+        assert!(!eval_bool(&mut host, "audio_enabled()"));
+        assert!(
+            !eval_bool(&mut host, &format!(r#"audio_play("sfx", "{wav}")"#)),
+            "通道关闭后播放请求应被拒绝"
+        );
+        let _ = host.eval("audio_set_enabled(true)").unwrap();
+        assert!(eval_bool(&mut host, "audio_enabled()"));
+        assert!(eval_bool(
+            &mut host,
+            &format!(r#"audio_play("sfx", "{wav}")"#)
+        ));
+        // stop_all / keys 在静默后端下也必须可用且不 panic
+        let _ = host.eval("audio_stop_all()").unwrap();
+        assert_eq!(eval_int(&mut host, "audio_count()"), 0);
+        assert_eq!(eval_int(&mut host, "audio_keys().len()"), 0);
     }
 }

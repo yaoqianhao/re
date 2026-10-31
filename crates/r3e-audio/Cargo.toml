@@ -1,0 +1,13 @@
+[package]
+name = "r3e-audio"
+version.workspace = true
+edition.workspace = true
+# rodio 0.23 要求 rustc ≥ 1.87，而 workspace 声明的 rust-version 是 1.79（core 的底线）。
+# 本 crate 单列 MSRV：工程实际工具链是 1.99（见 rust-toolchain.toml），不冲突。
+rust-version = "1.87"
+license.workspace = true
+
+[dependencies]
+# 音频后端：cpal 设备 + symphonia 解码，全 safe API（见 docs/ARCHITECTURE.md §15）
+rodio = { workspace = true }
+log.workspace = true
