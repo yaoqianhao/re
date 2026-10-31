@@ -2,12 +2,16 @@
 AIGC:
     Label: "1"
     ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_105106dace9411f1ad5e525400638852
-    ReservedCode1: EgohxgHBk+gfs/voa1np2ISIrdHNsSbtcYlQr8/cf2AXTzfRtLzjZfUYhuzi0tR52eNJUpb31vdvMQVo7AqufEEf9rPmZrHw7nQWB3HeAB5HMeL4Rh7V6oBPEND3Rh0avVrwz0I8RUM00dlL+9BRxu1FhmJwE3m0RVS9BILMK/xhas9EMdbcDjYb5o8=
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_814f577cd4fb11f19fe5525400638852
+    ReservedCode1: rBV+Ga3vu/7Y+yhFql6P63uQ9l6MO/kol95gdS+n0wjXv0JB6Swd5kwKPGALud+ODb5hryogajr2NkCatFiCj/X4sMk+Rf7tXu10XBo+wL59XjcL8gpind8Tw6QvlDYsh1aNmtfzbnq20bnAoHkply67VA+LH/InHX+IgCC7i0e0bp3RyzW2SlLiHF4=
     ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_105106dace9411f1ad5e525400638852
-    ReservedCode2: EgohxgHBk+gfs/voa1np2ISIrdHNsSbtcYlQr8/cf2AXTzfRtLzjZfUYhuzi0tR52eNJUpb31vdvMQVo7AqufEEf9rPmZrHw7nQWB3HeAB5HMeL4Rh7V6oBPEND3Rh0avVrwz0I8RUM00dlL+9BRxu1FhmJwE3m0RVS9BILMK/xhas9EMdbcDjYb5o8=
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_814f577cd4fb11f19fe5525400638852
+    ReservedCode2: rBV+Ga3vu/7Y+yhFql6P63uQ9l6MO/kol95gdS+n0wjXv0JB6Swd5kwKPGALud+ODb5hryogajr2NkCatFiCj/X4sMk+Rf7tXu10XBo+wL59XjcL8gpind8Tw6QvlDYsh1aNmtfzbnq20bnAoHkply67VA+LH/InHX+IgCC7i0e0bp3RyzW2SlLiHF4=
 ---
+
+
+
+
 
 # r3e 引擎架构文档
 
@@ -292,7 +296,7 @@ pub struct Light {
     pub color: Vec3,           // 默认 (1.0, 0.97, 0.92) 略偏暖
     pub intensity: f32,        // 默认 1.0
     pub ambient: Vec3,         // 默认 (0.18, 0.19, 0.23) 略偏冷
-    pub shadow: ShadowSettings // 阶段 D：方向光阴影配置（见 5.7）
+    pub shadow: ShadowSettings // 阶段 D：方向光阴影配置（见 5.8）
 }
 
 pub struct ShadowSettings {
@@ -404,7 +408,7 @@ render(scene):
   │   ├─ shadow.size 变化 → 重建深度纹理 + 采样器 bind group（贴图句柄不能原地 resize）
   │   ├─ Light::shadow_view_projection(场景包围球) → 光源正交矩阵
   │   ├─ 写 ShadowUniform（矩阵 + 纹素尺寸 + bias + 启用位 + 法线偏移 + 强度）
-  │   └─ 写 ShadowPassUniform（只有矩阵，见 5.7 的绑定组切分原因）
+  │   └─ 写 ShadowPassUniform（只有矩阵，见 5.9 的绑定组切分原因）
   ├─ surface.get_current_texture()
   │   ├─ Success    → 直接用
   │   ├─ Suboptimal → 重新 configure 后用
@@ -785,9 +789,30 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `time()` | 引擎时间（秒，f64） |
 | `frame()` | 帧序号 |
 | `dt()` | 上一帧耗时（秒） |
+| `fps()` | 上一帧瞬时帧率（`1/dt`，首帧 0），由 `app` 每帧算好经 `ScriptRuntime::tick(dt, fps)` 传入 |
 | `rand(min, max)` | xorshift64 伪随机，返回 `[min, max)` |
 
 随机数用自实现的 xorshift64（种子 `0x2545F4914F6CDD1D`）而非 `rand` crate，是为了不引入额外依赖并保证可复现——种子固定，每次启动的随机序列相同。
+
+
+
+| 函数 | 说明 |
+| --- | --- |
+
+
+
+单位以字符串给：`"24px"` / `"50%"` / `"12"`（等价 `"12px"`）；锚点为 9 种
+（`topleft` `topcenter` `topright` `midleft` `center` `midright` `bottomleft` `bottomcenter` `bottomright`，
+兼容 `top_left`、`bottom-center` 等写法）。
+
+| 函数 | 说明 |
+| --- | --- |
+
+
+
+
+| 函数 | 说明 |
+| --- | --- |
 
 **物理**
 
@@ -849,7 +874,7 @@ pub struct EngineApp {
     frame_index: u64,
     paused: bool,
     keys: HashSet<Key>,                  // 当前按下的键
-    input: Rc<RefCell<InputState>>,      // 鼠标/手柄帧级快照，与脚本层共用同一份
+    input: Rc<RefCell<InputState>>,      // 键盘/鼠标/手柄帧级快照，与脚本层共用同一份
     gilrs: Option<gilrs::Gilrs>,         // 手柄后端；初始化失败降级为 None
     cursor_valid: bool,                  // 是否已收到过 CursorMoved（首帧不产生位移）
     last_dt_ms: f32,                     // 供 HUD 显示
@@ -873,7 +898,7 @@ pub struct EngineApp {
 3. if !paused:
    3.1 time += dt; frame_index += 1
    3.2 scripts.tick(dt, time, frame)    ← 脚本可能生成/销毁/移动物件
-   3.3 apply_camera_input(dt)           ← 键盘 + 手柄摇杆/扳机驱动相机
+   3.3 apply_camera_input(dt)           ← 键盘快照 + 手柄摇杆/扳机驱动相机
    3.4 scene.time / scene.frame ← 当前值
    3.45 sync_physics_bindings()          ← 物理世代号变了才重绑场景声明的刚体
    3.5 physics.step(dt, &mut scene)     ← 开关关闭时内部直接返回
@@ -897,15 +922,29 @@ pub struct EngineApp {
 输入分三层，职责单向依赖，设备层不认识脚本层：
 
 ```
-core/input.rs   InputState / PadState / ButtonEdge   ← 纯数据 + 边沿语义，无 I/O
+core/input.rs   InputState / KeyboardState / PadState / ButtonEdge   ← 纯数据 + 边沿语义，无 I/O
    ↑ 写
 app/app.rs      winit 事件（键盘 / 鼠标）、gilrs 轮询（手柄）
    ↑ 读
-script/api.rs   mouse_* / gamepad_* / pad_* 注入 Rhai
+script/api.rs   key_* / mouse_* / gamepad_* / pad_* 注入 Rhai
 ```
 
 放 core 层的原因：脚本层要读输入，但脚本层不依赖窗口或设备 crate；
 设备侧写入由 app 层完成，其余层只读。
+
+键盘的设备无关性靠 `KeyCode` 保证：core 自带 98 键的 `#[repr(u8)]` 连续枚举（字母、数字、`F1`~`F12`、
+方向键、导航键、左右修饰键、符号键、小键盘），配合同序的 `ALL_KEYS` / `KEY_NAMES` 表，
+`from_index` / `index` / `name` 三者严格一致。winit 的 `Key` / `PhysicalKey` 只在 app 层被翻译成
+`KeyCode`，core 公开 API 里不出现任何 winit 类型（`crates/r3e-core/tests/architecture_guard.rs` 守着）。
+
+app 层的翻译规则是"字符键看逻辑键、其余看物理键"：
+
+| 事件 | 取值 | 原因 |
+| --- | --- | --- |
+| `Key::Character(c)` | `key_from_char(c)` | 跟随键盘布局：AZERTY 上按标着 `A` 的键就是 `a` |
+| 小键盘字符 | 物理键 `Numpad*` | 保留小键盘独立身份，与主键区数字互不干扰 |
+| `NamedKey::Shift` 等修饰键 | 物理键 `ShiftLeft` / `ShiftRight` | 逻辑键只给出通用 `Shift`，物理键才能区分左右 |
+| 导航键 / 功能键 | 物理键，回退逻辑键 | 两条路径都覆盖，`F5`、`ArrowLeft` 不会漏 |
 
 | 输入 | 行为 |
 | --- | --- |
@@ -925,16 +964,26 @@ script/api.rs   mouse_* / gamepad_* / pad_* 注入 Rhai
 
 相机移动是**整体平移**：`camera.position` 与 `camera.target` 同加位移，因此朝向不变（自由飞行视角，不是环绕轨道）。`MOVE_SPEED = 6.0` 单位/秒。
 
-按键状态用 `HashSet<Key>` 维护：按下插入、抬起移除，因此支持多键同时（斜着走更快会归一化）。手柄左摇杆走 `right * lx + forward * ly` 的模拟量路径，幅度由推杆深度决定，不参与归一化。
+键鼠状态存在 `InputState` 里：鼠标按键是 `ButtonEdge` 数组，键盘是 `KeyboardState`（98 个 `ButtonEdge`
+的连续数组，`down` / `pressed` / `released` 位查询，`index` 直接当下标用，无哈希开销）。支持多键同时按下，
+斜着走会归一化；`MoveKeys` 只在帧首取一次快照，避免相机计算过程中反复 `borrow`。手柄左摇杆走
+`right * lx + forward * ly` 的模拟量路径，幅度由推杆深度决定，不参与归一化。
 
 **边沿语义**是这块的核心约定：`ButtonEdge` 同时记录 `down`（持续）、`pressed`（刚按下）、`released`（刚松开），后两者只在状态翻转的那个逻辑帧内为 true，由帧末的 `InputState::end_frame` 清掉。脚本侧因此可以安全地区分"按住"与"按一下"，不会漏事件也不会重复触发。
 
-**粘键防护**：窗口 `Focused(false)` 时立即 `keys.clear()` + `InputState::reset_held()`。
-否则在窗口外松开鼠标，引擎永远不知道该键已抬起，相机会一直朝一个方向飞。
+**粘键防护**：窗口 `Focused(false)` 时立即 `InputState::reset_held()`——一次清掉鼠标、键盘、手柄的
+持续按下状态。否则在窗口外松开按键，引擎永远不知道该键已抬起，相机会一直朝一个方向飞。
+失焦只清"按住"，不伪造 `released` 边沿，避免脚本收到一次假的松开。
 
 **手柄降级**：`gilrs::Gilrs::new()` 失败只是 `warn`，`gilrs` 字段为 `None`，鼠标键盘照常工作；运行中未连接手柄时 `pad.connected == false`，所有 `pad_*` API 返回 `false` / `0.0`，脚本无需分支判断设备是否存在。手柄热插拔由每帧轮询自然覆盖，标题栏显示连接状态与设备名。
 
-`Space` 与 `Esc`、`F5` 在处理后立即从 `keys` 移除并 `return`，避免被当作持续按键重复触发。
+**系统自动重复**：winit 的 `KeyboardInput` 带 `repeat` 标志，按住不放会持续送事件。app 层对 `repeat`
+只更新按住状态、直接 `return`，因此 `Space` 不会在按住时反复切换暂停，脚本里的 `key_pressed("space")`
+也只在该键真正按下的那一帧为 true。`Esc` / `F2` / `F5` 等快捷键同理只认首次按下。
+
+**边沿清空点**：`KeyboardState::clear_frame()` 挂在 `InputState::end_frame()` 里，与鼠标、手柄同步，
+每帧渲染末尾调用一次；`set()` 是唯一写入点，`down/ pressed / released` 全是只读查询，
+因此"边沿只触发一次"由调用时序保证，不依赖调用方自觉。
 
 ### 8.5 文件监视与热重载
 
@@ -1278,6 +1327,10 @@ step_and_render() 开头：drain_editor_jobs()                            │
 
 ## 13. 运行与验证
 
+> workspace 含两个 bin：主程序 `r3e`（`crates/r3e-app`）与 IDE 插件 `r3e-plugin`（`crates/r3e-plugin`）。
+> `crates/r3e-app/Cargo.toml` 里的 `default-run = "r3e"` 让仓库根的 `cargo run` 及其带参形态（含 `--features rapier`）
+> 默认启动主程序；插件必须显式指定包：`cargo run -p r3e-plugin -- --help`。
+
 ```powershell
 cd D:\rust3d-engine
 
@@ -1289,7 +1342,7 @@ cargo run -- assets/scene.json scripts/example_swarm.rhai
 
 # 发布构建（无警告）
 cargo build --release
-.\target\release\r3e.exe
+.\target\x86_64-pc-windows-gnu\release\r3e.exe
 
 # 或一键
 .\run.bat

@@ -1,3 +1,16 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_809d28cbd4fb11f19fe5525400638852
+    ReservedCode1: U+pj9KT2xscmIHCzAuSN9AmjPyy/B7/Bu1oAJj+qxnIsjkWrhuTu5hRLupQsdazDkP7TA8yHWUyveuVb0t22NZXZU9FWVXnnNlVfudtWdsicm056lgmaBP0zKP36AaHZbS7IPn9bzaJvc6i//q/yhFh2FMvumOpPo6vPdfTcWIjH9bcvX6l1BW3SXqc=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_809d28cbd4fb11f19fe5525400638852
+    ReservedCode2: U+pj9KT2xscmIHCzAuSN9AmjPyy/B7/Bu1oAJj+qxnIsjkWrhuTu5hRLupQsdazDkP7TA8yHWUyveuVb0t22NZXZU9FWVXnnNlVfudtWdsicm056lgmaBP0zKP36AaHZbS7IPn9bzaJvc6i//q/yhFh2FMvumOpPo6vPdfTcWIjH9bcvX6l1BW3SXqc=
+---
+
+
+
 # r3e —— Rust 3D 游戏引擎（文本可编程）
 
 一个用 Rust 写的最小可用 3D 引擎内核：场景与行为全部由**文本**描述，
@@ -23,10 +36,10 @@ D:\rust3d-engine
 │   ├─ scene_physics.json     # 物理演示场景（已启用物理）
 │   ├─ scene_rapier.json      # Rapier 演示场景（堆叠 / 弹跳 / 圆柱）
 │   ├─ scene_ccd.json         # CCD 穿透对照场景（薄墙 + 两颗只差 ccd 一位的子弹）
-│   └─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
+│   ├─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
 ├─ scripts/
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
-│   ├─ input_demo.rhai        # 鼠标 / 手柄演示
+│   ├─ input_demo.rhai        # 键盘 / 鼠标 / 手柄演示
 │   ├─ physics_demo.rhai      # 物理演示（掉落 + 弹跳 + 运行时开关）
 │   ├─ rapier_demo.rhai       # Rapier 演示（持续丢方块堆叠 + 碰撞事件）
 │   ├─ ccd_demo.rhai          # CCD 演示（开/关 CCD 两球射同一面薄墙）
@@ -65,6 +78,10 @@ cargo run --release
 cargo run --release -- assets\scene.json scripts\main.rhai
 ```
 
+> workspace 里有**两个 bin**：主程序 `r3e`（`crates/r3e-app`）与 IDE 插件 `r3e-plugin`（`crates/r3e-plugin`）。
+> `crates/r3e-app/Cargo.toml` 已声明 `default-run = "r3e"`，所以在仓库根目录直接 `cargo run` / `cargo run --release`
+> 启动的就是主程序，不需要再加 `--bin`；要单独跑插件时显式指定包：`cargo run -p r3e-plugin -- --help`。
+
 编译产物：`D:\rust3d-engine\target\x86_64-pc-windows-gnu\debug\r3e.exe`（或 `release\r3e.exe`；
 `.cargo/config.toml` 指定了 `x86_64-pc-windows-gnu` 目标，故产物带三元组目录），
 双击 exe 时会自动向上查找 `assets` 目录。
@@ -87,6 +104,10 @@ cargo run --release -- assets\scene.json scripts\main.rhai
 | `F5` | 手动重载脚本 |
 | `Esc` | 退出 |
 | 终端输入一行代码 | 立即执行一行 Rhai，作用于当前场景 |
+
+键盘事件由 winit 的 `KeyboardInput` 送入引擎自有的 `KeyCode`（98 键，含字母、数字、F1~F12、
+方向键、导航键、左右修饰键与小键盘），状态区分「持续按住」与「本帧边沿」，边沿在每帧末清空；
+系统自动重复只更新按住状态，不会重复触发快捷键。
 
 手柄由 `gilrs` 轮询（每帧排空事件队列后取状态快照），支持 Xbox / PS / Switch 布局，
 按键与轴已归一化到统一的 16 键 + 8 轴编号（见 `crates/r3e-core/src/input.rs`）。
@@ -274,9 +295,30 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | `rand(min, max) -> f64` | 均匀随机 |
 | `log(text)` | 输出到控制台 |
 
-### 输入：鼠标 / 手柄
+### 输入：键盘 / 鼠标 / 手柄
 
-按键名不区分大小写，也可直接传索引（`0` = 左键 / `A` 键）。
+按键名不区分大小写，也可直接传索引（`0` = `A` 键 / 鼠标左键）。
+
+| 函数 | 说明 |
+| --- | --- |
+| `key_down(key) -> bool` | 持续按住 |
+| `key_pressed(key) -> bool` | 本帧刚按下（边沿，按住不放只触发一次） |
+| `key_released(key) -> bool` | 本帧刚松开（边沿） |
+| `key_any() -> bool` | 是否有任意键按住 |
+| `key_any_pressed() -> bool` | 本帧是否有任意键按下（"按任意键开始"用） |
+| `keys_held() -> array` | 当前按住的所有键名，如 `["a", "space"]` |
+| `key_held_count() -> int` | 当前按住的键数 |
+
+键盘键名：字母 `a`~`z`、数字 `0`~`9`、`f1`~`f12`、`up` `down` `left` `right`、`space` `enter`
+`escape`(`esc`) `tab` `backspace` `delete`(`del`) `insert` `home` `end` `pageup` `pagedown`、
+`shift`(`shift_left`/`lshift`) `shift_right` `ctrl`(`control`/`ctrl_left`) `ctrl_right` `alt`(`alt_left`)
+`alt_right` `super`(`win`/`cmd`/`super_left`) `super_right` `caps_lock`、符号键 `minus` `equal`
+`bracket_left` `bracket_right` `backslash` `semicolon` `quote` `comma` `period` `slash` `backquote`、
+小键盘 `numpad0`~`numpad9` `numpad_add` `numpad_subtract` `numpad_multiply` `numpad_divide` `numpad_decimal`。
+
+字符键按逻辑键解析（跟随键盘布局，AZERTY 上按 `a` 就是 `a`），修饰键与数字小键盘按物理键解析
+（左右 Shift / Ctrl 可区分，小键盘数字与主键区数字互不干扰）。窗口失焦时所有键盘状态清零，
+不会出现"按住 W 切窗口后一直往前走"。
 
 | 函数 | 说明 |
 | --- | --- |

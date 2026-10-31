@@ -1,7 +1,6 @@
 //! 应用层：窗口、事件循环、主循环、终端指令与脚本热重载。
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
@@ -12,9 +11,9 @@ use glam::{Mat4, Vec3};
 use r3e_asset::AssetLibrary;
 use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::input::{
-    InputState, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT, PAD_AXIS_COUNT,
-    PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT, PAD_RIGHT_X, PAD_RIGHT_Y, PAD_RT,
-    PAD_START,
+    key_from_char, InputState, KeyCode, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE,
+    MOUSE_RIGHT, PAD_AXIS_COUNT, PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT,
+    PAD_RIGHT_X, PAD_RIGHT_Y, PAD_RT, PAD_START,
 };
 use r3e_core::{
     AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance,
@@ -28,7 +27,7 @@ use crate::editor::LocalEngineApi;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode as WinitKeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 /// 场景文件缺失时的兜底场景，保证引擎任何情况下都能启动。
@@ -39,6 +38,26 @@ const MOVE_SPEED: f32 = 6.0;
 const MOUSE_ORBIT_SENS: f32 = 0.28;
 /// 鼠标右键拖拽平移的灵敏度系数（随相机距离缩放）。
 const MOUSE_PAN_SENS: f32 = 0.0016;
+/// 一帧内与相机移动相关的按键快照。
+///
+/// 键盘状态存在 `InputState::keyboard` 里（脚本与主循环共享同一份真源），
+/// 这里只在一帧开头取一次快照，避免相机计算过程中反复 borrow。
+#[derive(Debug, Clone, Copy, Default)]
+struct MoveKeys {
+    forward: bool,
+    back: bool,
+    left: bool,
+    right: bool,
+    up: bool,
+    down: bool,
+}
+
+impl MoveKeys {
+    fn is_empty(self) -> bool {
+        !(self.forward || self.back || self.left || self.right || self.up || self.down)
+    }
+}
+
 /// 手柄右摇杆转视角（度 / 秒）。
 const PAD_ORBIT_SPEED: f32 = 150.0;
 /// 手柄扳机推拉速度（每秒缩放比例）。
@@ -163,7 +182,6 @@ pub struct EngineApp {
     time: f64,
     frame_index: u64,
     paused: bool,
-    keys: HashSet<Key>,
     last_dt_ms: f32,
     console: mpsc::Receiver<String>,
     scene_mtime: Option<SystemTime>,
@@ -367,7 +385,6 @@ impl EngineApp {
             time: 0.0,
             frame_index: 0,
             paused: false,
-            keys: HashSet::new(),
             last_dt_ms: 0.0,
             console: spawn_console(),
             scene_mtime,
@@ -767,9 +784,10 @@ impl EngineApp {
     }
 
     fn apply_camera_input(&mut self, dt: f32) {
-        // 手柄摇杆 / 扳机快照（死区在此生效）
-        let (pad_connected, lx, ly, rx, ry, zoom) = {
+        // 手柄摇杆 / 扳机 + 键盘方向键快照（死区在输入层生效）
+        let (pad_connected, lx, ly, rx, ry, zoom, keys) = {
             let i = self.input.borrow();
+            let kb = &i.keyboard;
             (
                 i.pad.connected,
                 i.pad.axis_deadzone(PAD_LEFT_X),
@@ -777,10 +795,18 @@ impl EngineApp {
                 i.pad.axis_deadzone(PAD_RIGHT_X),
                 i.pad.axis_deadzone(PAD_RIGHT_Y),
                 i.pad.axis(PAD_RT) - i.pad.axis(PAD_LT),
+                MoveKeys {
+                    forward: kb.down(KeyCode::W) || kb.down(KeyCode::ArrowUp),
+                    back: kb.down(KeyCode::S) || kb.down(KeyCode::ArrowDown),
+                    left: kb.down(KeyCode::A) || kb.down(KeyCode::ArrowLeft),
+                    right: kb.down(KeyCode::D) || kb.down(KeyCode::ArrowRight),
+                    up: kb.down(KeyCode::E),
+                    down: kb.down(KeyCode::Q),
+                },
             )
         };
         let pad_move = pad_connected && (lx != 0.0 || ly != 0.0);
-        if self.keys.is_empty() && !pad_move && zoom == 0.0 && rx == 0.0 && ry == 0.0 {
+        if keys.is_empty() && !pad_move && zoom == 0.0 && rx == 0.0 && ry == 0.0 {
             return;
         }
 
@@ -803,23 +829,23 @@ impl EngineApp {
         let right = forward.cross(Vec3::Y).normalize_or_zero();
         let mut delta = Vec3::ZERO;
 
-        for key in &self.keys {
-            match key {
-                Key::Character(c) => match c.to_lowercase().as_str() {
-                    "w" => delta += forward,
-                    "s" => delta -= forward,
-                    "d" => delta += right,
-                    "a" => delta -= right,
-                    "e" => delta += Vec3::Y,
-                    "q" => delta -= Vec3::Y,
-                    _ => {}
-                },
-                Key::Named(NamedKey::ArrowLeft) => delta -= right,
-                Key::Named(NamedKey::ArrowRight) => delta += right,
-                Key::Named(NamedKey::ArrowUp) => delta += forward,
-                Key::Named(NamedKey::ArrowDown) => delta -= forward,
-                _ => {}
-            }
+        if keys.forward {
+            delta += forward;
+        }
+        if keys.back {
+            delta -= forward;
+        }
+        if keys.right {
+            delta += right;
+        }
+        if keys.left {
+            delta -= right;
+        }
+        if keys.up {
+            delta += Vec3::Y;
+        }
+        if keys.down {
+            delta -= Vec3::Y;
         }
 
         // 左摇杆：模拟量直接叠加（不归一化，保留推杆幅度）
@@ -1054,17 +1080,203 @@ impl EngineApp {
         }
     }
 
-    fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: Key, state: ElementState) {
-        if state == ElementState::Released {
-            self.keys.remove(&key);
+    /// winit 物理键 → 引擎键位（修饰键左右、方向键、功能键、小键盘都靠它区分）。
+    ///
+    /// 字符键不走这里：逻辑键（`Key::Character`）才是当前键盘布局下的真实字符。
+    fn physical_key_code(code: WinitKeyCode) -> Option<KeyCode> {
+        Some(match code {
+            WinitKeyCode::Backquote => KeyCode::Backquote,
+            WinitKeyCode::Backslash => KeyCode::Backslash,
+            WinitKeyCode::BracketLeft => KeyCode::BracketLeft,
+            WinitKeyCode::BracketRight => KeyCode::BracketRight,
+            WinitKeyCode::Comma => KeyCode::Comma,
+            WinitKeyCode::Digit0 => KeyCode::Digit0,
+            WinitKeyCode::Digit1 => KeyCode::Digit1,
+            WinitKeyCode::Digit2 => KeyCode::Digit2,
+            WinitKeyCode::Digit3 => KeyCode::Digit3,
+            WinitKeyCode::Digit4 => KeyCode::Digit4,
+            WinitKeyCode::Digit5 => KeyCode::Digit5,
+            WinitKeyCode::Digit6 => KeyCode::Digit6,
+            WinitKeyCode::Digit7 => KeyCode::Digit7,
+            WinitKeyCode::Digit8 => KeyCode::Digit8,
+            WinitKeyCode::Digit9 => KeyCode::Digit9,
+            WinitKeyCode::Equal => KeyCode::Equal,
+            WinitKeyCode::KeyA => KeyCode::A,
+            WinitKeyCode::KeyB => KeyCode::B,
+            WinitKeyCode::KeyC => KeyCode::C,
+            WinitKeyCode::KeyD => KeyCode::D,
+            WinitKeyCode::KeyE => KeyCode::E,
+            WinitKeyCode::KeyF => KeyCode::F,
+            WinitKeyCode::KeyG => KeyCode::G,
+            WinitKeyCode::KeyH => KeyCode::H,
+            WinitKeyCode::KeyI => KeyCode::I,
+            WinitKeyCode::KeyJ => KeyCode::J,
+            WinitKeyCode::KeyK => KeyCode::K,
+            WinitKeyCode::KeyL => KeyCode::L,
+            WinitKeyCode::KeyM => KeyCode::M,
+            WinitKeyCode::KeyN => KeyCode::N,
+            WinitKeyCode::KeyO => KeyCode::O,
+            WinitKeyCode::KeyP => KeyCode::P,
+            WinitKeyCode::KeyQ => KeyCode::Q,
+            WinitKeyCode::KeyR => KeyCode::R,
+            WinitKeyCode::KeyS => KeyCode::S,
+            WinitKeyCode::KeyT => KeyCode::T,
+            WinitKeyCode::KeyU => KeyCode::U,
+            WinitKeyCode::KeyV => KeyCode::V,
+            WinitKeyCode::KeyW => KeyCode::W,
+            WinitKeyCode::KeyX => KeyCode::X,
+            WinitKeyCode::KeyY => KeyCode::Y,
+            WinitKeyCode::KeyZ => KeyCode::Z,
+            WinitKeyCode::Minus => KeyCode::Minus,
+            WinitKeyCode::Period => KeyCode::Period,
+            WinitKeyCode::Quote => KeyCode::Quote,
+            WinitKeyCode::Semicolon => KeyCode::Semicolon,
+            WinitKeyCode::Slash => KeyCode::Slash,
+            WinitKeyCode::AltLeft => KeyCode::AltLeft,
+            WinitKeyCode::AltRight => KeyCode::AltRight,
+            WinitKeyCode::Backspace => KeyCode::Backspace,
+            WinitKeyCode::CapsLock => KeyCode::CapsLock,
+            WinitKeyCode::ControlLeft => KeyCode::ControlLeft,
+            WinitKeyCode::ControlRight => KeyCode::ControlRight,
+            WinitKeyCode::Enter => KeyCode::Enter,
+            WinitKeyCode::SuperLeft => KeyCode::SuperLeft,
+            WinitKeyCode::SuperRight => KeyCode::SuperRight,
+            WinitKeyCode::ShiftLeft => KeyCode::ShiftLeft,
+            WinitKeyCode::ShiftRight => KeyCode::ShiftRight,
+            WinitKeyCode::Space => KeyCode::Space,
+            WinitKeyCode::Tab => KeyCode::Tab,
+            WinitKeyCode::Delete => KeyCode::Delete,
+            WinitKeyCode::End => KeyCode::End,
+            WinitKeyCode::Home => KeyCode::Home,
+            WinitKeyCode::Insert => KeyCode::Insert,
+            WinitKeyCode::PageDown => KeyCode::PageDown,
+            WinitKeyCode::PageUp => KeyCode::PageUp,
+            WinitKeyCode::ArrowDown => KeyCode::ArrowDown,
+            WinitKeyCode::ArrowLeft => KeyCode::ArrowLeft,
+            WinitKeyCode::ArrowRight => KeyCode::ArrowRight,
+            WinitKeyCode::ArrowUp => KeyCode::ArrowUp,
+            WinitKeyCode::Escape => KeyCode::Escape,
+            WinitKeyCode::F1 => KeyCode::F1,
+            WinitKeyCode::F2 => KeyCode::F2,
+            WinitKeyCode::F3 => KeyCode::F3,
+            WinitKeyCode::F4 => KeyCode::F4,
+            WinitKeyCode::F5 => KeyCode::F5,
+            WinitKeyCode::F6 => KeyCode::F6,
+            WinitKeyCode::F7 => KeyCode::F7,
+            WinitKeyCode::F8 => KeyCode::F8,
+            WinitKeyCode::F9 => KeyCode::F9,
+            WinitKeyCode::F10 => KeyCode::F10,
+            WinitKeyCode::F11 => KeyCode::F11,
+            WinitKeyCode::F12 => KeyCode::F12,
+            WinitKeyCode::Numpad0 => KeyCode::Numpad0,
+            WinitKeyCode::Numpad1 => KeyCode::Numpad1,
+            WinitKeyCode::Numpad2 => KeyCode::Numpad2,
+            WinitKeyCode::Numpad3 => KeyCode::Numpad3,
+            WinitKeyCode::Numpad4 => KeyCode::Numpad4,
+            WinitKeyCode::Numpad5 => KeyCode::Numpad5,
+            WinitKeyCode::Numpad6 => KeyCode::Numpad6,
+            WinitKeyCode::Numpad7 => KeyCode::Numpad7,
+            WinitKeyCode::Numpad8 => KeyCode::Numpad8,
+            WinitKeyCode::Numpad9 => KeyCode::Numpad9,
+            WinitKeyCode::NumpadAdd => KeyCode::NumpadAdd,
+            WinitKeyCode::NumpadSubtract => KeyCode::NumpadSubtract,
+            WinitKeyCode::NumpadMultiply => KeyCode::NumpadMultiply,
+            WinitKeyCode::NumpadDivide => KeyCode::NumpadDivide,
+            WinitKeyCode::NumpadDecimal => KeyCode::NumpadDecimal,
+            _ => return None,
+        })
+    }
+
+    /// winit 逻辑键 → 引擎键位（字符键、别名导航键）。
+    fn logical_key_code(key: &Key) -> Option<KeyCode> {
+        match key {
+            Key::Character(text) => {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => key_from_char(c),
+                    _ => None,
+                }
+            }
+            Key::Named(named) => Some(match named {
+                NamedKey::Space => KeyCode::Space,
+                NamedKey::Enter => KeyCode::Enter,
+                NamedKey::Escape => KeyCode::Escape,
+                NamedKey::Tab => KeyCode::Tab,
+                NamedKey::Backspace => KeyCode::Backspace,
+                NamedKey::Delete => KeyCode::Delete,
+                NamedKey::Insert => KeyCode::Insert,
+                NamedKey::Home => KeyCode::Home,
+                NamedKey::End => KeyCode::End,
+                NamedKey::PageUp => KeyCode::PageUp,
+                NamedKey::PageDown => KeyCode::PageDown,
+                NamedKey::ArrowUp => KeyCode::ArrowUp,
+                NamedKey::ArrowDown => KeyCode::ArrowDown,
+                NamedKey::ArrowLeft => KeyCode::ArrowLeft,
+                NamedKey::ArrowRight => KeyCode::ArrowRight,
+                NamedKey::Shift => KeyCode::ShiftLeft,
+                NamedKey::Control => KeyCode::ControlLeft,
+                NamedKey::Alt => KeyCode::AltLeft,
+                NamedKey::Super | NamedKey::Meta => KeyCode::SuperLeft,
+                NamedKey::CapsLock => KeyCode::CapsLock,
+                NamedKey::F1 => KeyCode::F1,
+                NamedKey::F2 => KeyCode::F2,
+                NamedKey::F3 => KeyCode::F3,
+                NamedKey::F4 => KeyCode::F4,
+                NamedKey::F5 => KeyCode::F5,
+                NamedKey::F6 => KeyCode::F6,
+                NamedKey::F7 => KeyCode::F7,
+                NamedKey::F8 => KeyCode::F8,
+                NamedKey::F9 => KeyCode::F9,
+                NamedKey::F10 => KeyCode::F10,
+                NamedKey::F11 => KeyCode::F11,
+                NamedKey::F12 => KeyCode::F12,
+                _ => return None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// 一次按键事件 → 引擎键位。
+    ///
+    /// 字符键以逻辑键为准（布局相关：AZERTY 上按 "A" 就是 `A`），但小键盘要保留物理身份；
+    /// 非字符键以物理键为准（能区分左右 Shift / Ctrl，逻辑键只能给出通用的 `Shift`）。
+    fn key_code_of(logical: &Key, physical: PhysicalKey) -> Option<KeyCode> {
+        let physical_code = match physical {
+            PhysicalKey::Code(code) => Self::physical_key_code(code),
+            _ => None,
+        };
+        match logical {
+            Key::Character(_) => match physical_code {
+                Some(code) if code.is_numpad() => Some(code),
+                _ => Self::logical_key_code(logical).or(physical_code),
+            },
+            _ => physical_code.or_else(|| Self::logical_key_code(logical)),
+        }
+    }
+
+    /// 处理键盘事件：先把状态写进输入层（脚本与本帧相机共享），再处理引擎级快捷键。
+    ///
+    /// `repeat`（系统自动重复）只更新持续状态，不重复触发快捷键，
+    /// 因此按住空格不会来回切暂停。
+    fn handle_key(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        logical: Key,
+        physical: PhysicalKey,
+        state: ElementState,
+        repeat: bool,
+    ) {
+        let pressed = state == ElementState::Pressed;
+        if let Some(code) = Self::key_code_of(&logical, physical) {
+            self.input.borrow_mut().keyboard.set(code, pressed);
+        }
+
+        if !pressed || repeat {
             return;
         }
 
-        match &key {
-            Key::Named(NamedKey::Escape) => {
-                event_loop.exit();
-                return;
-            }
+        match &logical {
+            Key::Named(NamedKey::Escape) => event_loop.exit(),
             Key::Named(NamedKey::Space) => {
                 self.paused = !self.paused;
                 log::info!(
@@ -1075,19 +1287,15 @@ impl EngineApp {
                         "继续运行"
                     }
                 );
-                self.keys.remove(&key);
-                return;
             }
             Key::Named(NamedKey::F5) => {
                 let path = self.script_path.clone();
                 if let Err(e) = self.scripts.load_file(&path) {
                     log::error!("重载失败: {e}");
                 }
-                return;
             }
             _ => {}
         }
-        self.keys.insert(key);
     }
 }
 
@@ -1144,7 +1352,13 @@ impl ApplicationHandler for EngineApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                self.handle_key(event_loop, event.logical_key, event.state);
+                self.handle_key(
+                    event_loop,
+                    event.logical_key,
+                    event.physical_key,
+                    event.state,
+                    event.repeat,
+                );
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position.x, position.y);
@@ -1153,8 +1367,8 @@ impl ApplicationHandler for EngineApp {
                 self.handle_mouse_button(button, state);
             }
             WindowEvent::Focused(false) => {
-                // 失焦后收不到松开事件，主动清掉持续按下状态，避免粘键
-                self.keys.clear();
+                // 失焦后收不到松开事件，主动清掉鼠标 / 键盘 / 手柄的持续按下状态，
+                // 避免按住键切窗口后卡键（键盘的边沿也一并清掉，不会补发一次"抬起"）
                 self.input.borrow_mut().reset_held();
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1821,4 +2035,104 @@ fn spawn_asset_anim(
     );
     let _ = inst_name;
     Some(SkeletonSpawn { prefix, ids })
+}
+
+#[cfg(test)]
+mod key_event_tests {
+    use super::*;
+
+    /// 字符键走逻辑键：AZERTY 上按 "a" 报 `A`，与物理位置无关。
+    #[test]
+    fn character_keys_follow_logical_layout() {
+        let key = Key::Character("a".into());
+        // 物理位置是 Q 的键（AZERTY 的 A），逻辑键仍是 a
+        assert_eq!(
+            EngineApp::key_code_of(&key, PhysicalKey::Code(WinitKeyCode::KeyQ)),
+            Some(KeyCode::A)
+        );
+        let upper = Key::Character("W".into());
+        assert_eq!(
+            EngineApp::key_code_of(&upper, PhysicalKey::Code(WinitKeyCode::KeyW)),
+            Some(KeyCode::W),
+            "大写字母应归到同一键位"
+        );
+    }
+
+    /// 物理键补足逻辑键给不出的信息：左右修饰键分别映射。
+    #[test]
+    fn modifier_side_comes_from_physical_key() {
+        let shift = Key::Named(NamedKey::Shift);
+        assert_eq!(
+            EngineApp::key_code_of(&shift, PhysicalKey::Code(WinitKeyCode::ShiftRight)),
+            Some(KeyCode::ShiftRight)
+        );
+        assert_eq!(
+            EngineApp::key_code_of(&shift, PhysicalKey::Code(WinitKeyCode::ShiftLeft)),
+            Some(KeyCode::ShiftLeft)
+        );
+        // 逻辑键单独解析时退回左修饰键，与脚本别名 `shift` 一致
+        assert_eq!(
+            EngineApp::logical_key_code(&shift),
+            Some(KeyCode::ShiftLeft)
+        );
+        assert_eq!(
+            EngineApp::key_code_of(
+                &Key::Named(NamedKey::Control),
+                PhysicalKey::Code(WinitKeyCode::ControlRight)
+            ),
+            Some(KeyCode::ControlRight)
+        );
+    }
+
+    /// 小键盘数字与主键区数字分开统计。
+    #[test]
+    fn numpad_digits_stay_distinct() {
+        let one = Key::Character("1".into());
+        assert_eq!(
+            EngineApp::key_code_of(&one, PhysicalKey::Code(WinitKeyCode::Numpad1)),
+            Some(KeyCode::Numpad1)
+        );
+        assert_eq!(
+            EngineApp::key_code_of(&one, PhysicalKey::Code(WinitKeyCode::Digit1)),
+            Some(KeyCode::Digit1)
+        );
+    }
+
+    /// 功能键 / 方向键 / 未知键。
+    #[test]
+    fn named_and_unknown_keys() {
+        assert_eq!(
+            EngineApp::key_code_of(
+                &Key::Named(NamedKey::F5),
+                PhysicalKey::Code(WinitKeyCode::F5)
+            ),
+            Some(KeyCode::F5)
+        );
+        assert_eq!(
+            EngineApp::key_code_of(
+                &Key::Named(NamedKey::ArrowLeft),
+                PhysicalKey::Code(WinitKeyCode::ArrowLeft)
+            ),
+            Some(KeyCode::ArrowLeft)
+        );
+        // 引擎不关心的键不写入输入层
+        assert_eq!(
+            EngineApp::key_code_of(
+                &Key::Named(NamedKey::Help),
+                PhysicalKey::Code(WinitKeyCode::Help)
+            ),
+            None
+        );
+    }
+
+    /// 相机移动判据：任意一个方向键按下即应参与计算。
+    #[test]
+    fn move_keys_detect_any_direction() {
+        assert!(MoveKeys::default().is_empty());
+        assert!(!MoveKeys {
+            up: true,
+            ..Default::default()
+        }
+        .is_empty());
+    }
 }

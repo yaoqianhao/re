@@ -22,7 +22,7 @@ pub use anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
 pub use camera::Camera;
 pub use frustum::Frustum;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
-pub use input::{ButtonEdge, InputState, PadState};
+pub use input::{ButtonEdge, InputState, KeyCode, KeyboardState, PadState};
 pub use light::{Light, ShadowSettings};
 pub use mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};

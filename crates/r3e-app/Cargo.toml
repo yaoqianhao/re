@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# 本包只有 r3e 一个 bin；显式声明默认目标，避免将来新增辅助 bin
+# 或从包目录直接 `cargo run` 时出现目标歧义。
+default-run = "r3e"
 
 [[bin]]
 name = "r3e"

@@ -279,3 +279,117 @@ pub fn array_to_strings(arr: Array) -> Vec<String> {
         .filter_map(|d| d.into_string().ok())
         .collect()
 }
+#[cfg(test)]
+mod key_script_tests {
+    use super::*;
+    use r3e_core::KeyCode;
+
+    /// 空场景 + 可外部驱动的输入句柄。
+    fn host_with_input() -> (ScriptHost, Rc<RefCell<InputState>>) {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        (ScriptHost::new(scene, physics, input.clone()), input)
+    }
+
+    fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_bool()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回 bool"))
+    }
+
+    /// 脚本侧三态：按下 → 按住（边沿消失）→ 抬起。
+    #[test]
+    fn script_keyboard_three_states() {
+        let (mut host, input) = host_with_input();
+        assert!(!eval_bool(&mut host, "key_down(\"w\")"));
+
+        input.borrow_mut().keyboard.set(KeyCode::W, true);
+        assert!(eval_bool(&mut host, "key_down(\"w\")"), "按下后应持续按住");
+        assert!(eval_bool(&mut host, "key_down(\"W\")"), "键名不区分大小写");
+        assert!(eval_bool(&mut host, "key_pressed(\"w\")"));
+        assert!(!eval_bool(&mut host, "key_released(\"w\")"));
+
+        // 帧末清边沿：按住仍在，边沿不再触发
+        input.borrow_mut().end_frame();
+        assert!(eval_bool(&mut host, "key_down(\"w\")"));
+        assert!(
+            !eval_bool(&mut host, "key_pressed(\"w\")"),
+            "边沿只在本帧为真"
+        );
+
+        input.borrow_mut().keyboard.set(KeyCode::W, false);
+        assert!(!eval_bool(&mut host, "key_down(\"w\")"));
+        assert!(eval_bool(&mut host, "key_released(\"w\")"));
+    }
+
+    /// 任意键与按住列表：脚本做「按任意键开始」和 HUD 时用。
+    #[test]
+    fn script_lists_held_keys() {
+        let (mut host, input) = host_with_input();
+        assert!(!eval_bool(&mut host, "key_any()"));
+        assert!(!eval_bool(&mut host, "key_any_pressed()"));
+
+        {
+            let mut i = input.borrow_mut();
+            i.keyboard.set(KeyCode::A, true);
+            i.keyboard.set(KeyCode::Space, true);
+        }
+        assert!(eval_bool(&mut host, "key_any()"));
+        assert!(eval_bool(&mut host, "key_any_pressed()"));
+
+        let count = host
+            .eval("key_held_count()")
+            .expect("key_held_count 应可调用")
+            .as_int()
+            .expect("应返回整数");
+        assert_eq!(count, 2);
+
+        let held = host
+            .eval("keys_held()")
+            .expect("keys_held 应可调用")
+            .into_array()
+            .expect("应返回数组");
+        assert_eq!(held.len(), 2);
+        assert_eq!(
+            held[0].clone().into_string().expect("元素应为字符串"),
+            "a",
+            "按住列表按枚举顺序返回"
+        );
+    }
+
+    /// 未知键名不 panic，返回 false；索引形式可用。
+    #[test]
+    fn script_unknown_key_and_index_form() {
+        let (mut host, input) = host_with_input();
+        assert!(!eval_bool(&mut host, "key_down(\"不存在的键\")"));
+        assert!(!eval_bool(&mut host, "key_pressed(\"\")"));
+
+        input.borrow_mut().keyboard.set(KeyCode::F5, true);
+        let idx = KeyCode::F5.index() as i64;
+        assert!(eval_bool(&mut host, &format!("key_down({idx})")));
+        assert!(
+            !eval_bool(&mut host, "key_down(9999)"),
+            "越界索引应为 false"
+        );
+    }
+
+    /// 失焦清空后，脚本读到的键盘状态必须全为 false（含边沿）。
+    #[test]
+    fn script_sees_no_keys_after_focus_loss() {
+        let (mut host, input) = host_with_input();
+        input.borrow_mut().keyboard.set(KeyCode::W, true);
+        assert!(eval_bool(&mut host, "key_down(\"w\")"));
+
+        input.borrow_mut().reset_held();
+        assert!(!eval_bool(&mut host, "key_down(\"w\")"));
+        assert!(!eval_bool(&mut host, "key_pressed(\"w\")"));
+        assert!(
+            !eval_bool(&mut host, "key_released(\"w\")"),
+            "失焦不应伪造抬起边沿"
+        );
+        assert!(!eval_bool(&mut host, "key_any()"));
+    }
+}
+

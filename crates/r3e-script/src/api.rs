@@ -7,8 +7,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use glam::{Vec3, Vec4};
-use r3e_core::input::{parse_mouse_button, parse_pad_axis, parse_pad_button};
-use r3e_core::{InputState, MeshRef, NodeId, ObjectDesc, Scene};
+use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
+use r3e_core::{InputState, KeyCode, MeshRef, NodeId, ObjectDesc, Scene};
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
 };
@@ -581,6 +581,93 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("rand", move |min: f64, max: f64| -> f64 {
         min + xorshift(&c.rng) * (max - min)
+    });
+
+    // ---------------- 输入：键盘 ----------------
+    // 名字与鼠标 / 手柄保持同一套语义：down = 持续按住，pressed / released = 本帧边沿。
+    let c = ctx.clone();
+    engine.register_fn("key_down", move |key: &str| -> bool {
+        match parse_key(key) {
+            Some(k) => c.input.borrow().keyboard.down(k),
+            None => {
+                println!("[script] 未知按键 `{key}`（例：w / space / shift / f1 / up）");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_down", move |idx: i64| -> bool {
+        match KeyCode::from_index(idx.max(0) as usize) {
+            Some(k) => c.input.borrow().keyboard.down(k),
+            None => false,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_pressed", move |key: &str| -> bool {
+        match parse_key(key) {
+            Some(k) => c.input.borrow().keyboard.pressed(k),
+            None => {
+                println!("[script] 未知按键 `{key}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_pressed", move |idx: i64| -> bool {
+        match KeyCode::from_index(idx.max(0) as usize) {
+            Some(k) => c.input.borrow().keyboard.pressed(k),
+            None => false,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_released", move |key: &str| -> bool {
+        match parse_key(key) {
+            Some(k) => c.input.borrow().keyboard.released(k),
+            None => {
+                println!("[script] 未知按键 `{key}`");
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_released", move |idx: i64| -> bool {
+        match KeyCode::from_index(idx.max(0) as usize) {
+            Some(k) => c.input.borrow().keyboard.released(k),
+            None => false,
+        }
+    });
+
+    // 任意键：脚本做「按任意键开始」这类交互时不必逐个枚举。
+    let c = ctx.clone();
+    engine.register_fn("key_any", move || -> bool {
+        c.input.borrow().keyboard.any_down()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_any_pressed", move || -> bool {
+        c.input.borrow().keyboard.any_pressed()
+    });
+
+    // 当前按住的键名列表（HUD / 调试面板）。
+    let c = ctx.clone();
+    engine.register_fn("keys_held", move || -> Array {
+        c.input
+            .borrow()
+            .keyboard
+            .held()
+            .into_iter()
+            .map(|k| Dynamic::from(k.name().to_string()))
+            .collect()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("key_held_count", move || -> i64 {
+        c.input.borrow().keyboard.held_count() as i64
     });
 
     // ---------------- 输入：鼠标 ----------------
