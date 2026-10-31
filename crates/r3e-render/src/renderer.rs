@@ -14,6 +14,7 @@ use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
 use crate::text::{TextPass, TextStats};
+use crate::ui::{UiImageProvider, UiPass, UiStats};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
@@ -341,6 +342,10 @@ pub struct RenderStats {
     pub text_draws: u32,
     /// 本帧缺字数（该字符所有已加载字体面都没有），这些字符只占位不绘制。
     pub text_missing: u32,
+    /// 本帧 UI 通道画出的四边形数（M1 最小 UI）。
+    pub ui_quads: u32,
+    /// 本帧 UI 通道的 draw call 数。0 表示 UI 关闭 / 无元素。
+    pub ui_draws: u32,
 }
 
 pub struct Renderer {
@@ -377,6 +382,8 @@ pub struct Renderer {
     shadow_pipeline: wgpu::RenderPipeline,
     /// M1 文字渲染：屏幕空间 2D 文本通道，与 3D 主通道完全独立。
     text: TextPass,
+    /// M1 最小 UI：屏幕空间 2D UI 通道（矩形 / 边框 / 图片），与文本通道同构但独立。
+    ui: UiPass,
     stats: RenderStats,
 }
 
@@ -708,6 +715,8 @@ impl Renderer {
         });
 
         let text = TextPass::new(&device, config.format);
+        let ui = UiPass::new(&device, config.format);
+
         Ok(Self {
             device,
             queue,
@@ -736,6 +745,7 @@ impl Renderer {
             shadow_pass_uniform,
             shadow_pipeline,
             text,
+            ui,
             stats: RenderStats::default(),
         })
     }
@@ -774,6 +784,30 @@ impl Renderer {
     /// 用指定字体文件（可多个）替换文本字体集，CJK 字体走这里。
     pub fn load_text_fonts(&mut self, paths: &[std::path::PathBuf]) -> Result<(), String> {
         self.text.load_fonts(paths)
+    }
+
+    /// UI 通道（只读）：查统计、查已失败的图片。
+    pub fn ui(&self) -> &UiPass {
+        &self.ui
+    }
+
+    /// UI 通道（可变）：开关、注入图片提供者、清图片缓存。
+    pub fn ui_mut(&mut self) -> &mut UiPass {
+        &mut self.ui
+    }
+
+    pub fn ui_stats(&self) -> UiStats {
+        self.ui.stats()
+    }
+
+    /// 独立开关 2D UI 通道；关掉后主通道 / 阴影 / 文本行为完全不变。
+    pub fn set_ui_enabled(&mut self, enabled: bool) {
+        self.ui.set_enabled(enabled);
+    }
+
+    /// 注入 UI 图片解码器（应用层复用 asset 的 image 依赖实现）。
+    pub fn set_ui_image_provider(&mut self, provider: std::sync::Arc<dyn UiImageProvider>) {
+        self.ui.set_image_provider(provider);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -960,6 +994,8 @@ impl Renderer {
                 text_glyphs: 0,
                 text_draws: 0,
                 text_missing: 0,
+                ui_quads: 0,
+                ui_draws: 0,
             };
         }
 
@@ -972,6 +1008,23 @@ impl Renderer {
             &[][..]
         };
 
+        // M1 最小 UI：与文本同构的独立 passes。层次关系只需调换两个通道的提交顺序：
+        // 默认 UI 先画、文本后画 = 文本压在 UI 之上（HUD 数字盖在血条上）；
+        // 脚本 set_ui_above_text(true) 则反过来。两者都写 LoadOp::Load，顺序即层次。
+        let uis = if scene.ui_enabled {
+            &scene.ui[..]
+        } else {
+            &[][..]
+        };
+        if scene.ui_above_text {
+            self.ui.render(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &view,
+                uis,
+                self.size,
+            );
             self.text.render(
                 &self.device,
                 &self.queue,
@@ -980,6 +1033,33 @@ impl Renderer {
                 texts,
                 self.size,
             );
+        } else {
+            self.text.render(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &view,
+                texts,
+                self.size,
+            );
+            self.ui.render(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &view,
+                uis,
+                self.size,
+            );
+        }
+        // 统计在真正提交后读取，避免拿到上一帧的数值
+        let text_stats = self.text.stats();
+        self.stats.text_glyphs = text_stats.glyphs;
+        self.stats.text_draws = text_stats.draw_calls;
+        self.stats.text_missing = text_stats.missing;
+        let ui_stats = self.ui.stats();
+        self.stats.ui_quads = ui_stats.quads;
+        self.stats.ui_draws = ui_stats.draw_calls;
+
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
     }

@@ -534,4 +534,116 @@ mod text_script_tests {
         assert!(!scene.borrow().text_enabled, "清空不应顺带打开通道开关");
     }
 
+    // ---------------- M1 最小 UI 脚本绑定 ----------------
+
+    /// 每帧重复提交同一 key：节点数恒为 1，且尺寸单位按最新一次解析。
+    #[test]
+    fn per_frame_ui_rect_does_not_accumulate() {
+        let (mut host, scene) = host();
+        for frame in 0..10 {
+            let src = format!(
+                r#"ui_rect("hp", "topleft", "24px", "{}w", "50%", "12px", 0.2, 0.6, 0.2, 0.9)"#,
+                0
+            );
+            let created = eval_bool(&mut host, &src);
+            assert_eq!(created, frame == 0, "只有首帧是新建，之后都是覆盖");
+            assert_eq!(scene.borrow().ui.len(), 1, "第 {frame} 帧后节点数应仍为 1");
+        }
+        let el = scene.borrow().ui[0].clone();
+        assert_eq!(el.kind, r3e_core::ui::UiKind::Rect);
+        assert_eq!(el.anchor, r3e_core::ui::Anchor::TopLeft);
+        assert_eq!(el.size[0], r3e_core::ui::UiValue::pct(50.0));
+        assert_eq!(el.size[1], r3e_core::ui::UiValue::px(12.0));
+        assert_eq!(el.color, [0.2, 0.6, 0.2, 0.9]);
+    }
+
+    /// 三类元素 + 关键字型 setter 都能改到场景数据。
+    #[test]
+    fn ui_border_and_image_and_setters() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_border("frame", "bottomcenter", "0px", "-32px", "70%", "140px", 2.0, 1.0, 1.0, 1.0, 0.8)"#
+        ));
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_image("icon", "topright", "-24px", "24px", "48px", "48px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        {
+            let scene = scene.borrow();
+            assert_eq!(scene.ui.len(), 2);
+            assert_eq!(scene.ui[0].border_width, 2.0);
+            assert_eq!(scene.ui[1].image, "assets/ui/icon.png");
+            assert_eq!(scene.ui[1].offset[0], r3e_core::ui::UiValue::px(-24.0));
+        }
+
+        // 覆盖式重提不会丢掉 layer / visible（样式保留、位置尺寸刷新）
+        assert!(eval_bool(&mut host, r#"ui_set_layer("icon", 5)"#));
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_rect("icon", "bottomright", "0px", "0px", "8px", "8px", 1.0, 0.0, 0.0, 1.0)"#
+        ));
+        {
+            let scene = scene.borrow();
+            let icon = scene.ui.iter().find(|e| e.key == "icon").unwrap();
+            assert_eq!(icon.layer, 5, "层级属于样式，重提后应保留");
+            assert_eq!(icon.anchor, r3e_core::ui::Anchor::BottomRight);
+            assert_eq!(icon.kind, r3e_core::ui::UiKind::Rect);
+        }
+
+        assert!(eval_bool(&mut host, r#"ui_set_alpha("icon", 0.25)"#));
+        assert_eq!(scene.borrow().ui[1].color[3], 0.25);
+        assert!(eval_bool(&mut host, r#"ui_set_visible("icon", false)"#));
+        assert!(!scene.borrow().ui[1].visible);
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_set_uv("icon", 0.0, 0.0, 0.5, 1.0)"#
+        ));
+        assert_eq!(scene.borrow().ui[1].uv, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(host.eval("ui_count()").unwrap().as_int().unwrap(), 2);
+    }
+
+    /// 不存在的 key 一律返回 false，且不会凭空造出元素。
+    #[test]
+    fn ui_set_on_missing_key_reports_false() {
+        let (mut host, scene) = host();
+        assert!(!eval_bool(&mut host, r#"ui_set_pos("nope", "1px", "2px")"#));
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_set_size("nope", "1px", "2px")"#
+        ));
+        assert!(!eval_bool(&mut host, r#"ui_set_anchor("nope", "center")"#));
+        assert!(!eval_bool(&mut host, r#"ui_set_anchor("nope", "middle")"#));
+        assert!(!eval_bool(&mut host, r#"ui_set_layer("nope", 1)"#));
+        assert!(!eval_bool(&mut host, r#"ui_remove("nope")"#));
+        assert!(scene.borrow().ui.is_empty(), "失败的写入不应造出元素");
+    }
+
+    /// 清空与通道开关 / 层次开关互不干扰。
+    #[test]
+    fn ui_clear_and_channel_switches() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_rect("a", "center", "0px", "0px", "10px", "10px", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_rect("b", "center", "0px", "0px", "10px", "10px", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert_eq!(scene.borrow().ui.len(), 2);
+
+        let _ = host.eval("set_ui_enabled(false)").unwrap();
+        assert!(!scene.borrow().ui_enabled);
+        assert_eq!(scene.borrow().ui.len(), 2, "关通道不清数据");
+        assert!(!scene.borrow().ui_above_text, "默认文本在上");
+
+        let _ = host.eval("set_ui_above_text(true)").unwrap();
+        assert!(eval_bool(&mut host, "ui_above_text()"));
+        assert!(!eval_bool(&mut host, "ui_enabled()"));
+
+        let _ = host.eval("ui_clear()").unwrap();
+        assert!(scene.borrow().ui.is_empty());
+        assert!(!scene.borrow().ui_enabled, "清空不应顺带打开通道开关");
+    }
 }

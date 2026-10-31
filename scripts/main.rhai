@@ -22,12 +22,35 @@ fn on_start() {
     text_add("hud_center", "居中对齐", 640.0, 20.0, 16.0, 0.55, 0.62, 0.72);
     text_set_align("hud_center", "center");
     log("文本节点数 = " + text_count());
+
+    // ---- 2D 屏幕空间 UI（M1 最小 UI）----
+    // 尺寸 / 偏移写成带单位字符串："24px" 是像素，"50%" 是屏幕宽高的百分比。
+    // 锚点：topleft / topcenter / topright / midleft / center / midright /
+    //       bottomleft / bottomcenter / bottomright
+    // 所有元素用 key 定位，同名重复提交只覆盖，不会堆积。
+
+    // 1) 左上角血条：背景 + 当前值两层矩形（都锚在左上角，靠偏移错开）
+    ui_rect("hp_bg", "topleft", "24px", "132px", "260px", "22px", 0.04, 0.05, 0.07, 0.78);
+    ui_rect("hp_fill", "topleft", "27px", "135px", "180px", "16px", 0.88, 0.20, 0.24, 0.95);
     text_add("hp_text", "HP 100 / 100", 30.0, 135.0, 14.0, 1.0, 0.96, 0.96);
     ui_set_layer("hp_bg", 0);
     ui_set_layer("hp_fill", 1);
 
+    // 2) 底部对话框底框：半透明矩形 + 边框（宽度按屏幕百分比，换分辨率不错位）
+    ui_rect("dlg_bg", "bottomcenter", "0px", "-56px", "72%", "132px", 0.03, 0.04, 0.06, 0.62);
+    ui_border("dlg_frame", "bottomcenter", "0px", "-56px", "72%", "132px", 2.0, 0.85, 0.74, 0.42, 0.9);
+    ui_set_layer("dlg_bg", 0);
+    ui_set_layer("dlg_frame", 2);
+    // 文本仍是绝对像素坐标（text_* 不支持百分比）；x 给屏幕水平中心、配合居中对齐。
     text_add("dlg_text", "（对话框）这里的台词由 text_* 画在 UI 之上。", 640.0, 556.0, 18.0, 0.94, 0.95, 0.98);
     text_set_align("dlg_text", "center");
+
+    // 3) 右上角小图标：从 png 加载（找不到文件时渲染层回退成纯色块，不会崩）
+    ui_image("hud_icon", "topright", "-40px", "24px", "48px", "48px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0);
+    ui_border("hud_icon_ring", "topright", "-42px", "22px", "52px", "52px", 1.0, 0.85, 0.74, 0.42, 0.8);
+    ui_set_layer("hud_icon", 3);
+
+    log("UI 节点数 = " + ui_count());
 
     text_add("audio_hud", "", 24.0, 120.0, 16.0, 0.55, 0.78, 0.62);
     text_set_wrap("audio_hud", 900.0);
@@ -69,6 +92,16 @@ fn on_update(dt) {
     if age > 4.0 {
         remove_node(name);
     }
+
+    // ---- UI HUD 每帧刷新（同名覆盖不新增节点；百分比尺寸在 resize 后自动重算）----
+    let hp = 0.35 + 0.6 * ((t * 0.6).sin() * 0.5 + 0.5);      // 0.35 ~ 0.95
+    let fill_w = (180.0 * hp).round();
+    ui_set_size("hp_fill", fill_w.to_string() + "px", "16px");
+    ui_set_alpha("hp_fill", 0.55 + hp * 0.4);
+    text_set("hp_text", "HP " + (hp * 100.0).round().to_string() + " / 100");
+    // 对话框台词跟着鼠标/时间走，验证文本与 UI 的层次（文本默认在 UI 之上）
+    text_set("dlg_text", "（对话框）帧号 " + frame().to_string()
+        + " · 文本默认绘制在 UI 之上，可用 set_ui_above_text(true) 反转");
 
     // ---- 文本 HUD 每帧刷新（同名 text_set 只改内容，不会新增节点）----
     text_set("hud_status",

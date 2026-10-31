@@ -17,6 +17,7 @@ pub mod scene;
 pub mod skin;
 pub mod text;
 pub mod transform;
+pub mod ui;
 
 pub use aabb::Aabb;
 pub use air::{AirIssue, AirIssueKind};
@@ -45,3 +46,7 @@ pub use text::{
     ScreenText, TextAlign, TextLayout, TextMeasure,
 };
 pub use transform::Transform;
+pub use ui::{
+    find, remove, resolve_rect, sorted_for_draw, upsert, Anchor, UiElement, UiKind, UiRect, UiUnit,
+    UiUpsert, UiValue, MAX_UI_ELEMENTS,
+};

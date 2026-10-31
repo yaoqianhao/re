@@ -7,6 +7,7 @@ use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
 use crate::text::ScreenText;
+use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;
 use crate::{AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, Transform};
@@ -215,6 +216,9 @@ pub struct SceneFile {
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texts: Vec<ScreenText>,
+    /// 2D 屏幕空间 UI 元素（矩形 / 边框 / 图片）。空表示场景没有 UI 层。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui: Vec<UiElement>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physics: Option<PhysicsSceneDesc>,
     /// 外部资产声明（应用层负责真正导入）。
@@ -254,6 +258,14 @@ pub struct Scene {
     /// 2D 文本通道总开关（脚本 `set_text_enabled`）。false 时渲染层整帧跳过文本通道，
     /// 场景里的文本数据保留，再打开即原样恢复。
     pub text_enabled: bool,
+    /// 2D 屏幕空间 UI 元素（M1 最小 UI）。渲染层每帧按层级排序后重新解析像素矩形，
+    /// 窗口 resize 不需要任何额外通知。加入顺序 = 同层内的绘制顺序。
+    pub ui: Vec<UiElement>,
+    /// 2D UI 通道总开关（脚本 `set_ui_enabled`）。false 时整帧跳过 UI 通道，数据保留。
+    pub ui_enabled: bool,
+    /// UI 与文本的前后关系（脚本 `ui_above_text`）。默认 false：文本画在 UI 之上，
+    /// HUD 底框不会盖住文字；置 true 时 UI 通道在文本之后绘制。
+    pub ui_above_text: bool,
 }
 
 impl Default for Scene {
@@ -282,6 +294,9 @@ impl Scene {
             skins: Vec::new(),
             texts: Vec::new(),
             text_enabled: true,
+            ui: Vec::new(),
+            ui_enabled: true,
+            ui_above_text: false,
         }
     }
 
@@ -834,6 +849,7 @@ impl Scene {
             scene.spawn(obj)?;
         }
         scene.texts = file.texts.into_iter().map(|t| t.sanitized()).collect();
+        scene.ui = file.ui.into_iter().map(|u| u.sanitized()).collect();
         scene.update_world_transforms();
         Ok(scene)
     }
@@ -874,6 +890,7 @@ impl Scene {
             },
             assets: self.assets.clone(),
             texts: self.texts.clone(),
+            ui: self.ui.clone(),
         }
     }
 

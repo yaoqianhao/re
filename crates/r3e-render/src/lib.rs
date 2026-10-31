@@ -6,6 +6,12 @@
 pub mod mesh;
 pub mod renderer;
 pub mod text;
+pub mod ui;
 
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use renderer::{LayeredProvider, MeshCache, RenderStats, Renderer};
+pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
+pub use ui::{
+    images_to_load, plan_ui, plan_ui_limited, UiBatch, UiBuild, UiImageProvider, UiInstance,
+    UiPass, UiStats, MAX_UI_QUADS, MAX_UI_TEXTURE_DIM,
+};

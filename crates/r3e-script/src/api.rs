@@ -9,6 +9,7 @@ use std::rc::Rc;
 use glam::{Vec3, Vec4};
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
+use r3e_core::ui::{Anchor, UiElement, UiKind, UiValue};
 use r3e_core::{InputState, KeyCode, MeshRef, NodeId, ObjectDesc, Scene, ScreenText, TextAlign};
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -1395,6 +1396,302 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         estimate_text_height(content, sanitize_size(f32_of(size))) as f64
     });
 
+    // ---------------- 2D 屏幕空间 UI（M1 最小 UI）----------------
+    // 与 text_* 同构：场景里的 `ui` 是唯一真源，这些绑定只改数据。
+    // 都用 `key` 定位，同名即整体覆盖 —— 脚本每帧调用也不会重复堆积。
+    // 尺寸 / 偏移写成带单位字符串："24px"、"50%"（百分比按屏幕宽高算）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "ui_rect",
+        move |key: &str,
+              anchor: &str,
+              x: &str,
+              y: &str,
+              w: &str,
+              h: &str,
+              r: f64,
+              g: f64,
+              b: f64,
+              a: f64|
+              -> bool {
+            upsert_ui(&c, key, UiKind::Rect, anchor, [x, y], [w, h], [r, g, b, a])
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "ui_border",
+        move |key: &str,
+              anchor: &str,
+              x: &str,
+              y: &str,
+              w: &str,
+              h: &str,
+              width: f64,
+              r: f64,
+              g: f64,
+              b: f64,
+              a: f64|
+              -> bool {
+            let added = upsert_ui(
+                &c,
+                key,
+                UiKind::Border,
+                anchor,
+                [x, y],
+                [w, h],
+                [r, g, b, a],
+            );
+            with_ui(&c, key, |el| el.border_width = f32_of(width));
+            added
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "ui_image",
+        move |key: &str,
+              anchor: &str,
+              x: &str,
+              y: &str,
+              w: &str,
+              h: &str,
+              path: &str,
+              r: f64,
+              g: f64,
+              b: f64,
+              a: f64|
+              -> bool {
+            let added = upsert_ui(&c, key, UiKind::Image, anchor, [x, y], [w, h], [r, g, b, a]);
+            with_ui(&c, key, |el| el.image = path.to_string());
+            added
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_pos", move |key: &str, x: &str, y: &str| -> bool {
+        with_ui(&c, key, |el| {
+            el.offset = [parse_ui_value(x), parse_ui_value(y)]
+        })
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_size", move |key: &str, w: &str, h: &str| -> bool {
+        with_ui(&c, key, |el| {
+            el.size = [parse_ui_value(w), parse_ui_value(h)]
+        })
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_anchor", move |key: &str, anchor: &str| -> bool {
+        match Anchor::parse(anchor) {
+            Some(a) => with_ui(&c, key, |el| el.anchor = a),
+            None => {
+                println!(
+                    "[script] 未知锚点 `{anchor}`（可选 topleft / topcenter / ... / bottomright）"
+                );
+                false
+            }
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "ui_set_color",
+        move |key: &str, r: f64, g: f64, b: f64, a: f64| -> bool {
+            with_ui(&c, key, |el| {
+                el.color = [
+                    f32_of(r).clamp(0.0, 1.0),
+                    f32_of(g).clamp(0.0, 1.0),
+                    f32_of(b).clamp(0.0, 1.0),
+                    f32_of(a).clamp(0.0, 1.0),
+                ]
+            })
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_alpha", move |key: &str, a: f64| -> bool {
+        with_ui(&c, key, |el| el.color[3] = f32_of(a).clamp(0.0, 1.0))
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_layer", move |key: &str, layer: i64| -> bool {
+        with_ui(&c, key, |el| {
+            el.layer = layer.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+        })
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_visible", move |key: &str, on: bool| -> bool {
+        with_ui(&c, key, |el| el.visible = on)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_border", move |key: &str, width: f64| -> bool {
+        with_ui(&c, key, |el| el.border_width = f32_of(width))
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_set_image", move |key: &str, path: &str| -> bool {
+        with_ui(&c, key, |el| el.image = path.to_string())
+    });
+
+    // uv 子区间（九宫格扩展位；现在用来做图集裁切）
+    let c = ctx.clone();
+    engine.register_fn(
+        "ui_set_uv",
+        move |key: &str, u0: f64, v0: f64, u1: f64, v1: f64| -> bool {
+            with_ui(&c, key, |el| {
+                el.uv = [f32_of(u0), f32_of(v0), f32_of(u1), f32_of(v1)]
+            })
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("ui_remove", move |key: &str| -> bool {
+        let mut scene = c.scene.borrow_mut();
+        let before = scene.ui.len();
+        scene.ui.retain(|el| el.key != key);
+        scene.ui.len() != before
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_clear", move || {
+        c.scene.borrow_mut().ui.clear();
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_exists", move |key: &str| -> bool {
+        c.scene.borrow().ui.iter().any(|el| el.key == key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_count", move || -> i64 {
+        c.scene.borrow().ui.len() as i64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_keys", move || -> Array {
+        c.scene
+            .borrow()
+            .ui
+            .iter()
+            .map(|el| Dynamic::from(el.key.clone()))
+            .collect()
+    });
+
+    // UI 通道总开关：关掉后渲染层整帧跳过 UI pass（3D / 文本行为不变）。
+    let c = ctx.clone();
+    engine.register_fn("set_ui_enabled", move |on: bool| {
+        c.scene.borrow_mut().ui_enabled = on;
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_enabled", move || -> bool {
+        c.scene.borrow().ui_enabled
+    });
+
+    // 文本与 UI 的层次：false（默认）= 文本在上；true = UI 盖住文本。
+    let c = ctx.clone();
+    engine.register_fn("set_ui_above_text", move |on: bool| {
+        c.scene.borrow_mut().ui_above_text = on;
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_above_text", move || -> bool {
+        c.scene.borrow().ui_above_text
+    });
+
+}
+
+/// 解析带单位的 UI 数值："24px" / "50%" / "12"（默认像素）。
+fn parse_ui_value(text: &str) -> UiValue {
+    let raw = text.trim();
+    if let Some(num) = raw.strip_suffix('%') {
+        return UiValue::pct(num.trim().parse::<f32>().unwrap_or(0.0));
+    }
+    let num = raw
+        .strip_suffix("px")
+        .unwrap_or(raw)
+        .trim()
+        .parse::<f32>()
+        .unwrap_or(0.0);
+    UiValue::px(num)
+}
+
+/// 按 key 修改场景里的一条 UI 元素；找不到返回 false。
+fn with_ui(ctx: &ScriptContext, key: &str, edit: impl FnOnce(&mut UiElement)) -> bool {
+    let mut scene = ctx.scene.borrow_mut();
+    match scene.ui.iter_mut().find(|el| el.key == key) {
+        Some(el) => {
+            edit(el);
+            true
+        }
+        None => false,
+    }
+}
+
+/// 同名覆盖式写入：新增返回 true，覆盖返回 false（与 `text_add` 语义一致）。
+///
+/// 覆盖时保留 `layer` / `visible` / `uv` —— 这三个是「样式」，不该因为每帧重发
+/// 位置尺寸就被重置；颜色与尺寸走新值。
+fn upsert_ui(
+    ctx: &ScriptContext,
+    key: &str,
+    kind: UiKind,
+    anchor: &str,
+    offset: [&str; 2],
+    size: [&str; 2],
+    color: [f64; 4],
+) -> bool {
+    let anchor = match Anchor::parse(anchor) {
+        Some(a) => a,
+        None => {
+            println!("[script] 未知锚点 `{anchor}`，回退为 topleft");
+            Anchor::TopLeft
+        }
+    };
+    let mut el = UiElement::new(key, kind, anchor);
+    el.offset = [parse_ui_value(offset[0]), parse_ui_value(offset[1])];
+    el.size = [parse_ui_value(size[0]), parse_ui_value(size[1])];
+    el.color = [
+        f32_of(color[0]).clamp(0.0, 1.0),
+        f32_of(color[1]).clamp(0.0, 1.0),
+        f32_of(color[2]).clamp(0.0, 1.0),
+        f32_of(color[3]).clamp(0.0, 1.0),
+    ];
+    if kind != UiKind::Border {
+        el.border_width = 0.0;
+    }
+    let mut scene = ctx.scene.borrow_mut();
+    match scene.ui.iter_mut().find(|e| e.key == key) {
+        Some(slot) => {
+            let layer = slot.layer;
+            let visible = slot.visible;
+            let uv = slot.uv;
+            let border_width = slot.border_width;
+            *slot = el.clone();
+            slot.layer = layer;
+            slot.visible = visible;
+            slot.uv = uv;
+            if kind == UiKind::Border {
+                slot.border_width = if border_width > 0.0 {
+                    border_width
+                } else {
+                    2.0
+                };
+            }
+            false
+        }
+        None => {
+            if kind == UiKind::Border && el.border_width <= 0.0 {
+                el.border_width = 2.0;
+            }
+            scene.ui.push(el);
+            true
+        }
+    }
 }
 
 /// 按 key 修改场景里的一条文本；找不到返回 false（脚本可据此判断要不要 `text_add`）。

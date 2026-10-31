@@ -167,6 +167,7 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | `camera.rs` | 透视相机与轨道控制 | `Camera` |
 | `light.rs` | 单方向光 + 环境光 | `Light` |
 | `text.rs` | 字体加载、字形位图接口、排版（换行 / 对齐 / 缺字回退）、屏幕文本节点 | `FontSet`, `GlyphSource`, `TextLayout`, `ScreenText`, `TextAlign` |
+| `ui.rs` | 屏幕空间 UI 元素、锚点与单位换算、层级排序（纯数学，不碰 GPU） | `UiElement`, `UiKind`, `Anchor`, `UiUnit`, `UiValue`, `UiRect`, `resolve_rect`, `sort_by_layer` |
 | `glyph_atlas.rs` | 字形图集的货架式分配与分页 | `GlyphAtlas`, `ShelfAllocator`, `GlyphKey` |
 
 **为什么文本在 core 而不是 render**：字形栅格化（fontdue）与排版是纯 CPU 计算，与 wgpu 无关。
@@ -451,6 +452,21 @@ render(scene):
   │     set_index_buffer(Uint32)
   │     draw_indexed(index_count, 0, 0..1)     ← 1 次 call 画完该网格全部实例
   ├─ 统计 RenderStats { draw_calls, instances, shadow_draws, culled, cull_unknown, frame_index }
+  ├─ [UI 通道]（与文本通道同级，谁先谁后由 scene.ui_above_text 决定）
+  │     ui_pass.render(scene.ui, (w, h))       ← ui 为空或 ui_enabled=false 则整段跳过
+  │     ├─ sort_by_layer(scene.ui)              → 层级升序、同层按加入顺序（稳定）
+  │     ├─ 每个元素 resolve_rect(锚点 + 单位) → 屏幕像素矩形；尺寸非正则丢弃
+  │     ├─ 矩形 1 实例 / 边框 4 实例 / 图片 N 实例 → 按纹理分组
+  │     ├─ 首次出现的图片路径 → provider 加载 → create_texture + bind group（失败只记一次）
+  │     └─ 每组 draw(0..6, 实例区间)            → stats.ui_draws++ / ui_quads++
+  ├─ [文本通道] 开 RenderPass：LoadOp::Load 叠加到已画好的颜色附件，**无深度附件**
+  │     text_pass.render(texts)                ← texts 为空则一次 GPU 命令都不发
+  │     ├─ build_text(字体, scene.texts, 图集) → 每字形一个 TextInstance + 新字形上传表
+  │     ├─ 新字形 → write_texture 进对应图集页；新页 → 当场建纹理 + bind group
+  │     ├─ 实例数 > 缓冲容量 → 2 倍扩容重建 instance_buffer
+  │     └─ 按页分组 draw(0..6, 0..n)           → stats.text_draws++
+  ├─ stats.text_glyphs / text_draws / text_missing ← text_pass.stats()
+  ├─ stats.ui_quads / ui_draws                  ← ui_pass.stats()
   ├─ queue.submit + queue.present
 ```
 
@@ -514,6 +530,60 @@ uv 各向内收半个纹素（`UV_INSET`），避免线性采样吃到邻格字�
 另有 `text_set` 对缺失 key 返回 `false`、`text_clear` 与 `set_text_enabled` 互不干扰两条。
 真实字体与上屏效果只由 `cargo run` 的人工验证覆盖（见第 13 章）。
 
+### 5.6 UI 通道（M1：矩形 / 边框 / 图片）
+
+**为什么不再开一类 pass**：三类元素在 GPU 侧是同一种东西 —— 一个带纹理的屏幕四边形。
+所以只有一个 `UiPass`（一条 pipeline、一个实例缓冲），差异全在实例数据里：
+
+| 元素 | 实例数 | 数据 |
+| --- | --- | --- |
+| `Rect` | 1 | 纯色四边形，`texture = None`（绑定 1×1 白纹理 + 顶点色调制） |
+| `Border` | 4 | 上下左右四条矩形，全部落在给定矩形**边界内**（上下整条，左右夹在中间，四角不重叠），厚度夹到 `min(w,h)/2` |
+| `Image` | 1 | 四边形 + 该路径的 `TextureImage`，颜色乘到采样值上（可做淡入淡出） |
+
+同一帧里颜色相同（`texture == None`）的元素合并成一次 draw；图片按路径分组，
+每张纹理一次 draw。因此「血条 2 层 + 对话框 + 边框 + 图标」是 2 个 draw call，
+不是 5 个，也不随元素数量线性增长（受 `MAX_UI_QUADS = 4096` 兜底）。
+
+**与文本通道的层次**：两条通道都是 `LoadOp::Load` + `depth_stencil_attachment: None`，
+即"后画的赢"。默认先 UI 后文本（`scene.ui_above_text == false`），这样对话框底框、
+血条背景永远不会盖住文字；把 `set_ui_above_text(true)` 打开则顺序反转。顺序在
+`Renderer::render` 里只有一处 `if`，不是两套代码路径。
+
+**布局解析全在 CPU**（`r3e-core/src/ui.rs`，零 GPU 依赖、可单测）：
+
+```
+resolve_rect(el, (screen_w, screen_h)):
+  size  = [w.resolve(screen_w), h.resolve(screen_h)]     // px 原值 / pct → 百分比
+  size  ≤ 0 或非有限 → None（不画，不 panic）
+  (ax, ay) = anchor.factors()                            // 9 锚点 → 0 / 0.5 / 1
+  x = ax * (screen_w - w) + offset_x
+  y = ay * (screen_h - h) + offset_y
+```
+
+`ax * (screen_w - w)` 而不是 `ax * screen_w` 是关键：右对齐元素在窗口变宽时保持贴边，
+而不是被推出屏幕。窗口 resize 不需要任何通知 —— 每帧都拿当前 surface 尺寸重算一次，
+这也是"resize 后不错位"的实现级保证（单测覆盖 800×600 / 1600×900 两组尺寸）。
+
+**图片加载的边界**：`r3e-render` 不碰文件 IO（不引 `image` 依赖），只定义
+`UiImageProvider` trait；`r3e-app` 实现它并复用 `r3e-asset::load_texture_image`（png/jpg/tga/bmp）。
+失败路径：加载报错 → 记录到 `failed_images` → 该元素**回退成纯色块**（用元素 color），
+**同一条路径后续不再重试**，也不会每帧刷日志。
+
+**容量与安全阀**：
+
+| 项 | 值 | 超限行为 |
+| --- | --- | --- |
+| 单帧四边形实例 | `MAX_UI_QUADS = 4096` | 超出部分丢弃并累加 `skipped`，不 panic |
+| 纹理边长 | `MAX_UI_TEXTURE_DIM = 8192` | 超限图片按失败处理并回退纯色 |
+| 边框厚度 | `min(w, h) / 2` | 夹住，不会画出反向四边形 |
+
+**测试策略**：`r3e-core/src/ui.rs` 覆盖锚点落点（9 种）、百分比换算、resize 重算、
+空/负/非有限尺寸不 panic、层级稳定排序、serde 往返；`r3e-render/src/ui.rs` 覆盖
+矩形 1 实例、边框 4 实例且厚度被夹、图片按纹理分组、隐藏与退化元素被跳过、
+quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整体建批。
+
+### 5.7 着色器（shader.wgsl）
 
 **Uniform 布局（128 字节，16 字节对齐）**
 
@@ -560,7 +630,7 @@ color = base.rgb * (ambient + light_color * intensity * ndl) + spec
 - **没有 gamma 校正代码**，依赖 surface 用 sRGB 格式自动完成转换；颜色值按线性空间解释。
 - 没有任何纹理采样、没有阴影贴图、没有 PBR 参数。
 
-### 5.6 RenderStats 与 HUD
+### 5.8 RenderStats 与 HUD
 
 ```rust
 pub struct RenderStats {
@@ -573,15 +643,18 @@ pub struct RenderStats {
     pub text_glyphs: u32,  // 文本通道四边形数
     pub text_draws: u32,   // 文本通道 draw call；0 = 关闭 / 无字体 / 无文本
     pub text_missing: u32, // 缺字数（只占位不绘制）
+    pub ui_quads: u32,     // UI 通道四边形数（矩形 1 / 边框 4 / 图片 1）
+    pub ui_draws: u32,     // UI 通道 draw call；0 = 关闭 / 无元素
 }
 ```
 
-`--run-seconds` 的起止探针会把 `shadow_draws` 与主通道实例数一起打出来，
-是「阴影通道真的跑了」的数值证据（场景关闭阴影时为 0）。
+`--run-seconds` 的起止探针会把 `shadow_draws`、文本与 UI 通道的四边形/draw call 数一起打出来，
+是「对应通道真的跑了」的数值证据（关闭时为 0）。UI 探针还会额外给出元素数、缓存贴图数、
+缺图回退数与超限跳过数（来自 `UiPass::stats()`，比 `RenderStats` 更细）。
 
 `app.rs` 每帧把统计写进窗口标题：`r3e — Rust 3D Engine | N 物件 / M draw / X.X ms | 运行中`。这是当前唯一的运行时观测手段（无 GUI overlay）。
 
-### 5.7 方向光阴影贴图（阶段三 D）
+### 5.9 方向光阴影贴图（阶段三 D）
 
 单方向光的正交阴影，一张 `Depth32Float` 深度图 + 第二个 render pass。
 
@@ -900,6 +973,7 @@ pub fn reload_if_changed(&mut self) -> bool {
 命名刻意避开 Rhai 保留字（`text` / `draw` / `font` 都不做前缀裸名），并保持本仓库"短动词 + 按名寻址"的一致性：
 `text_*` 是数据操作，`set_text_enabled` 是通道级开关，与 `set_shadow(on)` 同一个写法。
 
+**UI（M1 矩形 / 边框 / 图片）**
 
 元素存在 `Scene::ui`，与 `texts` 同构：脚本是唯一入口，渲染层每帧全量重建。
 单位以字符串给：`"24px"` / `"50%"` / `"12"`（等价 `"12px"`）；锚点为 9 种
@@ -908,8 +982,23 @@ pub fn reload_if_changed(&mut self) -> bool {
 
 | 函数 | 说明 |
 | --- | --- |
+| `ui_rect(key, anchor, x, y, w, h, r, g, b, a)` | 纯色矩形，alpha 混合 |
+| `ui_border(key, anchor, x, y, w, h, width, r, g, b, a)` | 空心边框，厚度夹到 `min(w,h)/2`，画在矩形外侧 |
+| `ui_image(key, anchor, x, y, w, h, path, r, g, b, a)` | 纹理图片，颜色乘到纹理（`1,1,1,1` = 原色）；路径相对工作目录或 exe 目录 |
+| `ui_set_pos` / `ui_set_size` / `ui_set_anchor` | 改偏移 / 尺寸 / 锚点（未知锚点返回 `false`） |
+| `ui_set_color(key, r, g, b, a)` / `ui_set_alpha(key, a)` | 改整体颜色（含 alpha）/ 只改 alpha |
+| `ui_set_layer(key, layer)` | 改层级（整数，小的先画） |
+| `ui_set_visible(key, on)` | 显隐 |
+| `ui_set_border(key, width)` / `ui_set_image(key, path)` | 改边框厚度 / 换贴图 |
+| `ui_set_uv(key, u0, v0, u1, v1)` | 取纹理子区间（九宫格、图集裁切的预留扩展位） |
+| `ui_remove(key)` / `ui_clear()` | 删一条 / 清空 |
+| `ui_exists(key)` / `ui_count()` / `ui_keys()` | 查询 |
+| `set_ui_enabled(on)` / `ui_enabled()` | UI 通道总开关；关掉后整帧跳过 UI pass，3D 与文本不受影响 |
+| `set_ui_above_text(on)` / `ui_above_text()` | 默认 `false`（文本在 UI 之上）；置 `true` 时 UI 通道后画、盖住文本 |
 
+**同名即覆盖**：`ui_rect` 等写入接口在 key 已存在时只刷新几何/颜色，**保留** `layer` / `visible` /
 `uv`（与 `text_add` 语义一致），返回 `false`。因此 `on_update` 里每帧重复提交不会累积节点，
+由 `r3e-script` 的 `per_frame_ui_rect_does_not_accumulate` 单测锁住。
 
 
 

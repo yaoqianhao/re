@@ -1022,7 +1022,20 @@ fn decode_texture(tex: &ufbx::Texture, base_dir: &Path) -> Option<Arc<TextureIma
 }
 
 /// 解码一张贴图。先按文件头嗅探；TGA / BMP 这类没有可靠 magic 的格式靠扩展名兜底。
-fn decode_image_bytes(bytes: &[u8], name_hint: Option<&str>) -> Option<Arc<TextureImage>> {
+/// 从磁盘直接加载一张贴图（png / jpg / tga / bmp）。
+///
+/// UI 图片这类「按路径取图」的场景复用同一条解码链路，省得再引一份 image 依赖；
+/// 失败返回 `None`（调用方自行决定回退成纯色块还是报错）。
+pub fn load_texture_image(path: impl AsRef<Path>) -> Option<TextureImage> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path).ok()?;
+    decode_image_bytes(&bytes, path.to_str()).map(|image| (*image).clone())
+}
+
+pub(crate) fn decode_image_bytes(
+    bytes: &[u8],
+    name_hint: Option<&str>,
+) -> Option<Arc<TextureImage>> {
     if bytes.is_empty() {
         return None;
     }

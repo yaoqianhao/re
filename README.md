@@ -37,6 +37,7 @@ D:\rust3d-engine
 │   ├─ scene_rapier.json      # Rapier 演示场景（堆叠 / 弹跳 / 圆柱）
 │   ├─ scene_ccd.json         # CCD 穿透对照场景（薄墙 + 两颗只差 ccd 一位的子弹）
 │   ├─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
+│   └─ ui/icon.png            # UI 演示图标（右上角 HUD，可换任意 png）
 ├─ scripts/
 │   ├─ main.rhai              # 行为脚本（纯文本，保存即热重载）
 │   ├─ input_demo.rhai        # 键盘 / 鼠标 / 手柄演示
@@ -394,6 +395,65 @@ fn on_update(dt) {
 }
 ```
 
+### UI：矩形 / 边框 / 图片（M1）
+
+UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动重算重画，**不需要刷新调用**。
+定位用「9 锚点 + 偏移」，尺寸/偏移都可以写像素或屏幕百分比，窗口 resize 后逐帧重新解析，
+不会有残留错位。所有接口按 `key` 定位，**同名即覆盖**，每帧重复提交不会堆积节点。
+
+单位写法：`"24px"` 像素、`"50%"` 屏幕宽/高的百分比、`"12"` 等价 `"12px"`。
+锚点：`topleft` / `topcenter` / `topright` / `midleft` / `center` / `midright` /
+`bottomleft` / `bottomcenter` / `bottomright`（也接受 `top_left`、`bottom-center` 等写法）。
+
+| 函数 | 说明 |
+| --- | --- |
+| `ui_rect(key, anchor, x, y, w, h, r, g, b, a) -> bool` | 纯色矩形（走 alpha 混合） |
+| `ui_border(key, anchor, x, y, w, h, width, r, g, b, a) -> bool` | 空心边框（四条边各一个矩形，全部落在给定矩形**边界内**，四角不重叠；粗细夹到短边一半） |
+| `ui_image(key, anchor, x, y, w, h, path, r, g, b, a) -> bool` | 纹理图片（`r,g,b,a` 乘到纹理上，全 1 = 原色）；路径相对工作目录或 exe 目录 |
+| `ui_set_pos(key, x, y) -> bool` | 改相对锚点的偏移 |
+| `ui_set_size(key, w, h) -> bool` | 改尺寸 |
+| `ui_set_anchor(key, anchor) -> bool` | 改锚点；未知值返回 `false` |
+| `ui_set_color(key, r, g, b, a) -> bool` | 整体改颜色（含 alpha） |
+| `ui_set_alpha(key, a) -> bool` | 只改 alpha |
+| `ui_set_layer(key, layer) -> bool` | 改层级（整数，小的先画） |
+| `ui_set_visible(key, on) -> bool` | 显示 / 隐藏 |
+| `ui_set_border(key, width) -> bool` | 改边框粗细（对非边框元素无效果） |
+| `ui_set_image(key, path) -> bool` | 换贴图路径 |
+| `ui_set_uv(key, u0, v0, u1, v1) -> bool` | 取纹理子区间（九宫格/图集裁切的扩展位） |
+| `ui_remove(key) -> bool` | 删除该元素，返回是否真的删掉了 |
+| `ui_clear()` | 清空全部 UI |
+| `ui_exists(key) -> bool` / `ui_count() -> int` / `ui_keys() -> array` | 查询 |
+| `set_ui_enabled(on)` / `ui_enabled() -> bool` | UI 通道总开关；关掉后整帧跳过 UI pass，3D / 文本不受影响 |
+| `set_ui_above_text(on)` / `ui_above_text() -> bool` | **默认 `false`：文本画在 UI 之上**（HUD 底框不会盖字）；置 `true` 则 UI 盖住文本 |
+
+元素按 `layer` 升序稳定排序绘制（同层按加入顺序），文本与 UI 的前后关系由
+`set_ui_above_text` 决定，需要「某个 UI 盖住文字」时可整体切换或拆到不同通道处理。
+
+示例（`scripts/main.rhai` 内的最小 HUD）：
+
+```rhai
+fn on_start() {
+    // 左上角血条：背景 + 当前值两层矩形
+    ui_rect("hp_bg", "topleft", "24px", "132px", "260px", "22px", 0.04, 0.05, 0.07, 0.78);
+    ui_rect("hp_fill", "topleft", "27px", "135px", "180px", "16px", 0.88, 0.20, 0.24, 0.95);
+    // 底部对话框：宽度按屏幕百分比 + 边框
+    ui_rect("dlg_bg", "bottomcenter", "0px", "-56px", "72%", "132px", 0.03, 0.04, 0.06, 0.62);
+    ui_border("dlg_frame", "bottomcenter", "0px", "-56px", "72%", "132px", 2.0, 0.85, 0.74, 0.42, 0.9);
+    // 右上角图标（png）
+    ui_image("hud_icon", "topright", "-40px", "24px", "48px", "48px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0);
+}
+
+fn on_update(dt) {
+    let hp = 0.35 + 0.6 * ((time() * 0.6).sin() * 0.5 + 0.5);
+    ui_set_size("hp_fill", (180.0 * hp).round().to_string() + "px", "16px");
+    ui_set_alpha("hp_fill", 0.55 + hp * 0.4);
+}
+```
+
+人工验证：`cargo run` 起窗口后应看到左上血条（宽度随呼吸变化）、右侧/顶部文字、底部半透明对话框
+底框与描边、右上角金色圆形图标；拖动窗口改变大小时对话框保持居中贴底、血条保持左上贴边。
+把 `assets/ui/icon.png` 改名再热重载，图标位置会退化成纯色块（渲染层只记录一次加载失败，不刷日志、不崩）。
+
 
 ### 物理
 
@@ -522,6 +582,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
+- UI 只有矩形 / 边框 / 图片三类基本元素：**无圆角、无九宫格、无渐变、无旋转/缩放动画**
+  （`ui_set_uv` 与自定义 shader 留了扩展位）；文本与 UI 的前后关系只有通道级开关
+  （`set_ui_above_text`），不能逐元素互相穿插。
 - 物理：内置后端物件互不碰撞、无旋转、无地形碰撞（无 CCD，高速可能穿地），默认关闭；
   换 Rapier 后端后支持互撞 / 旋转 / 碰撞事件 / **CCD 高速防穿透**（默认开，可逐物件关掉）。
 
@@ -726,4 +789,48 @@ cargo run
   `text_set_on_missing_key_reports_false`、`text_clear_and_channel_switch`
 
 ---
+
+## 13. UI 渲染（M1：矩形 / 边框 / 图片）
+
+**目标**：HUD 与对话框所需的全部基本件——纯色矩形、空心边框、纹理图片，配合锚点自适应布局。
+
+| 层 | 模块 | 职责 |
+| --- | --- | --- |
+| `r3e-core` | `ui.rs` | `UiElement` 数据、9 锚点 + 像素/百分比解析（`resolve_rect`）、层级稳定排序 |
+| `r3e-render` | `ui.rs` | `plan_ui` 纯 CPU 建批、`UiPass` 单管线、`UiImageProvider`（图片解码由 app 注入） |
+| `r3e-render` | `ui.wgsl` | 屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |
+
+**只有一条管线**：矩形 / 边框 / 图片在 GPU 侧都是"带纹理的屏幕四边形"，差异全在实例数据里——
+矩形 1 实例（绑 1×1 白纹理）、边框 4 实例（上下左右，画在矩形外侧）、图片 1 实例。
+同色矩形合并成一次 draw、图片按路径分组，所以演示里的 6 个元素 = **12 个四边形 / 2 次 draw call**。
+
+**单帧顺序**：阴影通道 → 3D 主通道 → **UI 通道 → 文本通道**（默认）。两条 2D 通道都是
+`LoadOp::Load` + 无深度附件，谁后画谁在上：默认文本在 UI 之上（对话框底框不会盖住台词），
+`set_ui_above_text(true)` 可整体反转。
+
+**布局**：`x = anchor_ax * (screen_w - w) + offset_x`，所以右对齐元素在窗口变宽时贴边而不是飞出屏幕；
+每帧用当前 surface 尺寸重算，resize 不需要任何通知，也就不会错位。
+
+**上限与降级**：单帧四边形上限 4096（`MAX_UI_QUADS`），超出丢弃计 `skipped`；图片加载失败
+只记一次并在该元素上回退成纯色块（`missing_images` 计数），不刷日志、不 panic、不反复重试。
+
+**人工验证**：
+
+```powershell
+cargo run -- --run-seconds 3   # 看控制台 UI 探针
+cargo run                      # 看窗口
+```
+
+控制台应打印 `UI 通道：节点 6 / 绘制元素 6 / 四边形 12 / draw call 2 / 贴图 1 / 缺图回退 0 / 超限跳过 0 / 开关 true / UI 在文本之上 false`。
+窗口里应看到：左上血条（宽度随呼吸变化）、底部半透明对话框底框 + 描边、右上角金色圆形图标（`assets/ui/icon.png`）；
+拖动窗口缩放时对话框保持居中贴底、血条保持左上贴边。REPL 里 `set_ui_enabled(false)` 可对照验证 UI 与 3D/文本解耦。
+
+**测试覆盖**（`cargo test -p r3e-core -p r3e-render -p r3e-script`）：
+
+- 锚点落点 9 种、百分比换算、resize 前后重算、空/负/非有限尺寸与超界偏移不 panic、层级稳定排序、
+  同名 key 覆盖不累积且不改槽位顺序（`upsert`）、数量上限只拦新增（`r3e-core/src/ui.rs`）
+- 矩形 1 实例 / 边框 4 实例且厚度被夹 / 图片按纹理分组 / 隐藏与退化元素跳过 / quad 预算丢弃 /
+  图片只请求一次、失败只记一次（`r3e-render/src/ui.rs`）
+- 脚本每帧提交不累积（`per_frame_ui_rect_does_not_accumulate`）、同名覆盖保留 `layer`/`visible`/`uv`、
+  通道开关与前后关系（`r3e-script/src/lib.rs`）
 

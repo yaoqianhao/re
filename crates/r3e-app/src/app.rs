@@ -15,11 +15,13 @@ use r3e_core::input::{
     MOUSE_RIGHT, PAD_AXIS_COUNT, PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT,
     PAD_RIGHT_X, PAD_RIGHT_Y, PAD_RT, PAD_START,
 };
+use r3e_core::mesh::TextureImage;
 use r3e_core::{
     AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance,
 };
 use r3e_editor::RpcServer;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
+use r3e_render::ui::UiImageProvider;
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
 
@@ -29,6 +31,32 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, KeyCode as WinitKeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
+
+/// UI 图片加载器：把「按路径取图」接到 r3e-asset 的解码链路（png / jpg / tga / bmp）。
+///
+/// 渲染层不碰文件 IO，所有解码都发生在 CPU 侧，失败只记一次（见 `UiPass`）。
+struct FsUiImageProvider;
+
+impl UiImageProvider for FsUiImageProvider {
+    fn load_ui_image(&self, path: &str) -> Result<TextureImage, String> {
+        // 相对路径按工作目录解析；找不到再退到可执行文件同目录（便于发布包分发）。
+        let candidate = Path::new(path);
+        let resolved = if candidate.is_absolute() || candidate.exists() {
+            candidate.to_path_buf()
+        } else {
+            match std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(path)))
+                .filter(|p| p.exists())
+            {
+                Some(p) => p,
+                None => candidate.to_path_buf(),
+            }
+        };
+        r3e_asset::load_texture_image(&resolved)
+            .ok_or_else(|| format!("无法解码 UI 图片 `{}`", resolved.display()))
+    }
+}
 
 /// 场景文件缺失时的兜底场景，保证引擎任何情况下都能启动。
 const FALLBACK_SCENE: &str = include_str!("../../../assets/scene.json");
@@ -609,6 +637,22 @@ impl EngineApp {
             renderer.text().atlas_pages(),
             renderer.text().atlas_occupancy() * 100.0,
             self.scene.borrow().text_enabled
+        );
+        // UI 探针：quads 是真正提交的四边形数（矩形 1 / 边框 4 / 图片 1），
+        // draws 是纹理分组后的 draw call 数；ui 非空但 quads 为 0 说明元素全被判为退化（尺寸 <= 0）。
+        let (ui_nodes, ui_enabled, ui_above_text) = {
+            let scene = self.scene.borrow();
+            (scene.ui.len(), scene.ui_enabled, scene.ui_above_text)
+        };
+        let ui = renderer.ui_stats();
+        log::info!(
+            "[{tag}] UI 通道：节点 {ui_nodes} / 绘制元素 {} / 四边形 {} / draw call {} / 贴图 {} / 缺图回退 {} / 超限跳过 {} / 开关 {ui_enabled} / UI 在文本之上 {ui_above_text}",
+            ui.elements,
+            ui.quads,
+            ui.draw_calls,
+            ui.textures,
+            ui.missing_images,
+            ui.skipped
         );
     }
 
@@ -1383,6 +1427,8 @@ impl ApplicationHandler for EngineApp {
                         self.asset_nodes.borrow().len()
                     );
                 }
+                // UI 图片：应用层提供解码器，渲染层只消费 TextureImage
+                renderer.set_ui_image_provider(Arc::new(FsUiImageProvider));
                 // --font：显式指定字体（不指定时 TextPass 已自动加载系统中文字体）
                 if !self.cli_fonts.is_empty() {
                     match renderer.load_text_fonts(&self.cli_fonts) {
