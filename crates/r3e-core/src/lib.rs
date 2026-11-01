@@ -10,6 +10,7 @@ pub mod frustum;
 pub mod glyph_atlas;
 pub mod input;
 pub mod light;
+pub mod material;
 pub mod mesh;
 pub mod node;
 pub mod procedural;
@@ -31,6 +32,11 @@ pub use glyph_atlas::{
 };
 pub use input::{ButtonEdge, InputState, KeyCode, KeyboardState, PadState};
 pub use light::{Light, ShadowSettings};
+pub use material::{
+    clamp_roughness, cook_torrance_brdf, direct_light, distribution_ggx, emissive_radiance,
+    fresnel_f0, fresnel_schlick, geometry_smith, ggx_alpha, BrdfSample, GeoTerms, SurfaceMaterial,
+    DEFAULT_ROUGHNESS, DIELECTRIC_F0, MAX_EMISSIVE, MIN_ROUGHNESS,
+};
 pub use mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use procedural::ProceduralProvider;

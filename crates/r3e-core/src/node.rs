@@ -160,6 +160,11 @@ pub struct Node {
     pub body: Option<u64>,
     /// 场景文件里为该物件声明的物理描述（未声明为 None）。
     pub physics: Option<crate::scene::PhysicsDesc>,
+    /// 物件级 PBR 表面材质（metallic / roughness / emissive）。
+    ///
+    /// `None` 表示「不覆盖」：走网格资产自带的材质，再退到默认材质。
+    /// 写入前必须经过 [`crate::SurfaceMaterial::sanitized`] 收敛。
+    pub material: Option<crate::SurfaceMaterial>,
     /// 每帧由 `Scene::update_world_transforms` 计算的缓存。
     pub world: Mat4,
     /// 世界法线矩阵缓存。
@@ -179,6 +184,7 @@ impl Node {
             children: Vec::new(),
             body: None,
             physics: None,
+            material: None,
             world: Mat4::IDENTITY,
             world_normal: glam::Mat3::IDENTITY,
         }

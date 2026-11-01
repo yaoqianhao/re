@@ -10,7 +10,9 @@ use crate::text::ScreenText;
 use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;
-use crate::{AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, Transform};
+use crate::{
+    AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, SurfaceMaterial, Transform,
+};
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -33,6 +35,9 @@ pub struct ObjectDesc {
     /// 物理描述：只做数据承载，真正生效取决于启用的 `PhysicsBackend`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physics: Option<PhysicsDesc>,
+    /// PBR 表面材质（metallic / roughness / emissive）；省略表示不覆盖网格资产材质。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<SurfaceMaterial>,
 }
 
 /// 物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。
@@ -334,6 +339,8 @@ impl Scene {
         }
         node.visible = desc.visible.unwrap_or(true);
         node.physics = desc.physics;
+        // 场景文件里的材质在写入前收敛：NaN / inf / 超界值不进场景
+        node.material = desc.material.map(|m| m.sanitized());
 
         if let Some(parent_name) = desc.parent {
             let pid = *self
@@ -423,6 +430,56 @@ impl Scene {
 
     pub fn find_id(&self, name: &str) -> Option<NodeId> {
         self.name_index.get(name).copied()
+    }
+
+    // ---------- PBR 材质 ----------
+
+    /// 读取物件当前生效的材质。
+    ///
+    /// 物件不存在返回 `None`；物件存在但没声明材质时返回缺省材质
+    /// （与渲染侧「回退到网格资产材质 / 默认材质」的可见结果一致）。
+    pub fn material_of(&self, name: &str) -> Option<SurfaceMaterial> {
+        self.find(name)
+            .map(|n| n.material.unwrap_or_default().sanitized())
+    }
+
+    /// 整体写入物件材质。写入前统一收敛（NaN / inf / 超界值不进场景）。
+    ///
+    /// 返回 `false` 表示物件不存在。
+    pub fn set_material(&mut self, name: &str, material: SurfaceMaterial) -> bool {
+        match self.find_mut(name) {
+            Some(node) => {
+                node.material = Some(material.sanitized());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 只改 metallic / roughness，保留已有 emissive。
+    pub fn set_material_params(&mut self, name: &str, metallic: f32, roughness: f32) -> bool {
+        let mut material = self.material_of(name).unwrap_or_default();
+        material.metallic = metallic;
+        material.roughness = roughness;
+        self.set_material(name, material)
+    }
+
+    /// 只改自发光（线性 RGB），保留 metallic / roughness。
+    pub fn set_emissive(&mut self, name: &str, emissive: [f32; 3]) -> bool {
+        let mut material = self.material_of(name).unwrap_or_default();
+        material.emissive = emissive;
+        self.set_material(name, material)
+    }
+
+    /// 撤销物件级材质覆盖，回退到网格资产 / 默认材质。返回 `false` 表示物件不存在。
+    pub fn clear_material(&mut self, name: &str) -> bool {
+        match self.find_mut(name) {
+            Some(node) => {
+                node.material = None;
+                true
+            }
+            None => false,
+        }
     }
 
     /// 按名字前缀查找，返回名字列表。
@@ -969,6 +1026,7 @@ impl Scene {
                 .map(|parent| parent.name.clone()),
             visible: (!node.visible).then_some(false),
             physics: node.physics.clone(),
+            material: node.material,
         }
     }
 }
