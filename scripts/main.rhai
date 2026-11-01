@@ -76,6 +76,27 @@ fn on_start() {
     text_add("audio_hud", "", 24.0, 120.0, 16.0, 0.55, 0.78, 0.62);
     text_set_wrap("audio_hud", 900.0);
 
+    // ---- PBR 材质（直接光照 Cook-Torrance）----
+    // 两个旋钮都是 0..1：
+    //   metallic   0 = 绝缘体（塑料 / 石头），1 = 纯金属（漫反射归零，只剩染色高光）
+    //   roughness  0 = 镜面，1 = 完全漫反射；内部下限夹到 0.045 防 GGX 除零
+    // 写入前由 core 的 SurfaceMaterial::sanitized 收敛（NaN / ±inf / 超界都夹回），
+    // 脚本写脏值也不会污染场景。三件套 = GGX 法线分布 + Smith 遮蔽 + Schlick 菲涅尔。
+    set_material("spinner", 1.0, 0.18);    // 抛光金属：高光锐利、没有漫反射
+    set_material("orbiter", 0.0, 0.85);    // 粗糙绝缘体：哑光塑料
+    set_material("sky_cube", 0.0, 0.35);   // 半光滑塑料：有明确高光带
+
+    // 自发光只加不减：不乘 n·l、不吃阴影、不参与光照计算。
+    // 数值可以大于 1（线性 HDR，上限 16），用来做灯管 / 宝石这类开口。
+    create_node("lamp", "cube", 0.0, 3.4, -2.8);
+    set_scale_uniform("lamp", 0.22);
+    set_emissive("lamp", 0.25, 1.4, 2.2);
+
+    // 读回的是「收敛之后真正生效」的材质快照
+    let mat = material_of("spinner");
+    log("spinner 材质 metallic=" + mat.metallic.to_string()
+        + " roughness=" + mat.roughness.to_string());
+
     log("物理后端 = " + physics_backend()
         + " / 开关 = " + physics_enabled()
         + " / 刚体数 = " + body_count());

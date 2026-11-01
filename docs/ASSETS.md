@@ -324,7 +324,8 @@ struct CachedAsset {
 ### P2：材质与贴图 —— ✅ 已完成（2026-10-24）
 
 - 材质表 + 每材质 bind group + 纹理上传（`Rgba8UnormSrgb`，UV 采样）；
-- `MaterialAsset` 字段映射：`pbr.base_color` → `base_color`；`pbr.metallic / roughness` → 高光指数与强度的近似；
+- `MaterialAsset` 字段映射：`pbr.base_color` → `base_color`；`pbr.metallic` / `pbr.roughness` 直通到 PBR 三旋钮
+  （阶段十一起不再退化成「高光指数 + 强度」近似，见 [`ARCHITECTURE.md`](ARCHITECTURE.md) §4.7）；
 - 采样器：`Linear` + `Repeat`，无 mipmap（后续可加）；
 - 验收：带贴图样本（嵌入 + 外链各一）颜色正确、无 UV 错位、无上下颠倒（FBX 的 V 轴与 wgpu 的 UV 原点不同，需显式翻转）。
 

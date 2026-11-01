@@ -140,16 +140,16 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 6,928 | 371 | 108 | `scene.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 3,672 | 80 | 30 | `renderer.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 4,619 | 277 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
-| r3e-physics | 2,286 | 622 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
-| r3e-audio | 907 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
-| r3e-script | 2,577 | — | 18 | `api.rs` / `lib.rs`（含文本、UI、音频语义单测） |
-| r3e-editor | 945 | — | 7 | `lib.rs`（协议 + `EngineApi`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 2,977 | — | 14 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
-| r3e-plugin | 2,253 | — | 38 | `lib.rs`（插件宿主与 ABI） |
-| **合计** | **27,164** | **1,350** | **292** | **约 2.9 万行（含 WGSL）；`cargo test --workspace` 合计 292 passed** |
+| r3e-core | 8,766 | 538 | 134 | `scene.rs` / `material.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 4,107 | 88 | 42 | `renderer.rs` / `pbr.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 4,888 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-physics | 2,548 | 660 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
+| r3e-audio | 982 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
+| r3e-script | 3,158 | — | 25 | `api.rs` / `lib.rs`（含文本、UI、音频、材质语义单测） |
+| r3e-editor | 1,100 | — | 7 | `lib.rs`（协议 + `EngineApi`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 3,238 | — | 14 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-plugin | 2,400 | — | 38 | `lib.rs`（插件宿主与 ABI） |
+| **合计** | **31,187** | **1,580** | **337** | **约 3.2 万行（含 448 行 WGSL）；`cargo test --workspace` 合计 337 passed** |
 
 Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
@@ -158,8 +158,8 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 292 passed / 0 failed（其中原有 278 项语义未改，音频新增 14 项） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 106 passed / 0 failed |
+| 单测（默认特性） | `cargo test --workspace` | 337 passed / 0 failed（其中原有 292 项语义未改，PBR 直接光照新增 45 项：CPU 参考实现、收敛、材质键、脚本与 RPC 写入路径） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 341 passed / 0 failed |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -185,6 +185,7 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | `text.rs` | 字体加载、字形位图接口、排版（换行 / 对齐 / 缺字回退）、屏幕文本节点 | `FontSet`, `GlyphSource`, `TextLayout`, `ScreenText`, `TextAlign` |
 | `ui.rs` | 屏幕空间 UI 元素、锚点与单位换算、层级排序（纯数学，不碰 GPU） | `UiElement`, `UiKind`, `Anchor`, `UiUnit`, `UiValue`, `UiRect`, `resolve_rect`, `sort_by_layer` |
 | `glyph_atlas.rs` | 字形图集的货架式分配与分页 | `GlyphAtlas`, `ShelfAllocator`, `GlyphKey` |
+| `material.rs` | PBR 材质参数、收敛与 Cook-Torrance 纯函数参考实现（零 wgpu 依赖，可单测） | `SurfaceMaterial`, `GeoTerms`, `BrdfSample`, `cook_torrance_brdf`, `direct_light` |
 
 **为什么文本在 core 而不是 render**：字形栅格化（fontdue）与排版是纯 CPU 计算，与 wgpu 无关。
 放 core 有两个直接好处——① `r3e-core` 保持零 GPU 依赖，`architecture_guard` 测试守着这条线；
@@ -359,6 +360,48 @@ pub struct ShadowSettings {
 任何一处传 NaN / 负数 / 超大分辨率都不能让渲染器 panic 或悄悄失效。阴影相机的拟合逻辑在
 `Light::shadow_view_projection(center, radius)`：光源挂到场景包围球外，正交半宽取 `ortho_size` 或 `radius × 1.05`，
 因此光照换向时不需要重建任何包围盒数据。
+
+---
+
+### 4.7 材质模型（PBR 参数与 CPU 参考实现）
+
+```rust
+pub struct SurfaceMaterial {
+    pub metallic: f32,       // 0 = 绝缘体（塑料 / 石头），1 = 纯金属（漫反射归零）
+    pub roughness: f32,      // 0 = 镜面，1 = 完全漫反射；下限 MIN_ROUGHNESS = 0.045
+    pub emissive: [f32; 3],  // 线性 HDR，只加不减，上限 MAX_EMISSIVE = 16
+}
+
+pub struct GeoTerms {        // 四个点积打包，避免 direct_light 参数爆炸
+    pub n_dot_l: f32,
+    pub n_dot_v: f32,
+    pub n_dot_h: f32,
+    pub v_dot_h: f32,
+}
+```
+
+设计要点：
+
+1. **物件级材质是"覆盖层"，不是"完整材质"**。`Node.material` 是 `Option<SurfaceMaterial>`：
+   `None` 表示沿用网格资产自带材质（FBX / glTF 导入的 `MaterialData`），`Some` 表示在资产材质之上覆盖
+   metallic / roughness / emissive（`pbr::MaterialData::overlay`）。因此材质只描述"表面怎么反射"，
+   base color 与贴图仍由资产层提供——一份材质能被多个不同颜色的物件复用，材质键也只取决于这三个旋钮。
+   脚本里 `material_of` 对 `None` 物件返回**缺省值快照**（`metallic 0` / `roughness 0.6` / 无自发光），
+   这是"读不到资产值"的刻意取舍：脚本不感知资产层，避免同一 API 在不同物件上给出不一致的语义。
+2. **收敛发生在写入前，不在着色器兜底**。`SurfaceMaterial::sanitized()` 把 `metallic` 夹到 0..1、
+   `roughness` 夹到 `0.045..1`、`emissive` 每通道夹到 `0..16`，NaN 退回缺省值。场景 JSON、脚本 API、
+   编辑器 RPC 三条写入路径共用 `set_material_params` / `set_emissive`，非法值进不了场景。着色器里再
+   `clamp` 一次只是第二道防线。
+3. **CPU 是纯函数参考实现，GPU 照抄公式**。`cook_torrance_brdf` / `distribution_ggx` / `geometry_smith` /
+   `fresnel_schlick` 都是不依赖 wgpu 的纯函数，因此能在无 GPU 环境跑单测：白炉半球积分反射率 ≤ 1、
+   金属度 1 时漫反射为零、退化输入（NaN / 0 / 负值）保持有限。`shader.wgsl` 里的同名函数与之一一对应，
+   语义漂移会被这些测试卡住。
+4. **`GeoTerms` 是为了接口可读性**。早期把四个点积平铺成参数时，`direct_light` 有 9 个参数——
+   既触发 clippy `too_many_arguments`，调用点也看不出哪个 `1.0` 是 `n·l`、哪个是 `v·h`。打包后
+   `direct_light(base, material, geo, color, intensity, shadow)` 一眼能读出含义。
+5. **材质键用 `f32::to_bits` 精确比较**（`r3e-render::pbr::SurfaceKey`）。参数写入前已收敛，
+   `-0.0` 也被归一成 `0.0`，所以精确比较是安全的；换成近似比较反而会把本应同批的物件拆开。
+   代价是"语义相同但位不同"的参数会被当成两个材质（多一份 48 字节 uniform），这是刻意选择。
 
 ---
 
@@ -639,7 +682,9 @@ quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整�
 
 ### 5.7 着色器（shader.wgsl）
 
-**Uniform 布局（128 字节，16 字节对齐）**
+**Bind group 布局**
+
+`@group(0)`：相机 / 光（128 字节，16 字节对齐）
 
 | 字段 | 类型 | 内容 |
 | --- | --- | --- |
@@ -648,6 +693,18 @@ quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整�
 | `light_dir` | `vec4<f32>` | xyz = 光线行进方向 |
 | `light_color` | `vec4<f32>` | xyz = 光色，**w = 强度** |
 | `ambient` | `vec4<f32>` | xyz = 环境光色 |
+
+`@group(1)`：材质（`pbr::MaterialUniform`，48 字节）
+
+| 字段 | 类型 | 内容 |
+| --- | --- | --- |
+| `base_color` | `vec4<f32>` | rgb = 材质染色因子（乘到物件颜色上），a 参与最终 alpha |
+| `params` | `vec4<f32>` | **x = metallic，y = roughness，z = 是否有 base color 贴图**，w 保留 |
+| `emissive` | `vec4<f32>` | rgb = 自发光（线性 HDR，只加不减），a 保留 |
+| `t_base_color` / `s_base_color` | 纹理 + 采样器 | `params.z > 0.5` 时才采样 |
+
+`@group(2)` = 关节矩阵（P4 蒙皮，storage buffer）；`@group(3)` = 阴影贴图 + 阴影 uniform（阶段 D）。
+材质按 `MaterialKey`（`to_bits` 比较）分桶：同材质的物件共用一份 48 字节 buffer，不逐物件复制。
 
 **顶点阶段**
 
@@ -665,24 +722,35 @@ let normal_matrix = mat3x3<f32>(
 
 用伴随矩阵而不是真的算逆转置，是为了避免在顶点着色器里做 `inverse`（GLSL/WGSL 的 3x3 逆代价高且部分后端实现差异大）。**均匀缩放下该近似是精确的**；非均匀缩放时法线会有轻微偏差——注释已明示这一取舍。
 
-**片元阶段（Blinn-Phong）**
+**片元阶段（Cook-Torrance 直接光照）**
+
+着色器里的 BRDF 与 `r3e-core::material` 的 CPU 参考实现逐项对应——CPU 侧有单测（白炉积分、
+退化输入、金属度归一）兜底，GPU 侧照抄公式，两边算的是同一套语义。
 
 ```wgsl
-n = normalize(world_normal)
-l = normalize(-light_dir)
-v = normalize(camera_pos - world_position)
-h = normalize(l + v)
+// 半程向量：l + v 退化时取法线，避免 normalize(0) 出 NaN
+h = select(normalize(l + v), n, length(l + v) < 1e-4)
 
-ndl  = max(dot(n, l), 0)
-spec = pow(max(dot(n, h), 0), 48.0) * 0.35 * step(0.001, ndl)
+f0 = mix(vec3(DIELECTRIC_F0), albedo, metallic)   // 绝缘体 4%，金属染 base color
+f  = fresnel_schlick(vdh, f0)                     // F
+d  = distribution_ggx(ndh, roughness)             // D：GGX，α = r²
+g  = geometry_smith(ndv, ndl, roughness)          // G：Schlick-GGX，k = (r+1)²/8
 
-color = base.rgb * (ambient + light_color * intensity * ndl) + spec
+// 背面（n·l ≤ 0）直接给零，否则 0·inf 会变 NaN
+specular = ndl > 0 ? f * d * g / (4 * ndv * ndl) : 0
+diffuse  = (1 - f) * (1 - metallic) * albedo / PI
+
+lit = (diffuse + specular) * light_color.rgb * light_color.w * ndl * shadow
+    + albedo * ambient.rgb
+    + emissive.rgb
 ```
 
-- 高光指数 48、强度系数 0.35 是硬编码的"塑料感"参数。
-- `step(0.001, ndl)` 让背光面不出现高光泄漏（否则高光会穿透到背面）。
-- **没有 gamma 校正代码**，依赖 surface 用 sRGB 格式自动完成转换；颜色值按线性空间解释。
-- 没有任何纹理采样、没有阴影贴图、没有 PBR 参数。
+- **阴影只乘直接光**：环境光与自发光不衰减，否则影子是纯黑块、丢暗部层次。
+- **自发光只加不减**：不乘 `n·l`、不吃阴影、不参与光照计算，因此天然是"灯管 / 宝石"这类开口。
+- **两道粗糙度下限**：CPU 侧写入前夹到 `0.045`，着色器再 `clamp` 一次，任一环节漏了也不会爆白。
+- **反照率夹到非负**：负值会把光"减掉"，与 CPU 侧一致按 0 处理。
+- **没有 gamma 校正代码**，依赖 surface 用 sRGB 格式自动完成转换；颜色值全线按线性空间解释。
+- **没有 IBL**：金属只反射方向光，暗部由 `albedo * ambient` 常量项兜底。
 
 ### 5.8 RenderStats 与 HUD
 
@@ -991,6 +1059,15 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_shadow_strength(v)` | 阴影强度 0..1，`mix(1.0, visible, v)` |
 | `set_shadow_size(px)` | 阴影贴图边长，夹到 64..8192，变化时重建深度纹理 |
 | `set_shadow_extent(half)` | 正交半宽，0 = 按场景包围球自适应 |
+
+**材质（PBR）**
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_material(name, metallic, roughness)` | 物件级材质，写入前由 `SurfaceMaterial::sanitized` 收敛；物件不存在返回 `false` |
+| `set_emissive(name, r, g, b)` | 自发光（线性 HDR，每通道夹到 0..16），只加不减 |
+| `material_of(name)` | 读回收敛后的快照：`found` / `metallic` / `roughness` / `emissive` |
+| `clear_material(name)` | 删除物件级材质，回到缺省（`metallic 0` / `roughness 0.6` / 无自发光） |
 
 **时钟与随机**
 
@@ -1557,9 +1634,9 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | 维度 | 现状 | 影响 |
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
-| 材质 | 每物件颜色 × 材质因子 × base_color 贴图 | 无金属度/粗糙度贴图、无法线贴图；材质参数已进 uniform，仅着色近似 |
-| 光照 | 1 方向光 + 环境光，Blinn-Phong；方向光带单张正交阴影贴图（阶段三 D） | 无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
-| 后处理 | 无 | 无 bloom / tonemapping / FXAA |
+| 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
+| 光照 | 1 方向光 + 环境光，直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 IBL / 环境探针 / 反射探针**：金属只反射方向光，暗部靠 `albedo × ambient` 常量项兜底，纯金属背光时偏黑；无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
+| 后处理 | 无 | 无 bloom / tonemapping / FXAA；PBR 与自发光输出可超过 1.0，靠 sRGB 目标截断，高亮区会直接"切平" |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
@@ -1611,6 +1688,8 @@ step_and_render() 开头：drain_editor_jobs()                            │
 
 | **九（已完成：M1 收尾）** | **非空间化音频**：后端 `rodio`（cpal + symphonia），`r3e-audio` 门面（key 账本 / 单条 × 总音量 / 通道开关 / 错误记账 / 静默降级），21 个 `audio_*` 脚本 API，`assets/audio/` 两个合成 wav + `main.rhai` 按键演示 | 新增 `crates/r3e-audio`；`r3e-script` 加 `new_with_audio` 与音频绑定；`r3e-app` 持句柄并每帧 `update()` | 无（`ScriptHost::new` 仍为静默后端，旧调用不受影响） |
 | 十（待做） | **3D 空间化音频**：声源挂场景节点、按距离衰减 + 多普勒 + 听者由活动相机推导 | `r3e-audio` 增 `SpatialSource`，`r3e-core::Scene` 不动（声源仍走运行时注册表），`AudioBackend` 契约复用 | 无（纯增量；`kira` 届时可作为第二后端接入同一契约） |
+| **十一（已完成：PBR 直接光照）** | **Cook-Torrance 直接光照**：`r3e-core::material` 纯函数参考实现（GGX / Smith / Schlick）+ `SurfaceMaterial`（metallic / roughness / emissive）三处写入路径共用收敛；`r3e-render::pbr` 材质 uniform 与 `SurfaceKey` 分桶；着色器片元阶段由 Blinn-Phong 换成 PBR；4 个脚本 API（`set_material` / `set_emissive` / `material_of` / `clear_material`）；`main.rhai` 三档粗糙度 + 自发光演示 | `core/material.rs` 新增，`scene.rs` / `node.rs` 加材质字段与写入入口；`render/pbr.rs` 新增 + `renderer.rs` / `shader.wgsl` 换 PBR；`script/api.rs` 注册 4 个 API；`app.rs` / `editor.rs` 透传 | 无（场景 JSON 向后兼容：`material` 段缺省即默认材质）；观感变化——默认参数下高光比旧 Blinn-Phong 更收敛 |
+| 十二（待做） | **IBL / 环境探针**：预过滤环境图 + BRDF LUT，补上金属的暗部与反射 | `r3e-render` 新增环境贴图通道与第二套采样；`core/material.rs` 增加环境项参考实现 | 无（纯增量，直接光路径不变） |
 
 两条与顺序相关的说明：
 
@@ -1810,13 +1889,15 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-core/src/ui.rs` | `UiElement` / `UiKind` / `Anchor` / `UiUnit` / `UiValue`、`resolve_rect`（锚点 + 像素/百分比解析）、`slice_margins`（九宫格边距换算 + 夹取）、`sort_by_layer`（稳定排序） |
 | `crates/r3e-core/src/glyph_atlas.rs` | `GlyphAtlas` 分页图集、`ShelfAllocator` 货架分配、`GlyphKey`（face+glyph+像素量化） |
 | `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机 |
+| `crates/r3e-core/src/material.rs` | `SurfaceMaterial` 与 `sanitized`、`GeoTerms`、GGX / Smith / Schlick / `cook_torrance_brdf` / `direct_light` 纯函数参考实现（零 wgpu 依赖） |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
 | `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass + 主 pass）、`resize`、`RenderStats` |
 | `crates/r3e-render/src/text.rs` | `TextPass`（独立无深度管线）、`build_text` 顶点装配、图集动态纹理按需扩容、`MAX_TEXT_INSTANCES` 安全阀 |
 | `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`plan_slice`（九宫格切 3×3）、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀（九宫格原子丢弃）、`UiStats` |
 | `crates/r3e-render/src/ui.wgsl` | UI 着色器：屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |
 | `crates/r3e-render/src/text.wgsl` | 文本着色器：屏幕像素 → NDC、图集 R8 采样、alpha 混合 |
-| `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样 |
+| `crates/r3e-render/src/shader.wgsl` | Cook-Torrance 前向着色（GGX / Smith / Schlick）、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样、环境光与自发光不吃阴影 |
+| `crates/r3e-render/src/pbr.rs` | `MaterialUniform`（48 B）组装、`SurfaceKey`（`to_bits` 精确键）、`MaterialData` 与 `overlay`（物件级覆盖文档级） |
 | `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BackendCaps`、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面、查询层契约（`Ray` / `OverlapHit` / `CastShape`） |
 | `crates/r3e-physics/src/rapier_backend.rs` | Rapier 后端：刚体/碰撞体映射、接触求解、碰撞事件回传、parry 窄相查询（raycast / overlap / shape-cast） |
 | `crates/r3e-audio/src/lib.rs` | `Audio` 门面：实例账本、单条 × 总音量、通道开关、错误计数、`sanitize_volume`、静默降级、9 个单测（含 `MockBackend`） |

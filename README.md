@@ -300,6 +300,17 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | `set_shadow_size(px)` | 阴影贴图边长（64..8192，改值重建纹理） |
 | `set_shadow_extent(half)` | 正交半宽；0 = 按场景包围球自适应 |
 
+### 材质：PBR 参数
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_material(name, metallic, roughness)` | `metallic` 0 = 绝缘体 / 1 = 纯金属（漫反射归零）；`roughness` 0 = 镜面 / 1 = 完全漫反射 |
+| `set_emissive(name, r, g, b)` | 自发光（线性 RGB，可 > 1，上限 16），只加不减、不吃阴影 |
+| `material_of(name)` | 读回收敛后真正生效的快照：`found` / `metallic` / `roughness` / `emissive` |
+| `clear_material(name)` | 删除物件级材质，回到缺省 |
+
+三件套（GGX / Smith / Schlick）细节见 [§15 PBR 材质](#15-pbr-材质直接光照-cook-torrance)。
+
 ### 时间 / 随机 / 输出
 
 | 函数 | 说明 |
@@ -688,7 +699,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 
 ## 7. 已知边界
 
-- 单方向光 + 环境光，Blinn-Phong 着色；方向光带单张正交阴影贴图（3×3 PCF，默认开启），无后处理。
+- 单方向光 + 环境光，直接光照走 **Cook-Torrance**（GGX + Smith + Schlick，参数 metallic / roughness / emissive）；
+  **暂无 IBL / 环境探针**：金属只反射方向光，暗部靠环境光常量项兜底，所以纯金属背光时偏黑——
+  后续接 IBL（预过滤环境图 + BRDF LUT）补这一块。方向光带单张正交阴影贴图（3×3 PCF，默认开启），无后处理。
   阴影限制：无点光/聚光阴影、无级联、透明物件也投实心影。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
   骨骼蒙皮、交叉淡入与脚本状态机）；法线/粗糙度贴图、分层/叠加混合、morph target 尚未支持。
@@ -1021,6 +1034,52 @@ cargo run -- --run-seconds 3   # 看控制台音频探针
   播放返回 `true` 但不占实例）、加载失败返回 `false` 并记账、音量上下界夹取、重复 key 不叠加且不算错误、
   通道开关拦截播放。
 - 真实出声、mp3 / ogg 的实际听感、设备热插拔：**待人工验证**（无法自动化）。
+
+---
+
+## 15. PBR 材质（直接光照 Cook-Torrance）
+
+三个旋钮：`metallic`（0..1）、`roughness`（0..1）、`emissive`（线性 RGB，上限 16）。
+API 见 [§4 材质：PBR 参数](#材质pbr-参数)。
+
+**语义边界：物件级材质是覆盖层**。`Node.material` 为 `Option<SurfaceMaterial>`——不写就是沿用网格资产
+（FBX / glTF）自带的材质；写了就在资产材质之上覆盖这三个旋钮，base color 与贴图仍归资产层。
+因此 `set_material("cube", ...)` 只对内置图元"从零建材质"，对导入模型则是"改它的表层参数"。
+脚本 `material_of` 读 `None` 物件时给的是缺省快照（`0 / 0.6 / 无自发光`），不是资产里的真实数值。
+
+**着色模型**：`crates/r3e-render/src/shader.wgsl` 与 `crates/r3e-core/src/material.rs` 逐项对应，
+CPU 侧是纯函数、不依赖 wgpu，所以能吃单测。
+
+| 项 | 形式 |
+| --- | --- |
+| D 法线分布 | GGX / Trowbridge-Reitz，α = roughness² |
+| G 遮蔽 | Smith，Schlick-GGX 近似（直接光 k = (r+1)²/8） |
+| F 菲涅尔 | Schlick，F0 = mix(0.04, albedo, metallic) |
+| 漫反射 | (1 − F)·(1 − metallic)·albedo/π：金属无漫反射，且扣掉镜面已拿走的份额 |
+| 自发光 | 直接加到出射亮度，不乘 n·l、不受阴影影响、不参与光照计算 |
+| 阴影 | 只衰减直接光，环境光与自发光不衰减（否则影子是纯黑块） |
+
+**收敛与夹取**（写入前完成，场景 / 脚本 / RPC 三条路径共用同一套）：
+
+- `metallic` 夹到 0..1；`roughness` 夹到 `MIN_ROUGHNESS = 0.045`..1；`emissive` 每通道夹到 0..16；
+- NaN 退回缺省值，`±inf` 按边界处理，`-0.0` 归一成 `0.0`——材质键按 `to_bits` 比较，
+  等价键分裂会把同一材质的物件拆成两个绘制批次；
+- 着色器再夹一次粗糙度下限，属第二道防线：CPU 侧漏了也不会出 NaN。
+
+**退化处理**：`roughness → 0` 时 α 不趋零；`n·v` 掠射留 `1e-4` 下限；
+`l + v` 退化时半程向量直接取法线；`n·l ≤ 0` 镜面项给零而不是除零。
+
+**演示**：`scripts/main.rhai` 的 `on_start` —— `spinner`（metal 1.0 / rough 0.18）、
+`orbiter`（0.0 / 0.85）、`sky_cube`（0.0 / 0.35），外加自发光 `lamp`。
+
+**测试覆盖**：
+
+- `cargo test -p r3e-core` 的 `material` 模块（11 个）+ `tests/material_roundtrip.rs`：
+  参数收敛、金属度归零漫反射、退化输入保持有限、白炉半球积分反射率 ≤ 1（24×48 采样 × 6 档粗糙度 × 3 档金属度）、
+  粗糙绝缘体反射率接近 albedo、直接光不超光色、自发光只加不减、场景序列化往返。
+- `cargo test -p r3e-render`：材质 uniform 布局与着色器逐字段对齐（48 字节 / 16 对齐）、物件级材质键分桶。
+- `cargo test -p r3e-script`：`set_material` / `set_emissive` / `material_of` / `clear_material` 的写入、收敛与读回。
+- 视觉观感（金属是否像金属、高光带是否自然）**待人工窗口确认**：没有截图 / 像素比对测试。
 
 ---
 
