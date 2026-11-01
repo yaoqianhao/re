@@ -412,6 +412,8 @@ fn on_update(dt) {
 UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动重算重画，**不需要刷新调用**。
 定位用「9 锚点 + 偏移」，尺寸/偏移都可以写像素或屏幕百分比，窗口 resize 后逐帧重新解析，
 不会有残留错位。所有接口按 `key` 定位，**同名即覆盖**，每帧重复提交不会堆积节点。
+元素总数上限 `MAX_UI_ELEMENTS = 1024`（`ui_capacity()` 可读），**只拦新增、不拦覆盖**：
+满载时同 key 仍可刷新，新 key 会被拒绝并返回 `false`。
 
 单位写法：`"24px"` 像素、`"50%"` 屏幕宽/高的百分比、`"12"` 等价 `"12px"`。
 锚点：`topleft` / `topcenter` / `topright` / `midleft` / `center` / `midright` /
@@ -419,9 +421,9 @@ UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动�
 
 | 函数 | 说明 |
 | --- | --- |
-| `ui_rect(key, anchor, x, y, w, h, r, g, b, a) -> bool` | 纯色矩形（走 alpha 混合） |
-| `ui_border(key, anchor, x, y, w, h, width, r, g, b, a) -> bool` | 空心边框（四条边各一个矩形，全部落在给定矩形**边界内**，四角不重叠；粗细夹到短边一半） |
-| `ui_image(key, anchor, x, y, w, h, path, r, g, b, a) -> bool` | 纹理图片（`r,g,b,a` 乘到纹理上，全 1 = 原色）；路径相对工作目录或 exe 目录 |
+| `ui_rect(key, anchor, x, y, w, h, r, g, b, a) -> bool` | 纯色矩形（走 alpha 混合）；超限未写入返回 `false` |
+| `ui_border(key, anchor, x, y, w, h, width, r, g, b, a) -> bool` | 空心边框（四条边各一个矩形，全部落在给定矩形**边界内**，四角不重叠；粗细夹到短边一半）；超限未写入返回 `false` |
+| `ui_image(key, anchor, x, y, w, h, path, r, g, b, a) -> bool` | 纹理图片（`r,g,b,a` 乘到纹理上，全 1 = 原色）；路径相对工作目录或 exe 目录；超限未写入返回 `false` |
 | `ui_set_pos(key, x, y) -> bool` | 改相对锚点的偏移 |
 | `ui_set_size(key, w, h) -> bool` | 改尺寸 |
 | `ui_set_anchor(key, anchor) -> bool` | 改锚点；未知值返回 `false` |
@@ -435,8 +437,23 @@ UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动�
 | `ui_remove(key) -> bool` | 删除该元素，返回是否真的删掉了 |
 | `ui_clear()` | 清空全部 UI |
 | `ui_exists(key) -> bool` / `ui_count() -> int` / `ui_keys() -> array` | 查询 |
+| `ui_capacity() -> int` | UI 元素数量上限（当前 `1024`，由 `r3e_core::ui::MAX_UI_ELEMENTS` 定义） |
+| `ui_last_error() -> string` | 最近一次 UI 写入被拒 / 被纠正的原因；无则空串 |
+| `ui_error_count() -> int` | 累计被拒 / 被纠正次数（同 key 覆盖不算错误） |
 | `set_ui_enabled(on)` / `ui_enabled() -> bool` | UI 通道总开关；关掉后整帧跳过 UI pass，3D / 文本不受影响 |
 | `set_ui_above_text(on)` / `ui_above_text() -> bool` | **默认 `false`：文本画在 UI 之上**（HUD 底框不会盖字）；置 `true` 则 UI 盖住文本 |
+
+**同 key 更新语义**（实现在 `r3e-core::ui`，脚本层不再自己判断）：
+
+| 字段 | 同 key 重提时 |
+| --- | --- |
+| `kind` / `anchor` / `offset` / `size` / `color` / `image` | 取新值——每次提交都在描述「这一帧长什么样」 |
+| `layer` / `visible` / `uv` | 沿用旧值——属于样式与开关，要改请走 `ui_set_layer` / `ui_set_visible` / `ui_set_uv` |
+| `border_width` | 边框元素：入参 `> 0` 取新值，否则沿用旧线宽（旧值也没有就回落默认 `2.0`）；非边框恒为 `0` |
+
+`ui_rect` / `ui_border` / `ui_image` 的返回值含义：`true` = 新建成功；`false` = 没新增
+（同 key 覆盖，或已达上限被拒）。想区分这两者看 `ui_error_count()` / `ui_last_error()`——
+被拒绝不静默丢弃。空 key（含纯空白）一律忽略并记一笔账。
 
 元素按 `layer` 升序稳定排序绘制（同层按加入顺序），文本与 UI 的前后关系由
 `set_ui_above_text` 决定，需要「某个 UI 盖住文字」时可整体切换或拆到不同通道处理。
@@ -872,7 +889,9 @@ cargo run
 **布局**：`x = anchor_ax * (screen_w - w) + offset_x`，所以右对齐元素在窗口变宽时贴边而不是飞出屏幕；
 每帧用当前 surface 尺寸重算，resize 不需要任何通知，也就不会错位。
 
-**上限与降级**：单帧四边形上限 4096（`MAX_UI_QUADS`），超出丢弃计 `skipped`；图片加载失败
+**上限与降级**：元素数上限 1024（`r3e_core::ui::MAX_UI_ELEMENTS`，脚本 `ui_capacity()` 可读）——
+**只拦新增、不拦覆盖**，满载时同 key 刷新照样写进去，新 key 被拒并返回 `false`，不挤掉已有元素；
+单帧四边形上限 4096（`MAX_UI_QUADS`），超出丢弃计 `skipped`；图片加载失败
 只记一次并在该元素上回退成纯色块（`missing_images` 计数），不刷日志、不 panic、不反复重试。
 
 **人工验证**：
@@ -889,10 +908,12 @@ cargo run                      # 看窗口
 **测试覆盖**（`cargo test -p r3e-core -p r3e-render -p r3e-script`）：
 
 - 锚点落点 9 种、百分比换算、resize 前后重算、空/负/非有限尺寸与超界偏移不 panic、层级稳定排序、
-  同名 key 覆盖不累积且不改槽位顺序（`upsert`）、数量上限只拦新增（`r3e-core/src/ui.rs`）
+  同名 key 覆盖不累积且不改槽位顺序（`upsert`）、数量上限只拦新增、同 key 合并策略与边框线宽回落
+  （`merge_same_key` / `upsert_styled`）、非法值写入前收敛（`r3e-core/src/ui.rs`）
 - 矩形 1 实例 / 边框 4 实例且厚度被夹 / 图片按纹理分组 / 隐藏与退化元素跳过 / quad 预算丢弃 /
   图片只请求一次、失败只记一次（`r3e-render/src/ui.rs`）
 - 脚本每帧提交不累积（`per_frame_ui_rect_does_not_accumulate`）、同名覆盖保留 `layer`/`visible`/`uv`、
+  脚本路径超限被拒且计数不增长、满载时同 key 仍可更新、空 key 被拒、非法参数收敛、
   通道开关与前后关系（`r3e-script/src/lib.rs`）
 
 ## 14. 音频播放（M1：非空间化音效与音乐）

@@ -47,6 +47,7 @@ pub use text::{
 };
 pub use transform::Transform;
 pub use ui::{
-    find, remove, resolve_rect, sorted_for_draw, upsert, Anchor, UiElement, UiKind, UiRect, UiUnit,
-    UiUpsert, UiValue, MAX_UI_ELEMENTS,
+    find, find_mut, merge_same_key, remove, resolve_rect, sorted_for_draw, upsert, upsert_styled,
+    Anchor, UiElement, UiKind, UiRect, UiUnit, UiUpsert, UiValue, DEFAULT_BORDER_WIDTH,
+    MAX_UI_ELEMENTS,
 };

@@ -72,6 +72,7 @@ impl ScriptHost {
             audio: audio.clone(),
             clock: clock.clone(),
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
+            ui_log: Rc::new(RefCell::new(api::UiWriteLog::default())),
         };
 
         let mut engine = Engine::new();
@@ -671,6 +672,211 @@ mod text_script_tests {
         let _ = host.eval("ui_clear()").unwrap();
         assert!(scene.borrow().ui.is_empty());
         assert!(!scene.borrow().ui_enabled, "清空不应顺带打开通道开关");
+    }
+
+    /// 容量上限对脚本路径生效：满载后新建被拒、返回 false、计数不增长，上限值可读。
+    #[test]
+    fn ui_capacity_is_enforced_on_script_path() {
+        let (mut host, scene) = host();
+        assert_eq!(
+            host.eval("ui_capacity()").unwrap().as_int().unwrap(),
+            r3e_core::ui::MAX_UI_ELEMENTS as i64,
+            "脚本可读到 core 定的上限"
+        );
+
+        // 用 core 直接铺满，验证的是「脚本这一侧是否还会绕过上限」。
+        {
+            let mut s = scene.borrow_mut();
+            for i in 0..r3e_core::ui::MAX_UI_ELEMENTS {
+                let mut el = r3e_core::ui::UiElement::new(
+                    format!("fill{i}"),
+                    r3e_core::ui::UiKind::Rect,
+                    r3e_core::ui::Anchor::TopLeft,
+                );
+                el.size = [
+                    r3e_core::ui::UiValue::px(1.0),
+                    r3e_core::ui::UiValue::px(1.0),
+                ];
+                s.ui.push(el);
+            }
+        }
+        assert_eq!(
+            host.eval("ui_count()").unwrap().as_int().unwrap(),
+            r3e_core::ui::MAX_UI_ELEMENTS as i64
+        );
+
+        let before = eval_bool(
+            &mut host,
+            r#"ui_rect("overflow", "center", "0px", "0px", "8px", "8px", 1.0, 1.0, 1.0, 1.0)"#,
+        );
+        assert!(!before, "超限必须返回 false，不得静默成功");
+        assert_eq!(
+            scene.borrow().ui.len(),
+            r3e_core::ui::MAX_UI_ELEMENTS,
+            "被拒的元素不得写进场景"
+        );
+        assert!(
+            !scene.borrow().ui.iter().any(|e| e.key == "overflow"),
+            "被拒的 key 不应存在"
+        );
+        assert_eq!(
+            host.eval("ui_error_count()").unwrap().as_int().unwrap(),
+            1,
+            "被拒一次应记账一次"
+        );
+        let msg = host.eval("ui_last_error()").unwrap().into_string().unwrap();
+        assert!(msg.contains("上限"), "错误信息应说明是容量上限: {msg}");
+        assert!(msg.contains("overflow"), "错误信息应带上被拒的 key: {msg}");
+
+        // 边框 / 图片入口同样受上限约束（三条入口共用唯一写点）。
+        for src in [
+            r#"ui_border("ob", "center", "0px", "0px", "8px", "8px", 2.0, 1.0, 1.0, 1.0, 1.0)"#,
+            r#"ui_image("oi", "center", "0px", "0px", "8px", "8px", "a.png", 1.0, 1.0, 1.0, 1.0)"#,
+        ] {
+            assert!(
+                !eval_bool(&mut host, src),
+                "超限入口应一律返回 false: {src}"
+            );
+        }
+        assert_eq!(scene.borrow().ui.len(), r3e_core::ui::MAX_UI_ELEMENTS);
+        assert_eq!(
+            host.eval("ui_error_count()").unwrap().as_int().unwrap(),
+            3,
+            "三种入口的被拒都应记账"
+        );
+    }
+
+    /// 满载时覆盖已有 key 仍然成功：上限只拦新增，不拦更新。
+    #[test]
+    fn ui_capacity_still_allows_update_when_full() {
+        let (mut host, scene) = host();
+        {
+            let mut s = scene.borrow_mut();
+            for i in 0..r3e_core::ui::MAX_UI_ELEMENTS {
+                let mut el = r3e_core::ui::UiElement::new(
+                    format!("fill{i}"),
+                    r3e_core::ui::UiKind::Rect,
+                    r3e_core::ui::Anchor::TopLeft,
+                );
+                el.size = [
+                    r3e_core::ui::UiValue::px(1.0),
+                    r3e_core::ui::UiValue::px(1.0),
+                ];
+                s.ui.push(el);
+            }
+        }
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_rect("fill0", "center", "0px", "0px", "9px", "9px", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert_eq!(
+            scene.borrow().ui.len(),
+            r3e_core::ui::MAX_UI_ELEMENTS,
+            "覆盖不增长"
+        );
+        assert_eq!(
+            scene.borrow().ui[0].size[0],
+            r3e_core::ui::UiValue::px(9.0),
+            "满载时覆盖仍要改到数据"
+        );
+        assert_eq!(
+            host.eval("ui_error_count()").unwrap().as_int().unwrap(),
+            0,
+            "覆盖不算错误"
+        );
+    }
+
+    /// 空 key 一律拒绝并记账，不得造出无 key 元素。
+    #[test]
+    fn ui_empty_key_is_rejected() {
+        let (mut host, scene) = host();
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_rect("", "center", "0px", "0px", "8px", "8px", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_rect("   ", "center", "0px", "0px", "8px", "8px", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert!(scene.borrow().ui.is_empty(), "空 key 不应写入");
+        assert_eq!(host.eval("ui_error_count()").unwrap().as_int().unwrap(), 2);
+        let msg = host.eval("ui_last_error()").unwrap().into_string().unwrap();
+        assert!(msg.contains("key"), "错误信息应指明 key 问题: {msg}");
+    }
+
+    /// 同 key 跨类型重设：类型 / 几何走新值，样式（layer / visible / uv）沿用旧值。
+    #[test]
+    fn ui_same_key_across_kinds_keeps_style() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_border("frame", "topleft", "0px", "0px", "10px", "10px", 3.0, 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert!(eval_bool(&mut host, r#"ui_set_layer("frame", 4)"#));
+        assert!(eval_bool(&mut host, r#"ui_set_visible("frame", false)"#));
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_set_uv("frame", 0.0, 0.0, 0.25, 0.5)"#
+        ));
+
+        // 换成图片元素：不该新增，样式仍在
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_image("frame", "bottomright", "1px", "2px", "20px", "30px", "b.png", 0.5, 0.5, 0.5, 1.0)"#
+        ));
+        {
+            let s = scene.borrow();
+            assert_eq!(s.ui.len(), 1, "同 key 不增长");
+            let el = &s.ui[0];
+            assert_eq!(el.kind, r3e_core::ui::UiKind::Image);
+            assert_eq!(el.image, "b.png");
+            assert_eq!(el.anchor, r3e_core::ui::Anchor::BottomRight);
+            assert_eq!(el.layer, 4, "层级沿用");
+            assert!(!el.visible, "可见性沿用");
+            assert_eq!(el.uv, [0.0, 0.0, 0.25, 0.5], "uv 沿用");
+            assert_eq!(el.border_width, 0.0, "换成非边框后线宽归零");
+        }
+
+        // 换回边框：线宽走新值
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_border("frame", "center", "0px", "0px", "5px", "5px", 6.0, 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        {
+            let s = scene.borrow();
+            assert_eq!(s.ui.len(), 1);
+            assert_eq!(s.ui[0].kind, r3e_core::ui::UiKind::Border);
+            assert_eq!(s.ui[0].border_width, 6.0, "显式线宽应覆盖");
+            assert_eq!(s.ui[0].layer, 4, "样式仍沿用");
+        }
+        assert_eq!(
+            host.eval("ui_error_count()").unwrap().as_int().unwrap(),
+            0,
+            "覆盖不算错误"
+        );
+    }
+
+    /// 非法参数不 panic：坏锚点回退左上并记账，颜色越界由 core 收敛。
+    #[test]
+    fn ui_invalid_params_are_sanitized() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_rect("bad", "nowhere", "0px", "0px", "8px", "8px", 5.0, -2.0, 0.5, 1.0)"#
+        ));
+        {
+            let s = scene.borrow();
+            assert_eq!(s.ui.len(), 1, "坏锚点不应阻断写入");
+            assert_eq!(s.ui[0].anchor, r3e_core::ui::Anchor::TopLeft, "回退左上");
+            assert_eq!(s.ui[0].color, [1.0, 0.0, 0.5, 1.0], "颜色由 core 收敛");
+        }
+        assert_eq!(
+            host.eval("ui_error_count()").unwrap().as_int().unwrap(),
+            1,
+            "坏锚点应记账"
+        );
+        let msg = host.eval("ui_last_error()").unwrap().into_string().unwrap();
+        assert!(msg.contains("锚点"), "错误信息应指明锚点: {msg}");
     }
 }
 

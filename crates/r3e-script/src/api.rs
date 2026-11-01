@@ -10,7 +10,9 @@ use glam::{Vec3, Vec4};
 use r3e_audio::Audio;
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
-use r3e_core::ui::{Anchor, UiElement, UiKind, UiValue};
+use r3e_core::ui::{
+    find_mut, upsert_styled, Anchor, UiElement, UiKind, UiUpsert, UiValue, MAX_UI_ELEMENTS,
+};
 use r3e_core::{InputState, KeyCode, MeshRef, NodeId, ObjectDesc, Scene, ScreenText, TextAlign};
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -36,6 +38,33 @@ pub struct ScriptContext {
     pub audio: Rc<RefCell<Audio>>,
     pub clock: Rc<RefCell<Clock>>,
     pub rng: Rc<Cell<u64>>,
+    /// UI 写入被拒 / 被纠正的记录（`ui_last_error` / `ui_error_count` 的来源）。
+    pub ui_log: Rc<RefCell<UiWriteLog>>,
+}
+
+/// UI 写入的「不能静默失败」账本：只记最后一次原因 + 累计次数。
+///
+/// 与音频的 `audio_last_error` / `audio_error_count` 同构。脚本每帧调用也不会刷屏，
+/// 因为它只存状态、不打印。
+#[derive(Debug, Default)]
+pub struct UiWriteLog {
+    last: Option<String>,
+    count: u64,
+}
+
+impl UiWriteLog {
+    fn record(&mut self, msg: impl Into<String>) {
+        self.last = Some(msg.into());
+        self.count += 1;
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.last.as_deref()
+    }
+
+    pub fn error_count(&self) -> u64 {
+        self.count
+    }
 }
 
 fn f32_of(v: f64) -> f32 {
@@ -1402,6 +1431,11 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     // 与 text_* 同构：场景里的 `ui` 是唯一真源，这些绑定只改数据。
     // 都用 `key` 定位，同名即整体覆盖 —— 脚本每帧调用也不会重复堆积。
     // 尺寸 / 偏移写成带单位字符串："24px"、"50%"（百分比按屏幕宽高算）。
+    //
+    // 三条画元素的入口（`ui_rect` / `ui_border` / `ui_image`）全部走 core 的
+    // `r3e_core::ui::upsert_styled`：数量上限与「同 key 怎么合并」都由 core 定，
+    // 脚本层只负责把参数搬过去。返回值：true = 新建成功，false = 没新增（同 key
+    // 覆盖 或 被上限拒绝）；被拒原因留在 `ui_last_error()` / `ui_error_count()`。
     let c = ctx.clone();
     engine.register_fn(
         "ui_rect",
@@ -1416,7 +1450,16 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
               b: f64,
               a: f64|
               -> bool {
-            upsert_ui(&c, key, UiKind::Rect, anchor, [x, y], [w, h], [r, g, b, a])
+            let el = ui_element(
+                &c,
+                "ui_rect",
+                key,
+                UiKind::Rect,
+                anchor,
+                ([x, y], [w, h]),
+                [r, g, b, a],
+            );
+            submit_ui(&c, el)
         },
     );
 
@@ -1435,17 +1478,17 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
               b: f64,
               a: f64|
               -> bool {
-            let added = upsert_ui(
+            let mut el = ui_element(
                 &c,
+                "ui_border",
                 key,
                 UiKind::Border,
                 anchor,
-                [x, y],
-                [w, h],
+                ([x, y], [w, h]),
                 [r, g, b, a],
             );
-            with_ui(&c, key, |el| el.border_width = f32_of(width));
-            added
+            el.border_width = f32_of(width);
+            submit_ui(&c, el)
         },
     );
 
@@ -1464,9 +1507,17 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
               b: f64,
               a: f64|
               -> bool {
-            let added = upsert_ui(&c, key, UiKind::Image, anchor, [x, y], [w, h], [r, g, b, a]);
-            with_ui(&c, key, |el| el.image = path.to_string());
-            added
+            let mut el = ui_element(
+                &c,
+                "ui_image",
+                key,
+                UiKind::Image,
+                anchor,
+                ([x, y], [w, h]),
+                [r, g, b, a],
+            );
+            el.image = path.to_string();
+            submit_ui(&c, el)
         },
     );
 
@@ -1581,6 +1632,20 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .iter()
             .map(|el| Dynamic::from(el.key.clone()))
             .collect()
+    });
+
+    // 容量上限（core 定值，脚本侧只读）：脚本可以据此提前决定要不要新建元素。
+    engine.register_fn("ui_capacity", move || -> i64 { MAX_UI_ELEMENTS as i64 });
+
+    // 被拒 / 被纠正的写入：原因 + 累计次数。与 `audio_last_error` 同构，不刷屏。
+    let c = ctx.clone();
+    engine.register_fn("ui_last_error", move || -> String {
+        c.ui_log.borrow().last_error().unwrap_or("").to_string()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_error_count", move || -> i64 {
+        c.ui_log.borrow().error_count() as i64
     });
 
     // UI 通道总开关：关掉后渲染层整帧跳过 UI pass（3D / 文本行为不变）。
@@ -1753,7 +1818,7 @@ fn parse_ui_value(text: &str) -> UiValue {
 /// 按 key 修改场景里的一条 UI 元素；找不到返回 false。
 fn with_ui(ctx: &ScriptContext, key: &str, edit: impl FnOnce(&mut UiElement)) -> bool {
     let mut scene = ctx.scene.borrow_mut();
-    match scene.ui.iter_mut().find(|el| el.key == key) {
+    match find_mut(&mut scene.ui, key) {
         Some(el) => {
             edit(el);
             true
@@ -1762,23 +1827,27 @@ fn with_ui(ctx: &ScriptContext, key: &str, edit: impl FnOnce(&mut UiElement)) ->
     }
 }
 
-/// 同名覆盖式写入：新增返回 true，覆盖返回 false（与 `text_add` 语义一致）。
+/// 把脚本参数搬成 core 的 [`UiElement`]（只做解析与搬运，不含任何合并 / 覆盖策略）。
 ///
-/// 覆盖时保留 `layer` / `visible` / `uv` —— 这三个是「样式」，不该因为每帧重发
-/// 位置尺寸就被重置；颜色与尺寸走新值。
-fn upsert_ui(
+/// 锚点写错时回退左上角并记一笔账，但不阻断写入——每帧都在调的脚本不该因为一个笔误
+/// 整块 UI 消失。
+fn ui_element(
     ctx: &ScriptContext,
+    func: &str,
     key: &str,
     kind: UiKind,
     anchor: &str,
-    offset: [&str; 2],
-    size: [&str; 2],
+    geom: ([&str; 2], [&str; 2]),
     color: [f64; 4],
-) -> bool {
+) -> UiElement {
+    let (offset, size) = geom;
     let anchor = match Anchor::parse(anchor) {
         Some(a) => a,
         None => {
-            println!("[script] 未知锚点 `{anchor}`，回退为 topleft");
+            println!("[script] {func}: 未知锚点 `{anchor}`，回退为 topleft");
+            ctx.ui_log
+                .borrow_mut()
+                .record(format!("{func}: 未知锚点 `{anchor}`，回退 topleft"));
             Anchor::TopLeft
         }
     };
@@ -1786,40 +1855,39 @@ fn upsert_ui(
     el.offset = [parse_ui_value(offset[0]), parse_ui_value(offset[1])];
     el.size = [parse_ui_value(size[0]), parse_ui_value(size[1])];
     el.color = [
-        f32_of(color[0]).clamp(0.0, 1.0),
-        f32_of(color[1]).clamp(0.0, 1.0),
-        f32_of(color[2]).clamp(0.0, 1.0),
-        f32_of(color[3]).clamp(0.0, 1.0),
+        f32_of(color[0]),
+        f32_of(color[1]),
+        f32_of(color[2]),
+        f32_of(color[3]),
     ];
-    if kind != UiKind::Border {
-        el.border_width = 0.0;
+    el
+}
+
+/// 脚本侧唯一 UI 写入口：策略（同 key 合并 / 数量上限 / 非法值收敛）全在 core，
+/// 这里只做提交与拒绝记账。
+///
+/// 返回值沿用 `text_add` 的约定：`true` = 新建了元素，`false` = 没新增（同 key 覆盖
+/// 或 超限被拒）。想区分「覆盖」和「被拒」，看 `ui_error_count()` / `ui_last_error()`。
+fn submit_ui(ctx: &ScriptContext, el: UiElement) -> bool {
+    let key = el.key.trim().to_string();
+    if key.is_empty() {
+        let msg = format!("{}: key 不能为空，已忽略", el.kind.name());
+        println!("[script] {msg}");
+        ctx.ui_log.borrow_mut().record(msg);
+        return false;
     }
+    let mut el = el;
+    el.key = key.clone();
     let mut scene = ctx.scene.borrow_mut();
-    match scene.ui.iter_mut().find(|e| e.key == key) {
-        Some(slot) => {
-            let layer = slot.layer;
-            let visible = slot.visible;
-            let uv = slot.uv;
-            let border_width = slot.border_width;
-            *slot = el.clone();
-            slot.layer = layer;
-            slot.visible = visible;
-            slot.uv = uv;
-            if kind == UiKind::Border {
-                slot.border_width = if border_width > 0.0 {
-                    border_width
-                } else {
-                    2.0
-                };
-            }
+    match upsert_styled(&mut scene.ui, el) {
+        UiUpsert::Inserted => true,
+        UiUpsert::Replaced => false,
+        UiUpsert::Rejected => {
+            drop(scene);
+            let msg = format!("UI 元素数量已达上限 {MAX_UI_ELEMENTS}，key `{key}` 未写入");
+            println!("[script] {msg}");
+            ctx.ui_log.borrow_mut().record(msg);
             false
-        }
-        None => {
-            if kind == UiKind::Border && el.border_width <= 0.0 {
-                el.border_width = 2.0;
-            }
-            scene.ui.push(el);
-            true
         }
     }
 }

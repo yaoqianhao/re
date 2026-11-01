@@ -590,12 +590,40 @@ resolve_rect(el, (screen_w, screen_h)):
 
 | 项 | 值 | 超限行为 |
 | --- | --- | --- |
+| 元素总数 | `MAX_UI_ELEMENTS = 1024` | 只拦**新增**：新 key 返回 `UiUpsert::Rejected`，已有元素原样保留；同 key 覆盖不受限 |
 | 单帧四边形实例 | `MAX_UI_QUADS = 4096` | 超出部分丢弃并累加 `skipped`，不 panic |
 | 纹理边长 | `MAX_UI_TEXTURE_DIM = 8192` | 超限图片按失败处理并回退纯色 |
 | 边框厚度 | `min(w, h) / 2` | 夹住，不会画出反向四边形 |
 
+**唯一写点与同 key 语义**（这是本节的结构性约束，改动前先看）：
+
+`Scene::ui` 只有两组写入口，都在 `r3e-core/src/ui.rs`，脚本层**不得**直接 `push`：
+
+| 入口 | 语义 | 调用方 |
+| --- | --- | --- |
+| `upsert` | **裸全量覆盖**：同 key 连 `layer` / `visible` / `uv` 一起被新值重置 | 程序化一次性构造（测试、场景加载） |
+| `upsert_styled` | **脚本唯一写点**：同 key 先走 `merge_same_key`，再跑 `sanitized` 收敛非法值 | `r3e-script` 的 `ui_rect` / `ui_border` / `ui_image` |
+
+两者共用 `UiUpsert` 三态返回值（`Inserted` / `Replaced` / `Rejected`）与同一套上限判定，
+差别只在"同 key 时怎么合并"。`merge_same_key` 的字段策略写死在 core：
+
+| 字段 | 同 key 处理 |
+| --- | --- |
+| `kind` / `anchor` / `offset` / `size` / `color` / `image` | 取新值（每次提交都在描述"这一帧长什么样"） |
+| `layer` / `visible` / `uv` | 沿用旧值（样式与开关，只能由 `ui_set_*` 改） |
+| `border_width` | 边框元素：入参 `> 0` 取新值，否则沿用旧线宽，旧值也无则回落 `DEFAULT_BORDER_WIDTH = 2.0`；非边框恒 `0` |
+
+脚本层的职责被压缩到"搬参数 + 记账"：`submit_ui` 把 `UiUpsert` 翻成 `bool`
+（`Inserted = true`，`Replaced` / `Rejected = false`），空 key 与超限都写进 `UiWriteLog`
+（`last_error` / `error_count`），由 `ui_last_error()` / `ui_error_count()` 观测，
+不做静默丢弃。setter 类接口（`ui_set_*`）共用 `find_mut` 定位槽位，缺失 key 返回 `false`。
+
 **测试策略**：`r3e-core/src/ui.rs` 覆盖锚点落点（9 种）、百分比换算、resize 重算、
-空/负/非有限尺寸不 panic、层级稳定排序、serde 往返；`r3e-render/src/ui.rs` 覆盖
+空/负/非有限尺寸不 panic、层级稳定排序、serde 往返、`merge_same_key` 的三类字段策略、
+`upsert_styled` 的合并与上限（满载可覆盖、满载拒新增）、入参非法值收敛；
+`r3e-script/src/lib.rs` 覆盖脚本路径的同一组保证（超限被拒且 `ui_count()` 不增长、
+满载同 key 仍可更新、空 key 被拒、跨类别同 key 保留样式、非法参数收敛）；
+`r3e-render/src/ui.rs` 覆盖
 矩形 1 实例、边框 4 实例且厚度被夹、图片按纹理分组、隐藏与退化元素被跳过、
 quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整体建批。
 
@@ -1009,12 +1037,17 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `ui_set_uv(key, u0, v0, u1, v1)` | 取纹理子区间（九宫格、图集裁切的预留扩展位） |
 | `ui_remove(key)` / `ui_clear()` | 删一条 / 清空 |
 | `ui_exists(key)` / `ui_count()` / `ui_keys()` | 查询 |
+| `ui_capacity()` | 元素数量上限（`MAX_UI_ELEMENTS = 1024`），供脚本判断"还能不能再加" |
+| `ui_last_error()` / `ui_error_count()` | 最近一次写入被拒/被纠正的原因（无则空串）/ 累计次数 |
 | `set_ui_enabled(on)` / `ui_enabled()` | UI 通道总开关；关掉后整帧跳过 UI pass，3D 与文本不受影响 |
 | `set_ui_above_text(on)` / `ui_above_text()` | 默认 `false`（文本在 UI 之上）；置 `true` 时 UI 通道后画、盖住文本 |
 
-**同名即覆盖**：`ui_rect` 等写入接口在 key 已存在时只刷新几何/颜色，**保留** `layer` / `visible` /
-`uv`（与 `text_add` 语义一致），返回 `false`。因此 `on_update` 里每帧重复提交不会累积节点，
-由 `r3e-script` 的 `per_frame_ui_rect_does_not_accumulate` 单测锁住。
+**同名即覆盖**：`ui_rect` / `ui_border` / `ui_image` 全部走 `core::ui::upsert_styled` 这一个写点，
+key 已存在时只刷新几何/颜色，**保留** `layer` / `visible` / `uv`；边框线宽"给了就覆盖、没给沿用"。
+返回值 `true` 仅代表"新建成功"，`false` 表示"没新增"——可能是同 key 覆盖，也可能是超限被拒，
+后者可通过 `ui_error_count()` 增量与 `ui_last_error()` 区分。因此 `on_update` 里每帧重复提交
+不会累积节点，由 `per_frame_ui_rect_does_not_accumulate`（不累积）与
+`ui_capacity_is_enforced_on_script_path`（超限被拒且计数不增长）两条单测锁住。
 
 **音频（M1 非空间化）**
 

@@ -9,8 +9,15 @@
 //! 屏幕像素坐标，原点在左上角，x 向右、y 向下，与文本层（[`crate::text`]）一致。
 //!
 //! # 同名 key 语义
-//! [`UiElement::key`] 唯一。core 侧写入走 [`upsert`]：同 key 整体覆盖原槽位（顺序
-//! 不变、不累积），新 key 追加；数量上限见 [`MAX_UI_ELEMENTS`]（只拦新增，不拦覆盖）。
+//! [`UiElement::key`] 唯一，两种写入语义都在 core 里，调用方不要再自己实现：
+//! - [`upsert`]：裸全量覆盖。同 key 整体换成新值（顺序不变、不累积），新 key 追加。
+//!   适合「程序化重建一份完整元素」的场景。
+//! - [`upsert_styled`]：脚本 / 每帧提交用的唯一写点。同 key 走 [`merge_same_key`]——
+//!   几何与内容取新值，`layer` / `visible` / `uv` 这类**样式字段沿用旧值**（每帧重发
+//!   位置尺寸不该把样式重置掉）。
+//!
+//! 数量上限见 [`MAX_UI_ELEMENTS`]：只拦新增、不拦覆盖，两种写入都一样。超出返回
+//! [`UiUpsert::Rejected`]，由调用方决定怎么对外暴露（脚本层返回 `false` 并记账）。
 //!
 //! # 扩展位（当前不做，结构已留口）
 //! - 圆角：`UiElement` 现在没有 radius 字段，加圆角时在渲染侧的 shader 里按局部 uv
@@ -23,6 +30,9 @@ use serde::{Deserialize, Serialize};
 
 /// 单帧 UI 元素数量上限（防止脚本每帧新建 key 导致场景无限膨胀）。
 pub const MAX_UI_ELEMENTS: usize = 1024;
+
+/// 边框元素的默认线宽（新建边框、或提交值非法时回落到这里）。
+pub const DEFAULT_BORDER_WIDTH: f32 = 2.0;
 
 /// 锚点：元素矩形在屏幕上的对齐方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -268,7 +278,7 @@ impl Default for UiElement {
             offset: [UiValue::px(0.0), UiValue::px(0.0)],
             size: [UiValue::px(100.0), UiValue::px(100.0)],
             color: [1.0, 1.0, 1.0, 1.0],
-            border_width: 2.0,
+            border_width: DEFAULT_BORDER_WIDTH,
             image: String::new(),
             uv: [0.0, 0.0, 1.0, 1.0],
             layer: 0,
@@ -417,15 +427,67 @@ pub fn find<'a>(elements: &'a [UiElement], key: &str) -> Option<&'a UiElement> {
     elements.iter().find(|e| e.key == key)
 }
 
+/// 按 key 查可变元素（脚本 setter / 渲染层写入用）。
+pub fn find_mut<'a>(elements: &'a mut [UiElement], key: &str) -> Option<&'a mut UiElement> {
+    elements.iter_mut().find(|e| e.key == key)
+}
+
+/// 边框线宽收敛：非边框元素一律 `0`（不画）；边框元素非法 / 未给出时回落到默认。
+fn normalize_border_width(mut element: UiElement) -> UiElement {
+    element.border_width = if element.kind == UiKind::Border {
+        if element.border_width.is_finite() && element.border_width > 0.0 {
+            element.border_width
+        } else {
+            DEFAULT_BORDER_WIDTH
+        }
+    } else {
+        0.0
+    };
+    element
+}
+
+/// 同 key 重复提交时的字段合并策略（**core 唯一实现**，脚本层不再自己判断）。
+///
+/// 分三类处理：
+/// 1. **覆盖**（新值说了算）：`kind` / `anchor` / `offset` / `size` / `color` / `image`
+///    —— 每次提交都在描述「这一帧长什么样」。
+/// 2. **沿用**（旧值说了算）：`layer` / `visible` / `uv` —— 样式与开关，不该因为每帧
+///    重发几何就被重置；要改它们请走 `ui_set_layer` / `ui_set_visible` / `ui_set_uv`。
+/// 3. **有则覆盖、无则沿用**：`border_width` —— 边框元素的入参 `> 0` 时取入参，
+///    否则沿用旧线宽（旧值也没有就回落到 [`DEFAULT_BORDER_WIDTH`]）；非边框元素恒为 0。
+pub fn merge_same_key(existing: &UiElement, incoming: UiElement) -> UiElement {
+    // 先记下「提交方到底有没有给出线宽」，再走收敛（收敛会把 0 折成默认值）。
+    let is_border = incoming.kind == UiKind::Border;
+    let submitted_width = if incoming.border_width.is_finite() {
+        incoming.border_width.max(0.0)
+    } else {
+        0.0
+    };
+    let incoming = normalize_border_width(incoming);
+    let border_width = if !is_border {
+        0.0
+    } else if submitted_width > 0.0 {
+        submitted_width
+    } else if existing.border_width > 0.0 {
+        existing.border_width
+    } else {
+        DEFAULT_BORDER_WIDTH
+    };
+    UiElement {
+        layer: existing.layer,
+        visible: existing.visible,
+        uv: existing.uv,
+        border_width,
+        ..incoming
+    }
+}
+
 /// 按 key 覆盖式写入：同 key 整体替换原槽位（顺序不变），否则追加到末尾。
 ///
-/// core 侧的「同名重复提交不累积」语义实现，纯数据层可直接单测。上限只拦新增、
-/// 不拦覆盖——脚本每帧重发位置尺寸时必须能写进去，否则会被静默丢弃。非法值收敛
-/// 由调用方先跑 [`UiElement::sanitized`]。
-///
-/// 注意：脚本层 [`crate::ui`] 的 `ui_*` 写入还会额外保留 `layer` / `visible` / `uv`
-/// 这些「样式」字段（每帧重发几何不该重置样式），因此 `r3e-script` 目前保留自己的
-/// 写入策略；两者语义一致，后续可把样式保留策略收到这里统一。
+/// 这是**裸全量覆盖**：`layer` / `visible` / `uv` 也会被新值重置。脚本每帧提交的
+/// 场景要用 [`upsert_styled`]（样式字段沿用旧值）。上限只拦新增、不拦覆盖——脚本每帧
+/// 重发位置尺寸时必须能写进去，否则会被静默丢弃。非法值收敛由调用方先跑
+/// [`UiElement::sanitized`]。
 pub fn upsert(elements: &mut Vec<UiElement>, element: UiElement) -> UiUpsert {
     if let Some(slot) = elements.iter_mut().find(|e| e.key == element.key) {
         *slot = element;
@@ -435,6 +497,24 @@ pub fn upsert(elements: &mut Vec<UiElement>, element: UiElement) -> UiUpsert {
         return UiUpsert::Rejected;
     }
     elements.push(element);
+    UiUpsert::Inserted
+}
+
+/// 脚本入口 / 每帧提交的唯一写点：同 key 按 [`merge_same_key`] 合并，新 key 追加。
+///
+/// 与 [`upsert`] 的差别只有「同 key 时怎么合并」：这里保留样式字段、并把边框线宽与
+/// 非法值一起收敛（插入前跑 [`UiElement::sanitized`]）。数量上限语义与 [`upsert`]
+/// 完全一致：只拦新增、不拦覆盖，满载时同 key 更新照样生效。
+pub fn upsert_styled(elements: &mut Vec<UiElement>, element: UiElement) -> UiUpsert {
+    if let Some(slot) = elements.iter_mut().find(|e| e.key == element.key) {
+        let merged = merge_same_key(slot, element.sanitized());
+        *slot = merged;
+        return UiUpsert::Replaced;
+    }
+    if elements.len() >= MAX_UI_ELEMENTS {
+        return UiUpsert::Rejected;
+    }
+    elements.push(normalize_border_width(element.sanitized()));
     UiUpsert::Inserted
 }
 
@@ -619,6 +699,122 @@ mod tests {
         assert_eq!(upsert(&mut elements, again), UiUpsert::Replaced);
         assert_eq!(elements.len(), MAX_UI_ELEMENTS);
         assert_eq!(elements[0].layer, 7, "满载时覆盖仍要生效");
+    }
+
+    /// 同 key 合并策略：几何 / 内容取新值，样式字段（layer / visible / uv）沿用旧值。
+    #[test]
+    fn merge_same_key_keeps_style_fields() {
+        let mut old = el(UiKind::Rect, Anchor::TopLeft);
+        old.key = "hp".into();
+        old.size = [UiValue::px(10.0), UiValue::px(10.0)];
+        old.layer = 7;
+        old.visible = false;
+        old.uv = [0.0, 0.0, 0.5, 1.0];
+
+        let mut incoming = el(UiKind::Rect, Anchor::BottomRight);
+        incoming.key = "hp".into();
+        incoming.offset = [UiValue::px(4.0), UiValue::px(8.0)];
+        incoming.size = [UiValue::pct(50.0), UiValue::px(12.0)];
+        incoming.color = [0.1, 0.2, 0.3, 0.4];
+
+        let merged = merge_same_key(&old, incoming);
+        assert_eq!(merged.key, "hp");
+        assert_eq!(merged.anchor, Anchor::BottomRight, "锚点属于几何，取新值");
+        assert_eq!(merged.offset, [UiValue::px(4.0), UiValue::px(8.0)]);
+        assert_eq!(merged.size, [UiValue::pct(50.0), UiValue::px(12.0)]);
+        assert_eq!(merged.color, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(merged.layer, 7, "层级属于样式，沿用旧值");
+        assert!(!merged.visible, "可见性属于样式，沿用旧值");
+        assert_eq!(merged.uv, [0.0, 0.0, 0.5, 1.0], "uv 属于样式，沿用旧值");
+    }
+
+    /// 边框线宽的三条分支：给出就覆盖、没给就沿用、非边框恒为 0。
+    #[test]
+    fn merge_same_key_border_width_policy() {
+        let mut old = el(UiKind::Border, Anchor::TopLeft);
+        old.key = "f".into();
+        old.border_width = 6.0;
+
+        let mut explicit = el(UiKind::Border, Anchor::TopLeft);
+        explicit.key = "f".into();
+        explicit.border_width = 3.0;
+        assert_eq!(merge_same_key(&old, explicit).border_width, 3.0);
+
+        let mut unspecified = el(UiKind::Border, Anchor::TopLeft);
+        unspecified.key = "f".into();
+        unspecified.border_width = 0.0;
+        assert_eq!(
+            merge_same_key(&old, unspecified).border_width,
+            6.0,
+            "没给线宽时沿用旧值，不能被重置成默认"
+        );
+
+        let fresh = el(UiKind::Border, Anchor::TopLeft);
+        assert_eq!(
+            merge_same_key(&fresh, el(UiKind::Border, Anchor::TopLeft)).border_width,
+            DEFAULT_BORDER_WIDTH,
+            "旧值也没给时回落到默认"
+        );
+
+        let mut as_rect = el(UiKind::Rect, Anchor::TopLeft);
+        as_rect.key = "f".into();
+        assert_eq!(
+            merge_same_key(&old, as_rect).border_width,
+            0.0,
+            "换成非边框元素后线宽归零（不参与绘制）"
+        );
+    }
+
+    /// `upsert_styled`：同 key 覆盖不累积、样式保留；满载时只拒新增、不拒覆盖。
+    #[test]
+    fn upsert_styled_merges_and_respects_capacity() {
+        let mut elements = Vec::new();
+        let mut first = el(UiKind::Rect, Anchor::TopLeft);
+        first.key = "a".into();
+        first.size = [UiValue::px(100.0), UiValue::px(10.0)];
+        assert_eq!(upsert_styled(&mut elements, first), UiUpsert::Inserted);
+        assert!(find_mut(&mut elements, "a").is_some());
+        find_mut(&mut elements, "a").unwrap().layer = 5;
+
+        let mut again = el(UiKind::Rect, Anchor::TopLeft);
+        again.key = "a".into();
+        again.size = [UiValue::px(250.0), UiValue::px(10.0)];
+        assert_eq!(upsert_styled(&mut elements, again), UiUpsert::Replaced);
+        assert_eq!(elements.len(), 1, "同 key 不新增槽位");
+        assert_eq!(elements[0].size[0], UiValue::px(250.0));
+        assert_eq!(elements[0].layer, 5, "样式字段应被保留");
+
+        let mut capped: Vec<UiElement> = (0..MAX_UI_ELEMENTS)
+            .map(|i| {
+                let mut e = el(UiKind::Rect, Anchor::TopLeft);
+                e.key = format!("k{i}");
+                e
+            })
+            .collect();
+        let mut overflow = el(UiKind::Rect, Anchor::TopLeft);
+        overflow.key = "overflow".into();
+        assert_eq!(upsert_styled(&mut capped, overflow), UiUpsert::Rejected);
+        assert_eq!(capped.len(), MAX_UI_ELEMENTS, "超限不该写进去");
+
+        let mut update = el(UiKind::Rect, Anchor::TopLeft);
+        update.key = "k0".into();
+        update.size = [UiValue::px(7.0), UiValue::px(7.0)];
+        assert_eq!(upsert_styled(&mut capped, update), UiUpsert::Replaced);
+        assert_eq!(capped.len(), MAX_UI_ELEMENTS);
+        assert_eq!(capped[0].size[0], UiValue::px(7.0), "满载仍可覆盖");
+    }
+
+    /// 插入路径要收敛非法值：NaN 颜色折成 0，边框线宽非法时回落默认。
+    #[test]
+    fn upsert_styled_sanitizes_incoming() {
+        let mut elements = Vec::new();
+        let mut e = el(UiKind::Border, Anchor::Center);
+        e.key = "b".into();
+        e.color = [f32::NAN, 2.0, -1.0, 1.0];
+        e.border_width = f32::NAN;
+        assert_eq!(upsert_styled(&mut elements, e), UiUpsert::Inserted);
+        assert_eq!(elements[0].color, [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(elements[0].border_width, DEFAULT_BORDER_WIDTH);
     }
 
     /// 超出屏幕的极端偏移只影响落点，不得 panic、不得产生 NaN。
