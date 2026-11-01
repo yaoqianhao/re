@@ -13,6 +13,7 @@ use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, ProceduralProvider, Scene
 use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
+use crate::pbr::{MaterialUniform, SurfaceKey};
 use crate::text::{TextPass, TextStats};
 use crate::ui::{UiImageProvider, UiPass, UiStats};
 
@@ -21,32 +22,59 @@ const INITIAL_INSTANCE_CAPACITY: u64 = 512;
 /// 蒙皮网格做视锥剔除时的包围盒外扩比例：动画形变会超出静止姿态的 AABB。
 const SKIN_CULL_MARGIN: f32 = 0.25;
 
-/// 材质 uniform：base color + PBR 标量。32 字节，16 字节对齐。
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct MaterialUniform {
-    base_color: [f32; 4],
-    /// x = metallic，y = roughness，z = 是否有贴图（0/1），w 保留。
-    params: [f32; 4],
-}
-
-impl Default for MaterialUniform {
-    fn default() -> Self {
-        Self {
-            base_color: [1.0, 1.0, 1.0, 1.0],
-            params: [0.0, 0.6, 0.0, 0.0],
-        }
-    }
-}
-
-/// 材质键：默认材质，或「某资产内第 N 个材质」。
+/// 材质键：默认材质，或「某资产内第 N 个材质」，可再叠加「物件级 PBR 覆盖」。
 ///
 /// 渲染层只认这个键，具体材质参数通过 `MeshProvider::material` 取，
-/// 因此这里依旧不依赖任何模型文件格式。
+/// 因此这里依旧不依赖任何模型文件格式。物件级覆盖（场景 / 脚本写入的
+/// metallic / roughness / emissive）用 [`SurfaceKey`] 参与键值，保证同一网格的
+/// 不同 PBR 参数各自成批、互不串味。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum MaterialKey {
     Default,
-    Asset { asset: AssetId, index: u32 },
+    Asset {
+        asset: AssetId,
+        index: u32,
+    },
+    /// 纯粹的物件级材质（无资产材质可继承，base color 用 uniform 常量）
+    Surface(SurfaceKey),
+    /// 资产材质 + 物件级覆盖
+    AssetSurface {
+        asset: AssetId,
+        index: u32,
+        surface: SurfaceKey,
+    },
+}
+
+impl MaterialKey {
+    /// 叠加物件级 PBR 覆盖；`None` 原样返回。
+    fn with_surface(self, surface: Option<SurfaceKey>) -> Self {
+        match (self, surface) {
+            (key, None) => key,
+            (MaterialKey::Asset { asset, index }, Some(surface)) => MaterialKey::AssetSurface {
+                asset,
+                index,
+                surface,
+            },
+            (MaterialKey::Default, Some(surface)) | (MaterialKey::Surface(_), Some(surface)) => {
+                MaterialKey::Surface(surface)
+            }
+            (key @ MaterialKey::AssetSurface { .. }, Some(_)) => key,
+        }
+    }
+
+    /// 拆成「资产材质来源 + 物件级覆盖」两部分。
+    fn split(self) -> (Option<(AssetId, u32)>, Option<SurfaceKey>) {
+        match self {
+            MaterialKey::Default => (None, None),
+            MaterialKey::Asset { asset, index } => (Some((asset, index)), None),
+            MaterialKey::Surface(surface) => (None, Some(surface)),
+            MaterialKey::AssetSurface {
+                asset,
+                index,
+                surface,
+            } => (Some((asset, index)), Some(surface)),
+        }
+    }
 }
 
 /// 全局相机 / 光照 uniform。128 字节，16 字节对齐。
@@ -387,8 +415,16 @@ pub struct Renderer {
     stats: RenderStats,
 }
 
-/// `prepare_instances` 的返回值：绘制分组 `(网格, 实例区间)` + 本帧剔除统计。
-type InstancePlan = (Vec<(MeshRef, std::ops::Range<u32>)>, u32, u32, Option<Aabb>);
+/// `prepare_instances` 的返回值：绘制分组 + 本帧剔除统计。
+///
+/// 分组键是 `(网格, 物件级 PBR 材质)`：同一网格的物件若 metallic / roughness
+/// 不同，会被拆成多个批次，各自绑定自己的材质 uniform。
+type InstancePlan = (
+    Vec<(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)>,
+    u32,
+    u32,
+    Option<Aabb>,
+);
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self, String> {
@@ -892,7 +928,7 @@ impl Renderer {
             // group(3) 这里是「只含光源矩阵」的阴影通道专用绑定组，
             // 不是主通道那张比较采样器 —— 深度图此刻正被本 pass 写入。
             pass.set_bind_group(3, &self.shadow_pass_bind_group, &[]);
-            for (key, range) in &groups {
+            for (key, range, _) in &groups {
                 let Some(gpu) = self.mesh_cache.get(*key) else {
                     continue;
                 };
@@ -952,7 +988,7 @@ impl Renderer {
             let mut draw_calls = 0u32;
             let mut instances = 0u32;
 
-            for (key, range) in &groups {
+            for (key, range, surface) in &groups {
                 let Some(gpu) = self.mesh_cache.get(*key) else {
                     continue;
                 };
@@ -964,11 +1000,12 @@ impl Renderer {
                 );
                 pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-                // 每个材质分区一次 draw：bind group 1 换成该分区的材质。
+                // 每个材质分区一次 draw：bind group 1 换成该分区材质（含物件级 PBR 覆盖）。
                 for part in &gpu.parts {
+                    let material_key = part.material.with_surface(*surface);
                     let Some(material) = self
                         .material_cache
-                        .get(part.material)
+                        .get(material_key)
                         .or_else(|| self.material_cache.get(MaterialKey::Default))
                     else {
                         continue;
@@ -1067,7 +1104,7 @@ impl Renderer {
     /// 阶段 D：把阴影贴图尺寸对齐场景配置；返回本帧是否要跑阴影通道。
     fn prepare_shadow(
         &mut self,
-        groups: &[(MeshRef, std::ops::Range<u32>)],
+        groups: &[(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)],
         bounds: Option<Aabb>,
         light: Light,
     ) -> bool {
@@ -1160,15 +1197,20 @@ impl Renderer {
     }
 
     /// 收齐本帧要用到的材质并建好 bind group（默认材质也要有一份）。
-    fn prepare_materials(&mut self, groups: &[(MeshRef, std::ops::Range<u32>)]) {
+    fn prepare_materials(
+        &mut self,
+        groups: &[(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)],
+    ) {
         let mut keys: Vec<MaterialKey> = vec![MaterialKey::Default];
-        for (key, _) in groups {
+        for (key, _, surface) in groups {
             let Some(gpu) = self.mesh_cache.get(*key) else {
                 continue;
             };
             for part in &gpu.parts {
-                if !keys.contains(&part.material) {
-                    keys.push(part.material);
+                // 网格分区材质 + 物件级覆盖 → 本批次真正要绑的材质键
+                let material = part.material.with_surface(*surface);
+                if !keys.contains(&material) {
+                    keys.push(material);
                 }
             }
         }
@@ -1203,19 +1245,20 @@ impl Renderer {
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        // 分组键改为 MeshRef：内置网格与资产网格统一处理，按首次出现顺序稳定排列
-        let mut keys: Vec<MeshRef> = Vec::new();
+        // 分组键：网格 + 物件级 PBR 材质。内置网格与资产网格统一处理，按首次出现顺序稳定排列
+        let mut keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
         for node in scene.iter() {
             if !node.visible {
                 continue;
             }
-            if !keys.contains(&node.mesh) {
-                keys.push(node.mesh);
+            let group_key = (node.mesh, node.material.map(SurfaceKey::new));
+            if !keys.contains(&group_key) {
+                keys.push(group_key);
             }
         }
 
         let mut all: Vec<InstanceRaw> = Vec::new();
-        let mut groups: Vec<(MeshRef, std::ops::Range<u32>)> = Vec::new();
+        let mut groups: Vec<(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)> = Vec::new();
         // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
         self.joint_scratch.clear();
         let mut joint_overflow = 0usize;
@@ -1228,10 +1271,14 @@ impl Renderer {
         // 所以这里统计在剔除判断之前。
         let mut scene_bounds: Option<Aabb> = None;
 
-        for key in &keys {
+        for (key, surface) in &keys {
             let start = all.len() as u32;
             for node in scene.iter() {
                 if !node.visible || node.mesh != *key {
+                    continue;
+                }
+                // 同一网格不同 PBR 材质的物件分属不同批次
+                if node.material.map(SurfaceKey::new) != *surface {
                     continue;
                 }
                 match self.mesh_cache.bounds(*key) {
@@ -1280,7 +1327,7 @@ impl Renderer {
                 });
             }
             if all.len() as u32 > start {
-                groups.push((*key, start..all.len() as u32));
+                groups.push((*key, start..all.len() as u32, *surface));
             }
         }
 
@@ -1300,14 +1347,14 @@ impl Renderer {
 
         // 确保用到的网格都已上传（内置即时生成，资产从注入的 MeshProvider 取）
         let mut uploaded: Vec<MeshRef> = Vec::new();
-        for (key, _) in &groups {
+        for (key, _, _) in &groups {
             if self.mesh_cache.ensure(&self.device, &self.queue, *key) {
                 uploaded.push(*key);
             }
         }
         // 上传失败的网格从绘制分组中剔除
         if uploaded.len() != groups.len() {
-            groups.retain(|(key, _)| uploaded.contains(key));
+            groups.retain(|(key, _, _)| uploaded.contains(key));
         }
 
         if all.is_empty() {
@@ -1493,14 +1540,20 @@ impl MaterialCache {
             return;
         }
 
-        let data = match (key, library) {
-            (MaterialKey::Asset { asset, index }, Some(library)) => {
+        let (asset_material, surface) = key.split();
+        let data = match (asset_material, library) {
+            (Some((asset, index)), Some(library)) => {
                 library.material(asset, index).unwrap_or_else(|| {
                     log::warn!("资产 {} 缺少材质 {}，回退默认材质", asset, index);
                     MaterialData::default()
                 })
             }
             _ => MaterialData::default(),
+        };
+        // 物件级 PBR 覆盖只改 metallic / roughness，资产的颜色与贴图保持不变
+        let data = match surface {
+            Some(surface) => surface.overlay(&data),
+            None => data,
         };
 
         let (view, has_texture) = match (data.base_color_texture, library) {
@@ -1513,15 +1566,13 @@ impl MaterialCache {
             _ => (self.white.clone(), false),
         };
 
-        let uniform = MaterialUniform {
-            base_color: data.base_color,
-            params: [
-                data.metallic,
-                data.roughness,
-                if has_texture { 1.0 } else { 0.0 },
-                0.0,
-            ],
-        };
+        let uniform = MaterialUniform::build(
+            data.base_color,
+            data.metallic,
+            data.roughness,
+            surface.map(|s| s.emissive()).unwrap_or([0.0; 3]),
+            has_texture,
+        );
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("r3e-material-ubo"),
             size: std::mem::size_of::<MaterialUniform>() as u64,

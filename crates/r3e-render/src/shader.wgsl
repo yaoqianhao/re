@@ -1,5 +1,6 @@
-// 基础前向渲染：单方向光 + 环境光 + Blinn-Phong 高光。
-// 每个物件通过实例顶点缓冲传入模型矩阵与颜色。
+// 基础前向渲染：单方向光 + 环境光，直接光照用 Cook-Torrance BRDF
+// （GGX 法线分布 / Smith-Schlick-GGX 遮蔽 / Schlick 菲涅尔），
+// 漫反射为能量守恒形式；另有自发光项。每个物件通过实例顶点缓冲传入模型矩阵与颜色。
 
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -13,10 +14,13 @@ struct Camera {
 var<uniform> u_camera: Camera;
 
 // P2：每材质一组 —— base color 染色 + PBR 标量 + 可选贴图。
+// 布局必须与 `r3e-render::pbr::MaterialUniform` 逐字段一致（48 字节）。
 struct Material {
     base_color: vec4<f32>,
     // x = metallic，y = roughness，z = 是否有贴图，w 保留
     params: vec4<f32>,
+    // rgb = 自发光（线性 HDR，只加不减、不参与光照），a 保留
+    emissive: vec4<f32>,
 };
 
 @group(1) @binding(0)
@@ -198,12 +202,52 @@ fn shadow_factor(world_position: vec3<f32>, n: vec3<f32>) -> f32 {
     return mix(1.0, visible, u_shadow.params2.x);
 }
 
+// ---------------- Cook-Torrance 直接光照 ----------------
+// 与 `r3e-core::material` 的 CPU 参考实现逐项对应（那边有单测兜底）：
+//   * D：GGX / Trowbridge-Reitz 法线分布
+//   * G：Smith 遮蔽，用 Schlick-GGX 近似（直接光形式 k = (r+1)²/8）
+//   * F：Schlick 菲涅尔近似（正入射 F0，掠射趋近 1）
+//   * 漫反射：(1-metallic)·(1-F)·albedo/π —— 金属无漫反射，且扣掉镜面已拿走的份额
+const PI: f32 = 3.141592653589793;
+// 粗糙度下限：α = r²，r→0 时 D 项分母趋零会爆白，夹到与 CPU 侧一致的 0.045。
+const MIN_ROUGHNESS: f32 = 0.045;
+// 绝缘体基础反射率（4%）。
+const DIELECTRIC_F0: f32 = 0.04;
+
+fn distribution_ggx(n_dot_h: f32, roughness: f32) -> f32 {
+    let r = clamp(roughness, MIN_ROUGHNESS, 1.0);
+    let a = r * r;
+    let a2 = a * a;
+    let ndh = clamp(n_dot_h, 0.0, 1.0);
+    // 分母 (n·h)²(α²-1)+1 恒 ≥ α² > 0，不会除零
+    let d = ndh * ndh * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+fn geometry_schlick_ggx(n_dot_x: f32, roughness: f32) -> f32 {
+    let r = clamp(roughness, MIN_ROUGHNESS, 1.0);
+    let k = (r + 1.0) * (r + 1.0) / 8.0;
+    let nx = clamp(n_dot_x, 0.0, 1.0);
+    return nx / (nx * (1.0 - k) + k);
+}
+
+fn geometry_smith(n_dot_v: f32, n_dot_l: f32, roughness: f32) -> f32 {
+    return geometry_schlick_ggx(n_dot_v, roughness) * geometry_schlick_ggx(n_dot_l, roughness);
+}
+
+fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
+    let c = clamp(1.0 - cos_theta, 0.0, 1.0);
+    return f0 + (vec3<f32>(1.0) - f0) * pow(c, 5.0);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let l = normalize(-u_camera.light_dir.xyz);
     let v = normalize(u_camera.camera_pos.xyz - in.world_position);
-    let h = normalize(l + v);
+    // 光方向与视线正相反时 l+v 退化，直接取法线作半程向量，避免 normalize(0) 出 NaN
+    let half_sum = l + v;
+    let h = select(normalize(half_sum), n, length(half_sum) < 1e-4);
 
     // base color：贴图（若存在）乘以材质染色因子，再乘物件颜色。
     // 贴图是 sRGB 纹理，采样后已是线性值；材质因子按线性因子直接相乘。
@@ -212,23 +256,43 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let sampled = textureSample(t_base_color, s_base_color, in.uv);
         albedo = albedo * sampled.rgb;
     }
+    // 反照率为负会把光"减掉"，与 CPU 侧一样按 0 处理
+    albedo = max(albedo, vec3<f32>(0.0));
 
-    // 粗糙度影响高光锐度：粗糙 → 更散；金属度提高高光占比。
-    let roughness = clamp(u_material.params.y, 0.05, 1.0);
     let metallic = clamp(u_material.params.x, 0.0, 1.0);
-    let shininess = mix(96.0, 8.0, roughness);
-    let spec_strength = mix(0.25, 0.9, metallic);
+    let roughness = clamp(u_material.params.y, MIN_ROUGHNESS, 1.0);
 
-    let ndl = max(dot(n, l), 0.0);
-    let spec = pow(max(dot(n, h), 0.0), shininess) * spec_strength * step(0.001, ndl);
+    let ndl = clamp(dot(n, l), 0.0, 1.0);
+    // n·v 掠射时留极小正数防除零；G 项在掠射本来就趋于 0，不会因此爆亮
+    let ndv = max(clamp(dot(n, v), 0.0, 1.0), 1e-4);
+    let ndh = clamp(dot(n, h), 0.0, 1.0);
+    let vdh = clamp(dot(v, h), 0.0, 1.0);
 
-    // 阶段 D：只有直接光（漫反射 + 高光）被遮挡，环境光不衰减，
+    // 绝缘体 F0 = 0.04，金属用 base color 染色
+    let f0 = mix(vec3<f32>(DIELECTRIC_F0), albedo, metallic);
+    let f = fresnel_schlick(vdh, f0);
+    let d = distribution_ggx(ndh, roughness);
+    let g = geometry_smith(ndv, ndl, roughness);
+
+    // 镜面项：D·G·F / (4·(n·v)·(n·l))；背面（n·l ≤ 0）直接给零，
+    // 否则除以 0 会把 0·inf 变成 NaN
+    var specular = vec3<f32>(0.0);
+    if ndl > 0.0 {
+        specular = f * d * g / (4.0 * ndv * ndl);
+    }
+    let kd = (vec3<f32>(1.0) - f) * (1.0 - metallic);
+    let diffuse = kd * albedo / PI;
+
+    // 阶段 D：只有直接光（漫反射 + 镜面）被遮挡，环境光不衰减，
     // 否则影子会变成纯黑块、丢掉暗部层次。
     let shadow = shadow_factor(in.world_position, n);
+    // 光色 / 强度语义不变：light_color.rgb 是线性颜色，.w 是强度乘数
+    let radiance = u_camera.light_color.rgb * u_camera.light_color.w;
 
-    let lit = albedo
-        * (u_camera.ambient.rgb + u_camera.light_color.rgb * u_camera.light_color.w * ndl * shadow)
-        + vec3<f32>(spec * shadow);
+    let lit = (diffuse + specular) * radiance * ndl * shadow
+        + albedo * u_camera.ambient.rgb
+        // 自发光只加不减：不乘 n·l、不受阴影影响、不参与光照计算
+        + u_material.emissive.rgb;
 
     return vec4<f32>(lit, in.color.a * u_material.base_color.a);
 }

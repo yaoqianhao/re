@@ -4,11 +4,13 @@
 //! 或 `r3e_core::ProceduralProvider`。这里只导出 wgpu 布局与渲染器本体。
 
 pub mod mesh;
+pub mod pbr;
 pub mod renderer;
 pub mod text;
 pub mod ui;
 
 pub use mesh::{vertex_layout, InstanceRaw};
+pub use pbr::{MaterialUniform, SurfaceKey};
 pub use renderer::{LayeredProvider, MeshCache, RenderStats, Renderer};
 pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
 pub use ui::{
