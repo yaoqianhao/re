@@ -50,6 +50,15 @@ fn on_start() {
     ui_border("hud_icon_ring", "topright", "-42px", "22px", "52px", "52px", 1.0, 0.85, 0.74, 0.42, 0.8);
     ui_set_layer("hud_icon", 3);
 
+    // 4) 九宫格（9-slice）图片：把 32x32 的小图拉到 220x120 也不会糊 —— 四角保持原尺寸
+    //    （8px 不拉伸），四边单向拉伸、中心双向拉伸。参数顺序是 左 / 上 / 右 / 下，
+    //    单位同样支持 "24px" 与 "10%"（百分比按元素自身宽 / 高换算）。
+    //    这里只是演示切分效果，真实项目应换成专门画的九宫格美术（圆角边框等）。
+    //    ui_set_slice("key") 不带参数 = 关闭九宫格。
+    ui_image("slice_frame", "topleft", "24px", "176px", "220px", "120px", "assets/ui/icon.png", 0.85, 0.74, 0.42, 0.95);
+    ui_set_slice("slice_frame", "8px", "8px", "8px", "8px");
+    ui_set_layer("slice_frame", 2);
+
     log("UI 节点数 = " + ui_count());
 
     // ---- 音频（M1 非空间化音频：常规音效 + 背景音乐，没有 3D 衰减 / 多普勒）----

@@ -1590,13 +1590,42 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         with_ui(&c, key, |el| el.image = path.to_string())
     });
 
-    // uv 子区间（九宫格扩展位；现在用来做图集裁切）
+    // uv 子区间（图集裁切；九宫格切分时作为整体外边界）
     let c = ctx.clone();
     engine.register_fn(
         "ui_set_uv",
         move |key: &str, u0: f64, v0: f64, u1: f64, v1: f64| -> bool {
             with_ui(&c, key, |el| {
                 el.uv = [f32_of(u0), f32_of(v0), f32_of(u1), f32_of(v1)]
+            })
+        },
+    );
+
+    // 九宫格边距（左 / 上 / 右 / 下）：像素 "24px" 或百分比 "10%"（按元素自身宽 / 高）
+    // 无参调用 = 关闭九宫格（四条边距清零），与传全 0 等价
+    let c = ctx.clone();
+    engine.register_fn("ui_set_slice", move |key: &str| -> bool {
+        with_ui(&c, key, |el| {
+            el.slice_margin = [
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+            ]
+        })
+    });
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "ui_set_slice",
+        move |key: &str, left: &str, top: &str, right: &str, bottom: &str| -> bool {
+            with_ui(&c, key, |el| {
+                el.slice_margin = [
+                    parse_ui_value(left),
+                    parse_ui_value(top),
+                    parse_ui_value(right),
+                    parse_ui_value(bottom),
+                ]
             })
         },
     );

@@ -555,11 +555,13 @@ uv 各向内收半个纹素（`UV_INSET`），避免线性采样吃到邻格字�
 | --- | --- | --- |
 | `Rect` | 1 | 纯色四边形，`texture = None`（绑定 1×1 白纹理 + 顶点色调制） |
 | `Border` | 4 | 上下左右四条矩形，全部落在给定矩形**边界内**（上下整条，左右夹在中间，四角不重叠），厚度夹到 `min(w,h)/2` |
-| `Image` | 1 | 四边形 + 该路径的 `TextureImage`，颜色乘到采样值上（可做淡入淡出） |
+| `Image` | 1（九宫格时最多 9） | 四边形 + 该路径的 `TextureImage`，颜色乘到采样值上（可做淡入淡出）；`slice_margin` 非全零时切 3×3，四角不拉伸、四边单向拉伸、中心双向拉伸，每块 uv 取 `uv` 子区间的对应份（见 §13 九宫格小节） |
 
 同一帧里颜色相同（`texture == None`）的元素合并成一次 draw；图片按路径分组，
 每张纹理一次 draw。因此「血条 2 层 + 对话框 + 边框 + 图标」是 2 个 draw call，
-不是 5 个，也不随元素数量线性增长（受 `MAX_UI_QUADS = 4096` 兜底）。
+不是 5 个，也不随元素数量线性增长（受 `MAX_UI_QUADS = 4096` 兜底）。九宫格元素
+的 9 块与普通四边形走同一缓冲，不额外增加 draw call；块数装不下剩余预算时该元素
+整体丢弃（原子切分，不留残片）。
 
 **与文本通道的层次**：两条通道都是 `LoadOp::Load` + `depth_stencil_attachment: None`，
 即"后画的赢"。默认先 UI 后文本（`scene.ui_above_text == false`），这样对话框底框、
@@ -581,6 +583,9 @@ resolve_rect(el, (screen_w, screen_h)):
 而不是被推出屏幕。窗口 resize 不需要任何通知 —— 每帧都拿当前 surface 尺寸重算一次，
 这也是"resize 后不错位"的实现级保证（单测覆盖 800×600 / 1600×900 两组尺寸）。
 
+九宫格边距在 `resolve_rect` **之后**求解（`slice_margins(&rect)`），因为百分比边距要按
+元素最终宽高换算；尺寸已经是收敛过的有效值，所以夹取只需处理"边距之和超过尺寸"。
+
 **图片加载的边界**：`r3e-render` 不碰文件 IO（不引 `image` 依赖），只定义
 `UiImageProvider` trait；`r3e-app` 实现它并复用 `r3e-asset::load_texture_image`（png/jpg/tga/bmp）。
 失败路径：加载报错 → 记录到 `failed_images` → 该元素**回退成纯色块**（用元素 color），
@@ -591,7 +596,7 @@ resolve_rect(el, (screen_w, screen_h)):
 | 项 | 值 | 超限行为 |
 | --- | --- | --- |
 | 元素总数 | `MAX_UI_ELEMENTS = 1024` | 只拦**新增**：新 key 返回 `UiUpsert::Rejected`，已有元素原样保留；同 key 覆盖不受限 |
-| 单帧四边形实例 | `MAX_UI_QUADS = 4096` | 超出部分丢弃并累加 `skipped`，不 panic |
+| 单帧四边形实例 | `MAX_UI_QUADS = 4096` | 超出部分丢弃并累加 `skipped`，不 panic；九宫格元素按整元素原子丢弃（不留半张图） |
 | 纹理边长 | `MAX_UI_TEXTURE_DIM = 8192` | 超限图片按失败处理并回退纯色 |
 | 边框厚度 | `min(w, h) / 2` | 夹住，不会画出反向四边形 |
 
@@ -620,12 +625,17 @@ resolve_rect(el, (screen_w, screen_h)):
 
 **测试策略**：`r3e-core/src/ui.rs` 覆盖锚点落点（9 种）、百分比换算、resize 重算、
 空/负/非有限尺寸不 panic、层级稳定排序、serde 往返、`merge_same_key` 的三类字段策略、
-`upsert_styled` 的合并与上限（满载可覆盖、满载拒新增）、入参非法值收敛；
+`upsert_styled` 的合并与上限（满载可覆盖、满载拒新增）、入参非法值收敛，
+以及九宫格边距的百分比换算、超尺寸等比夹取、负数/NaN 收敛、`has_slice` 只对图片为真、
+`merge_same_key` 对 `slice_margin` 的沿用；
 `r3e-script/src/lib.rs` 覆盖脚本路径的同一组保证（超限被拒且 `ui_count()` 不增长、
-满载同 key 仍可更新、空 key 被拒、跨类别同 key 保留样式、非法参数收敛）；
+满载同 key 仍可更新、空 key 被拒、跨类别同 key 保留样式、非法参数收敛），
+以及 `ui_set_slice` 的像素/百分比写入、无参清零、每帧重发几何后边距仍沿用；
 `r3e-render/src/ui.rs` 覆盖
 矩形 1 实例、边框 4 实例且厚度被夹、图片按纹理分组、隐藏与退化元素被跳过、
-quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整体建批。
+quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整体建批，
+以及九宫格 9 块的位置/尺寸/uv（含面积守恒）、边距全零仍为 1 块、
+超尺寸退化不产生零/负尺寸块、与 `uv` 子区间叠加、预算不足时整元素原子丢弃。
 
 ### 5.7 着色器（shader.wgsl）
 
@@ -1034,7 +1044,8 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `ui_set_layer(key, layer)` | 改层级（整数，小的先画） |
 | `ui_set_visible(key, on)` | 显隐 |
 | `ui_set_border(key, width)` / `ui_set_image(key, path)` | 改边框厚度 / 换贴图 |
-| `ui_set_uv(key, u0, v0, u1, v1)` | 取纹理子区间（九宫格、图集裁切的预留扩展位） |
+| `ui_set_uv(key, u0, v0, u1, v1)` | 取纹理子区间（图集裁切；九宫格在子区间内再切） |
+| `ui_set_slice(key, left, top, right, bottom)` | 设置图片九宫格边距（顺序左/上/右/下，像素或百分比）；无参 = 关闭；非图片元素无效果 |
 | `ui_remove(key)` / `ui_clear()` | 删一条 / 清空 |
 | `ui_exists(key)` / `ui_count()` / `ui_keys()` | 查询 |
 | `ui_capacity()` | 元素数量上限（`MAX_UI_ELEMENTS = 1024`），供脚本判断"还能不能再加" |
@@ -1043,11 +1054,39 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_ui_above_text(on)` / `ui_above_text()` | 默认 `false`（文本在 UI 之上）；置 `true` 时 UI 通道后画、盖住文本 |
 
 **同名即覆盖**：`ui_rect` / `ui_border` / `ui_image` 全部走 `core::ui::upsert_styled` 这一个写点，
-key 已存在时只刷新几何/颜色，**保留** `layer` / `visible` / `uv`；边框线宽"给了就覆盖、没给沿用"。
+key 已存在时只刷新几何/颜色，**保留** `layer` / `visible` / `uv` / `slice_margin`；边框线宽"给了就覆盖、没给沿用"。
 返回值 `true` 仅代表"新建成功"，`false` 表示"没新增"——可能是同 key 覆盖，也可能是超限被拒，
 后者可通过 `ui_error_count()` 增量与 `ui_last_error()` 区分。因此 `on_update` 里每帧重复提交
 不会累积节点，由 `per_frame_ui_rect_does_not_accumulate`（不累积）与
 `ui_capacity_is_enforced_on_script_path`（超限被拒且计数不增长）两条单测锁住。
+
+**图片九宫格（9-slice）**
+
+`UiElement::slice_margin: [UiValue; 4]` 存左/上/右/下四条边距，默认全 `0`（= 关闭）。
+它和 `uv` 一样是**样式字段**：同 key 每帧重发几何时沿用旧值，改它只能走 `ui_set_slice`
+（`ui_set_slice(key)` 无参即清零关闭）。这样脚本每帧刷 `ui_image` 不会把面板边框切分冲掉。
+
+求解链（全部在 `core::ui`，render 只消费结果）：
+
+1. `sanitized()` 把每条边距里的负数 / `NaN` / 无穷收敛为 `0`（不报错，只清零该条边）。
+2. `slice_margins(&rect)` 按元素**最终尺寸**换算：像素直接用，百分比相对最终宽（左/右）
+   与最终高（上/下）。超尺寸时**等比夹取**——`left+right > w` 就两者各让步到和恰为 `w`，
+   `top+bottom > h` 同理；保证切分永不出现负宽高的块。
+3. `has_slice()` 判"是图片元素且四条边距换算后非全零"，render 只在它为真时才走九宫格分支。
+
+渲染侧（`r3e-render::ui::plan_slice`）按 3 列 × 3 行生成：列宽 `[left, w-left-right, right]`、
+行高 `[top, h-top-bottom, bottom]`；四角用边距原尺寸不拉伸，上/下边只横向拉伸、左/右边只纵向
+拉伸、中心双向拉伸。每块 uv 在元素的 `uv` 子区间内按同一组比例切，所以 `uv` 裁切的图集区域
+也能正常走九宫格。夹取后中间列/行宽高为 `0` 时对应块**不生成**（只剩 4 或 6 块），
+不留零面积 / 负面积四边形；边距全零则完全走原单四边形路径，零额外开销。
+
+预算交互：九宫格元素标记为**原子**（一个元素最多 9 个四边形）。`plan_ui_limited` 在
+"剩余 `MAX_UI_QUADS` 装不下整元素块数"时整体丢弃该元素并计入 `UiStats::skipped`，
+**不会只画前几块留下残片**。该行为由 `slice_is_atomic_under_quad_budget` 锁住。
+
+已知取舍：九宫格只做拉伸，**圆角留待后续**；四角不缩放也不做角部描边，边缘像素按线性采样
+直接拉伸，因此边距很小（< 2px）或纹理没有留白时边缘会糊——这是九宫格美术本身的约束，
+不在渲染层补偿。
 
 **音频（M1 非空间化）**
 
@@ -1768,13 +1807,13 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-core/src/scene.rs` | `ObjectDesc` / `PhysicsDesc` / `CameraDesc` / `LightDesc` / `SceneFile`、`Scene` 三索引、生命周期、`resolve_world`、`from_json_str` / `to_scene_file` / `save_to_path`（加载与保存严格对称） |
 | `crates/r3e-core/src/camera.rs` | `Camera`、DirectX 风格投影、`orbit` |
 | `crates/r3e-core/src/text.rs` | `FontSet`（系统字体查找 / 指定字体加载）、`GlyphSource` 抽象、`layout_text`（换行 / 对齐 / 缺字回退）、`ScreenText` / `TextAlign` |
-| `crates/r3e-core/src/ui.rs` | `UiElement` / `UiKind` / `Anchor` / `UiUnit` / `UiValue`、`resolve_rect`（锚点 + 像素/百分比解析）、`sort_by_layer`（稳定排序） |
+| `crates/r3e-core/src/ui.rs` | `UiElement` / `UiKind` / `Anchor` / `UiUnit` / `UiValue`、`resolve_rect`（锚点 + 像素/百分比解析）、`slice_margins`（九宫格边距换算 + 夹取）、`sort_by_layer`（稳定排序） |
 | `crates/r3e-core/src/glyph_atlas.rs` | `GlyphAtlas` 分页图集、`ShelfAllocator` 货架分配、`GlyphKey`（face+glyph+像素量化） |
 | `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机 |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
 | `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass + 主 pass）、`resize`、`RenderStats` |
 | `crates/r3e-render/src/text.rs` | `TextPass`（独立无深度管线）、`build_text` 顶点装配、图集动态纹理按需扩容、`MAX_TEXT_INSTANCES` 安全阀 |
-| `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀、`UiStats` |
+| `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`plan_slice`（九宫格切 3×3）、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀（九宫格原子丢弃）、`UiStats` |
 | `crates/r3e-render/src/ui.wgsl` | UI 着色器：屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |
 | `crates/r3e-render/src/text.wgsl` | 文本着色器：屏幕像素 → NDC、图集 R8 采样、alpha 混合 |
 | `crates/r3e-render/src/shader.wgsl` | Blinn-Phong 前向着色、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样 |

@@ -433,7 +433,8 @@ UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动�
 | `ui_set_visible(key, on) -> bool` | 显示 / 隐藏 |
 | `ui_set_border(key, width) -> bool` | 改边框粗细（对非边框元素无效果） |
 | `ui_set_image(key, path) -> bool` | 换贴图路径 |
-| `ui_set_uv(key, u0, v0, u1, v1) -> bool` | 取纹理子区间（九宫格/图集裁切的扩展位） |
+| `ui_set_uv(key, u0, v0, u1, v1) -> bool` | 取纹理子区间（图集裁切；九宫格在此基础上再切，见下节） |
+| `ui_set_slice(key, left, top, right, bottom) -> bool` | 设置图片九宫格边距（像素或百分比，顺序左/上/右/下）；**无参调用 `ui_set_slice(key)` 等于关闭九宫格**；对非图片元素无效果 |
 | `ui_remove(key) -> bool` | 删除该元素，返回是否真的删掉了 |
 | `ui_clear()` | 清空全部 UI |
 | `ui_exists(key) -> bool` / `ui_count() -> int` / `ui_keys() -> array` | 查询 |
@@ -448,7 +449,7 @@ UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动�
 | 字段 | 同 key 重提时 |
 | --- | --- |
 | `kind` / `anchor` / `offset` / `size` / `color` / `image` | 取新值——每次提交都在描述「这一帧长什么样」 |
-| `layer` / `visible` / `uv` | 沿用旧值——属于样式与开关，要改请走 `ui_set_layer` / `ui_set_visible` / `ui_set_uv` |
+| `layer` / `visible` / `uv` / `slice_margin` | 沿用旧值——属于样式与开关，要改请走 `ui_set_layer` / `ui_set_visible` / `ui_set_uv` / `ui_set_slice` |
 | `border_width` | 边框元素：入参 `> 0` 取新值，否则沿用旧线宽（旧值也没有就回落默认 `2.0`）；非边框恒为 `0` |
 
 `ui_rect` / `ui_border` / `ui_image` 的返回值含义：`true` = 新建成功；`false` = 没新增
@@ -457,6 +458,37 @@ UI 元素存在 `Scene::ui` 里，与文本同构：脚本改完下一帧自动�
 
 元素按 `layer` 升序稳定排序绘制（同层按加入顺序），文本与 UI 的前后关系由
 `set_ui_above_text` 决定，需要「某个 UI 盖住文字」时可整体切换或拆到不同通道处理。
+
+#### 图片九宫格（9-slice）
+
+`ui_image` 的元素可以在 `ui_set_slice(key, left, top, right, bottom)` 上设四条边距，
+之后这张图**无论拉到多大，四角都保持原像素尺寸不拉伸**（对话气泡、面板边框、按钮底板
+的常规做法）。字段名 `slice_margin`，存在 `r3e_core::ui::UiElement` 上。
+
+- **单位**：与 `offset` / `size` 同一套 `UiValue`——`"8px"` 像素、`"25%"` 百分比、
+  `"8"` 等价 `"8px"`。百分比分别相对**元素最终宽**（left/right）与**最终高**（top/bottom）
+  换算，所以同一个元素改尺寸后比例边距会跟着变。
+- **夹取**：求解时按元素**最终尺寸**收敛——`left + right` 不得超过宽、`top + bottom`
+  不得超过高；超了就**等比缩到刚好放下**（各占一半），不会出现负宽度的块。负数、NaN、
+  无穷一律收敛为 `0`（非法值不报错，只清零该条边）。
+- **退化**：夹取后如果中间列 / 中间行的宽高变成 `0`，那几块直接不生成——只剩四角或四边，
+  不会画出零面积 / 负面积四边形。
+- **与 `uv` 的关系**：`uv` 是**先**在整张纹理上取出的子区间（图集裁切），九宫格再在**这个
+  子区间内**按边距比例切 9 份。两者可叠加：`uv = [0.25,0.25,0.75,0.75]` + 左右各 10% 的元素宽，
+  切出来的左列 uv 就是子区间左侧 10% 那一条。
+- **切分布局**：3 列 × 3 行。四角尺寸 = 边距本身（不拉伸）；上/下边只用元素的横向拉伸、
+  纵向保持边距高；左/右边只用纵向拉伸；中心双向拉伸。9 块的面积之和恒等于整块矩形。
+- **关闭**：`slice_margin` 全 `0`（默认）或调用 `ui_set_slice(key)` 无参清零，走的是原来的
+  单四边形路径，**不产生额外四边形**。
+- **与四边形预算的关系**：一个九宫格元素最多 9 个四边形，仍受 `MAX_UI_QUADS`（4096）约束，
+  且切分是**原子的**——剩余预算装不下整个 9 块时该元素整体丢弃（计入 `UiStats::skipped`），
+  绝不会只画一半留下残片。只对 `UiKind::Image` 生效；矩形 / 边框 / 文本不受影响。
+
+```rhai
+// 32x32 的小图拉到 220x120：四角仍是 8px 原寸，中间拉伸
+ui_image("panel", "topleft", "24px", "176px", "220px", "120px", "assets/ui/icon.png", 0.85, 0.74, 0.42, 0.95);
+ui_set_slice("panel", "8px", "8px", "8px", "8px");
+```
 
 示例（`scripts/main.rhai` 内的最小 HUD）：
 
@@ -470,6 +502,9 @@ fn on_start() {
     ui_border("dlg_frame", "bottomcenter", "0px", "-56px", "72%", "132px", 2.0, 0.85, 0.74, 0.42, 0.9);
     // 右上角图标（png）
     ui_image("hud_icon", "topright", "-40px", "24px", "48px", "48px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0);
+    // 九宫格面板：小图拉大，四角保持原寸
+    ui_image("panel", "topleft", "24px", "176px", "220px", "120px", "assets/ui/icon.png", 0.85, 0.74, 0.42, 0.95);
+    ui_set_slice("panel", "8px", "8px", "8px", "8px");
 }
 
 fn on_update(dt) {
@@ -660,9 +695,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
-- UI 只有矩形 / 边框 / 图片三类基本元素：**无圆角、无九宫格、无渐变、无旋转/缩放动画**
-  （`ui_set_uv` 与自定义 shader 留了扩展位）；文本与 UI 的前后关系只有通道级开关
-  （`set_ui_above_text`），不能逐元素互相穿插。
+- UI 只有矩形 / 边框 / 图片三类基本元素：**无圆角、无渐变、无旋转/缩放动画**；图片支持
+  **九宫格（9-slice）拉伸**，圆角留待后续（先把九宫格做对再做角部描边更省事）；
+  文本与 UI 的前后关系只有通道级开关（`set_ui_above_text`），不能逐元素互相穿插。
 - 物理：内置后端物件互不碰撞、无旋转、无地形碰撞（无 CCD，高速可能穿地），默认关闭；
   换 Rapier 后端后支持互撞 / 旋转 / 碰撞事件 / **CCD 高速防穿透**（默认开，可逐物件关掉）。
 

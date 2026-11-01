@@ -630,6 +630,101 @@ mod text_script_tests {
         assert_eq!(host.eval("ui_count()").unwrap().as_int().unwrap(), 2);
     }
 
+    /// 九宫格边距：像素 / 百分比都收，无参调用等于关闭（清零）。
+    #[test]
+    fn ui_set_slice_sets_and_clears_margins() {
+        use r3e_core::ui::{UiRect, UiValue};
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_image("panel", "center", "0px", "0px", "200px", "100px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        // 默认关闭
+        assert_eq!(
+            scene.borrow().ui[0].slice_margin,
+            [
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::px(0.0)
+            ]
+        );
+
+        // 像素：左 / 上 / 右 / 下
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_set_slice("panel", "16px", "8px", "16px", "8px")"#
+        ));
+        assert_eq!(
+            scene.borrow().ui[0].slice_margin,
+            [
+                UiValue::px(16.0),
+                UiValue::px(8.0),
+                UiValue::px(16.0),
+                UiValue::px(8.0)
+            ]
+        );
+
+        // 百分比（按元素自身宽 / 高换算）
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_set_slice("panel", "10%", "20%", "10%", "20%")"#
+        ));
+        let el = scene.borrow().ui[0].clone();
+        assert_eq!(el.slice_margin[0], UiValue::pct(10.0));
+        assert_eq!(
+            el.slice_margins_px(&UiRect {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 100.0
+            }),
+            [20.0, 20.0, 20.0, 20.0]
+        );
+
+        // 无参 = 关闭
+        assert!(eval_bool(&mut host, r#"ui_set_slice("panel")"#));
+        assert_eq!(
+            scene.borrow().ui[0].slice_margin,
+            [UiValue::px(0.0); 4],
+            "无参调用应清零"
+        );
+
+        // 不存在的 key 返回 false
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_set_slice("nope", "4px", "4px", "4px", "4px")"#
+        ));
+        assert_eq!(scene.borrow().ui.len(), 1, "失败的写入不应造出元素");
+    }
+
+    /// 九宫格边距是样式字段：每帧重发几何不会把它冲掉。
+    #[test]
+    fn ui_slice_margin_survives_per_frame_geometry_resubmit() {
+        use r3e_core::ui::UiValue;
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_image("panel", "center", "0px", "0px", "200px", "100px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        assert!(eval_bool(
+            &mut host,
+            r#"ui_set_slice("panel", "12px", "12px", "12px", "12px")"#
+        ));
+        // 下一帧只重发几何（脚本常规写法）
+        assert!(!eval_bool(
+            &mut host,
+            r#"ui_image("panel", "center", "10px", "0px", "300px", "150px", "assets/ui/icon.png", 1.0, 1.0, 1.0, 1.0)"#
+        ));
+        let el = scene.borrow().ui[0].clone();
+        assert_eq!(el.size[0], UiValue::px(300.0), "几何应更新");
+        assert_eq!(
+            el.slice_margin,
+            [UiValue::px(12.0); 4],
+            "九宫格边距应沿用旧值"
+        );
+    }
+
     /// 不存在的 key 一律返回 false，且不会凭空造出元素。
     #[test]
     fn ui_set_on_missing_key_reports_false() {

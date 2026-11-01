@@ -19,11 +19,18 @@
 //! 数量上限见 [`MAX_UI_ELEMENTS`]：只拦新增、不拦覆盖，两种写入都一样。超出返回
 //! [`UiUpsert::Rejected`]，由调用方决定怎么对外暴露（脚本层返回 `false` 并记账）。
 //!
+//! # 九宫格（9-slice）
+//! 图片元素的 [`UiElement::slice_margin`] 是「左 / 上 / 右 / 下」四条边的边距，
+//! 与 [`UiElement::uv`] 一样支持像素或百分比（百分比以**元素自身**宽 / 高为基准）。
+//! 边距求解走 [`slice_margins`]：按元素当帧尺寸夹取（`左 + 右 <= 宽`、`上 + 下 <= 高`，
+//! 超出时两边等比缩放），非法值一律折成 `0`。全 `0` 表示关闭九宫格。
+//!
+//! 本模块只负责「边距是多少像素」，切 9 块四边形由渲染侧的 `plan_ui` 完成——
+//! 布局与切分同源，避免边距出现两套算法。
+//!
 //! # 扩展位（当前不做，结构已留口）
 //! - 圆角：`UiElement` 现在没有 radius 字段，加圆角时在渲染侧的 shader 里按局部 uv
 //!   做 SDF 即可，无需改动本模块的布局算法。
-//! - 九宫格：图片元素已带 [`UiElement::uv`] 子区间字段，将来按九宫格切分时由渲染侧
-//!   用多个四边形 + 不同 uv 区间绘制，本模块的布局结果（像素矩形）可以直接复用。
 //! - 新元素类型：在 [`UiKind`] 上加分支，并在渲染侧 `plan_ui` 里补一个四边形生成器。
 
 use serde::{Deserialize, Serialize};
@@ -261,8 +268,14 @@ pub struct UiElement {
     pub border_width: f32,
     /// 图片路径（png / jpeg 等），仅 `UiKind::Image` 使用
     pub image: String,
-    /// 图片 uv 子区间 `[u0, v0, u1, v1]`，默认整张；九宫格扩展位
+    /// 图片 uv 子区间 `[u0, v0, u1, v1]`，默认整张；九宫格切分时作为**整体**外边界
     pub uv: [f32; 4],
+    /// 九宫格边距 `[左, 上, 右, 下]`，仅 `UiKind::Image` 使用；全 `0` = 关闭九宫格。
+    ///
+    /// 单位与 [`UiValue`] 一致：`Px` 是元素像素，`Percent` 以元素**自身**宽 / 高为基准
+    /// （左右按宽、上下按高）。求解见 [`slice_margins`]：超出元素尺寸时等比夹取，
+    /// 所以不会画出负宽度的中间块。
+    pub slice_margin: [UiValue; 4],
     /// 层级：小的先画（会被大的盖住）；同层按加入顺序稳定排序
     pub layer: i32,
     /// 是否绘制
@@ -281,6 +294,12 @@ impl Default for UiElement {
             border_width: DEFAULT_BORDER_WIDTH,
             image: String::new(),
             uv: [0.0, 0.0, 1.0, 1.0],
+            slice_margin: [
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+            ],
             layer: 0,
             visible: true,
         }
@@ -333,7 +352,76 @@ impl UiElement {
             }
         };
         self.uv = [clamp01(u0), clamp01(v0), clamp01(u1), clamp01(v1)];
+        // 九宫格边距：非有限值折 0，负边距无意义也折 0（单位保留，便于脚本读回意图）
+        for m in self.slice_margin.iter_mut() {
+            let v = m.sanitized();
+            *m = if v.value > 0.0 { v } else { UiValue::px(0.0) };
+        }
         self
+    }
+
+    /// 本帧的九宫格边距 `[左, 上, 右, 下]`（像素，已按 `rect` 夹取）。
+    ///
+    /// 只是 [`slice_margins`] 的便捷入口；全 `0` 表示这个元素不切九宫格。
+    pub fn slice_margins_px(&self, rect: &UiRect) -> [f32; 4] {
+        slice_margins(self.slice_margin, rect)
+    }
+
+    /// 本帧是否需要切九宫格（图片元素且四条边距不全为 `0`）。
+    pub fn has_slice(&self, rect: &UiRect) -> bool {
+        self.kind == UiKind::Image && self.slice_margins_px(rect).iter().any(|m| *m > 0.0)
+    }
+}
+
+/// 把九宫格边距换算成像素并按元素尺寸夹取。
+///
+/// - 单位：`Px` 直接用；`Percent` 左右以 `rect.width`、上下以 `rect.height` 为基准
+///   （与偏移 / 尺寸「以屏幕为基准」不同——边距描述的是元素内部切分点，跟屏幕无关）。
+/// - 非法值（NaN / 无穷 / 负数）一律 `0`。
+/// - 夹取：`左 + 右 > 宽` 时两边**等比**缩放到和恰为宽（中心列宽收敛为 0），上下同理。
+///   等比而不是逐边截断，是为了保留左右（上下）边距的相对比例，视觉上不偏。
+pub fn slice_margins(margin: [UiValue; 4], rect: &UiRect) -> [f32; 4] {
+    let base_w = if rect.width.is_finite() && rect.width > 0.0 {
+        rect.width
+    } else {
+        0.0
+    };
+    let base_h = if rect.height.is_finite() && rect.height > 0.0 {
+        rect.height
+    } else {
+        0.0
+    };
+    let side = |v: UiValue, base: f32| {
+        let px = v.resolve(base);
+        if px.is_finite() && px > 0.0 {
+            px
+        } else {
+            0.0
+        }
+    };
+    let mut out = [
+        side(margin[0], base_w),
+        side(margin[1], base_h),
+        side(margin[2], base_w),
+        side(margin[3], base_h),
+    ];
+    shrink_pair(&mut out, 0, 2, base_w);
+    shrink_pair(&mut out, 1, 3, base_h);
+    out
+}
+
+/// 把一对边距（下标 `a` / `b`，如左右、上下）等比压到和不超过 `limit`。
+fn shrink_pair(m: &mut [f32; 4], a: usize, b: usize, limit: f32) {
+    if limit <= 0.0 {
+        m[a] = 0.0;
+        m[b] = 0.0;
+        return;
+    }
+    let sum = m[a] + m[b];
+    if sum > limit {
+        let scale = limit / sum;
+        m[a] *= scale;
+        m[b] *= scale;
     }
 }
 
@@ -451,8 +539,10 @@ fn normalize_border_width(mut element: UiElement) -> UiElement {
 /// 分三类处理：
 /// 1. **覆盖**（新值说了算）：`kind` / `anchor` / `offset` / `size` / `color` / `image`
 ///    —— 每次提交都在描述「这一帧长什么样」。
-/// 2. **沿用**（旧值说了算）：`layer` / `visible` / `uv` —— 样式与开关，不该因为每帧
-///    重发几何就被重置；要改它们请走 `ui_set_layer` / `ui_set_visible` / `ui_set_uv`。
+/// 2. **沿用**（旧值说了算）：`layer` / `visible` / `uv` / `slice_margin` —— 样式与开关，
+///    不该因为每帧重发几何就被重置；要改它们请走 `ui_set_layer` / `ui_set_visible` /
+///    `ui_set_uv` / `ui_set_slice`。（九宫格边距跟 `uv` 同一档：都是「这张纹理怎么贴」，
+///    而不是「这一帧画在哪、多大」。）
 /// 3. **有则覆盖、无则沿用**：`border_width` —— 边框元素的入参 `> 0` 时取入参，
 ///    否则沿用旧线宽（旧值也没有就回落到 [`DEFAULT_BORDER_WIDTH`]）；非边框元素恒为 0。
 pub fn merge_same_key(existing: &UiElement, incoming: UiElement) -> UiElement {
@@ -477,6 +567,7 @@ pub fn merge_same_key(existing: &UiElement, incoming: UiElement) -> UiElement {
         layer: existing.layer,
         visible: existing.visible,
         uv: existing.uv,
+        slice_margin: existing.slice_margin,
         border_width,
         ..incoming
     }
@@ -484,8 +575,8 @@ pub fn merge_same_key(existing: &UiElement, incoming: UiElement) -> UiElement {
 
 /// 按 key 覆盖式写入：同 key 整体替换原槽位（顺序不变），否则追加到末尾。
 ///
-/// 这是**裸全量覆盖**：`layer` / `visible` / `uv` 也会被新值重置。脚本每帧提交的
-/// 场景要用 [`upsert_styled`]（样式字段沿用旧值）。上限只拦新增、不拦覆盖——脚本每帧
+/// 这是**裸全量覆盖**：`layer` / `visible` / `uv` / `slice_margin` 也会被新值重置。脚本
+/// 每帧提交的场景要用 [`upsert_styled`]（样式字段沿用旧值）。上限只拦新增、不拦覆盖——脚本每帧
 /// 重发位置尺寸时必须能写进去，否则会被静默丢弃。非法值收敛由调用方先跑
 /// [`UiElement::sanitized`]。
 pub fn upsert(elements: &mut Vec<UiElement>, element: UiElement) -> UiUpsert {
@@ -898,5 +989,174 @@ mod tests {
         let json = serde_json::to_string(&e).expect("序列化应成功");
         let back: UiElement = serde_json::from_str(&json).expect("反序列化应成功");
         assert_eq!(back, e);
+    }
+
+    /// 九宫格边距：像素直接用，百分比以**元素自身**宽 / 高为基准。
+    #[test]
+    fn slice_margins_use_element_size_for_percent() {
+        let r = UiRect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let px = slice_margins(
+            [
+                UiValue::px(8.0),
+                UiValue::px(4.0),
+                UiValue::px(12.0),
+                UiValue::px(6.0),
+            ],
+            &r,
+        );
+        assert_eq!(px, [8.0, 4.0, 12.0, 6.0]);
+
+        // 左右按宽 200、上下按高 100 换算
+        let pct = slice_margins(
+            [
+                UiValue::pct(10.0),
+                UiValue::pct(10.0),
+                UiValue::pct(5.0),
+                UiValue::pct(20.0),
+            ],
+            &r,
+        );
+        assert_eq!(pct, [20.0, 10.0, 10.0, 20.0]);
+    }
+
+    /// 边距之和超过元素尺寸时**等比**夹取到恰好撑满，中心块宽高收敛为 0。
+    #[test]
+    fn slice_margins_shrink_when_oversized() {
+        let r = UiRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+        };
+        // 左右 80 + 40 = 120 > 100 → 按 100/120 等比缩放；上下 30 + 30 = 60 > 40
+        let m = slice_margins(
+            [
+                UiValue::px(80.0),
+                UiValue::px(30.0),
+                UiValue::px(40.0),
+                UiValue::px(30.0),
+            ],
+            &r,
+        );
+        assert!((m[0] - 100.0 * 80.0 / 120.0).abs() < 1e-5, "{:?}", m);
+        assert!((m[2] - 100.0 * 40.0 / 120.0).abs() < 1e-5, "{:?}", m);
+        assert!((m[0] + m[2] - r.width).abs() < 1e-5, "左右之和应恰为宽");
+        assert!((m[1] + m[3] - r.height).abs() < 1e-5, "上下之和应恰为高");
+        assert!((m[1] - 20.0).abs() < 1e-5 && (m[3] - 20.0).abs() < 1e-5);
+
+        // 等比缩放保持两边比例（80:40 仍是 2:1）
+        assert!((m[0] / m[2] - 2.0).abs() < 1e-4);
+    }
+
+    /// 非法边距（NaN / 负 / 无穷）与零尺寸元素一律收敛为 0，不产出负数。
+    #[test]
+    fn slice_margins_reject_invalid_values() {
+        let r = UiRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let m = slice_margins(
+            [
+                UiValue::px(f32::NAN),
+                UiValue::px(-12.0),
+                UiValue::px(f32::INFINITY),
+                UiValue::pct(-5.0),
+            ],
+            &r,
+        );
+        assert_eq!(m, [0.0, 0.0, 0.0, 0.0]);
+
+        // 零尺寸元素：百分比基数为 0，边距也只能是 0
+        let flat = UiRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        assert_eq!(
+            slice_margins([UiValue::pct(10.0); 4], &flat),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    /// sanitized 把负 / 非有限的边距折成 0，并保留合法单位。
+    #[test]
+    fn sanitize_rejects_bad_slice_margins() {
+        let mut e = el(UiKind::Image, Anchor::Center);
+        e.slice_margin = [
+            UiValue::px(-4.0),
+            UiValue::pct(f32::NAN),
+            UiValue::pct(12.0),
+            UiValue::px(f32::INFINITY),
+        ];
+        let s = e.sanitized();
+        assert_eq!(
+            s.slice_margin,
+            [
+                UiValue::px(0.0),
+                UiValue::px(0.0),
+                UiValue::pct(12.0),
+                UiValue::px(0.0)
+            ]
+        );
+    }
+
+    /// 九宫格边距属于样式字段：同 key 每帧重发几何时沿用旧值（与 uv / layer 同档）。
+    #[test]
+    fn merge_keeps_slice_margins_from_existing() {
+        let mut old = el(UiKind::Image, Anchor::TopLeft);
+        old.size = [UiValue::px(64.0), UiValue::px(64.0)];
+        old.uv = [0.25, 0.25, 0.5, 0.5];
+        old.layer = 7;
+        old.slice_margin = [
+            UiValue::px(8.0),
+            UiValue::px(8.0),
+            UiValue::px(8.0),
+            UiValue::px(8.0),
+        ];
+
+        // 新提交只描述几何，样式字段留给旧值
+        let mut incoming = el(UiKind::Image, Anchor::TopLeft);
+        incoming.size = [UiValue::px(200.0), UiValue::px(120.0)];
+        incoming.offset = [UiValue::px(5.0), UiValue::px(6.0)];
+
+        let merged = merge_same_key(&old, incoming);
+        assert_eq!(merged.size, [UiValue::px(200.0), UiValue::px(120.0)]);
+        assert_eq!(merged.offset, [UiValue::px(5.0), UiValue::px(6.0)]);
+        assert_eq!(merged.slice_margin, old.slice_margin, "边距应沿用旧值");
+        assert_eq!(merged.uv, old.uv, "uv 也应沿用");
+        assert_eq!(merged.layer, 7);
+    }
+
+    /// 只有图片元素才认九宫格；矩形 / 边框即使写了边距也不切分。
+    #[test]
+    fn has_slice_only_for_images() {
+        let r = UiRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let mut img = el(UiKind::Image, Anchor::Center);
+        img.slice_margin = [UiValue::px(4.0); 4];
+        assert!(img.has_slice(&r));
+
+        // 边距全 0 → 关闭
+        img.slice_margin = [UiValue::px(0.0); 4];
+        assert!(!img.has_slice(&r));
+
+        img.slice_margin = [UiValue::px(4.0); 4];
+        for kind in [UiKind::Rect, UiKind::Border] {
+            let mut other = el(kind, Anchor::Center);
+            other.slice_margin = [UiValue::px(4.0); 4];
+            assert!(!other.has_slice(&r), "{:?} 不应有九宫格", kind);
+        }
     }
 }

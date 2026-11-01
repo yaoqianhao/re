@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use r3e_core::mesh::TextureImage;
-use r3e_core::ui::{resolve_rect, sorted_for_draw, UiElement, UiKind};
+use r3e_core::ui::{resolve_rect, sorted_for_draw, UiElement, UiKind, UiRect};
 
 /// UI 图片贴图来源。由应用层实现（复用 asset 层的 `image` 依赖解码 png 等格式），
 /// 渲染层只负责上传与绘制，保持「render 不做文件 IO」的现有分层。
@@ -130,8 +130,10 @@ impl UiBuild {
 
 /// 把一个可见元素规划成若干四边形实例。
 ///
-/// 返回 `None` 表示这个元素本帧不该画（尺寸为 0 / 非有限 / 屏幕为 0）。
-fn plan_element(el: &UiElement, screen: (f32, f32), out: &mut Vec<UiInstance>) -> Option<()> {
+/// 返回 `None` 表示这个元素本帧不该画（尺寸为 0 / 非有限 / 屏幕为 0）；
+/// 返回 `Some(true)` 表示这个元素必须**整体**进预算（九宫格图片，缺一块就是坏图），
+/// `Some(false)` 表示允许按剩余额度截断（现有边框行为）。
+fn plan_element(el: &UiElement, screen: (f32, f32), out: &mut Vec<UiInstance>) -> Option<bool> {
     let rect = resolve_rect(el, screen)?;
     out.clear();
     match el.kind {
@@ -142,13 +144,26 @@ fn plan_element(el: &UiElement, screen: (f32, f32), out: &mut Vec<UiInstance>) -
             uv_max: [1.0, 1.0],
             color: el.color,
         }),
-        UiKind::Image => out.push(UiInstance {
-            origin: [rect.x, rect.y],
-            size: [rect.width, rect.height],
-            uv_min: [el.uv[0], el.uv[1]],
-            uv_max: [el.uv[2], el.uv[3]],
-            color: el.color,
-        }),
+        UiKind::Image => {
+            // 边距全 0（默认）→ 原来的单四边形路径，不引入任何额外开销
+            let margins = el.slice_margins_px(&rect);
+            if margins.iter().all(|m| *m <= 0.0) {
+                out.push(UiInstance {
+                    origin: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv_min: [el.uv[0], el.uv[1]],
+                    uv_max: [el.uv[2], el.uv[3]],
+                    color: el.color,
+                });
+                return Some(false);
+            }
+            // 边距退化到一块都不剩（理论上边距夹取后不会发生，防御性处理）→ 当未绘制
+            if !plan_slice(el, &rect, margins, out) {
+                return None;
+            }
+            // 九宫格必须整块进预算：丢掉任意一块都会露底，不如整元素不画
+            return Some(true);
+        }
         UiKind::Border => {
             // 四条边切成四个不重叠的矩形：粗细先夹到短边的一半，避免细矩形画成正片
             let t = el.border_width.min(rect.width * 0.5).min(rect.height * 0.5);
@@ -172,7 +187,62 @@ fn plan_element(el: &UiElement, screen: (f32, f32), out: &mut Vec<UiInstance>) -
             }
         }
     }
-    Some(())
+    Some(false)
+}
+
+/// 九宫格切分：把矩形按边距切成 9 块，返回是否成功（全部块尺寸退化时返回 `false`）。
+///
+/// 几何：
+/// - 列 = `[左, 宽-左-右, 右]`，行 = `[上, 高-上-下, 下]`；
+/// - 四角不拉伸（原尺寸），四边单向拉伸，中心双向拉伸；
+/// - 宽或高 `<= 0` 的块直接不生成（边距夹取后退化到 7 / 6 / 4 块，不会画负尺寸）。
+///
+/// uv：`el.uv` 是纹理**整体**外边界，按边距在元素尺寸里的占比等比切开——左右块的 uv 宽度
+/// 等于 `边距像素 / 元素宽` 乘 `uv` 区间宽，所以 `uv` 子区间（图集裁切）与九宫格可以叠加。
+fn plan_slice(el: &UiElement, rect: &UiRect, margins: [f32; 4], out: &mut Vec<UiInstance>) -> bool {
+    let [left, top, right, bottom] = margins;
+    let mid_w = rect.width - left - right;
+    let mid_h = rect.height - top - bottom;
+    let cols = [
+        (rect.x, left),
+        (rect.x + left, mid_w),
+        (rect.right() - right, right),
+    ];
+    let rows = [
+        (rect.y, top),
+        (rect.y + top, mid_h),
+        (rect.bottom() - bottom, bottom),
+    ];
+
+    let (u0, v0, u1, v1) = (el.uv[0], el.uv[1], el.uv[2], el.uv[3]);
+    let (du, dv) = (u1 - u0, v1 - v0);
+    // 切分点在 uv 上的位置：两端直接取 u0 / u1，避免「占比累加」带来的浮点漂移
+    let frac_l = left / rect.width;
+    let frac_r = right / rect.width;
+    let frac_t = top / rect.height;
+    let frac_b = bottom / rect.height;
+    let u = [u0, u0 + du * frac_l, u1 - du * frac_r, u1];
+    let v = [v0, v0 + dv * frac_t, v1 - dv * frac_b, v1];
+
+    let before = out.len();
+    for (ri, (y, h)) in rows.iter().enumerate() {
+        if *h <= 0.0 {
+            continue;
+        }
+        for (ci, (x, w)) in cols.iter().enumerate() {
+            if *w <= 0.0 {
+                continue;
+            }
+            out.push(UiInstance {
+                origin: [*x, *y],
+                size: [*w, *h],
+                uv_min: [u[ci], v[ri]],
+                uv_max: [u[ci + 1], v[ri + 1]],
+                color: el.color,
+            });
+        }
+    }
+    out.len() > before
 }
 
 /// 把 UI 元素列表规划成实例批次（纯 CPU，可单测）。
@@ -192,11 +262,19 @@ pub fn plan_ui_limited(elements: &[UiElement], screen: (f32, f32), max_quads: us
             build.skipped += 1;
             continue;
         }
-        if plan_element(el, screen, &mut buf).is_none() {
+        let atomic = match plan_element(el, screen, &mut buf) {
+            Some(atomic) => atomic,
+            None => {
+                build.skipped += 1;
+                continue;
+            }
+        };
+        let allowed = max_quads.saturating_sub(quads);
+        // 九宫格图片是原子的：剩余额度装不下 9 块就整元素丢弃，绝不画半张图
+        if atomic && buf.len() > allowed {
             build.skipped += 1;
             continue;
         }
-        let allowed = max_quads.saturating_sub(quads);
         let take = buf.len().min(allowed);
         if take < buf.len() {
             build.skipped += 1;
@@ -818,6 +896,143 @@ mod tests {
         assert_eq!(build.quad_count(), 5);
         assert_eq!(build.skipped, 1);
         assert_eq!(build.elements, 2);
+    }
+
+    /// 造一张九宫格图片：`slice` 是四条边距（像素）。
+    fn sliced(slice: [f32; 4], w: f32, h: f32) -> UiElement {
+        let mut el = UiElement::new("frame", UiKind::Image, Anchor::TopLeft);
+        el.image = "assets/ui/icon.png".into();
+        el.offset = [UiValue::px(10.0), UiValue::px(20.0)];
+        el.size = [UiValue::px(w), UiValue::px(h)];
+        el.slice_margin = [
+            UiValue::px(slice[0]),
+            UiValue::px(slice[1]),
+            UiValue::px(slice[2]),
+            UiValue::px(slice[3]),
+        ];
+        el
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    /// 九宫格：9 块，四角不拉伸、四边单向拉伸、中心双向拉伸；uv 按边距比例切开。
+    #[test]
+    fn slice_makes_nine_quads_with_expected_uv() {
+        // 100x50 元素，四边各 10px → 列宽 [10, 80, 10]，行高 [10, 30, 10]
+        let el = sliced([10.0, 10.0, 10.0, 10.0], 100.0, 50.0);
+        let build = plan_ui(std::slice::from_ref(&el), (800.0, 600.0));
+        assert_eq!(build.quad_count(), 9);
+        assert_eq!(build.elements, 1);
+        let inst = &build.batches[0].instances;
+
+        // 左上角：位置 (10,20)，尺寸 10x10，uv [0,0]-[0.1,0.2]
+        let tl = &inst[0];
+        assert_eq!(tl.origin, [10.0, 20.0]);
+        assert_eq!(tl.size, [10.0, 10.0]);
+        assert!(close(tl.uv_min[0], 0.0) && close(tl.uv_min[1], 0.0));
+        assert!(close(tl.uv_max[0], 0.1) && close(tl.uv_max[1], 0.2));
+
+        // 上边：x 拉到 10，宽 80（单向横向拉伸），高度保持 10
+        let top = &inst[1];
+        assert_eq!(top.origin, [20.0, 20.0]);
+        assert_eq!(top.size, [80.0, 10.0]);
+        assert!(close(top.uv_min[0], 0.1) && close(top.uv_max[0], 0.9));
+
+        // 右上角：贴右边界（100+10-10=100），uv 右端为 1
+        let tr = &inst[2];
+        assert_eq!(tr.origin, [100.0, 20.0]);
+        assert_eq!(tr.size, [10.0, 10.0]);
+        assert!(close(tr.uv_min[0], 0.9) && close(tr.uv_max[0], 1.0));
+
+        // 中心：双向拉伸 80x30，uv [0.1,0.2]-[0.9,0.8]
+        let mid = &inst[4];
+        assert_eq!(mid.origin, [20.0, 30.0]);
+        assert_eq!(mid.size, [80.0, 30.0]);
+        assert!(close(mid.uv_min[0], 0.1) && close(mid.uv_min[1], 0.2));
+        assert!(close(mid.uv_max[0], 0.9) && close(mid.uv_max[1], 0.8));
+
+        // 右下角：贴右下角，uv 收在 [0.9,0.8]-[1,1]
+        let br = &inst[8];
+        assert_eq!(br.origin, [100.0, 60.0]);
+        assert_eq!(br.size, [10.0, 10.0]);
+        assert!(close(br.uv_min[0], 0.9) && close(br.uv_min[1], 0.8));
+        assert!(close(br.uv_max[0], 1.0) && close(br.uv_max[1], 1.0));
+
+        // 9 块拼起来恰好覆盖整块矩形，没有缝隙也没有重叠
+        let area: f32 = inst.iter().map(|i| i.size[0] * i.size[1]).sum();
+        assert!(close(area, 100.0 * 50.0), "面积应等于原矩形：{area}");
+    }
+
+    /// 边距全 0（默认）仍走单个四边形，不额外开销。
+    #[test]
+    fn zero_slice_stays_single_quad() {
+        let el = sliced([0.0; 4], 100.0, 50.0);
+        let build = plan_ui(std::slice::from_ref(&el), (800.0, 600.0));
+        assert_eq!(build.quad_count(), 1);
+        let inst = &build.batches[0].instances[0];
+        assert_eq!(inst.size, [100.0, 50.0]);
+        assert_eq!(inst.uv_min, [0.0, 0.0]);
+        assert_eq!(inst.uv_max, [1.0, 1.0]);
+    }
+
+    /// 边距超尺寸时等比夹取：中间列 / 行宽高退化为 0，只剩角与边（不画负尺寸）。
+    #[test]
+    fn oversized_slice_degrades_without_negative_quads() {
+        // 100x100，左右各 80（和 160 > 100 → 各 50），上下各 10
+        let el = sliced([80.0, 10.0, 80.0, 10.0], 100.0, 100.0);
+        let build = plan_ui(std::slice::from_ref(&el), (800.0, 600.0));
+        // 列退化为 [50, 0, 50] → 只剩 2 列 × 3 行 = 6 块
+        assert_eq!(build.quad_count(), 6);
+        for i in &build.batches[0].instances {
+            assert!(i.size[0] > 0.0 && i.size[1] > 0.0, "不应出现零 / 负尺寸块");
+            assert!(i.size[0].is_finite() && i.size[1].is_finite());
+        }
+
+        // 上下也吃满：只剩四个角
+        let el = sliced([50.0, 50.0, 50.0, 50.0], 100.0, 100.0);
+        let build = plan_ui(std::slice::from_ref(&el), (800.0, 600.0));
+        assert_eq!(build.quad_count(), 4);
+    }
+
+    /// 九宫格与 uv 子区间（图集裁切）叠加：子区间按边距比例再切。
+    #[test]
+    fn slice_respects_uv_subregion() {
+        let mut el = sliced([10.0, 10.0, 10.0, 10.0], 100.0, 50.0);
+        el.uv = [0.25, 0.25, 0.75, 0.75];
+        let build = plan_ui(std::slice::from_ref(&el), (800.0, 600.0));
+        let inst = &build.batches[0].instances;
+        // 子区间宽 0.5，左列占元素宽 1/10 → uv 宽 0.05
+        assert!(close(inst[0].uv_min[0], 0.25) && close(inst[0].uv_max[0], 0.30));
+        assert!(close(inst[0].uv_min[1], 0.25) && close(inst[0].uv_max[1], 0.35));
+        // 右列从 0.75 - 0.05 起
+        assert!(close(inst[2].uv_min[0], 0.70) && close(inst[2].uv_max[0], 0.75));
+    }
+
+    /// 预算不够 9 块时整元素丢弃：不留残片，计入 skipped。
+    #[test]
+    fn slice_is_atomic_under_quad_budget() {
+        let el = sliced([10.0, 10.0, 10.0, 10.0], 100.0, 50.0);
+        // 预算 8 < 9 块 → 整元素不画
+        let build = plan_ui_limited(std::slice::from_ref(&el), (800.0, 600.0), 8);
+        assert_eq!(build.quad_count(), 0, "不得只画一部分");
+        assert_eq!(build.skipped, 1);
+        assert_eq!(build.elements, 0);
+
+        // 预算刚好 9 → 完整绘制
+        let build = plan_ui_limited(std::slice::from_ref(&el), (800.0, 600.0), 9);
+        assert_eq!(build.quad_count(), 9);
+        assert_eq!(build.skipped, 0);
+
+        // 前面先占 4 块（一个边框），剩 5 块装不下 9 块 → 九宫格整丢，边框不受影响
+        let mut bd = UiElement::new("bd", UiKind::Border, Anchor::TopLeft);
+        bd.size = [UiValue::px(100.0), UiValue::px(100.0)];
+        bd.border_width = 2.0;
+        let build = plan_ui_limited(&[bd, el], (800.0, 600.0), 8);
+        assert_eq!(build.quad_count(), 4, "只剩边框的 4 块");
+        assert_eq!(build.skipped, 1);
+        assert_eq!(build.elements, 1);
     }
 
     /// 完整 HUD 场景（血条两层 + 对话框底框 + 图标）不 panic 且批次数合理。
