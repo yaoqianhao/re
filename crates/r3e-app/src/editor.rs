@@ -17,7 +17,8 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 use r3e_core::{Node, ObjectDesc, Scene};
 use r3e_editor::{
-    EngineApi, EngineInfo, NodeBrief, PhysicsInfo, RpcFailure, TransformPatch, PROTOCOL_VERSION,
+    EngineApi, EngineInfo, MaterialPatch, NodeBrief, PhysicsInfo, RpcFailure, TransformPatch,
+    PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -178,6 +179,37 @@ impl EngineApi for LocalEngineApi<'_> {
         Ok(json!({ "removed": name, "nodes": scene.len() }))
     }
 
+    /// 材质补丁：在现有材质上叠加，再交给 `SurfaceMaterial` 统一收敛。
+    /// 返回合并后的完整材质（读回入口），调用方据此确认非法值已被夹取。
+    fn scene_set_material(
+        &mut self,
+        node: &str,
+        patch: MaterialPatch,
+    ) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        let mut material = scene.material_of(node).unwrap_or_default();
+        if let Some(metallic) = patch.metallic {
+            material.metallic = metallic;
+        }
+        if let Some(roughness) = patch.roughness {
+            material.roughness = roughness;
+        }
+        if let Some(emissive) = patch.emissive {
+            material.emissive = emissive;
+        }
+        if !scene.set_material(node, material) {
+            return Err(RpcFailure::not_found(format!("物件 `{node}` 不存在")));
+        }
+        let applied = scene.material_of(node).unwrap_or_default();
+        let snapshot = find_node(&scene, node)
+            .map(node_value)
+            .unwrap_or(Value::Null);
+        Ok(json!({
+            "material": material_value(applied),
+            "node": snapshot,
+        }))
+    }
+
     fn script_eval(&mut self, source: &str) -> Result<Value, RpcFailure> {
         let value = self.scripts.eval(source).map_err(RpcFailure::engine)?;
         Ok(dynamic_to_json(&value))
@@ -260,7 +292,18 @@ fn node_value(node: &Node) -> Value {
         "scale": t.scale.to_array(),
         "euler_deg": t.euler_deg().to_array(),
         "color": node.color.to_array(),
+        "material": node.material.map(material_value),
         "world": node.world.to_cols_array(),
+    })
+}
+
+/// 材质快照（读回入口）：未显式设置材质的物件给出 `null`，
+/// 显式设置过的给出收敛后的三件套。
+fn material_value(material: r3e_core::SurfaceMaterial) -> Value {
+    json!({
+        "metallic": material.metallic,
+        "roughness": material.roughness,
+        "emissive": material.emissive,
     })
 }
 

@@ -356,6 +356,59 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         edit(&c.scene, name, |n| n.visible = v)
     });
 
+    // ---------------- PBR 材质 ----------------
+    // 三个旋钮：metallic / roughness / emissive。base color 仍是物件颜色，
+    // 语义不变。所有写入都走 `Scene::set_material*`，由 `SurfaceMaterial::sanitized`
+    // 在**写入前**收敛（NaN / ±inf / 超界），脚本侧不做第二套夹取。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_material",
+        move |name: &str, metallic: f64, roughness: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_material_params(name, f32_of(metallic), f32_of(roughness))
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_emissive",
+        move |name: &str, r: f64, g: f64, b: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_emissive(name, [f32_of(r), f32_of(g), f32_of(b)])
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("clear_material", move |name: &str| -> bool {
+        c.scene.borrow_mut().clear_material(name)
+    });
+
+    // 读回：收敛之后真正生效的材质快照；物件没有显式材质时给缺省值。
+    let c = ctx.clone();
+    engine.register_fn("material_of", move |name: &str| -> Map {
+        let mut out = Map::new();
+        let Some(material) = c.scene.borrow().material_of(name) else {
+            out.insert("found".into(), Dynamic::from(false));
+            return out;
+        };
+        out.insert("found".into(), Dynamic::from(true));
+        out.insert("metallic".into(), Dynamic::from(material.metallic as f64));
+        out.insert("roughness".into(), Dynamic::from(material.roughness as f64));
+        out.insert(
+            "emissive".into(),
+            Dynamic::from(
+                material
+                    .emissive
+                    .iter()
+                    .map(|v| Dynamic::from(*v as f64))
+                    .collect::<Array>(),
+            ),
+        );
+        out
+    });
+
     let c = ctx.clone();
     engine.register_fn("set_mesh", move |name: &str, mesh: &str| -> bool {
         match MeshRef::parse(mesh) {

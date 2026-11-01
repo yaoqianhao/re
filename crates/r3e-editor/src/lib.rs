@@ -251,6 +251,24 @@ impl TransformPatch {
     }
 }
 
+/// `scene.set_material` 的局部改动：只给要改的字段，其余保持原值。
+///
+/// `metallic` / `roughness` 是 0..1 标量，`emissive` 是线性 RGB。传输层只做
+/// 类型与范围校验，真正的收敛（NaN / 超界 / 负值）由宿主的 `SurfaceMaterial`
+/// 完成，保证「非法值在写入场景前消失」。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MaterialPatch {
+    pub metallic: Option<f32>,
+    pub roughness: Option<f32>,
+    pub emissive: Option<[f32; 3]>,
+}
+
+impl MaterialPatch {
+    pub fn is_empty(&self) -> bool {
+        self.metallic.is_none() && self.roughness.is_none() && self.emissive.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -280,6 +298,16 @@ pub trait EngineApi {
 
     fn scene_spawn(&mut self, _object: Value) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.spawn"))
+    }
+
+    /// 改写物件的 PBR 材质（`metallic` / `roughness` / `emissive` 可分别给）。
+    /// 宿主应把补丁合并进现有材质后立即收敛，并把合并结果回给调用方。
+    fn scene_set_material(
+        &mut self,
+        _node: &str,
+        _patch: MaterialPatch,
+    ) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.set_material"))
     }
 
     fn scene_remove(&mut self, _node: &str) -> Result<Value, RpcFailure> {
@@ -318,6 +346,17 @@ fn require_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcFailure> 
     param(params, key)
         .and_then(Value::as_str)
         .ok_or_else(|| RpcFailure::invalid_params(format!("缺少字符串参数 `{key}`")))
+}
+
+/// 取出可选数字参数；缺省得到 `None`，给了但不是数字则报错。
+fn opt_f32(params: &Value, key: &str) -> Result<Option<f32>, RpcFailure> {
+    let Some(value) = param(params, key) else {
+        return Ok(None);
+    };
+    value
+        .as_f64()
+        .map(|v| Some(v as f32))
+        .ok_or_else(|| RpcFailure::invalid_params(format!("参数 `{key}` 应为数字")))
 }
 
 fn opt_f32_array<const N: usize>(
@@ -427,6 +466,34 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             Ok(r) => Response::ok(id, r),
             Err(f) => Response::fail(id, f),
         },
+        // 材质契约：metallic / roughness / emissive 三个字段可分别给，
+        // 一个都不给视为无意义调用；具体收敛由宿主材质结构完成。
+        "scene.setmaterial" => {
+            let patch = match (
+                opt_f32(&req.params, "metallic"),
+                opt_f32(&req.params, "roughness"),
+                opt_f32_array::<3>(&req.params, "emissive"),
+            ) {
+                (Ok(m), Ok(r), Ok(e)) => MaterialPatch {
+                    metallic: m,
+                    roughness: r,
+                    emissive: e,
+                },
+                (Err(f), _, _) | (_, Err(f), _) | (_, _, Err(f)) => return Response::fail(id, f),
+            };
+            if patch.is_empty() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params(
+                        "metallic / roughness / emissive 至少要给一个（否则这次调用没有意义）",
+                    ),
+                );
+            }
+            match with_node(&req.params, |node| api.scene_set_material(node, patch)) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "scene.save" => {
             let path = match param(&req.params, "path") {
                 None | Some(Value::Null) => None,
