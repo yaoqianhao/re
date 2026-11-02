@@ -453,6 +453,17 @@ impl UiRect {
     }
 
     /// 尺寸是否可画（宽高必须为正的有限值）。
+    /// 点是否落在矩形内（左闭右开 / 上闭下开）。
+    ///
+    /// 右边界与下边界取开区间：相邻两个元素拼在一起时，交界像素只会命中其中一个，
+    /// 不会出现「点一下触发两个」。非有限坐标一律算没命中。
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
+
     pub fn is_drawable(&self) -> bool {
         self.width.is_finite()
             && self.height.is_finite()
@@ -617,6 +628,273 @@ pub fn remove(elements: &mut Vec<UiElement>, key: &str) -> bool {
             true
         }
         None => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 交互层：命中测试与指针状态机
+// ---------------------------------------------------------------------------
+
+/// 单个 UI 元素在一帧内可能收到的交互事件。
+///
+/// 语义按「指针在元素上按下 → 抬起」的完整过程定义：
+/// - [`UiEventKind::Hovered`] / [`UiEventKind::Unhovered`]：指针进出元素；
+/// - [`UiEventKind::Pressed`]：在元素上按下；
+/// - [`UiEventKind::Released`]：抬起时若存在按下捕获，**总会**发一次（配 `active` 元素）；
+/// - [`UiEventKind::Clicked`]：在**同一个**元素上按下并抬起（`Released` 之前发）；
+/// - [`UiEventKind::Cancelled`]：按下了但没在同一元素上抬起（移到别处释放 / 元素被删 /
+///   丢掉了释放事件）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiEventKind {
+    Hovered,
+    Unhovered,
+    Pressed,
+    Released,
+    Clicked,
+    Cancelled,
+}
+
+impl UiEventKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Hovered => "hovered",
+            Self::Unhovered => "unhovered",
+            Self::Pressed => "pressed",
+            Self::Released => "released",
+            Self::Clicked => "clicked",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "hovered" => Some(Self::Hovered),
+            "unhovered" => Some(Self::Unhovered),
+            "pressed" => Some(Self::Pressed),
+            "released" => Some(Self::Released),
+            "clicked" => Some(Self::Clicked),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+/// 一条交互事件：哪个元素、发生了什么。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiEvent {
+    pub kind: UiEventKind,
+    pub key: String,
+}
+
+impl UiEvent {
+    pub fn new(kind: UiEventKind, key: impl Into<String>) -> Self {
+        Self {
+            kind,
+            key: key.into(),
+        }
+    }
+}
+
+/// 单帧事件上限。
+///
+/// 正常一帧最多「离开 N 个元素 + 进入 N 个元素 + 一次点击」级别的量，64 足够；
+/// 设上限是为了脚本侧 `ui_events()` 返回的数组不会因为异常场景（脚本每帧新建上千个
+/// 元素来回切换）而膨胀到卡住脚本运行时。
+pub const MAX_UI_EVENTS_PER_FRAME: usize = 64;
+
+/// 命中测试：返回光标下**最上层**的可见元素（后画的在上）。
+///
+/// 只判矩形——边框的中间空隙、图片的透明像素都算「点得到」，因为对脚本而言
+/// 「元素的位置与大小」才是可预期的点击区域，按像素 alpha 命中会让人猜不到为什么点不动。
+pub fn hit_test(
+    elements: &[UiElement],
+    screen: (f32, f32),
+    x: f32,
+    y: f32,
+) -> Option<&UiElement> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    sorted_for_draw(elements)
+        .into_iter()
+        .rev()
+        .find(|el| matches!(resolve_rect(el, screen), Some(r) if r.contains(x, y)))
+}
+
+/// [`hit_test`] 的 key 版本（脚本 / RPC 侧只需要 key）。
+pub fn hit_test_key(
+    elements: &[UiElement],
+    screen: (f32, f32),
+    x: f32,
+    y: f32,
+) -> Option<&str> {
+    hit_test(elements, screen, x, y).map(|el| el.key.as_str())
+}
+
+/// 指针交互状态机：hover / active 两个槽位 + 每帧事件队列。
+///
+/// 放在 core 是为了让它能在无窗口、无 GPU 的环境里单测：喂几个矩形与一串
+/// 「按下 / 抬起」布尔量，就能断言事件序列。渲染层完全不参与。
+///
+/// 用法约定（`app` 每帧一次）：
+/// 1. [`UiInteraction::reset`] 清上一帧事件（保留 hover / active，跨帧状态要连续）；
+/// 2. 需要读事件的脚本先跑——或者 `app` 先 `update` 再 tick，二者取一，不要两处都读；
+/// 3. [`UiInteraction::update`] 按本帧输入推进状态。
+#[derive(Debug, Default, Clone)]
+pub struct UiInteraction {
+    hover: Option<String>,
+    active: Option<String>,
+    events: Vec<UiEvent>,
+    /// 最近一帧的屏幕尺寸（像素）。`app` 每帧经 [`UiInteraction::update`] 送进来，
+    /// 脚本侧的 `ui_hit(x, y)` 之类的查询靠它把坐标换算成矩形。
+    screen: (f32, f32),
+}
+
+impl UiInteraction {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 当前悬停元素 key。
+    pub fn hover(&self) -> Option<&str> {
+        self.hover.as_deref()
+    }
+
+    /// 当前按住不放的元素 key（按下捕获）。
+    pub fn active(&self) -> Option<&str> {
+        self.active.as_deref()
+    }
+
+    /// 最近一帧的屏幕尺寸（像素；0 表示还没送进来过）。
+    pub fn screen(&self) -> (f32, f32) {
+        self.screen
+    }
+
+    /// 本帧事件列表（顺序即发生顺序）。
+    pub fn events(&self) -> &[UiEvent] {
+        &self.events
+    }
+
+    /// 指针是否正压在 UI 上——`app` 用它决定要不要把这次拖动交给相机。
+    pub fn pointer_over_ui(&self) -> bool {
+        self.hover.is_some()
+    }
+
+    /// 本帧是否收到某元素上的完整点击。
+    pub fn clicked(&self, key: &str) -> bool {
+        self.events
+            .iter()
+            .any(|e| e.kind == UiEventKind::Clicked && e.key == key)
+    }
+
+    /// 某元素本帧是否被悬停。
+    pub fn hovered(&self, key: &str) -> bool {
+        self.events
+            .iter()
+            .any(|e| e.kind == UiEventKind::Hovered && e.key == key)
+    }
+
+    /// 清空事件队列（每帧开头调用；hover / active 保留）。
+    pub fn reset(&mut self) {
+        self.events.clear();
+    }
+
+    /// 整体复位：hover / active / 事件队列一起清空，**不发事件**。
+    ///
+    /// 用于「切换场景 / 关闭 UI / 光标离开窗口后重新进入」这类整段作废的场景——
+    /// 此时旧元素可能已经不存在，发 `unhovered` 反而让脚本去查一个不存在的 key。
+    pub fn clear(&mut self) {
+        self.hover = None;
+        self.active = None;
+        self.events.clear();
+    }
+
+    /// 单独刷新屏幕尺寸（不推进事件）。
+    ///
+    /// 用于「只想知道坐标落在哪」的查询场景：脚本 / 编辑器在没有指针输入时
+    /// 也要能用 `ui_hit`，此时不必伪造一次 `update`。
+    pub fn set_screen(&mut self, screen: (f32, f32)) {
+        self.screen = screen;
+    }
+
+    /// 用缓存的屏幕尺寸做一次命中测试。
+    pub fn hit<'a>(&self, elements: &'a [UiElement], x: f32, y: f32) -> Option<&'a str> {
+        hit_test_key(elements, self.screen, x, y)
+    }
+
+    fn push(&mut self, kind: UiEventKind, key: impl Into<String>) {
+        if self.events.len() >= MAX_UI_EVENTS_PER_FRAME {
+            return;
+        }
+        self.events.push(UiEvent::new(kind, key));
+    }
+
+    /// 推进一帧。
+    ///
+    /// - `cursor`：光标位置（`None` = 光标不在窗口内）；
+    /// - `pressed` / `down` / `released`：左键的边沿与状态。
+    pub fn update(
+        &mut self,
+        elements: &[UiElement],
+        screen: (f32, f32),
+        cursor: Option<(f32, f32)>,
+        pressed: bool,
+        down: bool,
+        released: bool,
+    ) {
+        self.screen = screen;
+
+        // 1. 本帧 hover 目标
+        let target = cursor
+            .and_then(|(x, y)| hit_test(elements, screen, x, y))
+            .map(|el| el.key.clone());
+
+        // 2. hover 迁移：先离开旧的，再进入新的
+        if target != self.hover {
+            if let Some(old) = self.hover.take() {
+                self.push(UiEventKind::Unhovered, old);
+            }
+            if let Some(new) = target {
+                self.push(UiEventKind::Hovered, new.clone());
+                self.hover = Some(new);
+            }
+        }
+
+        // 3. 按下捕获的元素消失（被删 / 隐藏 / 尺寸变成非法）→ 取消
+        if let Some(act) = self.active.clone() {
+            let gone = find(elements, &act)
+                .map(|el| !el.visible || resolve_rect(el, screen).is_none())
+                .unwrap_or(true);
+            if gone {
+                self.active = None;
+                self.push(UiEventKind::Cancelled, act);
+            }
+        }
+
+        // 4. 按下：只在有 hover 目标时建立捕获（点在空白处不捕获）
+        if pressed && self.active.is_none() {
+            if let Some(h) = self.hover.clone() {
+                self.active = Some(h.clone());
+                self.push(UiEventKind::Pressed, h);
+            }
+        }
+
+        // 5. 抬起：同元素上算点击，否则算取消；两种情况都发 released
+        if released {
+            if let Some(act) = self.active.take() {
+                if self.hover.as_deref() == Some(act.as_str()) {
+                    self.push(UiEventKind::Clicked, act.clone());
+                } else {
+                    self.push(UiEventKind::Cancelled, act.clone());
+                }
+                self.push(UiEventKind::Released, act);
+            }
+        } else if !down {
+            // 6. 丢失释放事件（窗口失焦等）：不留下永远按住的幽灵 active
+            if let Some(act) = self.active.take() {
+                self.push(UiEventKind::Cancelled, act);
+            }
+        }
     }
 }
 
@@ -1158,5 +1436,227 @@ mod tests {
             other.slice_margin = [UiValue::px(4.0); 4];
             assert!(!other.has_slice(&r), "{:?} 不应有九宫格", kind);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 交互层：命中测试与指针状态机
+    // -----------------------------------------------------------------------
+
+    const SCR: (f32, f32) = (1000.0, 600.0);
+
+    /// 左上锚 + px 偏移的矩形，便于直接按像素断言。
+    fn frame(key: &str, x: f32, y: f32, w: f32, h: f32) -> UiElement {
+        let mut e = UiElement::new(key, UiKind::Rect, Anchor::TopLeft);
+        e.offset = [UiValue::px(x), UiValue::px(y)];
+        e.size = [UiValue::px(w), UiValue::px(h)];
+        e
+    }
+
+    /// 重叠区域命中「后画的」（layer 高的）。
+    #[test]
+    fn hit_test_prefers_top_layer() {
+        let mut back = frame("back", 0.0, 0.0, 200.0, 200.0);
+        back.layer = 0;
+        let mut front = frame("front", 50.0, 50.0, 200.0, 200.0);
+        front.layer = 5;
+        let list = vec![back, front];
+        // 重叠区
+        assert_eq!(hit_test_key(&list, SCR, 100.0, 100.0), Some("front"));
+        // 只有 back 覆盖的区域
+        assert_eq!(hit_test_key(&list, SCR, 10.0, 10.0), Some("back"));
+        // 谁都不覆盖
+        assert_eq!(hit_test_key(&list, SCR, 900.0, 500.0), None);
+    }
+
+    /// layer 相同时按加入顺序，后加的在上面。
+    #[test]
+    fn hit_test_same_layer_uses_insert_order() {
+        let list = vec![
+            frame("first", 0.0, 0.0, 100.0, 100.0),
+            frame("second", 0.0, 0.0, 100.0, 100.0),
+        ];
+        assert_eq!(hit_test_key(&list, SCR, 10.0, 10.0), Some("second"));
+    }
+
+    /// 隐藏元素与非法尺寸元素不参与命中。
+    #[test]
+    fn hit_test_skips_hidden_and_degenerate() {
+        let mut hidden = frame("hidden", 0.0, 0.0, 100.0, 100.0);
+        hidden.visible = false;
+        hidden.layer = 9;
+        let mut zero = frame("zero", 0.0, 0.0, 0.0, 100.0);
+        zero.layer = 8;
+        let list = vec![hidden, zero, frame("ok", 0.0, 0.0, 100.0, 100.0)];
+        assert_eq!(hit_test_key(&list, SCR, 10.0, 10.0), Some("ok"));
+    }
+
+    /// 右 / 下边界取开区间：相邻元素交界处只命中一个。
+    #[test]
+    fn hit_test_borders_are_half_open() {
+        let list = vec![
+            frame("left", 0.0, 0.0, 100.0, 100.0),
+            frame("right", 100.0, 0.0, 100.0, 100.0),
+        ];
+        assert_eq!(hit_test_key(&list, SCR, 99.5, 50.0), Some("left"));
+        assert_eq!(hit_test_key(&list, SCR, 100.0, 50.0), Some("right"));
+        assert_eq!(hit_test_key(&list, SCR, 200.0, 50.0), None);
+    }
+
+    /// 屏幕尺寸为 0（最小化）时一律不命中。
+    #[test]
+    fn hit_test_ignores_dead_screen() {
+        let list = vec![frame("a", 0.0, 0.0, 100.0, 100.0)];
+        assert_eq!(hit_test_key(&list, (0.0, 0.0), 10.0, 10.0), None);
+    }
+
+    /// 光标进出元素：一次迁移一对 unhovered / hovered。
+    #[test]
+    fn hover_emits_enter_and_leave() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+
+        ui.update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+        assert_eq!(ui.hover(), Some("btn"));
+        assert!(ui.pointer_over_ui());
+        assert_eq!(ui.events().len(), 1);
+        assert_eq!(ui.events()[0].kind, UiEventKind::Hovered);
+        assert_eq!(ui.events()[0].key, "btn");
+
+        ui.reset();
+        // 仍停在原地：不重复发
+        ui.update(&list, SCR, Some((12.0, 12.0)), false, false, false);
+        assert!(ui.events().is_empty());
+
+        ui.update(&list, SCR, Some((500.0, 500.0)), false, false, false);
+        assert_eq!(ui.hover(), None);
+        assert!(!ui.pointer_over_ui());
+        assert_eq!(ui.events().len(), 1);
+        assert_eq!(ui.events()[0].kind, UiEventKind::Unhovered);
+    }
+
+    /// 同元素按下再抬起 = pressed / clicked / released 三条，顺序确定。
+    #[test]
+    fn click_emits_pressed_clicked_released() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+
+        ui.update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+        ui.reset();
+        ui.update(&list, SCR, Some((10.0, 10.0)), true, true, false);
+        assert_eq!(ui.active(), Some("btn"));
+        let kinds: Vec<_> = ui.events().iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![UiEventKind::Pressed]);
+        assert!(!ui.clicked("btn"));
+
+        ui.reset();
+        ui.update(&list, SCR, Some((11.0, 11.0)), false, false, true);
+        let kinds: Vec<_> = ui.events().iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![UiEventKind::Clicked, UiEventKind::Released]
+        );
+        assert!(ui.clicked("btn"));
+        assert_eq!(ui.active(), None);
+    }
+
+    /// 按下后移出再释放：取消，不发 clicked。
+    #[test]
+    fn drag_outside_cancels_click() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+        ui.update(&list, SCR, Some((10.0, 10.0)), true, true, false);
+        ui.reset();
+        ui.update(&list, SCR, Some((400.0, 400.0)), false, true, false);
+        assert_eq!(ui.active(), Some("btn"), "按下捕获要跨过元素外");
+        ui.reset();
+        ui.update(&list, SCR, Some((400.0, 400.0)), false, false, true);
+        let kinds: Vec<_> = ui.events().iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![UiEventKind::Cancelled, UiEventKind::Released]);
+        assert!(!ui.clicked("btn"));
+    }
+
+    /// 点在空白处不建立捕获，抬起不产生任何事件。
+    #[test]
+    fn press_on_empty_space_captures_nothing() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+        ui.update(&list, SCR, Some((500.0, 500.0)), true, true, false);
+        assert_eq!(ui.active(), None);
+        assert!(ui.events().is_empty());
+        ui.update(&list, SCR, Some((500.0, 500.0)), false, false, true);
+        assert!(ui.events().is_empty());
+    }
+
+    /// 按住期间元素被删：立刻取消，且不会留下幽灵 active。
+    #[test]
+    fn removing_active_element_cancels() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+        ui.update(&list, SCR, Some((10.0, 10.0)), true, true, false);
+        ui.reset();
+        let empty: Vec<UiElement> = Vec::new();
+        ui.update(&empty, SCR, Some((10.0, 10.0)), false, true, false);
+        assert_eq!(ui.active(), None);
+        assert_eq!(ui.hover(), None);
+        let kinds: Vec<_> = ui.events().iter().map(|e| e.kind).collect();
+        // 顺序：先「指针离开」（hover 迁移）再「捕获取消」，符合因果
+        assert_eq!(
+            kinds,
+            vec![UiEventKind::Unhovered, UiEventKind::Cancelled]
+        );
+    }
+
+    /// 丢失释放事件（窗口失焦）：active 必须被撤掉。
+    #[test]
+    fn lost_release_resets_capture() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+        ui.update(&list, SCR, Some((10.0, 10.0)), true, true, false);
+        ui.reset();
+        ui.update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+        assert_eq!(ui.active(), None);
+        assert_eq!(ui.events().len(), 1);
+        assert_eq!(ui.events()[0].kind, UiEventKind::Cancelled);
+    }
+
+    /// 光标离开窗口（cursor = None）：hover 清空。
+    #[test]
+    fn cursor_leaving_window_clears_hover() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+        ui.update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+        ui.reset();
+        ui.update(&list, SCR, None, false, false, false);
+        assert_eq!(ui.hover(), None);
+        assert_eq!(ui.events().len(), 1);
+        assert_eq!(ui.events()[0].kind, UiEventKind::Unhovered);
+    }
+
+    /// 事件队列有上限，异常场景不会无界增长。
+    #[test]
+    fn event_queue_is_capped() {
+        let list = vec![frame("btn", 0.0, 0.0, 100.0, 50.0)];
+        let mut ui = UiInteraction::new();
+        for _ in 0..(MAX_UI_EVENTS_PER_FRAME * 3) {
+            ui.update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+            ui.update(&list, SCR, Some((900.0, 500.0)), false, false, false);
+        }
+        assert_eq!(ui.events().len(), MAX_UI_EVENTS_PER_FRAME);
+    }
+
+    /// 事件名的字符串双向映射（脚本 / RPC 侧靠它做过滤）。
+    #[test]
+    fn event_kind_name_roundtrip() {
+        for kind in [
+            UiEventKind::Hovered,
+            UiEventKind::Unhovered,
+            UiEventKind::Pressed,
+            UiEventKind::Released,
+            UiEventKind::Clicked,
+            UiEventKind::Cancelled,
+        ] {
+            assert_eq!(UiEventKind::parse(kind.name()), Some(kind));
+        }
+        assert_eq!(UiEventKind::parse("boom"), None);
     }
 }
