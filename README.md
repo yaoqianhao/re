@@ -37,6 +37,7 @@ D:\rust3d-engine
 │   ├─ scene_rapier.json      # Rapier 演示场景（堆叠 / 弹跳 / 圆柱）
 │   ├─ scene_ccd.json         # CCD 穿透对照场景（薄墙 + 两颗只差 ccd 一位的子弹）
 │   ├─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
+│   ├─ scene_ibl.json         # IBL 演示场景（三色天空 + 三档金属球 + 亮面/哑光介电）
 │   ├─ audio/
 │   │   ├─ blip.wav           # 0.18s 短音效（880Hz 指数衰减，脚本合成，无版权素材）
 │   │   └─ ambience.wav       # 2.0s 可无缝循环环境音（220Hz + 330Hz，脚本合成）
@@ -216,7 +217,7 @@ cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
 | `--rpc-max-per-frame <n>` | `8` | 每帧最多消化多少条请求，防止编辑器刷屏把帧时间顶爆 |
 
 协议：一行一个 JSON-RPC 2.0 请求 / 响应（NDJSON）。方法名大小写与下划线不敏感
-（`scene.setTransform` = `scene.set_transform`），共 9 个：
+（`scene.setTransform` = `scene.set_transform`），共 12 个：
 
 | 方法 | 作用 |
 | --- | --- |
@@ -225,8 +226,10 @@ cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
 | `scene.list` | 列物件，支持 `filter`（名字子串）与 `limit` |
 | `scene.get` | 单个物件的完整快照（局部 TRS、世界矩阵、父子、颜色、可见性） |
 | `scene.set_transform` | 改 `position` / `rotation` / `scale`，三者至少给一个 |
+| `scene.set_material` | 改物件的 PBR 材质（`metallic` / `roughness` / `emissive`，可分别给），回收敛后的完整材质 + 节点快照 |
 | `scene.spawn` | 按物件描述新建，回新节点 id |
 | `scene.remove` | 按名字删除 |
+| `scene.set_environment` | 改场景环境探针（`sky_zenith` / `sky_horizon` / `ground` / `sun_dir` / `sun_color` / `sun_intensity` / `intensity`，可分别给；`enabled: false` 清空），回收敛后的 `environment` |
 | `scene.save` | 把内存场景写回 JSON（`path` 省略时为原场景文件），回 `{path, objects, bytes}` |
 | `script.eval` | 执行一段 Rhai，返回其求值结果（JSON 化） |
 | `script.reload` | 重载脚本文件 |
@@ -310,6 +313,21 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | `clear_material(name)` | 删除物件级材质，回到缺省 |
 
 三件套（GGX / Smith / Schlick）细节见 [§15 PBR 材质](#15-pbr-材质直接光照-cook-torrance)。
+
+### 环境探针：IBL
+
+`scene.environment` 为 `None` 时仍走 `set_ambient` 的常数项（老场景行为不变）；一旦写入环境，
+漫反射改由 9 项球谐给出方向感，金属靠环境高光不再死黑。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_sky(zr, zg, zb, hr, hg, hb, gr, gg, gb)` | 三色天空：天顶 / 地平 / 地面（线性 RGB），9 个参数一次给全 |
+| `set_env_sun(r, g, b, intensity, dx, dy, dz)` | 太阳项：颜色 + 强度 + 指向太阳的方向（零向量时保留原方向） |
+| `set_env_intensity(v)` | 环境总强度，整体乘在天空 / 地面 / 太阳项上（1.0 = 物理量原值） |
+| `has_environment() -> bool` | 当前是否启用环境探针 |
+| `clear_environment()` | 关掉环境探针，退回 `light.ambient` 常数项 |
+
+细节（球谐投影、解析高光、缓存）见 [§16 IBL 环境探针](#16-ibl-环境探针)。
 
 ### 时间 / 随机 / 输出
 
@@ -1080,6 +1098,67 @@ CPU 侧是纯函数、不依赖 wgpu，所以能吃单测。
 - `cargo test -p r3e-render`：材质 uniform 布局与着色器逐字段对齐（48 字节 / 16 对齐）、物件级材质键分桶。
 - `cargo test -p r3e-script`：`set_material` / `set_emissive` / `material_of` / `clear_material` 的写入、收敛与读回。
 - 视觉观感（金属是否像金属、高光带是否自然）**待人工窗口确认**：没有截图 / 像素比对测试。
+
+---
+
+## 16. IBL 环境探针
+
+直接光照下金属的暗部是纯黑（没有环境可反射），观感立刻"塑料"。本节给一个**零外部依赖的解析环境探针**：
+不加载 HDR 贴图、不做预过滤立方体贴图，只用三色天空 + 一个太阳方向，在 CPU 侧投影成 9 项球谐，
+着色器侧再叠一个解析高光项。
+
+**为什么不上 HDR 立方体贴图**：现阶段没有资产管线产 cubemap 的输入源，且 IBL 预过滤需要 compute 或
+多 pass 渲染，成本远高于收益。球谐（L2，9 项）足以表达"天顶蓝、地平暖、地面暗"这类低频方向感，
+而金属的高频反射本来就该来自反射探针——那属于后续阶段。
+
+**数据流**：
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 契约 | `crates/r3e-core/src/env.rs` | `EnvironmentSettings`（7 个字段）+ `sanitized()` + Sh9 投影（CPU 纯函数） |
+| 传输 | `crates/r3e-editor/src/lib.rs` | `EnvironmentPatch`（字段全可选）+ `scene.set_environment` 解析 |
+| 缓存 | `crates/r3e-render/src/renderer.rs` | 环境配置变化才重投影，`environment_builds()` 暴露次数 |
+| 上屏 | `crates/r3e-render/src/shader.wgsl` | 球谐漫反射 + 解析高光，`env_horizon.w > 0.5` 为启用位 |
+
+**语义**：`scene.environment == None` 时完全走老的 `light.ambient` 常数项——**不写环境段的老场景行为不变**。
+写入后环境项替代 ambient（不是叠加），太阳项是"环境里的太阳"，与主方向光独立：
+主光负责阴影与直接高光，太阳项负责金属里那团亮斑。
+
+**收敛**：与材质同一套规矩——颜色夹到 0..16、`intensity` 夹到 0..8、`sun_dir` 归一化（零向量保留原方向）、
+NaN 退回缺省；`sun_intensity` 为 0 时太阳项整段消失（只剩天空与地面），不会把高光打进 NaN。
+
+**缓存**：`EnvironmentSettings` 实现了按位比较的等值判断，配置没变就不重投 Sh9。
+探针日志 `[起始] 环境探针：… 球谐重投影 N 次` 可直观看出来：跑 2 秒上百帧，`N` 稳定为 1。
+
+**演示**：`assets/scene_ibl.json` —— 三档金属球（roughness 0.05 / 0.35 / 0.75）并排，
+后排两颗亮面 / 哑光介电球做对照，加一条高强度自发光条：
+
+```powershell
+cargo run -- assets/scene_ibl.json
+```
+
+脚本侧等价写法（`scripts/main.rhai` 里可随时改）：
+
+```rhai
+set_sky(0.16, 0.26, 0.52,  0.62, 0.56, 0.48,  0.075, 0.068, 0.06);
+set_env_sun(1.0, 0.95, 0.86, 1.4,  0.42, 0.84, 0.33);
+set_env_intensity(1.0);
+```
+
+**已知边界**：
+
+- 环境只有一阶方向（球谐 L2）与一个太阳，**没有镜面反射探针**：金属里映不出场景物件，只能映出"天/地/太阳"；
+- `CameraUniform` 从 208 字节扩到 352 字节（环境 5 项 + 9 项球谐共 14 个 `vec4`），仍按 16 字节对齐；
+- 环境项不参与阴影判定——影子边缘的环境亮度不会随阴影变暗，属当前妥协。
+
+**测试覆盖**：
+
+- `cargo test -p r3e-core`：`tests/env_probe.rs`（Sh9 投影确定性、天空-地面方向分布、太阳项方向性、收敛夹取）；
+- `cargo test -p r3e-core`：`tests/environment_scene.rs`（缺省 `None`、场景载入收敛、JSON 往返、投影确定性）；
+- `cargo test -p r3e-render`：`tests/shader_wgsl.rs`（naga 静态解析 + 语义校验 + 球谐数组与常量对齐 + CPU 参考实现一致）；
+- `cargo test -p r3e-editor`：`tests/environment_rpc.rs`（字段逐一解析、部分补丁保留原值、`enabled: false` 清空、空补丁与类型错误拒绝）；
+- 实机证据：`--run-seconds 2` 加载 `assets/scene_ibl.json`，`环境探针：启用 true / 总强度 1.00 / 太阳强度 1.40 / 球谐重投影 1 次`；
+- 视觉观感（金属暗部是否"活"了）**待人工窗口确认**：无截图 / 像素比对测试。
 
 ---
 

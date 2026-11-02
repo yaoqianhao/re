@@ -140,16 +140,16 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 8,766 | 538 | 134 | `scene.rs` / `material.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 4,107 | 88 | 42 | `renderer.rs` / `pbr.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-core | 9,488 | 796 | 157 | `scene.rs` / `material.rs` / `env.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 4,761 | 186 | 48 | `renderer.rs` / `pbr.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 4,888 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
 | r3e-physics | 2,548 | 660 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
 | r3e-audio | 982 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
-| r3e-script | 3,158 | — | 25 | `api.rs` / `lib.rs`（含文本、UI、音频、材质语义单测） |
-| r3e-editor | 1,100 | — | 7 | `lib.rs`（协议 + `EngineApi`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 3,238 | — | 14 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-script | 3,215 | — | 25 | `api.rs` / `lib.rs`（含文本、UI、音频、材质、环境语义单测） |
+| r3e-editor | 1,193 | 133 | 12 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 3,299 | — | 14 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
 | r3e-plugin | 2,400 | — | 38 | `lib.rs`（插件宿主与 ABI） |
-| **合计** | **31,187** | **1,580** | **337** | **约 3.2 万行（含 448 行 WGSL）；`cargo test --workspace` 合计 337 passed** |
+| **合计** | **32,774** | **2,069** | **371** | **约 3.3 万行（含 556 行 WGSL）；`cargo test --workspace` 合计 371 passed** |
 
 Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
@@ -158,8 +158,8 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 337 passed / 0 failed（其中原有 292 项语义未改，PBR 直接光照新增 45 项：CPU 参考实现、收敛、材质键、脚本与 RPC 写入路径） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 341 passed / 0 failed |
+| 单测（默认特性） | `cargo test --workspace` | 371 passed / 0 failed（其中原有 337 项语义未改，IBL 环境探针新增 34 项：Sh9 投影、环境收敛、场景往返、着色器静态校验、RPC 补丁解析） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 375 passed / 0 failed |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -402,6 +402,43 @@ pub struct GeoTerms {        // 四个点积打包，避免 direct_light 参数�
 5. **材质键用 `f32::to_bits` 精确比较**（`r3e-render::pbr::SurfaceKey`）。参数写入前已收敛，
    `-0.0` 也被归一成 `0.0`，所以精确比较是安全的；换成近似比较反而会把本应同批的物件拆开。
    代价是"语义相同但位不同"的参数会被当成两个材质（多一份 48 字节 uniform），这是刻意选择。
+
+### 4.8 环境探针（IBL，扩展十二）
+
+**不做 HDR 立方体贴图的原因**：现阶段没有产 cubemap 的资产管线，IBL 预过滤需要 compute 或多 pass，
+成本高于收益。改用**解析环境 + 球谐（L2，9 项）**：天空三色（天顶 / 地平线 / 地面）给出低频方向感，
+一个太阳方向给出金属里那团亮斑。金属的高频反射留给后续的反射探针。
+
+```rust
+pub struct EnvironmentSettings {
+    pub sky_zenith: [f32; 3],   // 天顶辐亮度
+    pub sky_horizon: [f32; 3],  // 地平线（天与地的过渡都经过它）
+    pub ground: [f32; 3],       // 下半球
+    pub sun_dir: [f32; 3],      // 指向太阳，写入前归一化
+    pub sun_color: [f32; 3],
+    pub sun_intensity: f32,     // 0 = 阴天
+    pub intensity: f32,         // 美术旋钮，整体乘数
+}
+```
+
+1. **`scene.environment: Option<EnvironmentSettings>`，`None` = 完全关闭**。此时漫反射退回
+   `light.ambient` 常数项，画面与扩展十二之前逐像素一致；`Some` 时环境项**替代**（而非叠加）ambient。
+   这是"老场景不改行为"的结构性保证。
+2. **三处写入路径共用 `sanitized()`**：场景 JSON、脚本 `set_sky` / `set_env_sun` / `set_env_intensity`、
+   编辑器 `scene.set_environment`。收敛口径与材质同一套：颜色夹 `0..=16`（`MAX_ENV_RADIANCE`）、
+   `intensity` 夹 `0..=8`、`sun_dir` 归一化（零向量回退正上方）、NaN 回退缺省。
+3. **球谐投影在 CPU 侧完成，是纯函数**（`env::Sh9::project`，默认 2048 采样）。所以能吃单测：
+   投影确定性、天空亮于地面、太阳项方向性、`env_brdf_approx` 与着色器逐项对齐。
+   着色器不做积分，只做 9 项系数加权。
+4. **投影结果按配置位比较缓存**：`EnvironmentSettings` 的等值判断按 `f32` 位比较，配置没变就不重投。
+   `renderer.environment_builds()` 暴露重投次数——实机跑 2 秒上百帧，该值稳定为 1。
+5. **太阳项与环境项解耦**：主方向光负责阴影与直接高光，环境里的太阳只影响环境项。
+   两层光照叠加后金属才既"有影子"又"暗部不死黑"。
+6. **`CameraUniform` 从 128 涨到 352 字节**（环境 5 项 + 9 项球谐 = 14 个 `vec4`），仍 16 字节对齐。
+   启用位编码在 `env_horizon.w`（0/1），着色器据此单分支切换，不额外传 flag。
+
+**已知边界**：环境不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；没有镜面反射探针，
+金属里映不出场景物件，只能映出天 / 地 / 太阳。
 
 ---
 
@@ -1069,6 +1106,16 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `material_of(name)` | 读回收敛后的快照：`found` / `metallic` / `roughness` / `emissive` |
 | `clear_material(name)` | 删除物件级材质，回到缺省（`metallic 0` / `roughness 0.6` / 无自发光） |
 
+**环境探针（IBL）**
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_sky(zenith r,g,b, horizon r,g,b, ground r,g,b)` | 一次写三色天空；缺省 `EnvironmentSettings` 打底后写场景 `environment` |
+| `set_env_sun(color r,g,b, intensity, dir x,y,z)` | 太阳色 / 强度（夹 0..16）/ 指向太阳的方向（写入即归一化） |
+| `set_env_intensity(v)` | 环境总强度，夹 0..8；无环境段时先建缺省再写 |
+| `has_environment()` | 场景是否带环境段（`None` 为 `false`） |
+| `clear_environment()` | 删掉环境段，退回 `light.ambient` 常数项 |
+
 **时钟与随机**
 
 | 函数 | 说明 |
@@ -1635,7 +1682,7 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
-| 光照 | 1 方向光 + 环境光，直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 IBL / 环境探针 / 反射探针**：金属只反射方向光，暗部靠 `albedo × ambient` 常量项兜底，纯金属背光时偏黑；无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
+| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
 | 后处理 | 无 | 无 bloom / tonemapping / FXAA；PBR 与自发光输出可超过 1.0，靠 sRGB 目标截断，高亮区会直接"切平" |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
@@ -1689,7 +1736,8 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | **九（已完成：M1 收尾）** | **非空间化音频**：后端 `rodio`（cpal + symphonia），`r3e-audio` 门面（key 账本 / 单条 × 总音量 / 通道开关 / 错误记账 / 静默降级），21 个 `audio_*` 脚本 API，`assets/audio/` 两个合成 wav + `main.rhai` 按键演示 | 新增 `crates/r3e-audio`；`r3e-script` 加 `new_with_audio` 与音频绑定；`r3e-app` 持句柄并每帧 `update()` | 无（`ScriptHost::new` 仍为静默后端，旧调用不受影响） |
 | 十（待做） | **3D 空间化音频**：声源挂场景节点、按距离衰减 + 多普勒 + 听者由活动相机推导 | `r3e-audio` 增 `SpatialSource`，`r3e-core::Scene` 不动（声源仍走运行时注册表），`AudioBackend` 契约复用 | 无（纯增量；`kira` 届时可作为第二后端接入同一契约） |
 | **十一（已完成：PBR 直接光照）** | **Cook-Torrance 直接光照**：`r3e-core::material` 纯函数参考实现（GGX / Smith / Schlick）+ `SurfaceMaterial`（metallic / roughness / emissive）三处写入路径共用收敛；`r3e-render::pbr` 材质 uniform 与 `SurfaceKey` 分桶；着色器片元阶段由 Blinn-Phong 换成 PBR；4 个脚本 API（`set_material` / `set_emissive` / `material_of` / `clear_material`）；`main.rhai` 三档粗糙度 + 自发光演示 | `core/material.rs` 新增，`scene.rs` / `node.rs` 加材质字段与写入入口；`render/pbr.rs` 新增 + `renderer.rs` / `shader.wgsl` 换 PBR；`script/api.rs` 注册 4 个 API；`app.rs` / `editor.rs` 透传 | 无（场景 JSON 向后兼容：`material` 段缺省即默认材质）；观感变化——默认参数下高光比旧 Blinn-Phong 更收敛 |
-| 十二（待做） | **IBL / 环境探针**：预过滤环境图 + BRDF LUT，补上金属的暗部与反射 | `r3e-render` 新增环境贴图通道与第二套采样；`core/material.rs` 增加环境项参考实现 | 无（纯增量，直接光路径不变） |
+| **十二（已完成：IBL 环境探针）** | **解析环境 + 球谐漫反射**：`r3e-core::env` 三色天空 + 太阳方向，CPU 侧投影 9 项 Sh9（纯函数）+ 解析环境 BRDF；`r3e-render` `CameraUniform` 加环境 5 项与球谐 9 项（128→352 字节）、投影按配置位缓存；着色器加球谐漫反射与太阳高光，`env_horizon.w` 作启用位；5 个脚本 API（`set_sky` / `set_env_sun` / `set_env_intensity` / `has_environment` / `clear_environment`）；编辑器 `scene.set_environment` 补丁式 RPC；演示场景 `assets/scene_ibl.json` 三档金属球 | `core/env.rs` 新增；`scene.rs` 加 `environment` 字段；`renderer.rs` / `shader.wgsl` 环境项；`script/api.rs` 注册 5 个 API；`editor/lib.rs` `EnvironmentPatch`；`app.rs` / `editor.rs` 合并补丁与日志探针 | 无（场景 JSON 向后兼容：`environment` 缺省即退回 `light.ambient`）；**不加载 HDR 贴图、无反射探针**——金属只映天 / 地 / 太阳，映不出场景物件 |
+| 十三（待做） | **HDR 后处理链**：bloom + tonemapping + FXAA，接住 PBR 与自发光超过 1.0 的输出 | `r3e-render` 增加离屏 HDR 目标与后处理 pass 链；`shader.wgsl` 输出改线性 HDR | 无（纯增量；当前 sRGB 目标直接截断，高亮区"切平"） |
 
 两条与顺序相关的说明：
 
