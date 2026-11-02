@@ -6,6 +6,7 @@ pub mod aabb;
 pub mod air;
 pub mod anim;
 pub mod camera;
+pub mod env;
 pub mod frustum;
 pub mod glyph_atlas;
 pub mod input;
@@ -24,6 +25,11 @@ pub use aabb::Aabb;
 pub use air::{AirIssue, AirIssueKind};
 pub use anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
 pub use camera::Camera;
+pub use env::{
+    env_brdf_approx, sh_basis, sky_radiance, sky_radiance_blurred, specular_dominant_dir,
+    EnvironmentSettings, Sh9, DEFAULT_SH_SAMPLES, MAX_ENV_RADIANCE, MAX_IBL_INTENSITY,
+    SH_COEFFICIENTS, SUN_SHAPE_EXPONENT,
+};
 pub use frustum::Frustum;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use glyph_atlas::{
