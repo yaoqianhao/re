@@ -14,6 +14,7 @@ pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod node;
+pub mod postfx;
 pub mod procedural;
 pub mod scene;
 pub mod skin;
@@ -45,6 +46,13 @@ pub use material::{
 };
 pub use mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
+pub use postfx::{
+    bright_pass, expose, exposure_scale, fxaa_edge_visible, luminance, resolve, tonemap,
+    tonemap_aces, tonemap_reinhard, BloomSettings, PostFxSettings, TonemapMode, ACES_A, ACES_B,
+    ACES_C, ACES_D, ACES_E, DEFAULT_BLOOM_INTENSITY, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_THRESHOLD,
+    DEFAULT_EXPOSURE_EV, FXAA_EDGE_THRESHOLD_MIN, FXAA_EDGE_THRESHOLD_RELATIVE, LUMA_WEIGHTS,
+    MAX_BLOOM_INTENSITY, MAX_BLOOM_KNEE, MAX_BLOOM_THRESHOLD, MAX_EXPOSURE_EV, MIN_EXPOSURE_EV,
+};
 pub use procedural::ProceduralProvider;
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
