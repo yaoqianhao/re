@@ -1,0 +1,131 @@
+{
+  "name": "r3e-hdr-demo",
+  "background": [0.02, 0.024, 0.032, 1.0],
+  "camera": {
+    "position": [6.2, 3.4, 8.0],
+    "target": [0.0, 1.1, 0.0],
+    "fov": 50.0
+  },
+  "light": {
+    "direction": [-0.45, -0.72, -0.42],
+    "color": [1.0, 0.96, 0.9],
+    "intensity": 1.1,
+    "ambient": [0.0, 0.0, 0.0],
+    "shadow": {
+      "enabled": true,
+      "size": 2048,
+      "ortho_size": 0.0,
+      "bias": 0.0015,
+      "normal_bias": 1.5,
+      "distance": 2.0,
+      "strength": 0.9
+    }
+  },
+  "environment": {
+    "sky_zenith": [0.16, 0.26, 0.52],
+    "sky_horizon": [0.62, 0.56, 0.48],
+    "ground": [0.075, 0.068, 0.06],
+    "sun_dir": [0.42, 0.84, 0.33],
+    "sun_color": [1.0, 0.95, 0.86],
+    "sun_intensity": 1.4,
+    "intensity": 1.0
+  },
+  "postfx": {
+    "exposure": 0.35,
+    "tonemap": "aces",
+    "bloom": {
+      "enabled": true,
+      "threshold": 1.0,
+      "knee": 0.5,
+      "intensity": 0.25
+    },
+    "fxaa": true
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [0, 0, 0],
+      "scale": [24, 1, 24],
+      "color": [0.55, 0.55, 0.57, 1.0],
+      "material": { "metallic": 0.0, "roughness": 0.72 },
+      "physics": { "body": "static", "collider": "box" }
+    },
+    {
+      "name": "metal_mirror",
+      "mesh": "sphere",
+      "position": [-2.6, 1.0, 1.4],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [1.0, 0.98, 0.94, 1.0],
+      "material": { "metallic": 1.0, "roughness": 0.05 }
+    },
+    {
+      "name": "metal_brushed",
+      "mesh": "sphere",
+      "position": [0.0, 1.0, 1.6],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.92, 0.86, 0.78, 1.0],
+      "material": { "metallic": 1.0, "roughness": 0.35 }
+    },
+    {
+      "name": "metal_matte",
+      "mesh": "sphere",
+      "position": [2.6, 1.0, 1.4],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.82, 0.84, 0.9, 1.0],
+      "material": { "metallic": 1.0, "roughness": 0.75 }
+    },
+    {
+      "name": "dielectric_glossy",
+      "mesh": "sphere",
+      "position": [-1.3, 1.0, -1.6],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.85, 0.33, 0.28, 1.0],
+      "material": { "metallic": 0.0, "roughness": 0.12 }
+    },
+    {
+      "name": "dielectric_matte",
+      "mesh": "sphere",
+      "position": [1.3, 1.0, -1.6],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.35, 0.62, 0.85, 1.0],
+      "material": { "metallic": 0.0, "roughness": 0.85 }
+    },
+    {
+      "name": "emissive_strip",
+      "mesh": "cube",
+      "position": [0.0, 2.6, -2.6],
+      "scale": [5.0, 0.12, 0.12],
+      "color": [0.1, 0.1, 0.1, 1.0],
+      "material": { "metallic": 0.0, "roughness": 0.5, "emissive": [6.0, 4.2, 1.6] }
+    },
+    {
+      "name": "emissive_bar",
+      "mesh": "cube",
+      "position": [-3.9, 1.5, -2.2],
+      "scale": [1.2, 3.0, 1.2],
+      "color": [0.9, 0.52, 0.28, 1.0],
+      "material": { "metallic": 0.0, "roughness": 0.45, "emissive": [0.6, 0.18, 2.2] }
+    }
+  ],
+  "texts": [
+    {
+      "key": "hdr_title",
+      "content": "HDR 后处理链：Rgba16Float 离屏目标 + 三级泛光 + ACES + FXAA",
+      "x": 24.0,
+      "y": 24.0,
+      "size": 22.0,
+      "color": [0.95, 0.95, 0.95, 1.0],
+      "align": "left"
+    },
+    {
+      "key": "hdr_hint",
+      "content": "发光条亮度 6.0：超出 sRGB 目标 1.0 上限的部分现在会溢出成泛光，而不是被切平\n本行文字在 composite 之后叠加，不参与曝光与调色",
+      "x": 24.0,
+      "y": 58.0,
+      "size": 18.0,
+      "color": [0.72, 0.78, 0.86, 1.0],
+      "align": "left"
+    }
+  ]
+}
