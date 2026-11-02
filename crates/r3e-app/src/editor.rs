@@ -17,8 +17,8 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 use r3e_core::{Node, ObjectDesc, Scene};
 use r3e_editor::{
-    EngineApi, EngineInfo, MaterialPatch, NodeBrief, PhysicsInfo, RpcFailure, TransformPatch,
-    PROTOCOL_VERSION,
+    EngineApi, EngineInfo, EnvironmentPatch, MaterialPatch, NodeBrief, PhysicsInfo, RpcFailure,
+    TransformPatch, PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -210,6 +210,44 @@ impl EngineApi for LocalEngineApi<'_> {
         }))
     }
 
+    /// 环境探针补丁：在现有环境上叠加（未启用时从缺省起步），再交给 `EnvironmentSettings`
+    /// 统一收敛。`enabled = false` 清空环境、退回 `light.ambient` 常数项。
+    fn scene_set_environment(&mut self, patch: EnvironmentPatch) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        if patch.enabled == Some(false) {
+            scene.environment = None;
+            return Ok(json!({ "environment": Value::Null, "enabled": false }));
+        }
+        let mut env = scene.environment.unwrap_or_default();
+        if let Some(v) = patch.sky_zenith {
+            env.sky_zenith = v;
+        }
+        if let Some(v) = patch.sky_horizon {
+            env.sky_horizon = v;
+        }
+        if let Some(v) = patch.ground {
+            env.ground = v;
+        }
+        if let Some(v) = patch.sun_dir {
+            env.sun_dir = v;
+        }
+        if let Some(v) = patch.sun_color {
+            env.sun_color = v;
+        }
+        if let Some(v) = patch.sun_intensity {
+            env.sun_intensity = v;
+        }
+        if let Some(v) = patch.intensity {
+            env.intensity = v;
+        }
+        let applied = env.sanitized();
+        scene.environment = Some(applied);
+        Ok(json!({
+            "enabled": true,
+            "environment": environment_value(applied),
+        }))
+    }
+
     fn script_eval(&mut self, source: &str) -> Result<Value, RpcFailure> {
         let value = self.scripts.eval(source).map_err(RpcFailure::engine)?;
         Ok(dynamic_to_json(&value))
@@ -299,6 +337,19 @@ fn node_value(node: &Node) -> Value {
 
 /// 材质快照（读回入口）：未显式设置材质的物件给出 `null`，
 /// 显式设置过的给出收敛后的三件套。
+/// 环境探针快照：字段名与场景 JSON 的 `environment` 段完全一致，前端拿到即可回写。
+fn environment_value(env: r3e_core::env::EnvironmentSettings) -> Value {
+    json!({
+        "sky_zenith": env.sky_zenith,
+        "sky_horizon": env.sky_horizon,
+        "ground": env.ground,
+        "sun_dir": env.sun_dir,
+        "sun_color": env.sun_color,
+        "sun_intensity": env.sun_intensity,
+        "intensity": env.intensity,
+    })
+}
+
 fn material_value(material: r3e_core::SurfaceMaterial) -> Value {
     json!({
         "metallic": material.metallic,

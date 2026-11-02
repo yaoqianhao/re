@@ -269,6 +269,37 @@ impl MaterialPatch {
     }
 }
 
+/// `scene.set_environment` 的局部改动：只给要改的字段，其余保持原值。
+///
+/// `enabled = Some(false)` 表示关掉环境探针、退回 `light.ambient` 常数项；
+/// 其余字段与 `r3e_core::env::EnvironmentSettings` 一一对应。传输层只做类型 / 范围
+/// 校验，真正的收敛（NaN / 超界 / 方向归一化）由宿主的 `EnvironmentSettings::sanitized`
+/// 完成，与 `MaterialPatch` 同一条原则。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EnvironmentPatch {
+    pub enabled: Option<bool>,
+    pub sky_zenith: Option<[f32; 3]>,
+    pub sky_horizon: Option<[f32; 3]>,
+    pub ground: Option<[f32; 3]>,
+    pub sun_dir: Option<[f32; 3]>,
+    pub sun_color: Option<[f32; 3]>,
+    pub sun_intensity: Option<f32>,
+    pub intensity: Option<f32>,
+}
+
+impl EnvironmentPatch {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.sky_zenith.is_none()
+            && self.sky_horizon.is_none()
+            && self.ground.is_none()
+            && self.sun_dir.is_none()
+            && self.sun_color.is_none()
+            && self.sun_intensity.is_none()
+            && self.intensity.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -308,6 +339,13 @@ pub trait EngineApi {
         _patch: MaterialPatch,
     ) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.set_material"))
+    }
+
+    /// 改写场景级环境探针（三色天空 / 太阳 / 总强度）。
+    /// 宿主应把补丁合并进现有环境后立即收敛，并把合并结果回给调用方；
+    /// `enabled = false` 时清空环境（回到常数 `ambient`），返回值里 `environment` 为 `null`。
+    fn scene_set_environment(&mut self, _patch: EnvironmentPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.set_environment"))
     }
 
     fn scene_remove(&mut self, _node: &str) -> Result<Value, RpcFailure> {
@@ -357,6 +395,17 @@ fn opt_f32(params: &Value, key: &str) -> Result<Option<f32>, RpcFailure> {
         .as_f64()
         .map(|v| Some(v as f32))
         .ok_or_else(|| RpcFailure::invalid_params(format!("参数 `{key}` 应为数字")))
+}
+
+/// 取出可选布尔参数；缺省得到 `None`，给了但不是布尔则报错。
+fn opt_bool(params: &Value, key: &str) -> Result<Option<bool>, RpcFailure> {
+    let Some(value) = param(params, key) else {
+        return Ok(None);
+    };
+    value
+        .as_bool()
+        .map(Some)
+        .ok_or_else(|| RpcFailure::invalid_params(format!("参数 `{key}` 应为布尔值")))
 }
 
 fn opt_f32_array<const N: usize>(
@@ -490,6 +539,60 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 );
             }
             match with_node(&req.params, |node| api.scene_set_material(node, patch)) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        // 环境探针契约：字段可分别给，一个都不给视为无意义调用；
+        // `enabled = false` 是唯一的「清空」入口，与「什么都没给」区分开。
+        "scene.setenvironment" => {
+            let patch = match (
+                opt_bool(&req.params, "enabled"),
+                opt_f32_array::<3>(&req.params, "sky_zenith"),
+                opt_f32_array::<3>(&req.params, "sky_horizon"),
+                opt_f32_array::<3>(&req.params, "ground"),
+                opt_f32_array::<3>(&req.params, "sun_dir"),
+                opt_f32_array::<3>(&req.params, "sun_color"),
+                opt_f32(&req.params, "sun_intensity"),
+                opt_f32(&req.params, "intensity"),
+            ) {
+                (
+                    Ok(enabled),
+                    Ok(zenith),
+                    Ok(horizon),
+                    Ok(ground),
+                    Ok(dir),
+                    Ok(sun),
+                    Ok(si),
+                    Ok(i),
+                ) => EnvironmentPatch {
+                    enabled,
+                    sky_zenith: zenith,
+                    sky_horizon: horizon,
+                    ground,
+                    sun_dir: dir,
+                    sun_color: sun,
+                    sun_intensity: si,
+                    intensity: i,
+                },
+                (Err(f), ..)
+                | (_, Err(f), ..)
+                | (_, _, Err(f), ..)
+                | (_, _, _, Err(f), ..)
+                | (_, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, Err(f), _)
+                | (_, _, _, _, _, _, _, Err(f)) => return Response::fail(id, f),
+            };
+            if patch.is_empty() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params(
+                        "environment 补丁至少要给一个字段（或 enabled=false 清空）",
+                    ),
+                );
+            }
+            match api.scene_set_environment(patch) {
                 Ok(r) => Response::ok(id, r),
                 Err(f) => Response::fail(id, f),
             }

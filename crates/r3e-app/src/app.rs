@@ -656,6 +656,16 @@ impl EngineApp {
             stats.culled,
             stats.cull_unknown
         );
+        // 环境探针：enabled 为 false 表示退回 light.ambient 常数项；
+        // builds 是球谐重投影次数（缓存命中时应远小于帧数），用于确认没有每帧重算。
+        let (env_enabled, env_intensity, env_sun) = match self.scene.borrow().environment {
+            Some(env) => (true, env.intensity, env.sun_intensity),
+            None => (false, 0.0, 0.0),
+        };
+        log::info!(
+            "[{tag}] 环境探针：启用 {env_enabled} / 总强度 {env_intensity:.2} / 太阳强度 {env_sun:.2} / 球谐重投影 {} 次",
+            renderer.environment_builds()
+        );
         // 阴影探针：0 = 本帧没跑阴影通道（场景未开启 / 无可见物件），
         // 否则是深度通道里的 draw call 数（按网格合批，故通常 ≤ 主通道实例数）。
         log::info!(
