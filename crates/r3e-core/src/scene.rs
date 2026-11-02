@@ -11,7 +11,8 @@ use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;
 use crate::{
-    AnimClip, AnimInstance, Camera, Light, MeshRef, Node, NodeId, SurfaceMaterial, Transform,
+    AnimClip, AnimInstance, Camera, EnvironmentSettings, Light, MeshRef, Node, NodeId,
+    SurfaceMaterial, Transform,
 };
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
@@ -216,6 +217,9 @@ pub struct SceneFile {
     pub camera: Option<CameraDesc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light: Option<LightDesc>,
+    /// 环境探针（IBL）。缺省表示沿用 `light.ambient` 常数环境光，与旧场景完全兼容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentSettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
@@ -244,6 +248,10 @@ pub struct Scene {
     pub frame: u64,
     pub camera: Camera,
     pub light: Light,
+    /// 环境探针（IBL，扩展十二）。`None` 表示环境光继续用 `light.ambient` 常数项；
+    /// `Some` 时渲染层改用三色天空 + 太阳 + 球谐辐照度做漫反射 / 镜面环境光。
+    /// 与 `light` 的关系是二选一：两者都进 uniform，由开关位决定本帧用哪套，不会叠加过亮。
+    pub environment: Option<EnvironmentSettings>,
     pub background: Vec4,
     /// 场景级物理配置，随场景一起热重载。
     pub physics: PhysicsSceneDesc,
@@ -291,6 +299,7 @@ impl Scene {
             frame: 0,
             camera: Camera::default(),
             light: Light::default(),
+            environment: None,
             background: Vec4::new(0.05, 0.06, 0.08, 1.0),
             physics: PhysicsSceneDesc::default(),
             assets: Vec::new(),
@@ -902,6 +911,10 @@ impl Scene {
             }
         }
 
+        // 环境探针整段覆盖：这是「一个完整的光源配置」，逐字段可缺省会得到四不像的光，
+        // 缺省值统一由 EnvironmentSettings::default() 提供（未写的字段在反序列化时就已补默认）
+        scene.environment = file.environment.map(|e| e.sanitized());
+
         for obj in file.objects {
             scene.spawn(obj)?;
         }
@@ -934,6 +947,7 @@ impl Scene {
                 fov: Some(self.camera.fov_deg),
             }),
             light: Some(self.light_desc()),
+            environment: self.environment.map(|e| e.sanitized()),
             objects: self
                 .order
                 .iter()
