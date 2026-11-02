@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use r3e_audio::Audio;
-use r3e_core::{InputState, Scene};
+use r3e_core::{InputState, Scene, UiInteraction};
 use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
@@ -31,6 +31,8 @@ pub struct ScriptHost {
     input: Rc<RefCell<InputState>>,
     /// 音频门面。脚本层**不**自己开设备：句柄由 app 注入，或退化成静默后端（编辑器 / 单测）。
     audio: Rc<RefCell<Audio>>,
+    /// UI 指针交互状态。`app` 每帧 `update`，脚本只读——同一个 `Rc`，不存在两份真源。
+    ui_interaction: Rc<RefCell<UiInteraction>>,
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: Option<PathBuf>,
@@ -65,6 +67,7 @@ impl ScriptHost {
         audio: Rc<RefCell<Audio>>,
     ) -> Self {
         let clock = Rc::new(RefCell::new(Clock::default()));
+        let ui_interaction = Rc::new(RefCell::new(UiInteraction::new()));
         let ctx = api::ScriptContext {
             scene: scene.clone(),
             physics: physics.clone(),
@@ -73,6 +76,7 @@ impl ScriptHost {
             clock: clock.clone(),
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
             ui_log: Rc::new(RefCell::new(api::UiWriteLog::default())),
+            ui_interaction: ui_interaction.clone(),
         };
 
         let mut engine = Engine::new();
@@ -86,6 +90,7 @@ impl ScriptHost {
             physics,
             input,
             audio,
+            ui_interaction,
             ast: None,
             scope: Scope::new(),
             script_path: None,
@@ -176,6 +181,14 @@ impl ScriptHost {
 
     pub fn script_path(&self) -> Option<&Path> {
         self.script_path.as_deref()
+    }
+
+    /// UI 指针交互状态的共享句柄。
+    ///
+    /// `app` 拿到它每帧推进（送光标位置与左键边沿），脚本侧的 `ui_events` /
+    /// `ui_hover` / `ui_active` / `ui_hit` 读的就是同一份状态。
+    pub fn ui_interaction(&self) -> Rc<RefCell<UiInteraction>> {
+        self.ui_interaction.clone()
     }
 
     /// 每帧调用脚本的 `on_update(dt)`。
@@ -1265,5 +1278,135 @@ mod postfx_script_tests {
         assert!(scene.borrow().postfx.is_none(), "清空后应为 None");
         // 未开启时回读给出缺省值，不 panic。
         assert_eq!(eval_float(&mut host, "postfx_exposure()"), 0.0);
+    }
+}
+
+
+#[cfg(test)]
+mod ui_interaction_script_tests {
+    use super::*;
+    use r3e_core::ui::{Anchor, UiElement, UiValue};
+
+    const SCR: (f32, f32) = (800.0, 600.0);
+
+    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        (ScriptHost::new(scene.clone(), physics, input), scene)
+    }
+
+    fn button(scene: &Rc<RefCell<Scene>>, key: &str, x: f32, y: f32) {
+        let mut el = UiElement::new(key, r3e_core::ui::UiKind::Rect, Anchor::TopLeft);
+        el.offset = [UiValue::px(x), UiValue::px(y)];
+        el.size = [UiValue::px(120.0), UiValue::px(40.0)];
+        scene.borrow_mut().ui.push(el);
+    }
+
+    fn eval_str(host: &mut ScriptHost, src: &str) -> String {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .into_string()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回字符串"))
+    }
+
+    /// 事件数组：长度 / 字段名 / 顺序都要按 core 的语义落进脚本。
+    #[test]
+    fn ui_events_exposes_kind_and_key() {
+        let (mut host, scene) = host();
+        button(&scene, "btn", 10.0, 10.0);
+        let ui = host.ui_interaction();
+        let list = scene.borrow().ui.clone();
+
+        // 进入 → 按下 → 抬起：hovered / pressed / clicked / released
+        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), false, false, false);
+        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), true, true, false);
+        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), false, false, true);
+
+        assert_eq!(host.eval("ui_event_count()").unwrap().as_int().unwrap(), 4);
+        assert_eq!(eval_str(&mut host, "ui_event_kind_name(0)"), "hovered");
+        assert_eq!(eval_str(&mut host, "ui_event_kind_name(2)"), "clicked");
+        assert_eq!(eval_str(&mut host, "ui_event_key(2)"), "btn");
+        assert!(host
+            .eval(r#"ui_events()[2]["kind"] == "clicked""#)
+            .unwrap()
+            .as_bool()
+            .unwrap());
+        assert!(host
+            .eval(r#"ui_events()[2]["key"] == "btn""#)
+            .unwrap()
+            .as_bool()
+            .unwrap());
+    }
+
+    /// hover / active / pointer_over_ui 三个状态读口子。
+    #[test]
+    fn hover_and_active_are_readable() {
+        let (mut host, scene) = host();
+        button(&scene, "btn", 10.0, 10.0);
+        let ui = host.ui_interaction();
+        let list = scene.borrow().ui.clone();
+
+        assert_eq!(eval_str(&mut host, "ui_hover()"), "");
+        assert!(!host.eval("ui_pointer_over_ui()").unwrap().as_bool().unwrap());
+
+        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), true, true, false);
+        assert_eq!(eval_str(&mut host, "ui_hover()"), "btn");
+        assert_eq!(eval_str(&mut host, "ui_active()"), "btn");
+        assert!(host.eval("ui_pointer_over_ui()").unwrap().as_bool().unwrap());
+        assert!(host.eval(r#"ui_hovered("btn")"#).unwrap().as_bool().unwrap());
+        assert!(!host.eval(r#"ui_clicked("btn")"#).unwrap().as_bool().unwrap());
+
+        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), false, false, true);
+        assert!(host.eval(r#"ui_clicked("btn")"#).unwrap().as_bool().unwrap());
+        assert_eq!(eval_str(&mut host, "ui_active()"), "");
+    }
+
+    /// `ui_hit` 用最近一帧的屏幕尺寸换算矩形——和渲染出的位置一致。
+    #[test]
+    fn ui_hit_uses_last_screen_size() {
+        let (mut host, scene) = host();
+        button(&scene, "btn", 10.0, 10.0);
+        let ui = host.ui_interaction();
+        {
+            let list = scene.borrow().ui.clone();
+            ui.borrow_mut().update(&list, SCR, None, false, false, false);
+        }
+        assert_eq!(eval_str(&mut host, "ui_hit(20.0, 20.0)"), "btn");
+        assert_eq!(eval_str(&mut host, "ui_hit(500.0, 400.0)"), "");
+        // 未送屏幕尺寸时（screen = 0）一律不命中，不 panic。
+        ui.borrow_mut().clear();
+        ui.borrow_mut().set_screen((0.0, 0.0));
+        assert_eq!(eval_str(&mut host, "ui_hit(20.0, 20.0)"), "");
+    }
+
+    /// 越界索引读事件：返回空串而不是抛错。
+    #[test]
+    fn out_of_range_event_reads_are_empty() {
+        let (mut host, _scene) = host();
+        assert_eq!(eval_str(&mut host, "ui_event_kind_name(5)"), "");
+        assert_eq!(eval_str(&mut host, "ui_event_key(5)"), "");
+        assert_eq!(eval_str(&mut host, "ui_event_kind_name(-1)"), "");
+    }
+
+    /// 事件集合在脚本里可被 for 循环消费（这是脚本用起来最基本的形态）。
+    #[test]
+    fn events_can_be_looped_in_script() {
+        let (mut host, scene) = host();
+        button(&scene, "a", 0.0, 0.0);
+        button(&scene, "b", 200.0, 0.0);
+        let ui = host.ui_interaction();
+        let list = scene.borrow().ui.clone();
+        ui.borrow_mut().update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+        ui.borrow_mut().update(&list, SCR, Some((210.0, 10.0)), false, false, false);
+
+        let src = r#"
+            let n = 0;
+            for e in ui_events() {
+                if e["kind"] == "hovered" && e["key"] != "" { n += 1; }
+            }
+            n
+        "#;
+        assert_eq!(host.eval(src).unwrap().as_int().unwrap(), 2);
     }
 }

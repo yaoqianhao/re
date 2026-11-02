@@ -12,7 +12,8 @@ use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_b
 use r3e_core::postfx::TonemapMode;
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
 use r3e_core::ui::{
-    find_mut, upsert_styled, Anchor, UiElement, UiKind, UiUpsert, UiValue, MAX_UI_ELEMENTS,
+    find_mut, hit_test_key, upsert_styled, Anchor, UiElement, UiEventKind, UiInteraction, UiKind,
+    UiUpsert, UiValue, MAX_UI_ELEMENTS,
 };
 use r3e_core::{InputState, KeyCode, MeshRef, NodeId, ObjectDesc, Scene, ScreenText, TextAlign};
 use r3e_physics::{
@@ -41,6 +42,11 @@ pub struct ScriptContext {
     pub rng: Rc<Cell<u64>>,
     /// UI 写入被拒 / 被纠正的记录（`ui_last_error` / `ui_error_count` 的来源）。
     pub ui_log: Rc<RefCell<UiWriteLog>>,
+    /// UI 指针交互状态（hover / active / 每帧事件）。
+    ///
+    /// 由 `app` 每帧 `update` 推进、脚本侧只读：两边共用同一个 `Rc`，所以脚本在
+    /// `on_update` 里读到的事件一定是本帧的，不是上一帧的残留。
+    pub ui_interaction: Rc<RefCell<UiInteraction>>,
 }
 
 /// UI 写入的「不能静默失败」账本：只记最后一次原因 + 累计次数。
@@ -1916,6 +1922,106 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("ui_above_text", move || -> bool {
         c.scene.borrow().ui_above_text
+    });
+
+    // ------------------------------------------------------------------
+    // UI 指针交互（只读）。
+    //
+    // 事件由 `app` 每帧根据真实指针输入推进（`r3e_core::ui::UiInteraction`），
+    // 脚本只负责读——这样命中判定只有 core 一份实现，渲染、脚本、编辑器不会各判各的。
+    //
+    // 事件语义：
+    // * `hovered` / `unhovered`：指针进出元素；
+    // * `pressed`：在元素上按下；
+    // * `clicked`：在同一元素上按下并抬起（`released` 之前）；
+    // * `cancelled`：按下了但没在同一元素上抬起（移出后释放 / 元素被删 / 丢事件）；
+    // * `released`：有按下捕获时抬起**总会**收到一条。
+    // ------------------------------------------------------------------
+
+    // 本帧事件列表：`[#{ kind: "clicked", key: "btn" }, ...]`，顺序即发生顺序。
+    let c = ctx.clone();
+    engine.register_fn("ui_events", move || -> Array {
+        c.ui_interaction
+            .borrow()
+            .events()
+            .iter()
+            .map(|ev| {
+                let mut m = Map::new();
+                m.insert("kind".into(), Dynamic::from(ev.kind.name().to_string()));
+                m.insert("key".into(), Dynamic::from(ev.key.clone()));
+                Dynamic::from(m)
+            })
+            .collect()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_event_count", move || -> i64 {
+        c.ui_interaction.borrow().events().len() as i64
+    });
+
+    // 当前悬停 / 按住不放的元素 key（空串 = 无）。
+    let c = ctx.clone();
+    engine.register_fn("ui_hover", move || -> String {
+        c.ui_interaction.borrow().hover().unwrap_or("").to_string()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_active", move || -> String {
+        c.ui_interaction.borrow().active().unwrap_or("").to_string()
+    });
+
+    // 便利判定：省掉脚本里遍历事件数组的样板代码。
+    let c = ctx.clone();
+    engine.register_fn("ui_clicked", move |key: &str| -> bool {
+        c.ui_interaction.borrow().clicked(key)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_hovered", move |key: &str| -> bool {
+        c.ui_interaction.borrow().hovered(key)
+    });
+
+    // 指针是否正压在 UI 上（脚本可据此屏蔽自己的「点空白处」逻辑）。
+    let c = ctx.clone();
+    engine.register_fn("ui_pointer_over_ui", move || -> bool {
+        c.ui_interaction.borrow().pointer_over_ui()
+    });
+
+    // 屏幕坐标命中测试：返回最上层元素的 key（空串 = 没命中）。
+    // 用的是最近一帧 `app` 送进来的屏幕尺寸，所以和实际渲染的矩形完全一致。
+    let c = ctx.clone();
+    engine.register_fn("ui_hit", move |x: f64, y: f64| -> String {
+        let ui = c.ui_interaction.borrow();
+        let scene = c.scene.borrow();
+        hit_test_key(&scene.ui, ui.screen(), f32_of(x), f32_of(y))
+            .map(str::to_string)
+            .unwrap_or_default()
+    });
+
+    // 本帧的 UI 层级顺序里，某个 key 是否存在（脚本常用来先判存在再读事件）。
+    let c = ctx.clone();
+    engine.register_fn("ui_event_kind_name", move |i: i64| -> String {
+        let ui = c.ui_interaction.borrow();
+        let idx = i.max(0) as usize;
+        ui.events()
+            .get(idx)
+            .map(|e| e.kind.name().to_string())
+            .unwrap_or_default()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ui_event_key", move |i: i64| -> String {
+        let ui = c.ui_interaction.borrow();
+        let idx = i.max(0) as usize;
+        ui.events()
+            .get(idx)
+            .map(|e| e.key.clone())
+            .unwrap_or_default()
+    });
+
+    // 事件名的稳定取值（脚本里常写 `if k == ui_kind_clicked()` 之类的判断）。
+    engine.register_fn("ui_kind_clicked", || -> String {
+        UiEventKind::Clicked.name().to_string()
     });
 
     // ------------------------------------------------------------------
