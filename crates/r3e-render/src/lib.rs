@@ -5,12 +5,14 @@
 
 pub mod mesh;
 pub mod pbr;
+pub mod postfx;
 pub mod renderer;
 pub mod text;
 pub mod ui;
 
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use pbr::{MaterialUniform, SurfaceKey};
+pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
 pub use renderer::{LayeredProvider, MeshCache, RenderStats, Renderer};
 pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
 pub use ui::{

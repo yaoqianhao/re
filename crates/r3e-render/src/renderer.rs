@@ -16,6 +16,7 @@ use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
 use crate::pbr::{MaterialUniform, SurfaceKey};
+use crate::postfx::{PostFxPass, PostFxStats};
 use crate::text::{TextPass, TextStats};
 use crate::ui::{UiImageProvider, UiPass, UiStats};
 
@@ -414,6 +415,8 @@ pub struct RenderStats {
     pub ui_quads: u32,
     /// 本帧 UI 通道的 draw call 数。0 表示 UI 关闭 / 无元素。
     pub ui_draws: u32,
+    /// 本帧 HDR 后处理链的 pass 统计（扩展十三）。
+    pub postfx: PostFxStats,
 }
 
 pub struct Renderer {
@@ -452,6 +455,9 @@ pub struct Renderer {
     text: TextPass,
     /// M1 最小 UI：屏幕空间 2D UI 通道（矩形 / 边框 / 图片），与文本通道同构但独立。
     ui: UiPass,
+    /// 离屏 HDR 目标 + 泛光链 + composite（扩展十三）。常驻：即使场景没有
+    /// `postfx` 段，主通道也要先写进 HDR 目标再由它直通到 surface。
+    postfx: PostFxPass,
     /// 环境探针（扩展十二）的球谐缓存。`Sh9::project` 要做 2048 次天空采样，
     /// 每帧重算是纯浪费——只在场景 `environment` 段真的变了才重投影。
     env_cache: Option<EnvironmentSettings>,
@@ -743,7 +749,10 @@ impl Renderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    // 扩展十三：主通道不再直接写 surface，目标换成后处理的
+                    // 线性 HDR 离屏纹理（见 `PostFxPass::hdr_view`）。输出仍是线性值，
+                    // sRGB 编码交给 composite 在写 surface 时一次性完成。
+                    format: crate::postfx::HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -799,6 +808,8 @@ impl Renderer {
 
         let text = TextPass::new(&device, config.format);
         let ui = UiPass::new(&device, config.format);
+        // 后处理链与窗口同级：主通道从此写离屏 HDR 目标，不再直接写 surface
+        let postfx = PostFxPass::new(&device, config.format, (width, height));
 
         Ok(Self {
             device,
@@ -829,11 +840,17 @@ impl Renderer {
             shadow_pipeline,
             text,
             ui,
+            postfx,
             env_cache: None,
             env_sh: Sh9::default(),
             env_builds: 0,
             stats: RenderStats::default(),
         })
+    }
+
+    /// HDR 后处理链（扩展十三）：离屏目标尺寸、泛光层级、最近一帧生效的设置。
+    pub fn postfx(&self) -> &PostFxPass {
+        &self.postfx
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -918,6 +935,9 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, width, height);
+        // 后处理的离屏目标必须一起重建：纹理不能原地 resize，
+        // 不重建就会继续按旧尺寸采样，画面被拉成旧分辨率的内容。
+        self.postfx.resize(&self.device, width, height);
         log::debug!("窗口尺寸变化: {width}x{height}");
     }
 
@@ -1014,8 +1034,10 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("r3e-main-pass"),
+                // 扩展十三：主通道写离屏 HDR 目标（Rgba16Float，线性），
+                // 高亮不再被 sRGB 8 位目标直接切平；贴到屏幕由 composite 完成。
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: self.postfx.hdr_view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1094,8 +1116,22 @@ impl Renderer {
                 text_missing: 0,
                 ui_quads: 0,
                 ui_draws: 0,
+                postfx: PostFxStats::default(),
             };
         }
+
+        // 扩展十三：后处理链在文本 / UI 之前收口。
+        // 顺序很关键——composite 是唯一写 surface 的通道，文本与 UI 随后往它上面
+        // 用 LoadOp::Load 叠加，这样 HUD 的颜色不会被曝光与色调映射二次调色。
+        let postfx_settings = scene.postfx.unwrap_or_default();
+        self.postfx.render(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &view,
+            &postfx_settings,
+        );
+        self.stats.postfx = self.postfx.stats();
 
         // M1 文字渲染：主通道画完后叠加屏幕空间文本。
         // 独立 pass（LoadOp::Load）+ 独立管线，不共享深度与相机，关掉即彻底不跑。
