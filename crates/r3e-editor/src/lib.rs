@@ -331,6 +331,44 @@ impl PostFxPatch {
     }
 }
 
+/// `ui.set` 的补丁（扩展十四）：只给要改的字段，其余沿用旧值。
+///
+/// 与 `PostFxPatch` 同一条原则：本层**不认识** `r3e_core` 的任何类型。位置与尺寸用
+/// 字符串单位原样透传（`"12"` = 12px、`"50%"` = 屏幕一半），由宿主用
+/// `UiValue::parse` 收敛；`kind` / `anchor` 的合法性同理由宿主判定后报参数错误。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UiPatch {
+    pub key: String,
+    pub kind: Option<String>,
+    pub anchor: Option<String>,
+    pub x: Option<String>,
+    pub y: Option<String>,
+    pub width: Option<String>,
+    pub height: Option<String>,
+    pub color: Option<[f32; 4]>,
+    pub layer: Option<i32>,
+    pub visible: Option<bool>,
+    pub border_width: Option<f32>,
+    pub image: Option<String>,
+}
+
+impl UiPatch {
+    /// 除 `key` 之外一个字段都没给——对已有元素是无意义调用，对新元素则是「全部取默认」。
+    pub fn is_geometry_only(&self) -> bool {
+        self.kind.is_none()
+            && self.anchor.is_none()
+            && self.x.is_none()
+            && self.y.is_none()
+            && self.width.is_none()
+            && self.height.is_none()
+            && self.color.is_none()
+            && self.layer.is_none()
+            && self.visible.is_none()
+            && self.border_width.is_none()
+            && self.image.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -396,6 +434,29 @@ pub trait EngineApi {
         Err(RpcFailure::unsupported("scene.save"))
     }
 
+    /// 列出当前 2D UI 元素（扩展十四）。
+    ///
+    /// 返回的是**声明**（单位串、层级、可见性），不是换算后的像素矩形——像素要屏幕
+    /// 尺寸才能算，而屏幕尺寸属于宿主状态，编辑器要显示实际矩形时应自己带上视口大小。
+    fn ui_list(&mut self, _limit: Option<usize>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("ui.list"))
+    }
+
+    /// 写入 / 局部更新一个 UI 元素（同 key 覆盖）。
+    fn ui_set(&mut self, _patch: UiPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("ui.set"))
+    }
+
+    /// 按 key 删除一个 UI 元素。
+    fn ui_remove(&mut self, _key: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("ui.remove"))
+    }
+
+    /// 读当前指针交互状态（hover / active / 本帧事件），供编辑器显示与联调。
+    fn ui_state(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("ui.state"))
+    }
+
     fn script_eval(&mut self, _source: &str) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("script.eval"))
     }
@@ -447,6 +508,22 @@ fn opt_str<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, RpcFailu
 }
 
 /// 取出可选布尔参数；缺省得到 `None`，给了但不是布尔则报错。
+/// 取出可选整数参数；缺省得到 `None`，给了但不是整数则报错。
+fn opt_i32(params: &Value, key: &str) -> Result<Option<i32>, RpcFailure> {
+    let Some(value) = param(params, key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let n = value.as_i64().ok_or_else(|| {
+        RpcFailure::invalid_params(format!("参数 `{key}` 应为整数，收到 {value}"))
+    })?;
+    i32::try_from(n)
+        .map(Some)
+        .map_err(|_| RpcFailure::invalid_params(format!("参数 `{key}` 超出 i32 范围")))
+}
+
 fn opt_bool(params: &Value, key: &str) -> Result<Option<bool>, RpcFailure> {
     let Some(value) = param(params, key) else {
         return Ok(None);
@@ -700,6 +777,112 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 Err(f) => Response::fail(id, f),
             }
         }
+        // UI 契约（扩展十四）：位置 / 尺寸用字符串单位透传，名字合法性由宿主判定。
+        "ui.list" => {
+            let limit = match param(&req.params, "limit") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_u64() {
+                    Some(n) => Some(n as usize),
+                    None => {
+                        return Response::fail(
+                            id,
+                            RpcFailure::invalid_params("参数 `limit` 应为非负整数"),
+                        )
+                    }
+                },
+            };
+            match api.ui_list(limit) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "ui.set" => {
+            let key = match require_str(&req.params, "key") {
+                Ok(k) if !k.trim().is_empty() => k.to_string(),
+                Ok(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `key` 不能为空"),
+                    )
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            let patch = match (
+                opt_str(&req.params, "kind"),
+                opt_str(&req.params, "anchor"),
+                opt_str(&req.params, "x"),
+                opt_str(&req.params, "y"),
+                opt_str(&req.params, "width"),
+                opt_str(&req.params, "height"),
+                opt_f32_array::<4>(&req.params, "color"),
+                opt_i32(&req.params, "layer"),
+                opt_bool(&req.params, "visible"),
+                opt_f32(&req.params, "border_width"),
+                opt_str(&req.params, "image"),
+            ) {
+                (
+                    Ok(kind),
+                    Ok(anchor),
+                    Ok(x),
+                    Ok(y),
+                    Ok(width),
+                    Ok(height),
+                    Ok(color),
+                    Ok(layer),
+                    Ok(visible),
+                    Ok(border_width),
+                    Ok(image),
+                ) => UiPatch {
+                    key: key.clone(),
+                    kind: kind.map(str::to_string),
+                    anchor: anchor.map(str::to_string),
+                    x: x.map(str::to_string),
+                    y: y.map(str::to_string),
+                    width: width.map(str::to_string),
+                    height: height.map(str::to_string),
+                    color,
+                    layer,
+                    visible,
+                    border_width,
+                    image: image.map(str::to_string),
+                },
+                (Err(f), ..)
+                | (_, Err(f), ..)
+                | (_, _, Err(f), ..)
+                | (_, _, _, Err(f), ..)
+                | (_, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, _, _, _, Err(f), _)
+                | (_, _, _, _, _, _, _, _, _, _, Err(f)) => return Response::fail(id, f),
+            };
+            match api.ui_set(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "ui.remove" => {
+            let key = match require_str(&req.params, "key") {
+                Ok(k) if !k.trim().is_empty() => k,
+                Ok(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `key` 不能为空"),
+                    )
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.ui_remove(key) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "ui.state" => match api.ui_state() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
         "scene.save" => {
             let path = match param(&req.params, "path") {
                 None | Some(Value::Null) => None,
