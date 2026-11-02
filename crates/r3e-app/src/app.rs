@@ -666,6 +666,33 @@ impl EngineApp {
             "[{tag}] 环境探针：启用 {env_enabled} / 总强度 {env_intensity:.2} / 太阳强度 {env_sun:.2} / 球谐重投影 {} 次",
             renderer.environment_builds()
         );
+        // 后处理探针（扩展十三）：泛光 pass 数 > 0 说明整条链真的提交了；
+        // 层级分辨率应随窗口尺寸变化；重建次数只该在 resize 时增长——
+        // 若它逐帧增长，说明尺寸判定失效、每帧都在重建离屏目标。
+        let (postfx_present, exposure, tonemap, bloom_on, fxaa_on) =
+            match self.scene.borrow().postfx {
+                Some(fx) => (
+                    true,
+                    fx.exposure,
+                    fx.tonemap.name(),
+                    fx.bloom.enabled,
+                    fx.fxaa,
+                ),
+                None => (false, 0.0, "none(缺省)", false, false),
+            };
+        {
+            let pf = renderer.postfx();
+            let pf_stats = pf.stats();
+            log::info!(
+                "[{tag}] 后处理：postfx 段 {postfx_present} / 曝光 {exposure:+.2}EV / 色调映射 {tonemap} / 泛光 {bloom_on} / FXAA {fxaa_on} / HDR 目标 {:?}×{:?} / 泛光层级 {:?} / pass 泛光 {} + composite {} / 重建 {} 次",
+                pf.size().0,
+                pf.size().1,
+                pf.bloom_sizes(),
+                pf_stats.bloom_passes,
+                pf_stats.composite_passes,
+                pf.rebuilds()
+            );
+        }
         // 阴影探针：0 = 本帧没跑阴影通道（场景未开启 / 无可见物件），
         // 否则是深度通道里的 draw call 数（按网格合批，故通常 ≤ 主通道实例数）。
         log::info!(

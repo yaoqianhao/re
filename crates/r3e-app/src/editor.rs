@@ -15,9 +15,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::{Quat, Vec3};
+use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::{Node, ObjectDesc, Scene};
 use r3e_editor::{
-    EngineApi, EngineInfo, EnvironmentPatch, MaterialPatch, NodeBrief, PhysicsInfo, RpcFailure,
+    EngineApi, EngineInfo, EnvironmentPatch, MaterialPatch, NodeBrief, PhysicsInfo, PostFxPatch,
+    RpcFailure,
     TransformPatch, PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
@@ -248,6 +250,50 @@ impl EngineApi for LocalEngineApi<'_> {
         }))
     }
 
+    /// 后处理补丁（扩展十三）：在现有设置上叠加（未开启时从缺省起步），
+    /// 再交给 `PostFxSettings::sanitized` 统一收敛。
+    /// `enabled = false` 清空整段、回到 composite 直通。
+    fn scene_set_postfx(&mut self, patch: PostFxPatch) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        if patch.enabled == Some(false) {
+            scene.postfx = None;
+            return Ok(json!({ "postfx": Value::Null, "enabled": false }));
+        }
+        let mut fx = scene.postfx.unwrap_or_default();
+        if let Some(v) = patch.exposure {
+            fx.exposure = v;
+        }
+        // 名字的合法性在这里判定：认不出来就报参数错误，不做静默回落。
+        if let Some(name) = patch.tonemap.as_deref() {
+            fx.tonemap = TonemapMode::from_name(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!(
+                    "未知色调映射 `{name}`（可选：none / reinhard / aces）"
+                ))
+            })?;
+        }
+        if let Some(v) = patch.bloom_enabled {
+            fx.bloom.enabled = v;
+        }
+        if let Some(v) = patch.bloom_threshold {
+            fx.bloom.threshold = v;
+        }
+        if let Some(v) = patch.bloom_knee {
+            fx.bloom.knee = v;
+        }
+        if let Some(v) = patch.bloom_intensity {
+            fx.bloom.intensity = v;
+        }
+        if let Some(v) = patch.fxaa {
+            fx.fxaa = v;
+        }
+        let applied = fx.sanitized();
+        scene.postfx = Some(applied);
+        Ok(json!({
+            "enabled": true,
+            "postfx": postfx_value(applied),
+        }))
+    }
+
     fn script_eval(&mut self, source: &str) -> Result<Value, RpcFailure> {
         let value = self.scripts.eval(source).map_err(RpcFailure::engine)?;
         Ok(dynamic_to_json(&value))
@@ -288,6 +334,21 @@ impl EngineApi for LocalEngineApi<'_> {
         self.scripts.load_file(&path).map_err(RpcFailure::engine)?;
         Ok(json!({ "reloaded": path.display().to_string() }))
     }
+}
+
+/// 后处理快照：字段名与场景 JSON 的 `postfx` 段完全一致，前端拿到即可回写。
+fn postfx_value(fx: PostFxSettings) -> Value {
+    json!({
+        "exposure": fx.exposure,
+        "tonemap": fx.tonemap.name(),
+        "bloom": {
+            "enabled": fx.bloom.enabled,
+            "threshold": fx.bloom.threshold,
+            "knee": fx.bloom.knee,
+            "intensity": fx.bloom.intensity,
+        },
+        "fxaa": fx.fxaa,
+    })
 }
 
 /// 先按名字找，再按 `NodeId` 数字找：编辑器两种句柄都能用。
@@ -603,6 +664,72 @@ mod tests {
         api.script_eval("create_node_at_origin(\"from_script\", \"cube\")")
             .expect("应成功");
         assert!(scene.borrow().find("from_script").is_some());
+    }
+
+    #[test]
+    fn set_postfx_merges_and_sanitizes() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        // 逐项给：未给的字段保持原值（首次从未开启的缺省起步）。
+        let first = api
+            .scene_set_postfx(PostFxPatch {
+                exposure: Some(0.5),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(first["enabled"], json!(true));
+        assert_eq!(first["postfx"]["exposure"], json!(0.5));
+        assert_eq!(first["postfx"]["tonemap"], json!("none"));
+
+        let second = api
+            .scene_set_postfx(PostFxPatch {
+                tonemap: Some("aces".into()),
+                fxaa: Some(true),
+                ..Default::default()
+            })
+            .expect("应成功");
+        // 曝光保留上一次的值，不被这次补丁清零。
+        assert_eq!(second["postfx"]["exposure"], json!(0.5));
+        assert_eq!(second["postfx"]["tonemap"], json!("aces"));
+        assert_eq!(second["postfx"]["fxaa"], json!(true));
+
+        // 越界值收敛到上界，而不是写进 uniform。
+        let clamped = api
+            .scene_set_postfx(PostFxPatch {
+                exposure: Some(9999.0),
+                bloom_intensity: Some(-4.0),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(clamped["postfx"]["exposure"], json!(r3e_core::postfx::MAX_EXPOSURE_EV));
+        assert_eq!(clamped["postfx"]["bloom"]["intensity"], json!(0.0));
+
+        // 认不出的曲线名报参数错误，且不改动现有设置。
+        let bad = api
+            .scene_set_postfx(PostFxPatch {
+                tonemap: Some("cinematic".into()),
+                ..Default::default()
+            })
+            .expect_err("未知曲线名应报错");
+        assert!(
+            format!("{bad:?}").contains("cinematic"),
+            "错误信息应带上给错的名字: {bad:?}"
+        );
+        assert_eq!(
+            scene.borrow().postfx.expect("postfx 仍在").tonemap,
+            r3e_core::postfx::TonemapMode::Aces
+        );
+
+        // enabled=false 是唯一的清空入口。
+        let cleared = api
+            .scene_set_postfx(PostFxPatch {
+                enabled: Some(false),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(cleared["postfx"], Value::Null);
+        assert!(scene.borrow().postfx.is_none());
     }
 
     #[test]

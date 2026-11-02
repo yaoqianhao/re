@@ -1148,3 +1148,122 @@ mod audio_script_tests {
         assert_eq!(eval_int(&mut host, "audio_keys().len()"), 0);
     }
 }
+
+/// 后处理脚本 API（扩展十三）：`set_postfx` 一族写到 `Scene::postfx`，
+/// 并且一律过 `PostFxSettings::sanitized`——脚本里算出来的 NaN / 超界值
+/// 不能一路灌进 uniform。
+#[cfg(test)]
+mod postfx_script_tests {
+    use super::*;
+
+    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        (ScriptHost::new(scene.clone(), physics, input), scene)
+    }
+
+    fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_bool()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回 bool"))
+    }
+
+    fn eval_float(host: &mut ScriptHost, src: &str) -> f64 {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_float()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回浮点"))
+    }
+
+    /// 一击式全量设置：一次调用把五个字段都落到场景上。
+    #[test]
+    fn set_postfx_writes_all_fields() {
+        let (mut host, scene) = host();
+        // `set_postfx` 与 `set_sky` 一族同风格：写接口不返回 bool，只看场景结果。
+        let _ = host
+            .eval(r#"set_postfx(0.35, "aces", true, 0.25, true)"#)
+            .unwrap();
+        let fx = scene.borrow().postfx.expect("postfx 段应实体化");
+        assert!((fx.exposure - 0.35).abs() < 1e-6);
+        assert_eq!(fx.tonemap, r3e_core::postfx::TonemapMode::Aces);
+        assert!(fx.bloom.enabled);
+        assert!((fx.bloom.intensity - 0.25).abs() < 1e-6);
+        assert!(fx.fxaa);
+        // 没动的字段保持缺省，不因这次调用被清零。
+        assert!((fx.bloom.threshold - r3e_core::postfx::DEFAULT_BLOOM_THRESHOLD).abs() < 1e-6);
+    }
+
+    /// 分项设置：曝光 / 曲线 / 泛光 / FXAA 各自可改，且互不覆盖。
+    #[test]
+    fn granular_setters_compose() {
+        let (mut host, scene) = host();
+        let _ = host.eval("set_exposure(-2.0)").unwrap();
+        let _ = host.eval(r#"set_tonemap("reinhard")"#).unwrap();
+        let _ = host.eval("set_bloom(true, 2.0, 0.25, 0.5)").unwrap();
+        let _ = host.eval("set_fxaa(true)").unwrap();
+        let fx = scene.borrow().postfx.expect("postfx 段应实体化");
+        assert!((fx.exposure + 2.0).abs() < 1e-6, "曝光应保持 -2 EV");
+        assert_eq!(fx.tonemap, r3e_core::postfx::TonemapMode::Reinhard);
+        assert!(fx.bloom.enabled);
+        assert!((fx.bloom.threshold - 2.0).abs() < 1e-6);
+        assert!((fx.bloom.knee - 0.25).abs() < 1e-6);
+        assert!((fx.bloom.intensity - 0.5).abs() < 1e-6);
+        assert!(fx.fxaa);
+        // 回读接口与场景一致。
+        assert!((eval_float(&mut host, "postfx_exposure()") + 2.0).abs() < 1e-6);
+        assert_eq!(
+            host.eval("postfx_tonemap()").unwrap().into_string().unwrap(),
+            "reinhard"
+        );
+    }
+
+    /// 越界值被收敛：曝光夹进 [-8, 16]，泛光强度夹进 [0, 4]。
+    #[test]
+    fn out_of_range_values_are_clamped() {
+        let (mut host, scene) = host();
+        let _ = host.eval("set_exposure(999.0)").unwrap();
+        let fx = scene.borrow().postfx.expect("postfx 段应实体化");
+        assert!(
+            (fx.exposure - r3e_core::postfx::MAX_EXPOSURE_EV).abs() < 1e-6,
+            "曝光应被夹到上限，实际 {}",
+            fx.exposure
+        );
+        let _ = host.eval("set_bloom(true, -5.0, -1.0, -3.0)").unwrap();
+        let fx = scene.borrow().postfx.expect("postfx 段应实体化");
+        assert!(fx.bloom.threshold >= 0.0, "阈值下限为 0");
+        assert!(fx.bloom.knee >= 0.0, "软膝下限为 0");
+        assert!(fx.bloom.intensity >= 0.0, "负强度会让泛光变成减光");
+        // 曝光归零后与缺省一致，泛光关掉即可回到「直通」。
+        let _ = host.eval("set_exposure(0.0)").unwrap();
+        let _ = host.eval("set_bloom(false, 1.0, 0.5, 0.18)").unwrap();
+        let fx = scene.borrow().postfx.unwrap_or_default();
+        assert!(fx.is_neutral(), "全部关掉后应判定为直通");
+    }
+
+    /// 未知曲线名不 panic：回落 none 并保留其余字段。
+    #[test]
+    fn unknown_tonemap_falls_back_to_none() {
+        let (mut host, scene) = host();
+        let _ = host.eval(r#"set_postfx(1.0, "aces", false, 0.0, false)"#).unwrap();
+        let _ = host.eval(r#"set_tonemap("cinematic")"#).unwrap();
+        let fx = scene.borrow().postfx.expect("postfx 段应实体化");
+        assert_eq!(fx.tonemap, r3e_core::postfx::TonemapMode::None);
+        assert!((fx.exposure - 1.0).abs() < 1e-6, "其余字段不该被牵连");
+    }
+
+    /// 清空开关：`clear_postfx` 后回到「离屏 HDR + composite 直通」。
+    #[test]
+    fn clear_and_has_postfx_toggle() {
+        let (mut host, scene) = host();
+        assert!(!eval_bool(&mut host, "has_postfx()"));
+        let _ = host.eval("set_fxaa(true)").unwrap();
+        assert!(eval_bool(&mut host, "has_postfx()"));
+        let _ = host.eval("clear_postfx()").unwrap();
+        assert!(!eval_bool(&mut host, "has_postfx()"));
+        assert!(scene.borrow().postfx.is_none(), "清空后应为 None");
+        // 未开启时回读给出缺省值，不 panic。
+        assert_eq!(eval_float(&mut host, "postfx_exposure()"), 0.0);
+    }
+}

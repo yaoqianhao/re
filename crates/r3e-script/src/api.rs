@@ -9,6 +9,7 @@ use std::rc::Rc;
 use glam::{Vec3, Vec4};
 use r3e_audio::Audio;
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
+use r3e_core::postfx::TonemapMode;
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
 use r3e_core::ui::{
     find_mut, upsert_styled, Anchor, UiElement, UiKind, UiUpsert, UiValue, MAX_UI_ELEMENTS,
@@ -675,6 +676,114 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("has_environment", move || -> bool {
         c.scene.borrow().environment.is_some()
+    });
+
+    // ---------------- HDR 后处理链（扩展十三） ----------------
+    // 语义：`scene.postfx` 为 `None` 时整条链退化成「离屏 HDR 目标 + composite 直通」，
+    // 画面与不开启时一致；任何 set_postfx* 调用都会把这一段实体化。
+    // 与 set_sky 一族同规矩：每次写入都过 `sanitized()`，
+    // 脚本里算出来的 NaN / 超界值不会一路灌进 uniform。
+
+    // 一击式全量设置。`tonemap` 取 "none" / "reinhard" / "aces"，未知名字按 none
+    // 处理并打印一行说明——比静默忽略更容易在编辑器里定位脚本写错。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_postfx",
+        move |exposure: f64, tonemap: &str, bloom: bool, intensity: f64, fxaa: bool| {
+            let mode = match TonemapMode::from_name(tonemap) {
+                Some(m) => m,
+                None => {
+                    println!("[script] set_postfx: 未知色调映射 `{tonemap}`，按 none 处理");
+                    TonemapMode::None
+                }
+            };
+            let mut s = c.scene.borrow_mut();
+            let mut fx = s.postfx.unwrap_or_default();
+            fx.exposure = f32_of(exposure);
+            fx.tonemap = mode;
+            fx.bloom.enabled = bloom;
+            fx.bloom.intensity = f32_of(intensity);
+            fx.fxaa = fxaa;
+            s.postfx = Some(fx.sanitized());
+        },
+    );
+
+    // 曝光（EV）。正数提亮、负数压暗，范围由 core 夹在 [-8, 16]。
+    let c = ctx.clone();
+    engine.register_fn("set_exposure", move |ev: f64| {
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.exposure = f32_of(ev);
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 换色调映射曲线。
+    let c = ctx.clone();
+    engine.register_fn("set_tonemap", move |name: &str| {
+        let mode = match TonemapMode::from_name(name) {
+            Some(m) => m,
+            None => {
+                println!("[script] set_tonemap: 未知色调映射 `{name}`，按 none 处理");
+                TonemapMode::None
+            }
+        };
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.tonemap = mode;
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 泛光：开关 + 阈值 + 软膝 + 强度。阈值小于 1.0 会让整片天空都发光，
+    // 想要「只有高光溢出」就保持 ≥ 1.0。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_bloom",
+        move |enabled: bool, threshold: f64, knee: f64, intensity: f64| {
+            let mut s = c.scene.borrow_mut();
+            let mut fx = s.postfx.unwrap_or_default();
+            fx.bloom.enabled = enabled;
+            fx.bloom.threshold = f32_of(threshold);
+            fx.bloom.knee = f32_of(knee);
+            fx.bloom.intensity = f32_of(intensity);
+            s.postfx = Some(fx.sanitized());
+        },
+    );
+
+    // FXAA：在 composite 里做一次边缘内插，弥补没有 MSAA 的锯齿。
+    let c = ctx.clone();
+    engine.register_fn("set_fxaa", move |enabled: bool| {
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.fxaa = enabled;
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 关掉后处理段，退回直通。
+    let c = ctx.clone();
+    engine.register_fn("clear_postfx", move || {
+        c.scene.borrow_mut().postfx = None;
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("has_postfx", move || -> bool {
+        c.scene.borrow().postfx.is_some()
+    });
+
+    // 当前生效值快照（脚本侧断言 / 编辑器回读用），未开启时给出缺省值。
+    let c = ctx.clone();
+    engine.register_fn("postfx_exposure", move || -> f64 {
+        f64::from(c.scene.borrow().postfx.unwrap_or_default().exposure)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("postfx_tonemap", move || -> String {
+        c.scene
+            .borrow()
+            .postfx
+            .unwrap_or_default()
+            .tonemap
+            .name()
+            .to_string()
     });
 
     // ---------------- 场景保存（M1） ----------------

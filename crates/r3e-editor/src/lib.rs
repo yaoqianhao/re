@@ -300,6 +300,37 @@ impl EnvironmentPatch {
     }
 }
 
+/// `scene.set_postfx` 的局部改动（扩展十三）：只给要改的字段，其余保持原值。
+///
+/// `enabled = Some(false)` 表示关掉整个后处理段，回到「离屏 HDR 目标 + composite
+/// 直通」；`tonemap` 为规范名（`none` / `reinhard` / `aces`，大小写不敏感），
+/// 传输层只校验类型，名字是否认得由宿主的 `TonemapMode::from_name` 判定后报参数错误
+/// ——与 `EnvironmentPatch` 同一条原则：本层不认识 `r3e_core` 的任何类型。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PostFxPatch {
+    pub enabled: Option<bool>,
+    pub exposure: Option<f32>,
+    pub tonemap: Option<String>,
+    pub bloom_enabled: Option<bool>,
+    pub bloom_threshold: Option<f32>,
+    pub bloom_knee: Option<f32>,
+    pub bloom_intensity: Option<f32>,
+    pub fxaa: Option<bool>,
+}
+
+impl PostFxPatch {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.exposure.is_none()
+            && self.tonemap.is_none()
+            && self.bloom_enabled.is_none()
+            && self.bloom_threshold.is_none()
+            && self.bloom_knee.is_none()
+            && self.bloom_intensity.is_none()
+            && self.fxaa.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -346,6 +377,13 @@ pub trait EngineApi {
     /// `enabled = false` 时清空环境（回到常数 `ambient`），返回值里 `environment` 为 `null`。
     fn scene_set_environment(&mut self, _patch: EnvironmentPatch) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.set_environment"))
+    }
+
+    /// 改写场景级 HDR 后处理段（曝光 / 色调映射 / 泛光 / FXAA）。
+    /// 宿主应把补丁合并进现有设置后立即收敛，并把合并结果回给调用方；
+    /// `enabled = false` 时清空该段（直通），返回值里 `postfx` 为 `null`。
+    fn scene_set_postfx(&mut self, _patch: PostFxPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.set_postfx"))
     }
 
     fn scene_remove(&mut self, _node: &str) -> Result<Value, RpcFailure> {
@@ -395,6 +433,17 @@ fn opt_f32(params: &Value, key: &str) -> Result<Option<f32>, RpcFailure> {
         .as_f64()
         .map(|v| Some(v as f32))
         .ok_or_else(|| RpcFailure::invalid_params(format!("参数 `{key}` 应为数字")))
+}
+
+/// 取出可选字符串参数；缺省得到 `None`（含显式 `null`），给了但不是字符串则报错。
+fn opt_str<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, RpcFailure> {
+    match param(params, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(_) => Err(RpcFailure::invalid_params(format!(
+            "参数 `{key}` 应为字符串"
+        ))),
+    }
 }
 
 /// 取出可选布尔参数；缺省得到 `None`，给了但不是布尔则报错。
@@ -593,6 +642,60 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 );
             }
             match api.scene_set_environment(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        // 后处理契约（扩展十三）：字段可分别给，一个都不给视为无意义调用；
+        // `enabled = false` 是唯一的「清空」入口。`tonemap` 名字的合法性由宿主判定。
+        "scene.setpostfx" => {
+            let patch = match (
+                opt_bool(&req.params, "enabled"),
+                opt_f32(&req.params, "exposure"),
+                opt_str(&req.params, "tonemap"),
+                opt_bool(&req.params, "bloom_enabled"),
+                opt_f32(&req.params, "bloom_threshold"),
+                opt_f32(&req.params, "bloom_knee"),
+                opt_f32(&req.params, "bloom_intensity"),
+                opt_bool(&req.params, "fxaa"),
+            ) {
+                (
+                    Ok(enabled),
+                    Ok(exposure),
+                    Ok(tonemap),
+                    Ok(bloom_enabled),
+                    Ok(bloom_threshold),
+                    Ok(bloom_knee),
+                    Ok(bloom_intensity),
+                    Ok(fxaa),
+                ) => PostFxPatch {
+                    enabled,
+                    exposure,
+                    tonemap: tonemap.map(str::to_string),
+                    bloom_enabled,
+                    bloom_threshold,
+                    bloom_knee,
+                    bloom_intensity,
+                    fxaa,
+                },
+                (Err(f), ..)
+                | (_, Err(f), ..)
+                | (_, _, Err(f), ..)
+                | (_, _, _, Err(f), ..)
+                | (_, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, Err(f), _)
+                | (_, _, _, _, _, _, _, Err(f)) => return Response::fail(id, f),
+            };
+            if patch.is_empty() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params(
+                        "postfx 补丁至少要给一个字段（或 enabled=false 清空）",
+                    ),
+                );
+            }
+            match api.scene_set_postfx(patch) {
                 Ok(r) => Response::ok(id, r),
                 Err(f) => Response::fail(id, f),
             }
