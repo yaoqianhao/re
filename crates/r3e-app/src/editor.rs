@@ -16,11 +16,11 @@ use std::rc::Rc;
 
 use glam::{Quat, Vec3};
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
+use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
 use r3e_core::{Node, ObjectDesc, Scene};
 use r3e_editor::{
     EngineApi, EngineInfo, EnvironmentPatch, MaterialPatch, NodeBrief, PhysicsInfo, PostFxPatch,
-    RpcFailure,
-    TransformPatch, PROTOCOL_VERSION,
+    RpcFailure, TransformPatch, UiPatch, PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -299,6 +299,97 @@ impl EngineApi for LocalEngineApi<'_> {
         Ok(dynamic_to_json(&value))
     }
 
+    fn ui_list(&mut self, limit: Option<usize>) -> Result<Value, RpcFailure> {
+        let scene = self.scene.borrow();
+        let items: Vec<Value> = scene
+            .ui
+            .iter()
+            .take(limit.unwrap_or(usize::MAX))
+            .map(ui_element_value)
+            .collect();
+        Ok(json!({
+            "count": scene.ui.len(),
+            "limit": ui::MAX_UI_ELEMENTS,
+            "enabled": scene.ui_enabled,
+            "elements": items,
+        }))
+    }
+
+    fn ui_set(&mut self, patch: UiPatch) -> Result<Value, RpcFailure> {
+        if patch.key.trim().is_empty() {
+            return Err(RpcFailure::invalid_params("参数 `key` 不能为空"));
+        }
+        // 名字先全部解析完再落地：一个写错的锚点不该留下半条被改的元素。
+        let kind = match patch.kind.as_deref() {
+            Some(name) => Some(UiKind::parse(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!(
+                    "未知元素类型 `{name}`（可用：rect / border / image）"
+                ))
+            })?),
+            None => None,
+        };
+        let anchor = match patch.anchor.as_deref() {
+            Some(name) => Some(Anchor::parse(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!("未知锚点 `{name}`（可用：top_left / center ...）"))
+            })?),
+            None => None,
+        };
+
+        let mut scene = self.scene.borrow_mut();
+        let existing = ui::find(&scene.ui, &patch.key).cloned();
+        let inserted = existing.is_none();
+        let mut element = existing.unwrap_or_else(|| UiElement {
+            key: patch.key.clone(),
+            ..UiElement::default()
+        });
+        apply_ui_patch(&mut element, &patch, kind, anchor);
+        // 用 `upsert`（裸全量覆盖）而不是 `upsert_styled`：RPC 的语义是「给了才改」，
+        // 改动已经在 clone 上做完了；`merge_same_key` 会强制沿用旧的
+        // `layer` / `visible` / `uv`，那是脚本每帧重发位置时该有的行为，放在这里会把
+        // 编辑器对层级 / 可见性的修改吞掉。
+        let outcome = ui::upsert(&mut scene.ui, element.sanitized());
+        if outcome == UiUpsert::Rejected {
+            return Err(RpcFailure::invalid_params(format!(
+                "UI 元素已达上限 {}，无法新增",
+                ui::MAX_UI_ELEMENTS
+            )));
+        }
+        let value = ui::find(&scene.ui, &patch.key)
+            .map(ui_element_value)
+            .unwrap_or(Value::Null);
+        Ok(json!({
+            "key": patch.key,
+            "inserted": inserted,
+            "replaced": outcome == UiUpsert::Replaced,
+            "count": scene.ui.len(),
+            "element": value,
+        }))
+    }
+
+    fn ui_remove(&mut self, key: &str) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        let removed = ui::remove(&mut scene.ui, key);
+        Ok(json!({ "key": key, "removed": removed, "count": scene.ui.len() }))
+    }
+
+    fn ui_state(&mut self) -> Result<Value, RpcFailure> {
+        let interaction = self.scripts.ui_interaction();
+        let state = interaction.borrow();
+        let events: Vec<Value> = state
+            .events()
+            .iter()
+            .map(|e| json!({ "kind": e.kind.name(), "key": e.key }))
+            .collect();
+        let (sw, sh) = state.screen();
+        Ok(json!({
+            "hover": state.hover(),
+            "active": state.active(),
+            "pointer_over_ui": state.pointer_over_ui(),
+            "screen": [sw, sh],
+            "events": events,
+        }))
+    }
+
     fn scene_save(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
         // 目标路径：显式给了就用它，否则写回本场景的原始文件（编辑器「Ctrl+S」语义）。
         let target = match path.map(str::trim).filter(|p| !p.is_empty()) {
@@ -454,6 +545,95 @@ fn plain_abs_path(path: &std::path::Path) -> String {
     } else {
         text
     }
+}
+
+
+/// 把 `UiPatch` 的字段并进一个元素（只覆盖给了的字段）。
+///
+/// `kind` / `anchor` 已由调用方解析完毕；这里只做搬运与单位解析，不做任何策略判断。
+fn apply_ui_patch(
+    el: &mut UiElement,
+    patch: &UiPatch,
+    kind: Option<UiKind>,
+    anchor: Option<Anchor>,
+) {
+    if let Some(kind) = kind {
+        el.kind = kind;
+    }
+    if let Some(anchor) = anchor {
+        el.anchor = anchor;
+    }
+    if let Some(text) = patch.x.as_deref() {
+        el.offset[0] = parse_ui_value(text);
+    }
+    if let Some(text) = patch.y.as_deref() {
+        el.offset[1] = parse_ui_value(text);
+    }
+    if let Some(text) = patch.width.as_deref() {
+        el.size[0] = parse_ui_value(text);
+    }
+    if let Some(text) = patch.height.as_deref() {
+        el.size[1] = parse_ui_value(text);
+    }
+    if let Some(color) = patch.color {
+        el.color = color;
+    }
+    if let Some(layer) = patch.layer {
+        el.layer = layer;
+    }
+    if let Some(visible) = patch.visible {
+        el.visible = visible;
+    }
+    if let Some(width) = patch.border_width {
+        el.border_width = width;
+    }
+    if let Some(image) = patch.image.as_deref() {
+        el.image = image.to_string();
+    }
+}
+
+/// 单位串 → `UiValue`：`"12"` / `"12px"` 为像素，`"50%"` 为屏幕百分比。
+///
+/// 解析失败折成 0 与脚本层同一口径——RPC 调用方拿到的是「渲染结果」而非异常，
+/// 与 `scene.set_material` 对非法数值的处理保持一致。
+fn parse_ui_value(text: &str) -> UiValue {
+    let raw = text.trim();
+    if let Some(num) = raw.strip_suffix('%') {
+        return UiValue::pct(num.trim().parse::<f32>().unwrap_or(0.0));
+    }
+    let num = raw
+        .strip_suffix("px")
+        .unwrap_or(raw)
+        .trim()
+        .parse::<f32>()
+        .unwrap_or(0.0);
+    UiValue::px(num)
+}
+
+/// `UiValue` → 单位串（`"12"` / `"50%"`），供 RPC 回读。
+fn fmt_ui_value(value: UiValue) -> String {
+    match value.unit {
+        UiUnit::Px => format!("{}", value.value),
+        UiUnit::Percent => format!("{}%", value.value),
+    }
+}
+
+/// 单个 UI 元素的 RPC 表示（声明层，未折算像素）。
+fn ui_element_value(el: &UiElement) -> Value {
+    json!({
+        "key": el.key,
+        "kind": el.kind.name(),
+        "anchor": el.anchor.name(),
+        "x": fmt_ui_value(el.offset[0]),
+        "y": fmt_ui_value(el.offset[1]),
+        "width": fmt_ui_value(el.size[0]),
+        "height": fmt_ui_value(el.size[1]),
+        "color": el.color,
+        "border_width": el.border_width,
+        "image": el.image,
+        "layer": el.layer,
+        "visible": el.visible,
+    })
 }
 
 #[cfg(test)]
@@ -737,5 +917,153 @@ mod tests {
         let (scene, physics, mut scripts) = fixture();
         let mut api = api(&scene, &physics, &mut scripts);
         assert!(api.script_reload().is_err());
+    }
+
+    #[test]
+    fn ui_set_inserts_with_parsed_units() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        let out = api
+            .ui_set(UiPatch {
+                key: "btn_start".to_string(),
+                kind: Some("image".to_string()),
+                anchor: Some("bottom_center".to_string()),
+                x: Some("0".to_string()),
+                y: Some("-48".to_string()),
+                width: Some("50%".to_string()),
+                height: Some("64".to_string()),
+                layer: Some(7),
+                ..Default::default()
+            })
+            .expect("应成功");
+
+        assert_eq!(out["inserted"], true);
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["element"]["kind"], "image");
+        assert_eq!(out["element"]["anchor"], "bottom_center");
+        // 百分比与像素各回读成自己的单位串。
+        assert_eq!(out["element"]["width"], "50%");
+        assert_eq!(out["element"]["height"], "64");
+
+        let scene = scene.borrow();
+        assert_eq!(scene.ui.len(), 1);
+        assert_eq!(scene.ui[0].size[0], UiValue::pct(50.0));
+        assert_eq!(scene.ui[0].size[1], UiValue::px(64.0));
+        assert_eq!(scene.ui[0].offset[1], UiValue::px(-48.0));
+        assert_eq!(scene.ui[0].layer, 7);
+    }
+
+    #[test]
+    fn ui_set_patches_existing_element_in_place() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.ui_set(UiPatch {
+            key: "btn".to_string(),
+            kind: Some("image".to_string()),
+            image: Some("ui/btn.png".to_string()),
+            width: Some("120".to_string()),
+            layer: Some(3),
+            ..Default::default()
+        })
+        .expect("首次写入应成功");
+
+        // 只改 layer：其余字段必须保持原值（局部更新而不是整体覆盖）。
+        let out = api
+            .ui_set(UiPatch {
+                key: "btn".to_string(),
+                layer: Some(9),
+                ..Default::default()
+            })
+            .expect("局部更新应成功");
+        assert_eq!(out["inserted"], false);
+        assert_eq!(out["replaced"], true);
+        assert_eq!(out["count"], 1, "同 key 不应累积出新元素");
+
+        let scene = scene.borrow();
+        assert_eq!(scene.ui.len(), 1);
+        assert_eq!(scene.ui[0].layer, 9);
+        assert_eq!(scene.ui[0].kind, UiKind::Image);
+        assert_eq!(scene.ui[0].image, "ui/btn.png");
+        assert_eq!(scene.ui[0].size[0], UiValue::px(120.0));
+    }
+
+    #[test]
+    fn ui_set_rejects_unknown_names_without_side_effect() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        let bad_anchor = api
+            .ui_set(UiPatch {
+                key: "panel".to_string(),
+                anchor: Some("斜着".to_string()),
+                ..Default::default()
+            })
+            .expect_err("未知锚点应报错");
+        assert!(format!("{bad_anchor:?}").contains("斜着"));
+
+        let bad_kind = api
+            .ui_set(UiPatch {
+                key: "panel".to_string(),
+                kind: Some("圆角矩形".to_string()),
+                ..Default::default()
+            })
+            .expect_err("未知类型应报错");
+        assert!(format!("{bad_kind:?}").contains("圆角矩形"));
+
+        assert!(scene.borrow().ui.is_empty(), "报错时不应留下半条元素");
+    }
+
+    #[test]
+    fn ui_list_and_remove_round_trip() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        for key in ["a", "b"] {
+            api.ui_set(UiPatch {
+                key: key.to_string(),
+                ..Default::default()
+            })
+            .expect("应成功");
+        }
+        let listed = api.ui_list(None).expect("应成功");
+        assert_eq!(listed["count"], 2);
+        assert_eq!(listed["elements"].as_array().expect("数组").len(), 2);
+
+        let removed = api.ui_remove("a").expect("应成功");
+        assert_eq!(removed["removed"], true);
+        assert_eq!(removed["count"], 1);
+
+        let again = api.ui_remove("a").expect("重复删除应成功");
+        assert_eq!(again["removed"], false, "已不存在时如实回报 false");
+    }
+
+    #[test]
+    fn ui_state_reports_pointer_interaction() {
+        let (scene, physics, mut scripts) = fixture();
+        scene
+            .borrow_mut()
+            .ui
+            .push(UiElement {
+                key: "btn".to_string(),
+                ..Default::default()
+            });
+        // 直接把光标按在元素上（默认 100x100 从左上角起算），模拟一帧按下。
+        {
+            let interaction = scripts.ui_interaction();
+            let mut state = interaction.borrow_mut();
+            state.reset();
+            state.update(
+                &scene.borrow().ui,
+                (800.0, 600.0),
+                Some((10.0, 10.0)),
+                true,
+                true,
+                false,
+            );
+        }
+        let mut api = api(&scene, &physics, &mut scripts);
+        let state = api.ui_state().expect("应成功");
+        assert_eq!(state["hover"], "btn");
+        assert_eq!(state["active"], "btn");
+        assert_eq!(state["pointer_over_ui"], true);
+        assert_eq!(state["events"].as_array().expect("数组").len(), 2);
     }
 }

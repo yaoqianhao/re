@@ -19,6 +19,7 @@ use r3e_core::input::{
 use r3e_core::mesh::TextureImage;
 use r3e_core::{
     AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance,
+    UiInteraction,
 };
 use r3e_editor::RpcServer;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
@@ -215,6 +216,11 @@ pub struct EngineApp {
     gilrs: Option<gilrs::Gilrs>,
     /// 光标是否已有有效位置（首个 CursorMoved 之前不算位移）。
     cursor_valid: bool,
+    /// UI 指针交互状态（与脚本宿主共享同一份 `Rc`）。
+    ///
+    /// 主循环每帧推进它，脚本侧 `ui_events()` / `ui_hover()` / `ui_hit()` 读的就是这份；
+    /// 相机拖动也靠它判断「这一下点的是 UI 还是场景」。
+    ui_interaction: Rc<RefCell<UiInteraction>>,
 
     last_frame: Instant,
     last_watch: Instant,
@@ -337,6 +343,9 @@ impl EngineApp {
             input.clone(),
             audio.clone(),
         );
+
+        // UI 指针交互与脚本宿主共用同一份状态：app 推进、脚本读。
+        let ui_interaction = scripts.ui_interaction();
         scripts.set_base_scene(scene_src);
 
         // 资产节点：按资产内节点路径 spawn，重名自动加 `#N` 后缀
@@ -436,6 +445,7 @@ impl EngineApp {
             input,
             gilrs,
             cursor_valid: false,
+            ui_interaction,
             last_frame: now,
             last_watch: now,
             time: 0.0,
@@ -526,6 +536,11 @@ impl EngineApp {
         self.last_frame = now;
         dt = dt.clamp(0.0, 0.1);
         self.last_dt_ms = dt * 1000.0;
+
+        // 0) UI 指针交互：命中测试 / hover / 按下捕获在本帧输入清掉之前算完，
+        //    这样脚本 on_update 读到的就是本帧事件，相机也据此决定要不要吃这次拖动。
+        //    放在暂停判断之外：暂停时点 UI（按钮切换状态）仍然要有反馈。
+        self.update_ui_interaction();
 
         if !self.paused {
             self.time += dt as f64;
@@ -719,8 +734,19 @@ impl EngineApp {
             (scene.ui.len(), scene.ui_enabled, scene.ui_above_text)
         };
         let ui = renderer.ui_stats();
+        // 交互探针：hover / active 是本帧指针压住 / 按住的 key，事件数是本帧产出的事件条数。
+        // 无鼠标输入的无人值守运行里这三项应为空 / 空 / 0，但 `update_ui_interaction` 确实跑过。
+        let (ui_hover, ui_active, ui_events, ui_pointer) = {
+            let it = self.ui_interaction.borrow();
+            (
+                it.hover().unwrap_or("").to_string(),
+                it.active().unwrap_or("").to_string(),
+                it.events().len(),
+                it.pointer_over_ui(),
+            )
+        };
         log::info!(
-            "[{tag}] UI 通道：节点 {ui_nodes} / 绘制元素 {} / 四边形 {} / draw call {} / 贴图 {} / 缺图回退 {} / 超限跳过 {} / 开关 {ui_enabled} / UI 在文本之上 {ui_above_text}",
+            "[{tag}] UI 通道：节点 {ui_nodes} / 绘制元素 {} / 四边形 {} / draw call {} / 贴图 {} / 缺图回退 {} / 超限跳过 {} / 开关 {ui_enabled} / UI 在文本之上 {ui_above_text} / 交互 hover [{ui_hover}] active [{ui_active}] 事件 {ui_events} 指针压 UI {ui_pointer}",
             ui.elements,
             ui.quads,
             ui.draw_calls,
@@ -1092,6 +1118,60 @@ impl EngineApp {
         }
     }
 
+    /// 当前窗口的像素尺寸（未创建窗口时退回 0，命中测试会因此一律不命中）。
+    fn screen_size(&self) -> (f32, f32) {
+        self.window
+            .as_ref()
+            .map(|w| {
+                let s = w.inner_size();
+                (s.width as f32, s.height as f32)
+            })
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// 本帧 UI 交互推进：把光标位置与左键边沿交给 core 的状态机。
+    ///
+    /// UI 通道被 `set_ui_enabled(false)` 关掉时不做命中——看不见的东西不该挡住点击。
+    fn update_ui_interaction(&mut self) {
+        let screen = self.screen_size();
+        let cursor = {
+            let i = self.input.borrow();
+            if self.cursor_valid {
+                Some((i.mouse_x, i.mouse_y))
+            } else {
+                None
+            }
+        };
+        let (pressed, down, released) = {
+            let i = self.input.borrow();
+            (
+                i.mouse_pressed(MOUSE_LEFT),
+                i.mouse_down(MOUSE_LEFT),
+                i.mouse_released(MOUSE_LEFT),
+            )
+        };
+        let enabled = self.scene.borrow().ui_enabled;
+        let scene = self.scene.borrow();
+        let mut ui = self.ui_interaction.borrow_mut();
+        ui.reset();
+        if !enabled {
+            ui.update(&[], screen, cursor, pressed, down, released);
+            return;
+        }
+        ui.update(&scene.ui, screen, cursor, pressed, down, released);
+    }
+
+    /// 该屏幕坐标是否压在一个可见 UI 元素上（用于让 UI 吃掉相机拖动）。
+    fn cursor_over_ui(&self, x: f32, y: f32) -> bool {
+        if !self.scene.borrow().ui_enabled {
+            return false;
+        }
+        let mut ui = self.ui_interaction.borrow_mut();
+        ui.set_screen(self.screen_size());
+        let scene = self.scene.borrow();
+        ui.hit(&scene.ui, x, y).is_some()
+    }
+
     /// 鼠标移动：更新位置 / 位移快照，并直接驱动相机（左键转视角、右键平移）。
     fn handle_cursor_moved(&mut self, x: f64, y: f64) {
         let (dx, dy, left, right) = {
@@ -1115,6 +1195,14 @@ impl EngineApp {
         self.cursor_valid = true;
 
         if !left && !right {
+            return;
+        }
+
+        // 光标压在 UI 上时，这一拖属于 UI（按钮 / 滑块），相机不动。
+        // 判断的是「当前位置」而不是「按下时位置」：从 UI 上开始拖、拖出到场景里，
+        // 相机也不会突然接手——避免一下拖拽中途切换操纵对象。
+        if self.cursor_over_ui(x as f32, y as f32) || self.ui_interaction.borrow().pointer_over_ui()
+        {
             return;
         }
 
