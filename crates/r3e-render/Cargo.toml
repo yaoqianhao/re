@@ -13,3 +13,7 @@ glam.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+# 与 wgpu 30 内置的 naga 同版本：无 GPU 也能对着色器做语法 + 语义校验
+naga = { version = "30.0", features = ["wgsl-in"] }

@@ -9,7 +9,9 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
-use r3e_core::{Aabb, AssetId, Frustum, Light, MeshRef, ProceduralProvider, Scene};
+use r3e_core::{
+    Aabb, AssetId, EnvironmentSettings, Frustum, Light, MeshRef, ProceduralProvider, Scene, Sh9,
+};
 use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
@@ -77,7 +79,11 @@ impl MaterialKey {
     }
 }
 
-/// 全局相机 / 光照 uniform。128 字节，16 字节对齐。
+/// 全局相机 / 光照 uniform。288 字节，16 字节对齐。
+///
+/// 布局必须与 `shader.wgsl` 的 `Camera` 逐字段一致：相机矩阵 → 光照 → 环境探针 → 9 项球谐。
+/// 环境探针部分只有在 `env_horizon.w > 0.5` 时才被着色器采用，否则退回 `ambient` 常数项，
+/// 因此老场景（不写 `environment`）的画面与扩展十二之前逐像素一致。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct CameraUniform {
@@ -87,16 +93,50 @@ struct CameraUniform {
     /// rgb = 光色，a = 强度
     light_color: [f32; 4],
     ambient: [f32; 4],
+    /// rgb = 天顶色，a = IBL 总强度
+    env_zenith: [f32; 4],
+    /// rgb = 地平线色，a = 是否启用 IBL（0/1）
+    env_horizon: [f32; 4],
+    /// rgb = 地面色，a 保留
+    env_ground: [f32; 4],
+    /// rgb = 太阳色 × 太阳强度，a 保留
+    env_sun: [f32; 4],
+    /// xyz = 指向太阳的单位向量，a 保留
+    env_sun_dir: [f32; 4],
+    /// 9 项球谐：rgb = 系数（已是辐亮度量纲），a 保留。由 `env::Sh9::project` 在 CPU 侧投影。
+    env_sh: [[f32; 4]; r3e_core::env::SH_COEFFICIENTS],
 }
 
 impl Default for CameraUniform {
     fn default() -> Self {
+        let env = EnvironmentSettings::default();
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             camera_pos: [0.0, 0.0, 0.0, 1.0],
             light_dir: [0.0, -1.0, 0.0, 0.0],
             light_color: [1.0, 1.0, 1.0, 1.0],
             ambient: [0.1, 0.1, 0.1, 1.0],
+            env_zenith: [
+                env.sky_zenith[0],
+                env.sky_zenith[1],
+                env.sky_zenith[2],
+                env.intensity,
+            ],
+            env_horizon: [
+                env.sky_horizon[0],
+                env.sky_horizon[1],
+                env.sky_horizon[2],
+                0.0,
+            ],
+            env_ground: [env.ground[0], env.ground[1], env.ground[2], 0.0],
+            env_sun: [
+                env.sun_color[0] * env.sun_intensity,
+                env.sun_color[1] * env.sun_intensity,
+                env.sun_color[2] * env.sun_intensity,
+                0.0,
+            ],
+            env_sun_dir: [env.sun_dir[0], env.sun_dir[1], env.sun_dir[2], 0.0],
+            env_sh: [[0.0; 4]; r3e_core::env::SH_COEFFICIENTS],
         }
     }
 }
@@ -412,6 +452,13 @@ pub struct Renderer {
     text: TextPass,
     /// M1 最小 UI：屏幕空间 2D UI 通道（矩形 / 边框 / 图片），与文本通道同构但独立。
     ui: UiPass,
+    /// 环境探针（扩展十二）的球谐缓存。`Sh9::project` 要做 2048 次天空采样，
+    /// 每帧重算是纯浪费——只在场景 `environment` 段真的变了才重投影。
+    env_cache: Option<EnvironmentSettings>,
+    env_sh: Sh9,
+    /// 累计做过几次球谐投影（只增不减）。正常连续帧里应保持不变——
+    /// 若它逐帧增长，说明缓存键比较失效、正在每帧重算。
+    env_builds: u64,
     stats: RenderStats,
 }
 
@@ -782,6 +829,9 @@ impl Renderer {
             shadow_pipeline,
             text,
             ui,
+            env_cache: None,
+            env_sh: Sh9::default(),
+            env_builds: 0,
             stats: RenderStats::default(),
         })
     }
@@ -792,6 +842,17 @@ impl Renderer {
 
     pub fn aspect(&self) -> f32 {
         self.size.0 as f32 / self.size.1.max(1) as f32
+    }
+
+    /// 环境探针的累计球谐投影次数。连续帧之间不该增长（缓存命中），
+    /// 供集成测试与遥测确认「没有每帧重算」。
+    pub fn environment_builds(&self) -> u64 {
+        self.env_builds
+    }
+
+    /// 当前生效的环境探针 `Some` = 用 IBL，`None` = 用 `light.ambient` 常数项。
+    pub fn environment(&self) -> Option<EnvironmentSettings> {
+        self.env_cache
     }
 
     pub fn stats(&self) -> RenderStats {
@@ -1235,12 +1296,49 @@ impl Renderer {
         let mut camera = scene.camera;
         camera.aspect = self.aspect();
         let light = scene.light;
+        // 环境探针：场景里写了 `environment` 才启用；球谐只在配置真变了时重投影
+        let environment = scene.environment.map(|e| e.sanitized());
+        if environment != self.env_cache {
+            self.env_cache = environment;
+            self.env_sh = match environment {
+                Some(env) => Sh9::project(&env),
+                None => Sh9::default(),
+            };
+            self.env_builds += 1;
+        }
+        let env = environment.unwrap_or_default();
+        let mut sh = [[0.0_f32; 4]; r3e_core::env::SH_COEFFICIENTS];
+        for (dst, src) in sh.iter_mut().zip(self.env_sh.coeffs.iter()) {
+            *dst = [src.x, src.y, src.z, 0.0];
+        }
         let uniform = CameraUniform {
             view_proj: camera.view_projection().to_cols_array_2d(),
             camera_pos: [camera.position.x, camera.position.y, camera.position.z, 1.0],
             light_dir: [light.direction.x, light.direction.y, light.direction.z, 0.0],
             light_color: [light.color.x, light.color.y, light.color.z, light.intensity],
             ambient: [light.ambient.x, light.ambient.y, light.ambient.z, 1.0],
+            env_zenith: [
+                env.sky_zenith[0],
+                env.sky_zenith[1],
+                env.sky_zenith[2],
+                env.intensity,
+            ],
+            // w 位就是「本帧用哪套环境光」的开关：0 = 退回常数 ambient
+            env_horizon: [
+                env.sky_horizon[0],
+                env.sky_horizon[1],
+                env.sky_horizon[2],
+                if environment.is_some() { 1.0 } else { 0.0 },
+            ],
+            env_ground: [env.ground[0], env.ground[1], env.ground[2], 0.0],
+            env_sun: [
+                env.sun_color[0] * env.sun_intensity,
+                env.sun_color[1] * env.sun_intensity,
+                env.sun_color[2] * env.sun_intensity,
+                0.0,
+            ],
+            env_sun_dir: [env.sun_dir[0], env.sun_dir[1], env.sun_dir[2], 0.0],
+            env_sh: sh,
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));

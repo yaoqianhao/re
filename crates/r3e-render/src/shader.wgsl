@@ -8,6 +8,14 @@ struct Camera {
     light_dir: vec4<f32>,
     light_color: vec4<f32>,
     ambient: vec4<f32>,
+    // 环境探针（扩展十二）：三色天空 + 太阳项，逐字段对应 r3e_core::env::EnvironmentSettings
+    env_zenith: vec4<f32>,   // rgb = 天顶色，a = IBL 总强度
+    env_horizon: vec4<f32>,  // rgb = 地平线色，a = 是否启用 IBL（0/1）
+    env_ground: vec4<f32>,   // rgb = 地面色
+    env_sun: vec4<f32>,      // rgb = 太阳色 × 太阳强度
+    env_sun_dir: vec4<f32>,  // xyz = 指向太阳的单位向量
+    // 9 项球谐辐亮度系数（rgb），CPU 侧由 env::Sh9::project 投影后上传
+    env_sh: array<vec4<f32>, 9>,
 };
 
 @group(0) @binding(0)
@@ -202,6 +210,91 @@ fn shadow_factor(world_position: vec3<f32>, n: vec3<f32>) -> f32 {
     return mix(1.0, visible, u_shadow.params2.x);
 }
 
+// ---------------- 环境探针（IBL，扩展十二） ----------------
+// 与 `r3e-core::env` 的 CPU 实现逐项对应：
+//   * 天空：天顶 / 地平线 / 地面三色按 |y| 开方插值，太阳是 cos^8 的亮斑
+//   * 漫反射：9 项球谐（l ≤ 2）经 Lambertian 余弦卷积，直接算辐照度，不需要 cubemap
+//   * 镜面：反射方向按 roughness² 拉向法线后取天空亮度，再用 Karis 解析 BRDF 加权
+// 之所以不上预滤波 cubemap / BRDF LUT：本引擎要在无窗口、无 GPU 的环境里跑集成测试，
+// 全部用解析式才能在 CPU 侧留一份可断言的参考实现。
+
+// 太阳盘锐度：cos^k 的指数，与 CPU 侧 SUN_SHAPE_EXPONENT 一致
+const SUN_SHAPE_EXPONENT: f32 = 8.0;
+// 9 项球谐的基常数（与 CPU sh_basis 逐位一致）
+const SH_Y0: f32 = 0.2820948;
+const SH_Y1: f32 = 0.4886028;
+const SH_Y2_A: f32 = 1.0925484;
+const SH_Y2_B: f32 = 0.3153916;
+const SH_Y2_C: f32 = 0.5462742;
+// Lambertian 余弦卷积系数：A0 = π，A1 = 2π/3，A2 = π/4
+// （直接写字面量而不是引用 PI：这几行出现在 PI 声明之前，避免依赖声明顺序）
+const LAMBERT_A0: f32 = 3.141592653589793;
+const LAMBERT_A1: f32 = 2.094395102393195;
+const LAMBERT_A2: f32 = 0.785398163397448;
+
+/// 三色天空插值（不含太阳）。开方让地平线附近的过渡带更宽。
+fn env_sky_base(dir: vec3<f32>) -> vec3<f32> {
+    let up = clamp(dir.y, -1.0, 1.0);
+    if up >= 0.0 {
+        return mix(u_camera.env_horizon.rgb, u_camera.env_zenith.rgb, sqrt(up));
+    }
+    return mix(u_camera.env_horizon.rgb, u_camera.env_ground.rgb, sqrt(-up));
+}
+
+/// 太阳亮斑：只在地平线以上、朝太阳的半球出现，cos^8 收成一个盘。
+fn env_sun(dir: vec3<f32>) -> vec3<f32> {
+    let cos_theta = clamp(dot(dir, u_camera.env_sun_dir.xyz), -1.0, 1.0);
+    if cos_theta <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    return u_camera.env_sun.rgb * pow(cos_theta, SUN_SHAPE_EXPONENT);
+}
+
+/// 整球平均辐亮度：l = 0 系数即球面平均 × √(4π)，反过来除回去就是平均亮度。
+fn env_average() -> vec3<f32> {
+    return u_camera.env_sh[0].rgb * SH_Y0;
+}
+
+/// 按粗糙度模糊后的环境亮度：r 越大越接近方向无关的平均值，与 CPU 侧一致。
+fn env_radiance(dir: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let r = clamp(roughness, 0.0, 1.0);
+    let t = r * r;
+    let attenuation = (1.0 - t) * (1.0 - t);
+    let sharp = env_sky_base(dir) + env_sun(dir) * attenuation;
+    return mix(sharp, env_average(), t);
+}
+
+/// 球谐辐照度 E(n)：投影系数 × 基函数 × Lambertian 权重，再夹 0 防二阶截断出负值。
+fn env_irradiance(n: vec3<f32>) -> vec3<f32> {
+    let x = n.x;
+    let y = n.y;
+    let z = n.z;
+    var e = u_camera.env_sh[0].rgb * (SH_Y0 * LAMBERT_A0);
+    e = e + u_camera.env_sh[1].rgb * (SH_Y1 * y * LAMBERT_A1);
+    e = e + u_camera.env_sh[2].rgb * (SH_Y1 * z * LAMBERT_A1);
+    e = e + u_camera.env_sh[3].rgb * (SH_Y1 * x * LAMBERT_A1);
+    e = e + u_camera.env_sh[4].rgb * (SH_Y2_A * x * y * LAMBERT_A2);
+    e = e + u_camera.env_sh[5].rgb * (SH_Y2_A * y * z * LAMBERT_A2);
+    e = e + u_camera.env_sh[6].rgb * (SH_Y2_B * (3.0 * z * z - 1.0) * LAMBERT_A2);
+    e = e + u_camera.env_sh[7].rgb * (SH_Y2_A * x * z * LAMBERT_A2);
+    e = e + u_camera.env_sh[8].rgb * (SH_Y2_C * (x * x - y * y) * LAMBERT_A2);
+    return max(e, vec3<f32>(0.0));
+}
+
+/// Karis 解析环境 BRDF（SIGGRAPH 2013 Mobile）：返回 (scale, bias)，
+/// 高光亮度按 `F0 * scale + bias`。bias 夹 0（拟合在 r→1 会给负值）。
+fn env_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
+    let r = clamp(roughness, 0.0, 1.0);
+    let nv = clamp(ndv, 1e-4, 1.0);
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let k = r * c0 + c1;
+    let a004 = min(k.x * k.x, exp2(-9.28 * nv)) * k.x + k.y;
+    let scale = -1.04 * a004 + k.z;
+    let bias = max(1.04 * a004 + k.w, 0.0);
+    return vec2<f32>(scale, bias);
+}
+
 // ---------------- Cook-Torrance 直接光照 ----------------
 // 与 `r3e-core::material` 的 CPU 参考实现逐项对应（那边有单测兜底）：
 //   * D：GGX / Trowbridge-Reitz 法线分布
@@ -289,8 +382,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 光色 / 强度语义不变：light_color.rgb 是线性颜色，.w 是强度乘数
     let radiance = u_camera.light_color.rgb * u_camera.light_color.w;
 
+    // 环境光：场景写了 environment 段就走 IBL，否则退回常数 ambient（老场景画面不变）
+    var ambient_term = albedo * u_camera.ambient.rgb;
+    if u_camera.env_horizon.w > 0.5 {
+        // 漫反射 IBL：辐照度 E(n) × albedo / π，金属没有漫反射
+        let diffuse_ibl = albedo * (1.0 - metallic) * env_irradiance(n) / PI;
+        // 镜面 IBL：粗糙表面看不到清晰的环境轮廓，先把反射方向按 roughness² 拉向法线。
+        // R·n = n·v ≥ 0，理论上不会退化到零向量，仍留一道兜底防 normalize(0)
+        let reflect_dir = reflect(-v, n);
+        var dominant = mix(reflect_dir, n, roughness * roughness);
+        dominant = select(normalize(dominant), n, length(dominant) < 1e-4);
+        let ab = env_brdf(roughness, ndv);
+        let specular_ibl = env_radiance(dominant, roughness) * (f0 * ab.x + ab.y);
+        ambient_term = (diffuse_ibl + specular_ibl) * u_camera.env_zenith.w;
+    }
+
     let lit = (diffuse + specular) * radiance * ndl * shadow
-        + albedo * u_camera.ambient.rgb
+        + ambient_term
         // 自发光只加不减：不乘 n·l、不受阴影影响、不参与光照计算
         + u_material.emissive.rgb;
 

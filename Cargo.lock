@@ -2358,6 +2358,7 @@ dependencies = [
  "bytemuck",
  "glam 0.34.1",
  "log",
+ "naga",
  "pollster",
  "r3e-core",
  "wgpu",
