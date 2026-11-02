@@ -38,6 +38,7 @@ D:\rust3d-engine
 │   ├─ scene_ccd.json         # CCD 穿透对照场景（薄墙 + 两颗只差 ccd 一位的子弹）
 │   ├─ scene_shadow.json      # 阴影演示场景（地面 + 柱/方块/球/圆柱）
 │   ├─ scene_ibl.json         # IBL 演示场景（三色天空 + 三档金属球 + 亮面/哑光介电）
+│   ├─ scene_hdr.json         # HDR 后处理演示场景（高亮自发光条 + 金属球 + 泛光/ACES）
 │   ├─ audio/
 │   │   ├─ blip.wav           # 0.18s 短音效（880Hz 指数衰减，脚本合成，无版权素材）
 │   │   └─ ambience.wav       # 2.0s 可无缝循环环境音（220Hz + 330Hz，脚本合成）
@@ -230,6 +231,7 @@ cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
 | `scene.spawn` | 按物件描述新建，回新节点 id |
 | `scene.remove` | 按名字删除 |
 | `scene.set_environment` | 改场景环境探针（`sky_zenith` / `sky_horizon` / `ground` / `sun_dir` / `sun_color` / `sun_intensity` / `intensity`，可分别给；`enabled: false` 清空），回收敛后的 `environment` |
+| `scene.set_postfx` | 改 HDR 后处理（`exposure` / `tonemap` / `bloom_enabled` / `bloom_threshold` / `bloom_knee` / `bloom_intensity` / `fxaa`，可分别给；`enabled: false` 清空），回收敛后的 `postfx`（清空后为 `null`） |
 | `scene.save` | 把内存场景写回 JSON（`path` 省略时为原场景文件），回 `{path, objects, bytes}` |
 | `script.eval` | 执行一段 Rhai，返回其求值结果（JSON 化） |
 | `script.reload` | 重载脚本文件 |
@@ -328,6 +330,25 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | `clear_environment()` | 关掉环境探针，退回 `light.ambient` 常数项 |
 
 细节（球谐投影、解析高光、缓存）见 [§16 IBL 环境探针](#16-ibl-环境探针)。
+
+### 后处理：HDR 链
+
+`scene.postfx` 缺省为直通（曝光 0、无泛光、无 FXAA），画面与扩展十三之前逐像素一致；
+写这段只是"把已经渲出来的 HDR 亮部接住"，不改光照数值。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_postfx(exposure, tonemap, bloom, intensity, fxaa)` | 一击式全量设置：EV、曲线名、泛光开关、泛光强度、抗锯齿开关 |
+| `set_exposure(ev)` | 曝光（EV，夹 -8..16；0 = 原值，+1 = 亮一倍） |
+| `set_tonemap(name)` | 曲线：`"none"` / `"reinhard"` / `"aces"`（认不出的名字回落 `none` 并打印一行） |
+| `set_bloom(on, threshold, knee, intensity)` | 泛光：亮部阈值、软膝宽度、强度（关掉时后三个参数被忽略） |
+| `set_fxaa(on)` | FXAA 开关（在 composite 里做，零额外 pass） |
+| `has_postfx() -> bool` | 当前是否写了后处理段 |
+| `clear_postfx()` | 清空后处理段，回到直通 |
+| `postfx_exposure() -> f64` | 回读曝光 EV（未开启时给缺省 0） |
+| `postfx_tonemap() -> string` | 回读曲线名（`"none"` / `"reinhard"` / `"aces"`） |
+
+细节（HDR 目标、三级泛光、composite 顺序）见 [§17 HDR 后处理链](#17-hdr-后处理链)。
 
 ### 时间 / 随机 / 输出
 
@@ -717,10 +738,13 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 
 ## 7. 已知边界
 
-- 单方向光 + 环境光，直接光照走 **Cook-Torrance**（GGX + Smith + Schlick，参数 metallic / roughness / emissive）；
-  **暂无 IBL / 环境探针**：金属只反射方向光，暗部靠环境光常量项兜底，所以纯金属背光时偏黑——
-  后续接 IBL（预过滤环境图 + BRDF LUT）补这一块。方向光带单张正交阴影贴图（3×3 PCF，默认开启），无后处理。
+- 单方向光 + **环境探针（IBL）**，直接光照走 **Cook-Torrance**（GGX + Smith + Schlick，
+  参数 metallic / roughness / emissive）。环境探针是解析式（三色天空 + 太阳 + 9 项球谐），
+  **没有 HDR 立方体贴图、没有反射探针**：金属只映天 / 地 / 太阳，映不出场景物件，见
+  [§16 IBL 环境探针](#16-ibl-环境探针)。方向光带单张正交阴影贴图（3×3 PCF，默认开启）；
   阴影限制：无点光/聚光阴影、无级联、透明物件也投实心影。
+- 后处理：常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光，
+  缺省直通，见 [§17 HDR 后处理链](#17-hdr-后处理链)。**无 SSAO、无运动模糊、无 TAA、无自动曝光**。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
   骨骼蒙皮、交叉淡入与脚本状态机）；法线/粗糙度贴图、分层/叠加混合、morph target 尚未支持。
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
@@ -1159,6 +1183,94 @@ set_env_intensity(1.0);
 - `cargo test -p r3e-editor`：`tests/environment_rpc.rs`（字段逐一解析、部分补丁保留原值、`enabled: false` 清空、空补丁与类型错误拒绝）；
 - 实机证据：`--run-seconds 2` 加载 `assets/scene_ibl.json`，`环境探针：启用 true / 总强度 1.00 / 太阳强度 1.40 / 球谐重投影 1 次`；
 - 视觉观感（金属暗部是否"活"了）**待人工窗口确认**：无截图 / 像素比对测试。
+
+---
+
+## 17. HDR 后处理链
+
+§15 把光照换成了线性 HDR 辐亮度，但渲染色目标还是 8 位 sRGB 表面：超过 1.0 的部分写进去就被切平，
+太阳盘、自发光、金属高光统统糊成一块死白。本节把这块接住——**常开一个 `Rgba16Float` 离屏目标，
+主通道改写成线性 HDR，再由 composite 压回可显示范围**。
+
+**数据流**：
+
+```text
+主通道 ──▶ Rgba16Float 离屏目标（线性 HDR）
+           ├─(bloom 开启) 亮部提取 → 1/2 → 1/4 → 1/8 三级降采样
+           │                └─▶ 1/8 → 1/4 → 1/2 逐级加法回叠
+           ▼
+         composite：hdr + bloom·intensity → 曝光 2^EV → 色调映射 → FXAA ──▶ sRGB surface
+           ├─▶ 文本通道（Load）
+           └─▶ UI 通道（Load）
+```
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 契约 | `crates/r3e-core/src/postfx.rs` | `PostFxSettings` + `sanitized()` + `expose` / `bright_pass` / `tonemap` / `resolve` / `fxaa_edge_visible`（零 wgpu 纯函数） |
+| 上屏 | `crates/r3e-render/src/postfx.rs` + `postfx.wgsl` | `PostFxPass`：离屏目标、三级泛光纹理、composite pipeline |
+| 传输 | `crates/r3e-editor/src/lib.rs` | `PostFxPatch`（字段全可选）+ `scene.set_postfx` 解析 |
+
+**语义**：`scene.postfx == None` 等价于 `PostFxSettings::default()`（曝光 0、曲线 `none`、无泛光、无 FXAA），
+此时泛光链路整体跳过、composite 只做一次 clamp——**不写后处理段的老场景画面逐像素不变**。
+代价是离屏 HDR 目标常驻显存（`Rgba16Float`，每像素 8 字节）。
+
+**为什么文本 / UI 在 composite 之后**：这两个通道的顶点色是 LDR 用户数据（脚本里写的 `[1,0,0,1]`
+就是想要的红色），不该被曝光与 ACES 二次调色；放在前面会让 HUD 随场景曝光一起漂移，编辑器里一眼可见。
+
+**泛光固定三级**（1/2、1/4、1/8）：亮部提取 1 + 降采样 2 + 上采样 2 + composite 1 = 单帧最多 6 个全屏 pass
+（`MAX_PASSES_PER_FRAME`）。再细的层级在小窗口上退化成一两个像素，只会把光晕抖成噪点。
+软膝 `knee = 0` 走硬阈值（`KNEE_EPSILON` 兜除零），否则在阈值上下各 `knee` 的过渡带里平滑，避免光晕边缘出台阶。
+
+**收敛**：曝光夹 `-8..16` EV、泛光阈值 `0..64`、软膝 `0..8`、强度 `0..4`，NaN 回落**缺省值**而非 0
+（阈值收敛成 0 会把整幅画面当亮部，泛光变成一层灰雾）。三处写入路径（场景 JSON / 脚本 / 编辑器 RPC）
+共用同一个 `sanitized()`。
+
+**曲线名字的合法性由谁判定**：编辑器 RPC 只传字符串，`LocalEngineApi` 用 `TonemapMode::from_name`
+解析，认不出就回 invalid params——前端拿到明确失败比静默变直通好；脚本侧相反，是热重载的运行时代码，
+未知名回落 `none` 并打印一行，一个拼写错误不该让整个脚本中止。
+
+**演示**：`assets/scene_hdr.json` —— 高亮自发光条 + 三档粗糙度金属球 + 环境探针，专门用来看亮部是否被切平：
+
+```powershell
+cargo run -- assets/scene_hdr.json
+```
+
+脚本侧等价写法：
+
+```rhai
+set_postfx(0.35, "aces", true, 0.25, true);
+// 或分项改：
+set_exposure(0.35);
+set_tonemap("aces");
+set_bloom(true, 1.0, 0.5, 0.25);
+set_fxaa(true);
+```
+
+**探针日志**：`--run-seconds 2` 跑 `assets/scene_hdr.json` 得到
+
+```text
+[起始] 后处理：postfx 段 true / 曝光 +0.35EV / 色调映射 aces / 泛光 true / FXAA true /
+       HDR 目标 1920x1080 / 泛光层级 [(960, 540), (480, 270), (240, 135)] /
+       pass 泛光 5 + composite 1 / 重建 2 次
+```
+
+`pass 泛光 5` = 亮部 1 + 降采样 2 + 上采样 2，整条链确实提交了；`重建 2 次`是首帧建目标 + 一次窗口尺寸收敛。
+
+**已知边界**：
+
+- 无 SSAO、无运动模糊、无 TAA；FXAA 是纯后处理，救不回已经丢失的几何信息（细长物体边缘仍会闪）；
+- 泛光层级与核大小固定，不随分辨率自适应；小窗口下 1/8 层只剩几十像素；
+- 曝光是手动旋钮，**没有基于平均亮度的自动曝光**（不做降采样统计 pass）。
+
+**测试覆盖**：
+
+- `cargo test -p r3e-core`：`postfx` 单测（`tonemap` 三档单调性与值域、亮部软膝连续、`resolve` 直通即 clamp、NaN 回落与范围夹取）；
+- `cargo test -p r3e-core`：`tests/postfx_scene.rs`（缺省 `None`、场景载入收敛、JSON 往返）；
+- `cargo test -p r3e-render`：`tests/postfx_contract.rs`（pass 预算、泛光层级除数、`PostFxParams` 64 字节布局、`tonemap_code` 编码）；
+- `cargo test -p r3e-render`：`tests/postfx_shader.rs`（naga 解析 `postfx.wgsl` + ACES 五系数 / Rec.709 权重 / 泛光与 FXAA 阈值与 Rust 常量逐项比对）；
+- `cargo test -p r3e-editor`：`tests/postfx_rpc.rs`（全量 / 局部 / 清空 / 未知曲线名 / 空补丁 / 类型错误）；
+- `cargo test -p r3e-script`：`set_postfx` 一族写入、逐项组合、越界收敛、未知名回落、清空回读；
+- 视觉观感（泛光是否"糊"、ACES 是否偏灰）**待人工窗口确认**：无截图 / 像素比对测试。
 
 ---
 

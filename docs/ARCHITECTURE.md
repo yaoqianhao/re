@@ -140,8 +140,8 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 9,488 | 796 | 157 | `scene.rs` / `material.rs` / `env.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 4,761 | 186 | 48 | `renderer.rs` / `pbr.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-core | 9,488 | 796 | 157 | `scene.rs` / `material.rs` / `env.rs` / `postfx.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 4,761 | 186 | 48 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 4,888 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
 | r3e-physics | 2,548 | 660 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
 | r3e-audio | 982 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
@@ -158,7 +158,7 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 371 passed / 0 failed（其中原有 337 项语义未改，IBL 环境探针新增 34 项：Sh9 投影、环境收敛、场景往返、着色器静态校验、RPC 补丁解析） |
+| 单测（默认特性） | `cargo test --workspace` | 414 passed / 0 failed（其中原有 337 项语义未改；IBL 环境探针新增 34 项：Sh9 投影、环境收敛、场景往返、着色器静态校验、RPC 补丁解析；HDR 后处理链新增 43 项：曲线与亮部纯函数、HDR 目标格式、pass 预算、`postfx.wgsl` 常量比对、场景往返、RPC 补丁解析、脚本 5 项写入与收敛） |
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 375 passed / 0 failed |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
@@ -186,6 +186,8 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | `ui.rs` | 屏幕空间 UI 元素、锚点与单位换算、层级排序（纯数学，不碰 GPU） | `UiElement`, `UiKind`, `Anchor`, `UiUnit`, `UiValue`, `UiRect`, `resolve_rect`, `sort_by_layer` |
 | `glyph_atlas.rs` | 字形图集的货架式分配与分页 | `GlyphAtlas`, `ShelfAllocator`, `GlyphKey` |
 | `material.rs` | PBR 材质参数、收敛与 Cook-Torrance 纯函数参考实现（零 wgpu 依赖，可单测） | `SurfaceMaterial`, `GeoTerms`, `BrdfSample`, `cook_torrance_brdf`, `direct_light` |
+| `env.rs` | 三色天空 + 太阳的解析环境探针，Sh9 球谐投影与解析环境 BRDF（零 wgpu，可单测） | `EnvironmentSettings`, `Sh9`, `env_brdf_approx` |
+| `postfx.rs` | HDR 后处理的数值契约：曝光、软膝亮部提取、Reinhard / ACES 曲线、FXAA 边缘判定、composite 参考实现 | `PostFxSettings`, `BloomSettings`, `TonemapMode`, `expose`, `bright_pass`, `tonemap`, `resolve` |
 
 **为什么文本在 core 而不是 render**：字形栅格化（fontdue）与排版是纯 CPU 计算，与 wgpu 无关。
 放 core 有两个直接好处——① `r3e-core` 保持零 GPU 依赖，`architecture_guard` 测试守着这条线；
@@ -439,6 +441,49 @@ pub struct EnvironmentSettings {
 
 **已知边界**：环境不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；没有镜面反射探针，
 金属里映不出场景物件，只能映出天 / 地 / 太阳。
+
+### 4.9 HDR 后处理链（扩展十三）
+
+扩展十二把光照换成了 HDR 辐亮度，但渲染色目标仍是 8 位 sRGB 表面：超过 1.0 的线性亮度
+在写入时被直接切平，太阳盘、自发光、金属高光统统糊成一片死白，动态范围红利被浪费。
+**本扩展只解决"接住"**：常开一个 `Rgba16Float` 离屏目标，主通道改写成线性 HDR，
+再由一条后处理链压回可显示范围。
+
+```text
+主通道 ──▶ Rgba16Float HDR 目标（线性）
+           ├─(bloom)  亮部提取 → 1/2 → 1/4 → 1/8 → 逐级加法回叠
+           ▼
+         composite: hdr + bloom·intensity → 曝光(2^ev) → 色调映射 → FXAA ──▶ sRGB surface
+           ├─▶ 文本通道（Load）
+           └─▶ UI 通道（Load）
+```
+
+1. **HDR 目标是常开的，`postfx` 段缺省为「直通」**。`Scene::postfx: Option<PostFxSettings>`，
+   `None` 等价于 `PostFxSettings::default()`（曝光 0、直通曲线、无泛光、无 FXAA）。
+   `is_neutral()` 为真时泛光链路整体跳过，composite 只剩一次 clamp——**老场景画面逐像素不变**。
+   这也意味着离屏目标的显存常驻（`Rgba16Float` 每像素 8 字节），这是换取"任何场景都能吃到 HDR"的代价。
+2. **公式的权威实现在 `r3e-core::postfx`**（零 wgpu 依赖的纯函数：`expose` / `bright_pass` /
+   `tonemap` / `fxaa_edge_visible` / `resolve`），`postfx.wgsl` 只是把同样的公式搬到 GPU。
+   两边用 `tests/postfx_shader.rs` 做常量比对（ACES 五系数、亮部阈值、Rec.709 权重、FXAA 两个阈值），
+   改一边不改另一边会直接红。
+3. **泛光是固定三级（1/2、1/4、1/8）**：亮部提取一次 + 降采样两次 + 上采样两次 + composite 一次，
+   单帧 pass 上限 `MAX_PASSES_PER_FRAME = 6`（`tests/postfx_contract.rs` 锁住预算）。
+   再细的层级在小窗口上会退化成一两个像素，只会把光晕抖成噪点。
+4. **软膝亮部提取**：`knee = 0` 走硬阈值分支（`KNEE_EPSILON` 兜除零），否则在阈值上下各 `knee`
+   的过渡带里做平滑，避免光晕边缘出现台阶。
+5. **文本 / UI 放在 composite 之后**：这两个通道的顶点色是 LDR 用户数据，不该被曝光与 ACES
+   二次调色；放在前面会让 HUD 随场景曝光整体漂移。
+6. **三处写入路径共用 `PostFxSettings::sanitized()`**：场景 JSON、脚本 API、编辑器
+   `scene.set_postfx`。口径：曝光夹 `[-8, 16]` EV、泛光阈值夹 `[0, 64]`、软膝 `[0, 8]`、
+   强度 `[0, 4]`，NaN 一律回落缺省值（不是 0——0 阈值会把整幅画面当亮部）。
+7. **色调映射名字的合法性由宿主判定**：`r3e-editor::PostFxPatch` 只带字符串，传输层不认识
+   `r3e_core` 的任何类型；`LocalEngineApi` 用 `TonemapMode::from_name` 解析，认不出就报
+   invalid params（不做静默回落）。脚本侧则相反——脚本是热重载的，未知名回落 `none` 并打印一行，
+   免得一个拼写错误让整个脚本执行失败。
+
+**已知边界**：无 SSAO、无运动模糊、无时间性抗锯齿（TAA），FXAA 是纯后处理
+（边缘判定在 composite 里做，无法恢复已经丢失的几何信息）；泛光层级与核大小固定，
+不随分辨率自适应；曝光是手动旋钮，没有基于平均亮度的自动曝光。
 
 ---
 
@@ -1116,6 +1161,18 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `has_environment()` | 场景是否带环境段（`None` 为 `false`） |
 | `clear_environment()` | 删掉环境段，退回 `light.ambient` 常数项 |
 
+**HDR 后处理**
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_postfx(exposure, tonemap, bloom, intensity, fxaa)` | 一击式全量：EV / 曲线名 / 泛光开关 / 泛光强度 / FXAA |
+| `set_exposure(ev)` | 曝光，夹 -8..16 |
+| `set_tonemap(name)` | `none` / `reinhard` / `aces`；未知名回落 `none` 并打印一行（脚本不该因拼写中止） |
+| `set_bloom(on, threshold, knee, intensity)` | 阈值夹 0..64、软膝 0..8、强度 0..4 |
+| `set_fxaa(on)` | 在 composite 里做，零额外 pass |
+| `has_postfx()` / `clear_postfx()` | 是否带后处理段 / 清空回直通 |
+| `postfx_exposure()` / `postfx_tonemap()` | 回读（未开启时给缺省 0 / `none`） |
+
 **时钟与随机**
 
 | 函数 | 说明 |
@@ -1683,7 +1740,7 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
 | 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
-| 后处理 | 无 | 无 bloom / tonemapping / FXAA；PBR 与自发光输出可超过 1.0，靠 sRGB 目标截断，高亮区会直接"切平" |
+| 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）；缺省直通 | **无 SSAO、无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮 |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
@@ -1737,7 +1794,7 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | 十（待做） | **3D 空间化音频**：声源挂场景节点、按距离衰减 + 多普勒 + 听者由活动相机推导 | `r3e-audio` 增 `SpatialSource`，`r3e-core::Scene` 不动（声源仍走运行时注册表），`AudioBackend` 契约复用 | 无（纯增量；`kira` 届时可作为第二后端接入同一契约） |
 | **十一（已完成：PBR 直接光照）** | **Cook-Torrance 直接光照**：`r3e-core::material` 纯函数参考实现（GGX / Smith / Schlick）+ `SurfaceMaterial`（metallic / roughness / emissive）三处写入路径共用收敛；`r3e-render::pbr` 材质 uniform 与 `SurfaceKey` 分桶；着色器片元阶段由 Blinn-Phong 换成 PBR；4 个脚本 API（`set_material` / `set_emissive` / `material_of` / `clear_material`）；`main.rhai` 三档粗糙度 + 自发光演示 | `core/material.rs` 新增，`scene.rs` / `node.rs` 加材质字段与写入入口；`render/pbr.rs` 新增 + `renderer.rs` / `shader.wgsl` 换 PBR；`script/api.rs` 注册 4 个 API；`app.rs` / `editor.rs` 透传 | 无（场景 JSON 向后兼容：`material` 段缺省即默认材质）；观感变化——默认参数下高光比旧 Blinn-Phong 更收敛 |
 | **十二（已完成：IBL 环境探针）** | **解析环境 + 球谐漫反射**：`r3e-core::env` 三色天空 + 太阳方向，CPU 侧投影 9 项 Sh9（纯函数）+ 解析环境 BRDF；`r3e-render` `CameraUniform` 加环境 5 项与球谐 9 项（128→352 字节）、投影按配置位缓存；着色器加球谐漫反射与太阳高光，`env_horizon.w` 作启用位；5 个脚本 API（`set_sky` / `set_env_sun` / `set_env_intensity` / `has_environment` / `clear_environment`）；编辑器 `scene.set_environment` 补丁式 RPC；演示场景 `assets/scene_ibl.json` 三档金属球 | `core/env.rs` 新增；`scene.rs` 加 `environment` 字段；`renderer.rs` / `shader.wgsl` 环境项；`script/api.rs` 注册 5 个 API；`editor/lib.rs` `EnvironmentPatch`；`app.rs` / `editor.rs` 合并补丁与日志探针 | 无（场景 JSON 向后兼容：`environment` 缺省即退回 `light.ambient`）；**不加载 HDR 贴图、无反射探针**——金属只映天 / 地 / 太阳，映不出场景物件 |
-| 十三（待做） | **HDR 后处理链**：bloom + tonemapping + FXAA，接住 PBR 与自发光超过 1.0 的输出 | `r3e-render` 增加离屏 HDR 目标与后处理 pass 链；`shader.wgsl` 输出改线性 HDR | 无（纯增量；当前 sRGB 目标直接截断，高亮区"切平"） |
+| **十三（已完成：HDR 后处理链）** | **bloom + tonemapping + FXAA**：`r3e-core::postfx` 纯函数契约（`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve`）+ `PostFxSettings` 收敛；常开 `Rgba16Float` 离屏 HDR 目标，主通道改写成线性 HDR；`postfx.wgsl` 三级泛光上采样 + composite（曝光→ACES/Reinhard→FXAA）；7 个脚本 API（`set_postfx` / `set_exposure` / `set_tonemap` / `set_bloom` / `set_fxaa` / `clear_postfx` / `has_postfx`，外加 `postfx_exposure` / `postfx_tonemap` 回读）；编辑器 `scene.set_postfx` 补丁式 RPC；演示场景 `assets/scene_hdr.json` | `core/postfx.rs` 新增；`scene.rs` 加 `postfx` 字段；`render/postfx.rs` + `postfx.wgsl` 新增，`renderer.rs` 主通道改 HDR 视图、文本 / UI 前插 composite；`script/api.rs` 注册 9 个 API；`editor/lib.rs` `PostFxPatch`；`app.rs` 后处理探针日志；`tests/postfx_shader.rs` / `postfx_contract.rs` / `r3e-editor/tests/postfx_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx` 缺省即"直通"，画面与扩展十二逐像素一致）；**不做 SSAO / 运动模糊 / 时间性抗锯齿**，泛光固定三级、单帧 pass 上限 6 |
 
 两条与顺序相关的说明：
 
@@ -1938,14 +1995,18 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-core/src/glyph_atlas.rs` | `GlyphAtlas` 分页图集、`ShelfAllocator` 货架分配、`GlyphKey`（face+glyph+像素量化） |
 | `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机 |
 | `crates/r3e-core/src/material.rs` | `SurfaceMaterial` 与 `sanitized`、`GeoTerms`、GGX / Smith / Schlick / `cook_torrance_brdf` / `direct_light` 纯函数参考实现（零 wgpu 依赖） |
+| `crates/r3e-core/src/env.rs` | `EnvironmentSettings`（7 字段）与 `sanitized`、`Sh9::project` 球谐投影、`env_brdf_approx` 解析环境项（零 wgpu） |
+| `crates/r3e-core/src/postfx.rs` | `PostFxSettings` / `BloomSettings` / `TonemapMode`、`sanitized`、`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve` 参考实现（零 wgpu） |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
-| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass + 主 pass）、`resize`、`RenderStats` |
+| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass → 主 pass 写 HDR 目标 → `PostFxPass::render` composite → 文本 / UI）、`resize`、`RenderStats` |
 | `crates/r3e-render/src/text.rs` | `TextPass`（独立无深度管线）、`build_text` 顶点装配、图集动态纹理按需扩容、`MAX_TEXT_INSTANCES` 安全阀 |
 | `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`plan_slice`（九宫格切 3×3）、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀（九宫格原子丢弃）、`UiStats` |
 | `crates/r3e-render/src/ui.wgsl` | UI 着色器：屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |
 | `crates/r3e-render/src/text.wgsl` | 文本着色器：屏幕像素 → NDC、图集 R8 采样、alpha 混合 |
 | `crates/r3e-render/src/shader.wgsl` | Cook-Torrance 前向着色（GGX / Smith / Schlick）、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样、环境光与自发光不吃阴影 |
 | `crates/r3e-render/src/pbr.rs` | `MaterialUniform`（48 B）组装、`SurfaceKey`（`to_bits` 精确键）、`MaterialData` 与 `overlay`（物件级覆盖文档级） |
+| `crates/r3e-render/src/postfx.rs` | `PostFxPass`：`Rgba16Float` 离屏目标、三级泛光纹理、composite pipeline、`PostFxParams`（64 B）、`PostFxStats`、`planned_passes` 预算 |
+| `crates/r3e-render/src/postfx.wgsl` | 亮部提取 / 降采样 / 加性上采样 / composite（曝光 → Reinhard·ACES → FXAA）四个片元入口 |
 | `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BackendCaps`、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面、查询层契约（`Ray` / `OverlapHit` / `CastShape`） |
 | `crates/r3e-physics/src/rapier_backend.rs` | Rapier 后端：刚体/碰撞体映射、接触求解、碰撞事件回传、parry 窄相查询（raycast / overlap / shape-cast） |
 | `crates/r3e-audio/src/lib.rs` | `Audio` 门面：实例账本、单条 × 总音量、通道开关、错误计数、`sanitize_volume`、静默降级、9 个单测（含 `MockBackend`） |

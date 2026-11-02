@@ -305,6 +305,39 @@ struct CachedAsset {
 **省略该段 = 关闭环境探针**，漫反射退回 `light.ambient` 常数项，画面与扩展十二之前一致。
 存档时若与环境缺省完全一致，序列化会省略该段（`is_default()` 判定）。
 
+### 5.1.3 后处理段（扩展十三：HDR 链）
+
+```json
+"postfx": {
+  "exposure": 0.35,
+  "tonemap": "aces",
+  "fxaa": true,
+  "bloom": {
+    "enabled": true,
+    "threshold": 1.0,
+    "knee": 0.5,
+    "intensity": 0.25
+  }
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `exposure` | `0.0` | 曝光（EV），夹 -8..16；0 = 原值，+1 = 亮一倍 |
+| `tonemap` | `"none"` | `"none"`（只 clamp）/ `"reinhard"` / `"aces"`；**认不出的名字在载入时报错**，不静默回落 |
+| `bloom.enabled` | `false` | 泛光总开关；关闭时整条泛光链路跳过 |
+| `bloom.threshold` | `1.0` | 亮部阈值，夹 0..64；高于它的部分才进光晕 |
+| `bloom.knee` | `0.5` | 软膝宽度，夹 0..8；0 = 硬阈值（边缘会有台阶） |
+| `bloom.intensity` | `0.18` | 光晕强度，夹 0..4 |
+| `fxaa` | `false` | FXAA 开关，在 composite 里做，零额外 pass |
+
+**省略该段 = 直通**（曝光 0、曲线 `none`、无泛光、无 FXAA），画面与扩展十三之前逐像素一致；
+离屏 `Rgba16Float` HDR 目标仍然常开（每像素 8 字节），这样任何场景都能吃到 HDR 而不必先写后处理段。
+存档时若与缺省完全一致，序列化会省略该段（`is_default()` 判定）。
+
+演示场景 `assets/scene_hdr.json` 三件套：高亮自发光条（测高光是否被切平）、
+三档粗糙度金属球（测泛光随粗糙度的扩散）、环境探针（提供 HDR 环境亮度）。
+
 ### 5.2 脚本 API（新增）
 
 | 函数 | 说明 |
