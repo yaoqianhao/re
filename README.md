@@ -568,6 +568,55 @@ fn on_update(dt) {
 底框与描边、右上角金色圆形图标；拖动窗口改变大小时对话框保持居中贴底、血条保持左上贴边。
 把 `assets/ui/icon.png` 改名再热重载，图标位置会退化成纯色块（渲染层只记录一次加载失败，不刷日志、不崩）。
 
+### 指针交互：命中测试 / 悬停 / 点击（扩展十四）
+
+UI 元素能被鼠标点到。命中测试只看**矩形**（边框空隙与图片透明像素也算点得到），
+`visible = false` 的元素点不到，`set_ui_enabled(false)` 时整层不参与命中。
+指针压在任意 UI 元素上时，**左键不再驱动相机**（`cursor_over_ui()` 为真即让位）——否则点按钮会顺手把镜头转飞。
+
+| 函数 | 说明 |
+| --- | --- |
+| `ui_events() -> array` | 本帧事件数组，元素是 map：`kind`（`hovered` / `unhovered` / `pressed` / `released` / `clicked` / `cancelled`）、`key`、`x`、`y`。**每帧重置**，`on_update` 开头遍历一次即可 |
+| `ui_event_count() -> int` | 本帧事件条数（上限 `64`，超出部分丢弃） |
+| `ui_event_kind_name(ev) -> string` / `ui_event_key(ev) -> string` | 从事件 map 里取 `kind` / `key`（也可以直接 `ev.kind` / `ev.key`） |
+| `ui_hover() -> string` | 当前指针悬停的元素 key；无则空串 |
+| `ui_active() -> string` | 当前被按下（按住未抬）的元素 key；无则空串 |
+| `ui_clicked(key) -> bool` | 本帧是否有该元素的 `clicked`（同元素内按下并抬起） |
+| `ui_hovered(key) -> bool` | 本帧是否有该元素进入或处于悬停 |
+| `ui_pointer_over_ui() -> bool` | 指针是否压在任何 UI 元素上（脚本可用它做「UI 打开时屏蔽游戏输入」） |
+| `ui_hit(x, y) -> string` | 给定屏幕坐标反查最上层元素 key；未命中返回空串 |
+
+事件语义（一帧一次推进，先于 `on_update` 生效）：
+
+| 事件 | 何时产出 |
+| --- | --- |
+| `hovered` / `unhovered` | 指针进出元素。**与按键无关**：抬起后指针还在元素上就保持 hover，`ui_hover()` 仍返回该 key |
+| `pressed` | 在元素上按下左键 |
+| `clicked` | **同一个**元素上按下并抬起（先于 `released` 产出） |
+| `cancelled` | 按下后没在同一元素上抬起（移出后释放、或元素被删） |
+| `released` | 只要有按下捕获，抬起总会收到一条 |
+
+最小例子（`scripts/ui_interaction_demo.rhai` 的骨架）：
+
+```rhai
+fn on_update(dt) {
+    for ev in ui_events() {
+        if ev.kind == "clicked" && ev.key == "play" {
+            ui_set_color("spinner", 0.2, 0.9, 0.5, 1.0);
+        }
+        if ev.kind == "hovered" && ev.key == "play" {
+            ui_set_alpha("play", 1.0);
+        }
+        if ev.kind == "unhovered" && ev.key == "play" {
+            ui_set_alpha("play", 0.7);
+        }
+    }
+}
+```
+
+**已知边界**：不做键盘焦点 / Tab 遍历、不派发滚轮与拖拽、无长按与双击、控件自身的状态机（按钮按下变色、
+列表滚动）仍需脚本自己写——引擎只负责「谁被点到」，不假设控件类型。
+
 ### 音频：音效 / 音乐（M1，非空间化）
 
 音频走独立 crate `r3e-audio`，**不碰场景图**：`core` 里没有任何声音对象，脚本用「自己起的 key」管理实例。
@@ -1271,6 +1320,49 @@ set_fxaa(true);
 - `cargo test -p r3e-editor`：`tests/postfx_rpc.rs`（全量 / 局部 / 清空 / 未知曲线名 / 空补丁 / 类型错误）；
 - `cargo test -p r3e-script`：`set_postfx` 一族写入、逐项组合、越界收敛、未知名回落、清空回读；
 - 视觉观感（泛光是否"糊"、ACES 是否偏灰）**待人工窗口确认**：无截图 / 像素比对测试。
+
+---
+
+## 18. UI 指针交互（扩展十四）
+
+§13 的 UI 层只负责「画」；本节补上「点」。三处写入路径共用同一份契约（`r3e-core::ui`），
+渲染与脚本都不自带一套矩形换算。
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 契约 | `crates/r3e-core/src/ui.rs` | `UiRect` / `resolve_rect` / `hit_test` / `UiInteraction`（hover + active + 有界事件队列 `MAX_UI_EVENTS_PER_FRAME = 64`） |
+| 驱动 | `crates/r3e-app/src/app.rs` | `update_ui_interaction()` 每帧喂光标与左键边沿；`cursor_over_ui()` 让相机让位 |
+| 读取 | `r3e-script` / `r3e-editor` | 脚本 10 个只读 API；编辑器 `ui.state` |
+
+**编辑器 RPC**（与 `scene.set_*` 同一套补丁风格，字段全可选）：
+
+| 方法 | 参数 | 说明 |
+| --- | --- | --- |
+| `ui.list` | 无 | 返回全部 UI 元素（含解析后的像素矩形） |
+| `ui.set` | `key` + 可选 `kind` / `anchor` / `x` / `y` / `width` / `height` / `color` / `layer` / `visible` / `image` / `uv` / `slice` | 新建或局部改。**给了才改**：未给字段保留当前值；`key` 缺失回 invalid params |
+| `ui.remove` | `key` | 返回 `removed` 布尔 |
+| `ui.state` | 无 | 指针状态：`hover` / `active` / `pointer_over_ui` / 本帧事件列表 |
+
+长度写法与脚本一致：`"50%"` 百分比、`"120"` 等价 `"120px"`。`ui.set` 走 `ui::upsert`（裸全量覆盖），
+**不走**脚本那条 `upsert_styled`——否则编辑器改 `layer` 会被「沿用旧值」静默吞掉。
+
+**探针日志**（`cargo run -- assets/scene.json scripts/ui_interaction_demo.rhai --run-seconds 1`）：
+
+```text
+[起始] UI 通道：节点 5 / 绘制元素 5 / 四边形 11 / draw call 1 / 贴图 0 / 缺图回退 0 / 超限跳过 0 /
+       开关 true / UI 在文本之上 false / 交互 hover [] active [] 事件 0 指针压 UI false
+```
+
+无人值守运行时没有鼠标输入，`hover [] active [] 事件 0` 是**正确**读数：说明状态机跑过、这一帧确实没有事件，
+而不是没接上。人工验证要真动鼠标：悬停按钮变亮、点「开始」给 spinner 上色、点「重置」还原。
+
+**测试覆盖**：
+
+- `cargo test -p r3e-core --lib ui`：`resolve_rect` 锚点与单位、`hit_test` 取最上层 / 跳过不可见、状态机六类事件（含移出后释放走 `cancelled`、抬起后 hover 保持）；
+- `cargo test -p r3e-core --test ui_scene`：场景层 `ui` 段缺省 / 部分字段 / JSON 往返 / 收敛 / 未知 kind 报错 / 命中与事件驱动；
+- `cargo test -p r3e-app --bin r3e`：`ui_set` 插入与就地打补丁、未知 key 不改状态、`ui_list` / `ui_remove` 往返、`ui_state` 反映指针；
+- `cargo test -p r3e-editor --test ui_rpc`：全量 / 局部 / 坏 key / 未知 anchor / 类型错误；
+- 视觉与手感（hover 反馈是否跟手、点击命中是否够宽容）**待人工窗口确认**，无自动化截图比对。
 
 ---
 

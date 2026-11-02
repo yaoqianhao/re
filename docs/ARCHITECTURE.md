@@ -1668,6 +1668,47 @@ step_and_render() 开头：drain_editor_jobs()                            │
 
 ---
 
+### 8.12 UI 指针交互层（扩展十四）
+
+M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素矩形，渲染侧按 layer 排序后提交四边形。
+扩展十四补上另一半——**指针能不能点到、点到了算给谁、脚本怎么知道**。三层职责刻意分开，
+避免「渲染一套矩形、脚本另算一套、编辑器再算一套」：
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 契约 | `crates/r3e-core/src/ui.rs` | `UiRect` / `resolve_rect` / `hit_test`（取最上层）/ `UiInteraction`（hover + active + 事件队列），零 wgpu 零 winit，可在无窗口环境单测 |
+| 驱动 | `crates/r3e-app/src/app.rs` | 每帧 `update_ui_interaction()`：屏幕尺寸 + 光标 + 左键 `pressed / down / released` 三个布尔量喂给状态机；`cursor_over_ui()` 让相机拖动让位 |
+| 读取 | `crates/r3e-script/src/api.rs` / `r3e-editor` | 脚本 `ui_events()` / `ui_clicked()` / `ui_hit()` 等只读绑定；编辑器 `ui.state` 返回同一份状态 |
+
+**命中为什么只判矩形**：边框的中间空隙、图片的透明像素都算「点得到」。对脚本作者而言
+「元素的位置与大小」才是可预期的点击区域；按像素 alpha 命中会让人猜不到为什么点不动。
+`visible = false` 的元素不参与命中——看不见的东西不该挡住点击，`ui_enabled = false` 时直接喂空元素表。
+
+**状态机语义**（`UiInteraction::update` 一帧一次）：
+
+| 事件 | 触发条件 |
+| --- | --- |
+| `hovered` / `unhovered` | 指针进入 / 离开元素（与按键无关，抬起后指针仍在元素上就保持 hover） |
+| `pressed` | 在元素上按下（左键） |
+| `clicked` | **同一个**元素上按下并抬起，先于 `released` 产出 |
+| `cancelled` | 按下后没在同一元素上抬起（移出后释放 / 元素被删） |
+| `released` | 只要有按下捕获，抬起**总会**收到一条 |
+
+事件队列每帧有界（`MAX_UI_EVENTS_PER_FRAME = 64`）：异常场景下（脚本每帧新建上千元素来回切）
+脚本侧 `ui_events()` 的数组不会膨胀到卡住运行时，超出部分直接丢弃并记账。
+**hover / active 存的是 key 而不是索引**：元素被删、重排、改 layer 都不会让槽位指错人。
+
+**相机让位**：`CursorMoved` 里若 `cursor_over_ui()` 为真就跳过相机旋转 / 平移。
+不这么做会出现「点 UI 按钮顺手把镜头转飞」——UI 与相机抢同一个左键时的必然冲突。
+
+**编辑器侧写语义与脚本不同，这是刻意的**：RPC `ui.set` 是「给了才改」——`LocalEngineApi` 先把当前
+元素 clone 出来、逐字段覆盖补丁，再走 `ui::upsert`（裸全量覆盖）；脚本每次提交走 `upsert_styled`
+（同 key 时 `layer` / `visible` / `uv` 沿用旧值，因为脚本每帧重发位置尺寸不该把样式重置掉）。
+早先版本 `ui.set` 误用了 `upsert_styled`，导致编辑器改 `layer` 被静默吞掉——`app.rs` 的
+`ui_set_patches_existing_element_in_place` 单测就是这条回归的守门人。
+
+---
+
 ## 9. 端到端数据流
 
 ```
@@ -1795,6 +1836,8 @@ step_and_render() 开头：drain_editor_jobs()                            │
 | **十一（已完成：PBR 直接光照）** | **Cook-Torrance 直接光照**：`r3e-core::material` 纯函数参考实现（GGX / Smith / Schlick）+ `SurfaceMaterial`（metallic / roughness / emissive）三处写入路径共用收敛；`r3e-render::pbr` 材质 uniform 与 `SurfaceKey` 分桶；着色器片元阶段由 Blinn-Phong 换成 PBR；4 个脚本 API（`set_material` / `set_emissive` / `material_of` / `clear_material`）；`main.rhai` 三档粗糙度 + 自发光演示 | `core/material.rs` 新增，`scene.rs` / `node.rs` 加材质字段与写入入口；`render/pbr.rs` 新增 + `renderer.rs` / `shader.wgsl` 换 PBR；`script/api.rs` 注册 4 个 API；`app.rs` / `editor.rs` 透传 | 无（场景 JSON 向后兼容：`material` 段缺省即默认材质）；观感变化——默认参数下高光比旧 Blinn-Phong 更收敛 |
 | **十二（已完成：IBL 环境探针）** | **解析环境 + 球谐漫反射**：`r3e-core::env` 三色天空 + 太阳方向，CPU 侧投影 9 项 Sh9（纯函数）+ 解析环境 BRDF；`r3e-render` `CameraUniform` 加环境 5 项与球谐 9 项（128→352 字节）、投影按配置位缓存；着色器加球谐漫反射与太阳高光，`env_horizon.w` 作启用位；5 个脚本 API（`set_sky` / `set_env_sun` / `set_env_intensity` / `has_environment` / `clear_environment`）；编辑器 `scene.set_environment` 补丁式 RPC；演示场景 `assets/scene_ibl.json` 三档金属球 | `core/env.rs` 新增；`scene.rs` 加 `environment` 字段；`renderer.rs` / `shader.wgsl` 环境项；`script/api.rs` 注册 5 个 API；`editor/lib.rs` `EnvironmentPatch`；`app.rs` / `editor.rs` 合并补丁与日志探针 | 无（场景 JSON 向后兼容：`environment` 缺省即退回 `light.ambient`）；**不加载 HDR 贴图、无反射探针**——金属只映天 / 地 / 太阳，映不出场景物件 |
 | **十三（已完成：HDR 后处理链）** | **bloom + tonemapping + FXAA**：`r3e-core::postfx` 纯函数契约（`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve`）+ `PostFxSettings` 收敛；常开 `Rgba16Float` 离屏 HDR 目标，主通道改写成线性 HDR；`postfx.wgsl` 三级泛光上采样 + composite（曝光→ACES/Reinhard→FXAA）；7 个脚本 API（`set_postfx` / `set_exposure` / `set_tonemap` / `set_bloom` / `set_fxaa` / `clear_postfx` / `has_postfx`，外加 `postfx_exposure` / `postfx_tonemap` 回读）；编辑器 `scene.set_postfx` 补丁式 RPC；演示场景 `assets/scene_hdr.json` | `core/postfx.rs` 新增；`scene.rs` 加 `postfx` 字段；`render/postfx.rs` + `postfx.wgsl` 新增，`renderer.rs` 主通道改 HDR 视图、文本 / UI 前插 composite；`script/api.rs` 注册 9 个 API；`editor/lib.rs` `PostFxPatch`；`app.rs` 后处理探针日志；`tests/postfx_shader.rs` / `postfx_contract.rs` / `r3e-editor/tests/postfx_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx` 缺省即"直通"，画面与扩展十二逐像素一致）；**不做 SSAO / 运动模糊 / 时间性抗锯齿**，泛光固定三级、单帧 pass 上限 6 |
+
+| **十四（已完成：UI 指针交互层）** | **命中测试 + 指针状态机 + 事件回灌脚本**：`r3e-core::ui` 增 `UiRect` / `resolve_rect` / `hit_test`（按 layer 取最上层、只判矩形、visible=false 点不到）/ `UiInteraction`（hover / active 两槽位 + 每帧有界事件队列 `MAX_UI_EVENTS_PER_FRAME = 64`，`clicked` 只在同一元素内按下并抬起时产出，`released` 有按下捕获时总发，`cancelled` 是移出后释放）；`r3e-app` 每帧把光标与左键边沿喂给状态机，**指针压在 UI 上时相机不吃这次拖动**；脚本注册 10 个只读 API（`ui_events` / `ui_event_count` / `ui_event_kind_name` / `ui_event_key` / `ui_hover` / `ui_active` / `ui_clicked` / `ui_hovered` / `ui_pointer_over_ui` / `ui_hit`）；编辑器新增 `ui.list` / `ui.set` / `ui.remove` / `ui.state` 四条 RPC（`UiPatch` 字段全可选，`"50%"` / `"120"` 两种写法都可）；演示 `scripts/ui_interaction_demo.rhai` | `core/ui.rs` 加交互层；`script/api.rs` 注册只读绑定；`r3e-editor` 加 `UiPatch` + 四个 trait 方法；`r3e-app/editor.rs` 实现四个方法 + `apply_ui_patch`；`app.rs` 加 `ui_interaction` 字段、`update_ui_interaction`、`cursor_over_ui`；`tests/ui_scene.rs` / `r3e-editor/tests/ui_rpc.rs` / `app.rs` 单测锁语义 | 无（纯增量；不接输入时行为与原 UI 层一致）。**不做**：键盘焦点 / Tab 遍历、滚轮与拖拽、IME、长按与双击、控件语义（按钮状态机仍在脚本里） |
 
 两条与顺序相关的说明：
 
