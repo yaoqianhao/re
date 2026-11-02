@@ -620,6 +620,63 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow_mut().light.ambient = Vec3::new(f32_of(r), f32_of(g), f32_of(b));
     });
 
+    // ---------------- 环境探针（IBL，扩展十二） ----------------
+    // 语义：`scene.environment` 为 `None` 时走 `set_ambient` 的常数项（老场景行为不变）；
+    // 一旦调用 set_sky / set_env_sun / set_env_intensity，就切到环境探针：
+    // 漫反射由 9 项球谐给出方向感，金属靠环境高光不再死黑。
+    // 所有写入都经 `sanitized()`，脚本传 NaN / 天文数字不会污染渲染。
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_sky",
+        move |zr: f64, zg: f64, zb: f64, hr: f64, hg: f64, hb: f64, gr: f64, gg: f64, gb: f64| {
+            let mut s = c.scene.borrow_mut();
+            let mut env = s.environment.unwrap_or_default();
+            env.sky_zenith = [f32_of(zr), f32_of(zg), f32_of(zb)];
+            env.sky_horizon = [f32_of(hr), f32_of(hg), f32_of(hb)];
+            env.ground = [f32_of(gr), f32_of(gg), f32_of(gb)];
+            s.environment = Some(env.sanitized());
+        },
+    );
+
+    // 太阳项：颜色 + 强度 + 指向太阳的方向。方向为零向量时保留原值（与 set_light 同规矩）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_env_sun",
+        move |r: f64, g: f64, b: f64, intensity: f64, dx: f64, dy: f64, dz: f64| {
+            let mut s = c.scene.borrow_mut();
+            let mut env = s.environment.unwrap_or_default();
+            env.sun_color = [f32_of(r), f32_of(g), f32_of(b)];
+            env.sun_intensity = f32_of(intensity);
+            let d = Vec3::new(f32_of(dx), f32_of(dy), f32_of(dz));
+            if d.length_squared() > 1e-8 {
+                let n = d.normalize();
+                env.sun_dir = [n.x, n.y, n.z];
+            }
+            s.environment = Some(env.sanitized());
+        },
+    );
+
+    // 环境总强度：整体乘在天空 / 地面 / 太阳项上（1.0 = 物理量原值）。
+    let c = ctx.clone();
+    engine.register_fn("set_env_intensity", move |v: f64| {
+        let mut s = c.scene.borrow_mut();
+        let mut env = s.environment.unwrap_or_default();
+        env.intensity = f32_of(v);
+        s.environment = Some(env.sanitized());
+    });
+
+    // 关掉环境探针，退回 `light.ambient` 常数项。
+    let c = ctx.clone();
+    engine.register_fn("clear_environment", move || {
+        c.scene.borrow_mut().environment = None;
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("has_environment", move || -> bool {
+        c.scene.borrow().environment.is_some()
+    });
+
     // ---------------- 场景保存（M1） ----------------
     // 只读导出：当前场景 → JSON 文本（相对路径无关，可赋值给变量做 diff / 打印）。
     // 失败返回空串并打印原因——与 create_node 一类写接口的返回风格保持一致。
