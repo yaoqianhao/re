@@ -39,8 +39,9 @@ pub use glyph_atlas::{
 };
 pub use input::{ButtonEdge, InputState, KeyCode, KeyboardState, PadState};
 pub use light::{
-    attenuation, find_local, remove_local, spot_factor, upsert_local, with_local, Light,
-    LocalLight, LocalLightKind, ShadowSettings, ATTENUATION_EPSILON, ATTENUATION_WINDOW_POWER,
+    attenuation, cascade_splits, find_local, fit_cascade, frustum_slice_corners, remove_local,
+    spot_factor, upsert_local, with_local, CascadeFit, CascadeSettings, Light, LocalLight,
+    LocalLightKind, ShadowSettings, ATTENUATION_EPSILON, ATTENUATION_WINDOW_POWER, MAX_CASCADES,
     MAX_CONE_ANGLE_DEG, MAX_LIGHT_COLOR, MAX_LIGHT_INTENSITY, MAX_LIGHT_RANGE, MAX_LOCAL_LIGHTS,
     MIN_CONE_GAP_DEG, MIN_LIGHT_RANGE,
 };

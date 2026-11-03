@@ -1,5 +1,6 @@
 //! 单方向光 + 环境光（Blinn-Phong 光照模型），含方向光阴影配置（阶段 D）。
 
+use crate::camera::Camera;
 use glam::{Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +25,8 @@ pub struct ShadowSettings {
     pub distance: f32,
     /// 阴影强度 0..1：1 = 完全遮挡，0 = 无阴影。
     pub strength: f32,
+    /// 级联阴影（扩展十六）。`cascade.count == 1` 时退化为阶段 D 的单张全场景阴影图。
+    pub cascade: CascadeSettings,
 }
 
 impl Default for ShadowSettings {
@@ -36,6 +39,7 @@ impl Default for ShadowSettings {
             normal_bias: 1.5,
             distance: 2.0,
             strength: 1.0,
+            cascade: CascadeSettings::default(),
         }
     }
 }
@@ -67,7 +71,245 @@ impl ShadowSettings {
         } else {
             1.0
         };
+        self.cascade = self.cascade.sanitized();
         self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 扩展十六：级联阴影（CSM）
+// ---------------------------------------------------------------------------
+//
+// 阶段 D 只有一张覆盖「整个场景包围球」的正交阴影图：视距一拉远，所有纹素都被摊到
+// 几十米上，近处物件立刻出锯齿；视距拉近又浪费分辨率。级联把相机视锥按深度切成
+// 若干段，每段一张同分辨率的图，近段纹素密度高、远段只求覆盖。
+//
+// 这一层同样遵守「core 只放纯函数」：切分点、子视锥角点、光源正交相机拟合全部是
+// 纯计算，零 wgpu 依赖，GPU 侧只照着矩阵与切分点做选择，不再重复推导。
+
+/// 级联数上限。渲染层纹理数组的层数、shader 里定长数组的长度都等于它。
+pub const MAX_CASCADES: usize = 4;
+
+/// 级联阴影配置（扩展十六）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CascadeSettings {
+    /// 级联数 1..=4。1 = 单级（等价阶段 D 的全场景阴影图）。
+    pub count: u32,
+    /// 切分混合系数：0 = 纯均匀切分（远处的段很长），1 = 纯对数切分（近处更密）。
+    pub lambda: f32,
+    /// 级间过渡带宽（占该级跨度的比例，0 = 硬切，越大接缝越柔）。
+    pub blend: f32,
+    /// 阴影最远距离（世界单位，沿相机前后方向）。0 = 用相机 `zfar`。
+    pub max_distance: f32,
+}
+
+impl Default for CascadeSettings {
+    fn default() -> Self {
+        Self {
+            // 默认单级：老场景、老测试的画面与统计口径完全不变，要 CSM 就显式开
+            count: 1,
+            lambda: 0.6,
+            blend: 0.1,
+            max_distance: 0.0,
+        }
+    }
+}
+
+impl CascadeSettings {
+    /// 规范化：级数夹到 1..=4，比例与距离收敛到有限区间。
+    pub fn sanitized(mut self) -> Self {
+        self.count = self.count.clamp(1, MAX_CASCADES as u32);
+        self.lambda = if self.lambda.is_finite() {
+            self.lambda.clamp(0.0, 1.0)
+        } else {
+            0.6
+        };
+        self.blend = if self.blend.is_finite() {
+            self.blend.clamp(0.0, 0.5)
+        } else {
+            0.1
+        };
+        self.max_distance = if self.max_distance.is_finite() && self.max_distance > 0.0 {
+            self.max_distance.clamp(0.5, 1.0e5)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// 规范化后的级数（usize，便于当数组长度用）。
+    pub fn levels(&self) -> usize {
+        self.sanitized().count as usize
+    }
+}
+
+/// 一台相机的可见子视锥的 8 个世界角点（先近平面 4 个，再远平面 4 个）。
+///
+/// 顺序：近平面 (-x,-y) (+x,-y) (+x,+y) (-x,+y)，远平面同序。
+pub fn frustum_slice_corners(camera: &Camera, near: f32, far: f32) -> [Vec3; 8] {
+    // 近远平面夹到合法区间：near 必须是正数，far 不得小于 near
+    let near = if near.is_finite() && near > 1e-4 {
+        near
+    } else {
+        1e-3
+    };
+    let far = if far.is_finite() && far > near {
+        far
+    } else {
+        near + 1.0
+    };
+    // 相机基：与 `Camera::view` 同一套 look_at 约定（-z 为前）
+    let view = camera.view();
+    let inv = view.inverse();
+    let right = inv.x_axis.truncate().normalize_or_zero();
+    let up = inv.y_axis.truncate().normalize_or_zero();
+    let forward = -inv.z_axis.truncate().normalize_or_zero();
+    let right = if right.length_squared() > 0.5 {
+        right
+    } else {
+        Vec3::X
+    };
+    let up = if up.length_squared() > 0.5 { up } else { Vec3::Y };
+    let forward = if forward.length_squared() > 0.5 {
+        forward
+    } else {
+        Vec3::NEG_Z
+    };
+    let tan_half_v = (camera.fov_deg.clamp(1.0, 179.0) * 0.5).to_radians().tan();
+    let tan_half_h = tan_half_v * camera.aspect.max(1e-4);
+    let mut out = [Vec3::ZERO; 8];
+    for (i, d) in [near, far].into_iter().enumerate() {
+        let center = camera.position + forward * d;
+        let hx = right * (tan_half_h * d);
+        let hy = up * (tan_half_v * d);
+        out[i * 4] = center - hx - hy;
+        out[i * 4 + 1] = center + hx - hy;
+        out[i * 4 + 2] = center + hx + hy;
+        out[i * 4 + 3] = center - hx + hy;
+    }
+    out
+}
+
+/// 级联切分点（沿相机深度的距离，单调递增，长度 = 级数 + 1，首元素是 `znear`）。
+///
+/// 采用 practical split scheme：均匀切分与对数切分按 `lambda` 混合，
+/// 近处因此拿到更短的段长、更密的纹素。
+pub fn cascade_splits(camera: &Camera, cascade: CascadeSettings) -> Vec<f32> {
+    let c = cascade.sanitized();
+    let levels = c.levels();
+    let near = if camera.znear.is_finite() && camera.znear > 1e-4 {
+        camera.znear
+    } else {
+        1e-3
+    };
+    let far_limit = if c.max_distance > 0.0 {
+        c.max_distance
+    } else if camera.zfar.is_finite() && camera.zfar > near {
+        camera.zfar
+    } else {
+        near + 100.0
+    };
+    let far = far_limit.max(near * 1.001);
+    let ratio = far / near;
+    let mut splits = Vec::with_capacity(levels + 1);
+    splits.push(near);
+    for i in 1..=levels {
+        let f = i as f32 / levels as f32;
+        let log_split = near * ratio.powf(f);
+        let uniform_split = near + (far - near) * f;
+        let d = uniform_split * (1.0 - c.lambda) + log_split * c.lambda;
+        // 浮点误差可能让相邻切分点贴死，强制留出一点点间隔保证严格递增
+        let prev = splits[i - 1];
+        let floor = prev + (far - near) * 1e-4;
+        splits.push(d.clamp(floor, far).max(floor));
+    }
+    // 最后一级必须精确落在 far 上，边界不要飘
+    if let Some(last) = splits.last_mut() {
+        *last = far;
+    }
+    splits
+}
+
+/// 单级阴影相机（光源正交相机）的拟合结果。
+#[derive(Debug, Clone, Copy)]
+pub struct CascadeFit {
+    /// 光源正交相机的 view-projection（右乘、NDC 深度 0..1，与 wgpu 一致）。
+    pub view_proj: Mat4,
+    /// 正交半宽（世界单位）。纹素尺寸 = `2 * radius / resolution`。
+    pub radius: f32,
+    /// 该级切片的中心（世界坐标），调试与文档用。
+    pub center: Vec3,
+}
+
+/// 把一组世界角点拟合成沿 `light_dir` 观察的光源正交相机。
+///
+/// 关键处理：光空间 AABB 用**正方形**外接（x/y 取同一个半宽，保证纹素各向同性），
+/// 中心再量化到纹素网格上。量化这一步是 CSM 的命门——相机缓慢平移时若每帧都
+/// 重新取中心，整张阴影图的采样位置会随亚纹素抖动，表现为边缘「爬行」。
+pub fn fit_cascade(light_dir: Vec3, corners: &[Vec3; 8], resolution: u32) -> CascadeFit {
+    let dir = if light_dir.length_squared() > 1e-8 {
+        light_dir.normalize()
+    } else {
+        Vec3::NEG_Y
+    };
+    // 光源接近竖直时换 Z 轴当 up，避免 look_at 退化
+    let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    // 只取旋转（eye 在原点，translation 为 0）：世界 → 光相机空间
+    let rot = glam::camera::rh::view::look_at_mat4(Vec3::ZERO, dir, up);
+
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for c in corners {
+        let p = rot.transform_point3(*c);
+        min = min.min(p);
+        max = max.max(p);
+    }
+    if !min.is_finite() || !max.is_finite() {
+        return CascadeFit {
+            view_proj: Mat4::IDENTITY,
+            radius: 1.0,
+            center: Vec3::ZERO,
+        };
+    }
+
+    let res = resolution.max(1) as f32;
+    let extent = (max - min).max(Vec3::splat(1e-3));
+    // 正方形半宽：取 x/y 里更大的那半，再加 2% 余量防边缘裁切
+    let half = (extent.x.max(extent.y) * 0.5 * 1.02).max(1e-3);
+    let texel = 2.0 * half / res;
+
+    let center_local = (min + max) * 0.5;
+    // 中心量化到纹素网格（只量化 x/y，深度方向由 min/max 决定，不需要量化）
+    let cx = (center_local.x / texel).round() * texel;
+    let cy = (center_local.y / texel).round() * texel;
+
+    // 光相机沿 `dir` 观察，视空间的「前」是 -z，所以最近点的深度 = -max.z、最远 = -min.z。
+    // 把最近点搬到 depth = 0.05 处（贴住近平面的余量），最远点自然落在 far 之前。
+    let depth_near = -max.z;
+    let depth_far = -min.z;
+    let shift = depth_near - 0.05;
+    let span = ((depth_far - depth_near) + 0.2).max(0.1);
+
+    // view：先转到光空间，再把 (cx, cy) 与深度起点搬到原点附近
+    let view = Mat4::from_translation(Vec3::new(-cx, -cy, shift)) * rot;
+    let proj = glam::camera::rh::proj::directx::orthographic(
+        -half,
+        half,
+        -half,
+        half,
+        0.05,
+        0.05 + span,
+    );
+
+    // 世界坐标下的切片中心（把光空间里的量化中心搬回世界）
+    let center = rot
+        .inverse()
+        .transform_point3(Vec3::new(cx, cy, center_local.z));
+
+    CascadeFit {
+        view_proj: proj * view,
+        radius: half,
+        center,
     }
 }
 
@@ -526,6 +768,12 @@ mod tests {
             normal_bias: f32::INFINITY,
             distance: 0.0,
             strength: 4.0,
+            cascade: CascadeSettings {
+                count: 9,
+                lambda: f32::NAN,
+                blend: 9.0,
+                max_distance: -1.0,
+            },
         }
         .sanitized();
         assert_eq!(s.size, 64);
@@ -534,9 +782,168 @@ mod tests {
         assert!(s.normal_bias.is_finite());
         assert!(s.distance >= 0.05);
         assert_eq!(s.strength, 1.0);
+        assert_eq!(s.cascade.count, MAX_CASCADES as u32);
+        assert!(s.cascade.lambda.is_finite());
+        assert!(s.cascade.blend <= 0.5);
+        assert_eq!(s.cascade.max_distance, 0.0);
         let vp = Light::default().shadow_view_projection(Vec3::ZERO, 2.0);
         assert!(vp.to_cols_array().iter().all(|v| v.is_finite()));
     }
+
+    // ---------------- 扩展十六：级联阴影 ----------------
+
+    /// 切分点必须严格递增、首尾落在 near/far 上。
+    #[test]
+    fn cascade_splits_are_monotonic_and_cover_range() {
+        let camera = Camera {
+            znear: 0.1,
+            zfar: 200.0,
+            ..Camera::default()
+        };
+        let splits = cascade_splits(
+            &camera,
+            CascadeSettings {
+                count: 4,
+                lambda: 0.6,
+                blend: 0.1,
+                max_distance: 0.0,
+            },
+        );
+        assert_eq!(splits.len(), 5);
+        assert!((splits[0] - 0.1).abs() < 1e-4, "首切分 = znear");
+        assert!((splits[4] - 200.0).abs() < 1e-2, "末切分 = zfar");
+        for w in splits.windows(2) {
+            assert!(w[1] > w[0], "切分点必须严格递增: {w:?}");
+        }
+    }
+
+    /// 单级时等于「相机整段视距」，即阶段 D 的行为。
+    #[test]
+    fn cascade_splits_single_level_is_full_range() {
+        let camera = Camera {
+            znear: 0.5,
+            zfar: 120.0,
+            ..Camera::default()
+        };
+        let splits = cascade_splits(&camera, CascadeSettings::default());
+        assert_eq!(splits.len(), 2);
+        assert!((splits[1] - 120.0).abs() < 1e-2);
+    }
+
+    /// `max_distance` 覆盖 `zfar`；lambda 越大，第一级越短。
+    #[test]
+    fn cascade_splits_respects_max_distance_and_lambda() {
+        let camera = Camera {
+            znear: 0.1,
+            zfar: 500.0,
+            ..Camera::default()
+        };
+        let capped = cascade_splits(
+            &camera,
+            CascadeSettings {
+                count: 2,
+                max_distance: 40.0,
+                ..CascadeSettings::default()
+            },
+        );
+        assert!((capped[2] - 40.0).abs() < 1e-2, "末切分被 max_distance 截断");
+
+        let uniform = cascade_splits(
+            &camera,
+            CascadeSettings {
+                count: 3,
+                lambda: 0.0,
+                ..CascadeSettings::default()
+            },
+        );
+        let log = cascade_splits(
+            &camera,
+            CascadeSettings {
+                count: 3,
+                lambda: 1.0,
+                ..CascadeSettings::default()
+            },
+        );
+        assert!(
+            log[1] < uniform[1],
+            "对数切分的第一级应比均匀切分更短: {} vs {}",
+            log[1],
+            uniform[1]
+        );
+    }
+
+    /// 子视锥角点必须真的贴在相机的近 / 远平面与四个边界上。
+    #[test]
+    fn frustum_corners_match_projection() {
+        let camera = Camera {
+            position: Vec3::new(3.0, 2.0, -4.0),
+            target: Vec3::new(0.5, 0.0, 1.0),
+            znear: 0.1,
+            zfar: 50.0,
+            aspect: 1.5,
+            ..Camera::default()
+        };
+        let vp = camera.view_projection();
+        let corners = frustum_slice_corners(&camera, 0.1, 50.0);
+        for (i, c) in corners.iter().enumerate() {
+            let clip = vp * c.extend(1.0);
+            let ndc = clip / clip.w;
+            assert!((ndc.x.abs() - 1.0).abs() < 1e-3, "角点 {i} x = {}", ndc.x);
+            assert!((ndc.y.abs() - 1.0).abs() < 1e-3, "角点 {i} y = {}", ndc.y);
+            let want = if i < 4 { 0.0 } else { 1.0 };
+            assert!((ndc.z - want).abs() < 1e-3, "角点 {i} z = {}", ndc.z);
+        }
+    }
+
+    /// 拟合后的光源正交相机必须把该级 8 个角点全部包住（NDC 各分量在 [-1, 1]）。
+    #[test]
+    fn fit_cascade_contains_all_corners() {
+        let camera = Camera::default();
+        let light = Light::default();
+        let splits = cascade_splits(
+            &camera,
+            CascadeSettings {
+                count: 3,
+                ..CascadeSettings::default()
+            },
+        );
+        for w in splits.windows(2) {
+            let corners = frustum_slice_corners(&camera, w[0], w[1]);
+            let fit = fit_cascade(light.direction, &corners, 2048);
+            assert!(fit.radius > 0.0 && fit.radius.is_finite());
+            for c in corners {
+                let clip = fit.view_proj * c.extend(1.0);
+                assert!(clip.w.abs() > 1e-6, "正交投影 w 应恒为 1");
+                let ndc = clip / clip.w;
+                assert!(ndc.x >= -1.0 - 1e-3 && ndc.x <= 1.0 + 1e-3, "x = {}", ndc.x);
+                assert!(ndc.y >= -1.0 - 1e-3 && ndc.y <= 1.0 + 1e-3, "y = {}", ndc.y);
+                assert!(ndc.z >= -1e-3 && ndc.z <= 1.0 + 1e-3, "z = {}", ndc.z);
+            }
+        }
+    }
+
+    /// 同一输入必须得到同一矩阵（纹素量化是确定性的，不能引入随机抖动）。
+    #[test]
+    fn fit_cascade_is_deterministic() {
+        let camera = Camera::default();
+        let corners = frustum_slice_corners(&camera, 0.1, 30.0);
+        let a = fit_cascade(Light::default().direction, &corners, 2048);
+        let b = fit_cascade(Light::default().direction, &corners, 2048);
+        assert_eq!(a.view_proj, b.view_proj);
+        assert_eq!(a.radius, b.radius);
+    }
+
+    /// 坏输入（全 NaN 角点 / 零方向）不能产出 NaN 矩阵。
+    #[test]
+    fn fit_cascade_handles_garbage() {
+        let corners = [Vec3::splat(f32::NAN); 8];
+        let fit = fit_cascade(Vec3::ZERO, &corners, 1024);
+        assert!(fit.view_proj.to_cols_array().iter().all(|v| v.is_finite()));
+        let corners = frustum_slice_corners(&Camera::default(), 0.1, 20.0);
+        let fit = fit_cascade(Vec3::ZERO, &corners, 1024);
+        assert!(fit.view_proj.to_cols_array().iter().all(|v| v.is_finite()));
+    }
+
 
     // ---------------- 扩展十五：局部光源 ----------------
 
