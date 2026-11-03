@@ -34,6 +34,8 @@ struct Params {
 // 布局统一的好处是六个 pass 共用一份 bind group layout。
 @group(1) @binding(2) var t_aux: texture_2d<f32>;
 @group(1) @binding(3) var s_aux: sampler;
+// 遮蔽图（扩展十七）：只有 composite 读，泛光 pass 绑的是 1×1 白图。
+@group(1) @binding(4) var t_ao: texture_2d<f32>;
 
 // ACES 拟合系数（Narkowicz 2015），与 core::postfx 的 ACES_A..ACES_E 同值。
 const ACES_A: f32 = 2.51;
@@ -125,6 +127,9 @@ fn edge_visible(luma_min: f32, luma_max: f32) -> bool {
 /// 「同一台相机换一档曝光」，而不是「先把泛光调好再当 LDR 贴图叠加」。
 fn composite_color(uv: vec2<f32>) -> vec3<f32> {
     var c = textureSampleLevel(t_src, s_src, uv, 0.0).rgb;
+    // 遮蔽压的是直接光。泛光源自散射，遮它等于让暗角把光晕也吃掉，
+    // 所以顺序是「先乘 AO、再叠泛光」。AO 关闭时这里采样到 1.0，等于没乘。
+    c = c * textureSampleLevel(t_ao, s_src, uv, 0.0).r;
     if (params.bloom_enabled != 0u) {
         c = c + textureSampleLevel(t_aux, s_aux, uv, 0.0).rgb * params.bloom_intensity;
     }

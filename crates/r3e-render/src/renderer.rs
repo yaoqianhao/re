@@ -18,6 +18,7 @@ use winit::window::Window;
 use crate::mesh::{vertex_layout, InstanceRaw};
 use crate::pbr::{MaterialUniform, SurfaceKey};
 use crate::postfx::{PostFxPass, PostFxStats};
+use crate::ssao::{SsaoPass, SsaoStats};
 use crate::text::{TextPass, TextStats};
 use crate::ui::{UiImageProvider, UiPass, UiStats};
 
@@ -498,6 +499,8 @@ pub struct RenderStats {
     pub ui_draws: u32,
     /// 本帧 HDR 后处理链的 pass 统计（扩展十三）。
     pub postfx: PostFxStats,
+    /// 本帧屏幕空间遮蔽的统计（扩展十七）。`passes = 0` 表示整条跳过。
+    pub ssao: SsaoStats,
     /// 本帧真正上传并参与计算的局部光源数（扩展十五）。0 = 场景没有灯 / 总开关关闭。
     pub local_lights: u32,
 }
@@ -548,6 +551,9 @@ pub struct Renderer {
     /// 离屏 HDR 目标 + 泛光链 + composite（扩展十三）。常驻：即使场景没有
     /// `postfx` 段，主通道也要先写进 HDR 目标再由它直通到 surface。
     postfx: PostFxPass,
+    /// 屏幕空间环境光遮蔽（扩展十七）：吃主通道的深度，产出 AO 图给 composite。
+    /// 常驻但只在场景开了 `postfx.ssao` 时提交命令。
+    ssao: SsaoPass,
     /// 环境探针（扩展十二）的球谐缓存。`Sh9::project` 要做 2048 次天空采样，
     /// 每帧重算是纯浪费——只在场景 `environment` 段真的变了才重投影。
     env_cache: Option<EnvironmentSettings>,
@@ -937,6 +943,8 @@ impl Renderer {
         let ui = UiPass::new(&device, config.format);
         // 后处理链与窗口同级：主通道从此写离屏 HDR 目标，不再直接写 surface
         let postfx = PostFxPass::new(&device, config.format, (width, height));
+        // 遮蔽吃主通道深度、产出与 HDR 同尺寸的 AO 图，所以与窗口同级创建
+        let ssao = SsaoPass::new(&device, (width, height), &depth_view);
 
         Ok(Self {
             device,
@@ -970,6 +978,7 @@ impl Renderer {
             text,
             ui,
             postfx,
+            ssao,
             env_cache: None,
             env_sh: Sh9::default(),
             env_builds: 0,
@@ -980,6 +989,11 @@ impl Renderer {
     /// HDR 后处理链（扩展十三）：离屏目标尺寸、泛光层级、最近一帧生效的设置。
     pub fn postfx(&self) -> &PostFxPass {
         &self.postfx
+    }
+
+    /// 屏幕空间遮蔽通道（扩展十七）：遮蔽图尺寸、本帧统计、最近一帧生效的设置。
+    pub fn ssao(&self) -> &SsaoPass {
+        &self.ssao
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -1067,6 +1081,9 @@ impl Renderer {
         // 后处理的离屏目标必须一起重建：纹理不能原地 resize，
         // 不重建就会继续按旧尺寸采样，画面被拉成旧分辨率的内容。
         self.postfx.resize(&self.device, width, height);
+        // 遮蔽图与深度图同尺寸，必须跟着一起换
+        self.ssao
+            .resize(&self.device, width, height, &self.depth_view);
         log::debug!("窗口尺寸变化: {width}x{height}");
     }
 
@@ -1250,6 +1267,7 @@ impl Renderer {
                 ui_quads: 0,
                 ui_draws: 0,
                 postfx: PostFxStats::default(),
+                ssao: SsaoStats::default(),
                 local_lights,
             };
         }
@@ -1258,6 +1276,22 @@ impl Renderer {
         // 顺序很关键——composite 是唯一写 surface 的通道，文本与 UI 随后往它上面
         // 用 LoadOp::Load 叠加，这样 HUD 的颜色不会被曝光与色调映射二次调色。
         let postfx_settings = scene.postfx.unwrap_or_default();
+        // 扩展十七：遮蔽夹在「主通道画完」与「composite 写 surface」之间。
+        // 早一步深度还没写满，晚一步就没有第二个通道能把它乘回颜色了。
+        self.ssao.render(
+            &self.queue,
+            &mut encoder,
+            &scene.camera,
+            &postfx_settings.ssao,
+        );
+        self.stats.ssao = self.ssao.stats();
+        // 世代号没变就不会重建绑定组，可以放心每帧调
+        let (ao_key, ao_view) = if self.stats.ssao.enabled {
+            (self.ssao.generation(), Some(self.ssao.ao_view()))
+        } else {
+            (0, None)
+        };
+        self.postfx.bind_ao(&self.device, ao_key, ao_view);
         self.postfx.render(
             &self.device,
             &self.queue,

@@ -7,12 +7,14 @@ pub mod mesh;
 pub mod pbr;
 pub mod postfx;
 pub mod renderer;
+pub mod ssao;
 pub mod text;
 pub mod ui;
 
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use pbr::{MaterialUniform, SurfaceKey};
 pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
+pub use ssao::{SsaoPass, SsaoStats, AO_FORMAT, AO_PASSES_PER_FRAME};
 pub use renderer::{
     LayeredProvider, LightsUniform, LocalLightRaw, MeshCache, RenderStats, Renderer,
     LIGHTS_UNIFORM_SIZE, LOCAL_LIGHT_STRIDE,

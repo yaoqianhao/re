@@ -23,8 +23,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use r3e_core::postfx::{
-    exposure_scale, PostFxSettings, TonemapMode, DEFAULT_BLOOM_INTENSITY,
-    DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_THRESHOLD,
+    exposure_scale, PostFxSettings, TonemapMode, DEFAULT_BLOOM_INTENSITY, DEFAULT_BLOOM_KNEE,
+    DEFAULT_BLOOM_THRESHOLD,
 };
 
 /// 离屏 HDR 目标的像素格式：16 位浮点，线性空间，不做 sRGB 编解码。
@@ -99,8 +99,18 @@ pub struct PostFxPass {
     hdr_view: wgpu::TextureView,
     /// HDR 目标作为「源」时的绑定组（亮部提取、composite 的主输入）。
     hdr_source: SourceBinding,
-    /// composite 专用：主输入 = HDR，副输入 = 泛光一级。
-    hdr_bloom_source: Option<SourceBinding>,
+    /// composite 专用：主输入 = HDR，副输入 = 泛光一级，遮蔽段 = 当前 AO 图。
+    ///
+    /// 与 `hdr_source` 分开是因为 composite 要多吃一张遮蔽图，而泛光链不需要；
+    /// 分成两个绑定组后，AO 换图只需重建这一个，泛光链的绑定组保持不动。
+    composite_source: SourceBinding,
+    /// 1×1 全白遮蔽图：AO 关闭时绑它，采样恒为 1（画面与扩展十六逐像素一致）。
+    _ao_placeholder: wgpu::Texture,
+    ao_placeholder_view: wgpu::TextureView,
+    /// 当前绑在 composite 上的遮蔽图（`None` = 用占位图）。
+    ao_bound: Option<wgpu::TextureView>,
+    /// 与 `ao_bound` 配对的世代号，0 = 占位。判等用它，不去比较视图句柄。
+    ao_key: u64,
     levels: Vec<BloomLevel>,
     sampler: wgpu::Sampler,
     source_layout: wgpu::BindGroupLayout,
@@ -118,7 +128,11 @@ pub struct PostFxPass {
 }
 
 impl PostFxPass {
-    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat, size: (u32, u32)) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        size: (u32, u32),
+    ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("r3e-postfx-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -163,6 +177,18 @@ impl PostFxPass {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // 遮蔽图（扩展十七）。只有 composite 会读它，泛光 pass 照样要绑
+                // 一份（绑占位），否则布局不一致、管线创建直接失败。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -262,14 +288,21 @@ impl PostFxPass {
         let width = size.0.max(1);
         let height = size.1.max(1);
         let (hdr_texture, hdr_view) = create_hdr_target(device, width, height);
+        let (ao_placeholder, ao_placeholder_view) = create_ao_placeholder(device);
         let hdr_source = SourceBinding {
             bind_group: make_source_bind_group(
                 device,
                 &source_layout,
                 &hdr_view,
                 &hdr_view,
+                &ao_placeholder_view,
                 &sampler,
             ),
+        };
+
+        // 先按「无遮蔽」克隆一份，`rebuild_bloom_chain` 会立刻用正版覆盖
+        let composite_source = SourceBinding {
+            bind_group: hdr_source.bind_group.clone(),
         };
 
         let mut this = Self {
@@ -278,7 +311,12 @@ impl PostFxPass {
             hdr_texture,
             hdr_view,
             hdr_source,
-            hdr_bloom_source: None,
+            // 真值在 `rebuild_bloom_chain` 里构建（要等泛光一级落地后才能绑副输入）
+            composite_source,
+            _ao_placeholder: ao_placeholder,
+            ao_placeholder_view,
+            ao_bound: None,
+            ao_key: 0,
             levels: Vec::new(),
             sampler,
             source_layout,
@@ -313,6 +351,40 @@ impl PostFxPass {
     }
 
     /// 最近一帧真正生效的设置。
+    /// composite 当前采样的遮蔽图世代号（0 = 占位 / 未开 AO）。
+    pub fn ao_key(&self) -> u64 {
+        self.ao_key
+    }
+
+    /// 指定 composite 要乘的遮蔽图。`key` 是调用方的世代号：同一个 key 重复
+    /// 传不会重建绑定组，因此可以每帧调用（渲染循环里就是这么用的）。
+    ///
+    /// `key = 0`（或 `view = None`）表示「本次不乘遮蔽」——绑回 1×1 白图，
+    /// 是与场景真的关掉 AO 等价的视觉结果，而不是「继续用上一帧的旧 AO」。
+    pub fn bind_ao(&mut self, device: &wgpu::Device, key: u64, view: Option<&wgpu::TextureView>) {
+        let key = if view.is_none() { 0 } else { key };
+        if key == self.ao_key {
+            return;
+        }
+        // 泛光链还没建好时无处可绑（只有 new 的中间态会走到这里）
+        if self.levels.is_empty() {
+            return;
+        }
+        self.ao_key = key;
+        self.ao_bound = view.cloned();
+        let ao = self.ao_bound.as_ref().unwrap_or(&self.ao_placeholder_view);
+        self.composite_source = SourceBinding {
+            bind_group: make_source_bind_group(
+                device,
+                &self.source_layout,
+                &self.hdr_view,
+                &self.levels[0].view,
+                ao,
+                &self.sampler,
+            ),
+        };
+    }
+
     pub fn applied(&self) -> PostFxSettings {
         self.applied
     }
@@ -345,9 +417,14 @@ impl PostFxPass {
                 &self.source_layout,
                 &self.hdr_view,
                 &self.hdr_view,
+                &self.ao_placeholder_view,
                 &self.sampler,
             ),
         };
+        // 遮蔽图由 SsaoPass 自己重建，这里只把世代号清回占位：
+        // 下一帧 `bind_ao` 拿到新句柄会重建 composite 绑定组。
+        self.ao_key = 0;
+        self.ao_bound = None;
         self.rebuild_bloom_chain(device);
         self.rebuilds += 1;
     }
@@ -373,8 +450,14 @@ impl PostFxPass {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group =
-                make_source_bind_group(device, &self.source_layout, &view, &view, &self.sampler);
+            let bind_group = make_source_bind_group(
+                device,
+                &self.source_layout,
+                &view,
+                &view,
+                &self.ao_placeholder_view,
+                &self.sampler,
+            );
             self.levels.push(BloomLevel {
                 size: (w, h),
                 _texture: texture,
@@ -382,17 +465,20 @@ impl PostFxPass {
                 source: SourceBinding { bind_group },
             });
         }
-        // composite 的副输入固定是「最终累积」的泛光一级（1/2 分辨率）
+        // composite 的副输入固定是「最终累积」的泛光一级（1/2 分辨率）。
+        // 泛光关闭时 shader 走不到 t_aux，绑什么都不影响结果，因此不必随开关重建。
         let (hdr_view, bloom_view) = (&self.hdr_view, &self.levels[0].view);
-        self.hdr_bloom_source = Some(SourceBinding {
+        let ao_view = self.ao_bound.as_ref().unwrap_or(&self.ao_placeholder_view);
+        self.composite_source = SourceBinding {
             bind_group: make_source_bind_group(
                 device,
                 &self.source_layout,
                 hdr_view,
                 bloom_view,
+                ao_view,
                 &self.sampler,
             ),
-        });
+        };
     }
 
     /// 本帧要提交的 pass 数（不改任何状态，探针可先问再渲）。
@@ -458,10 +544,7 @@ impl PostFxPass {
             for level in 1..BLOOM_LEVELS {
                 let src = &self.levels[level - 1];
                 let src_texel = [1.0 / src.size.0 as f32, 1.0 / src.size.1 as f32];
-                let params = PostFxParams {
-                    src_texel,
-                    ..base
-                };
+                let params = PostFxParams { src_texel, ..base };
                 self.upload(queue, level, params);
                 self.fullscreen_pass(
                     encoder,
@@ -484,10 +567,7 @@ impl PostFxPass {
                     let l = &self.levels[src_level];
                     [1.0 / l.size.0 as f32, 1.0 / l.size.1 as f32]
                 };
-                let params = PostFxParams {
-                    src_texel,
-                    ..base
-                };
+                let params = PostFxParams { src_texel, ..base };
                 // 每个 pass 一个独立参数槽：`write_buffer` 在本帧 submit 前统一生效，
                 // 复用同一个槽会让先写的参数被后写的覆盖，所有 pass 都读到同一份数值。
                 let slot = 1 + (BLOOM_LEVELS - 1) + step;
@@ -510,20 +590,12 @@ impl PostFxPass {
         // 最后一个 pass：composite → surface。
         let composite_slot = self.slots.len() - 1;
         self.upload(queue, composite_slot, base);
-        let source = if fx.bloom.enabled {
-            self.hdr_bloom_source
-                .as_ref()
-                .map(|s| &s.bind_group)
-                .unwrap_or(&self.hdr_source.bind_group)
-        } else {
-            &self.hdr_source.bind_group
-        };
         self.fullscreen_pass(
             encoder,
             "r3e-postfx-composite",
             &self.composite_pipeline,
             composite_slot,
-            source,
+            &self.composite_source.bind_group,
             target,
             wgpu::LoadOp::Clear(wgpu::Color::BLACK),
             device,
@@ -609,6 +681,7 @@ fn make_source_bind_group(
     layout: &wgpu::BindGroupLayout,
     src: &wgpu::TextureView,
     aux: &wgpu::TextureView,
+    ao: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -631,8 +704,33 @@ fn make_source_bind_group(
                 binding: 3,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(ao),
+            },
         ],
     })
+}
+
+/// 1×1 全白遮蔽图（R8Unorm 的 255 = 1.0）：AO 关闭时 composite 绑它，
+/// 采样恒为 1，乘上去等于没乘。
+fn create_ao_placeholder(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-postfx-ao-placeholder"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 fn fullscreen_pipeline(
