@@ -38,7 +38,12 @@ pub use glyph_atlas::{
     DEFAULT_PAGE_SIZE,
 };
 pub use input::{ButtonEdge, InputState, KeyCode, KeyboardState, PadState};
-pub use light::{Light, ShadowSettings};
+pub use light::{
+    attenuation, find_local, remove_local, spot_factor, upsert_local, with_local, Light,
+    LocalLight, LocalLightKind, ShadowSettings, ATTENUATION_EPSILON, ATTENUATION_WINDOW_POWER,
+    MAX_CONE_ANGLE_DEG, MAX_LIGHT_COLOR, MAX_LIGHT_INTENSITY, MAX_LIGHT_RANGE, MAX_LOCAL_LIGHTS,
+    MIN_CONE_GAP_DEG, MIN_LIGHT_RANGE,
+};
 pub use material::{
     clamp_roughness, cook_torrance_brdf, direct_light, distribution_ggx, emissive_radiance,
     fresnel_f0, fresnel_schlick, geometry_smith, ggx_alpha, BrdfSample, GeoTerms, SurfaceMaterial,

@@ -7,6 +7,7 @@ use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
 use crate::text::ScreenText;
+use crate::light::{self, LocalLight};
 use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;
@@ -224,6 +225,9 @@ pub struct SceneFile {
     /// 画面与「没有 postfx 段」的旧场景逐像素一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postfx: Option<PostFxSettings>,
+    /// 局部光源表（扩展十五：点光 / 聚光）。空表示场景只有方向光，画面与旧场景一致。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<LocalLight>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
@@ -286,6 +290,13 @@ pub struct Scene {
     /// UI 与文本的前后关系（脚本 `ui_above_text`）。默认 false：文本画在 UI 之上，
     /// HUD 底框不会盖住文字；置 true 时 UI 通道在文本之后绘制。
     pub ui_above_text: bool,
+    /// 局部光源表（扩展十五）。与方向光 `light` 并存：方向光负责主光与阴影，
+    /// 这里放灯泡 / 台灯 / 手电这类「有位置、有衰减、有方向锥」的光。
+    /// 顺序即上传顺序，上限 [`MAX_LOCAL_LIGHTS`]（超出的新增被拒绝，覆盖不受限）。
+    pub lights: Vec<LocalLight>,
+    /// 局部光源总开关（脚本 `set_lights_enabled`）。false 时渲染层整帧跳过局部光循环，
+    /// 数据保留，再打开即原样恢复——用于对比「有灯 / 无灯」或临时省 GPU。
+    pub lights_enabled: bool,
 }
 
 impl Default for Scene {
@@ -319,7 +330,49 @@ impl Scene {
             ui: Vec::new(),
             ui_enabled: true,
             ui_above_text: false,
+            lights: Vec::new(),
+            lights_enabled: true,
         }
+    }
+
+    // ---------- 局部光源（扩展十五） ----------
+
+    /// 按 key 覆盖式写入一盏局部光源。
+    ///
+    /// 语义与 `ui::upsert` 一致：同 key 原地替换（顺序不变），新 key 追加；
+    /// 满载时只拒绝新增，同 key 更新仍然生效。返回值即「这次写入是否生效」。
+    /// 入参在这里统一跑 `sanitized()`，所以脚本传 NaN 也污染不了场景。
+    pub fn upsert_local_light(&mut self, light: LocalLight) -> bool {
+        if light.key.is_empty() {
+            return false;
+        }
+        light::upsert_local(&mut self.lights, light)
+    }
+
+    /// 按 key 移除一盏局部光源。
+    pub fn remove_local_light(&mut self, key: &str) -> bool {
+        light::remove_local(&mut self.lights, key)
+    }
+
+    /// 按 key 查一盏局部光源。
+    pub fn local_light(&self, key: &str) -> Option<&LocalLight> {
+        light::find_local(&self.lights, key)
+    }
+
+    /// 按 key 改一盏局部光源；key 不存在时返回 `None`（不新建，避免拼错名字后
+    /// 悄悄多出一盏灯）。
+    pub fn with_local_light<F>(&mut self, key: &str, f: F) -> bool
+    where
+        F: FnOnce(&mut LocalLight),
+    {
+        light::with_local(&mut self.lights, key, f).is_some()
+    }
+
+    /// 清空全部局部光源。
+    pub fn clear_local_lights(&mut self) -> usize {
+        let n = self.lights.len();
+        self.lights.clear();
+        n
     }
 
     // ---------- 生命周期 ----------
@@ -924,6 +977,14 @@ impl Scene {
         scene.environment = file.environment.map(|e| e.sanitized());
         // 后处理同样整段覆盖：缺段 = None（直通），有段则按 PostFxSettings 收敛
         scene.postfx = file.postfx.map(|p| p.sanitized());
+        // 局部光源：逐盏收敛 + 按 key 去重（后者覆盖前者），超上限的截断。
+        // 空 key 是无效光源（脚本 / RPC 拿不到它），直接跳过而不是静默塞个默认名。
+        for light in file.lights {
+            if light.key.trim().is_empty() {
+                continue;
+            }
+            let _ = light::upsert_local(&mut scene.lights, light);
+        }
 
         for obj in file.objects {
             scene.spawn(obj)?;
@@ -959,6 +1020,7 @@ impl Scene {
             light: Some(self.light_desc()),
             environment: self.environment.map(|e| e.sanitized()),
             postfx: self.postfx.map(|p| p.sanitized()),
+            lights: self.lights.clone(),
             objects: self
                 .order
                 .iter()
