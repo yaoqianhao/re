@@ -331,6 +331,32 @@ impl PostFxPatch {
     }
 }
 
+/// `scene.set_ssao` 的局部改动（扩展十七）：只给要改的字段，其余保持原值。
+///
+/// 遮蔽图挂在后处理段下（`postfx.ssao`），宿主在段缺失时可先实体化成缺省值再写；
+/// 本层只做类型校验与转发，半径 / 偏置 / 强度 / 样本数的区间收敛一律由宿主的
+/// `SsaoSettings::sanitized` 负责——与 `PostFxPatch` 同一条原则：本层不认识
+/// `r3e_core` 的任何类型。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SsaoPatch {
+    pub enabled: Option<bool>,
+    pub radius: Option<f32>,
+    pub bias: Option<f32>,
+    pub intensity: Option<f32>,
+    /// 样本数用有符号整数传输：负数留给宿主夹到区间下限，好过在传输层静默改成 0。
+    pub samples: Option<i32>,
+}
+
+impl SsaoPatch {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.radius.is_none()
+            && self.bias.is_none()
+            && self.intensity.is_none()
+            && self.samples.is_none()
+    }
+}
+
 /// `ui.set` 的补丁（扩展十四）：只给要改的字段，其余沿用旧值。
 ///
 /// 与 `PostFxPatch` 同一条原则：本层**不认识** `r3e_core` 的任何类型。位置与尺寸用
@@ -499,6 +525,14 @@ pub trait EngineApi {
     /// `enabled = false` 时清空该段（直通），返回值里 `postfx` 为 `null`。
     fn scene_set_postfx(&mut self, _patch: PostFxPatch) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.set_postfx"))
+    }
+
+    /// 改写后处理段下的屏幕空间环境光遮蔽（扩展十七）。
+    /// 宿主应把补丁合并进现有设置后立即收敛，并把合并结果回给调用方；
+    /// 与 `scene_set_postfx` 的区别：`enabled = false` 只掐遮蔽这一条支线，
+    /// 不清空整段后处理（曝光 / 泛光 / FXAA 照旧生效）。
+    fn scene_set_ssao(&mut self, _patch: SsaoPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.set_ssao"))
     }
 
     fn scene_remove(&mut self, _node: &str) -> Result<Value, RpcFailure> {
@@ -888,6 +922,45 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 );
             }
             match api.scene_set_postfx(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        // 环境光遮蔽契约（扩展十七）：字段可分别给，一个都不给视为无意义调用；
+        // 与 set_postfx 不同，`enabled = false` 只关遮蔽，后处理段其余设置保留。
+        "scene.setssao" => {
+            // 显式 `null` 一律视为「没给」：不少 JSON 客户端会把未填字段序列化成 `null`。
+            let enabled = match param(&req.params, "enabled") {
+                None | Some(Value::Null) => Ok(None),
+                Some(_) => opt_bool(&req.params, "enabled"),
+            };
+            let patch = match (
+                enabled,
+                opt_num(&req.params, "radius"),
+                opt_num(&req.params, "bias"),
+                opt_num(&req.params, "intensity"),
+                opt_i32(&req.params, "samples"),
+            ) {
+                (Ok(enabled), Ok(radius), Ok(bias), Ok(intensity), Ok(samples)) => SsaoPatch {
+                    enabled,
+                    radius,
+                    bias,
+                    intensity,
+                    samples,
+                },
+                (Err(f), ..)
+                | (_, Err(f), ..)
+                | (_, _, Err(f), ..)
+                | (_, _, _, Err(f), ..)
+                | (_, _, _, _, Err(f)) => return Response::fail(id, f),
+            };
+            if patch.is_empty() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params("ssao 补丁至少要给一个字段"),
+                );
+            }
+            match api.scene_set_ssao(patch) {
                 Ok(r) => Response::ok(id, r),
                 Err(f) => Response::fail(id, f),
             }

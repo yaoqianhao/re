@@ -16,13 +16,14 @@ use std::rc::Rc;
 
 use glam::{Quat, Vec3};
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
+use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::{MAX_CASCADES, ShadowSettings};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_editor::{
     EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief, PhysicsInfo,
-    PostFxPatch, RpcFailure, ShadowPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
+    PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -292,6 +293,41 @@ impl EngineApi for LocalEngineApi<'_> {
         scene.postfx = Some(applied);
         Ok(json!({
             "enabled": true,
+            "postfx": postfx_value(applied),
+        }))
+    }
+
+    /// 遮蔽补丁（扩展十七）：在现有后处理段的 `ssao` 上叠加（段缺失时从缺省起步），
+    /// 再交给 `SsaoSettings::sanitized` 统一收敛。
+    /// 与 `scene_set_postfx` 的区别：`enabled = false` 只关遮蔽这一条支线，
+    /// 曝光 / 泛光 / FXAA 全部保留——遮挡本来就该能单独开关。
+    fn scene_set_ssao(&mut self, patch: SsaoPatch) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        let mut fx = scene.postfx.unwrap_or_default();
+        if let Some(v) = patch.enabled {
+            fx.ssao.enabled = v;
+        }
+        if let Some(v) = patch.radius {
+            fx.ssao.radius = v;
+        }
+        if let Some(v) = patch.bias {
+            fx.ssao.bias = v;
+        }
+        if let Some(v) = patch.intensity {
+            fx.ssao.intensity = v;
+        }
+        if let Some(v) = patch.samples {
+            // 越界直接夹：样本数区间是引擎的硬约束，编辑器拖滑块越界是常态，
+            // 报参数错误只会让前端反复弹错。
+            fx.ssao.samples =
+                v.clamp(i32::from(MIN_SSAO_SAMPLES), i32::from(MAX_SSAO_SAMPLES)) as u8;
+        }
+        let applied = fx.sanitized();
+        scene.postfx = Some(applied);
+        Ok(json!({
+            "enabled": applied.ssao.enabled,
+            "neutral": applied.ssao.is_neutral(),
+            "ssao": ssao_value(applied.ssao),
             "postfx": postfx_value(applied),
         }))
     }
@@ -585,6 +621,21 @@ fn postfx_value(fx: PostFxSettings) -> Value {
             "intensity": fx.bloom.intensity,
         },
         "fxaa": fx.fxaa,
+        "ssao": ssao_value(fx.ssao),
+    })
+}
+
+/// 遮蔽快照：字段名与场景 JSON 的 `postfx.ssao` 段一致，前端拿到即可回写。
+/// `neutral` 是渲染侧真正用的判据（关闭或强度为 0 时为 true，此时整帧跳过两个 pass），
+/// 单看 `enabled` 会把「开了但强度 0」误报成在算遮蔽。
+fn ssao_value(s: SsaoSettings) -> Value {
+    json!({
+        "enabled": s.enabled,
+        "radius": s.radius,
+        "bias": s.bias,
+        "intensity": s.intensity,
+        "samples": s.samples,
+        "neutral": s.is_neutral(),
     })
 }
 
@@ -1513,5 +1564,72 @@ mod tests {
             })
             .is_err());
         assert_eq!(scene.borrow().lights.len(), 0);
+    }
+
+    /// 遮蔽补丁落在后处理段的 `ssao` 子段里：既有设置（曝光）必须原样留着，
+    /// 越界样本数在宿主侧夹进 [4, 16] 而不是报参数错误。
+    #[test]
+    fn set_ssao_merges_and_clamps() {
+        let (scene, physics, mut scripts) = fixture();
+        {
+            let mut api = api(&scene, &physics, &mut scripts);
+            api.scene_set_postfx(PostFxPatch {
+                exposure: Some(1.5),
+                ..Default::default()
+            })
+            .expect("postfx 补丁应成功");
+            let v = api
+                .scene_set_ssao(SsaoPatch {
+                    enabled: Some(true),
+                    radius: Some(0.9),
+                    samples: Some(99),
+                    ..Default::default()
+                })
+                .expect("ssao 补丁应成功");
+            assert_eq!(v["ssao"]["samples"], json!(16), "样本数应夹到上限");
+            assert_eq!(v["enabled"], true);
+            assert_eq!(v["neutral"], false);
+        }
+        let fx = scene.borrow().postfx.expect("后处理段应已实体化");
+        assert!(fx.ssao.enabled);
+        assert!((fx.ssao.radius - 0.9).abs() < 1e-6);
+        assert!(
+            (fx.exposure - 1.5).abs() < 1e-6,
+            "遮蔽补丁不该动曝光: {fx:?}"
+        );
+    }
+
+    /// `enabled = false` 只关遮蔽支线：曝光 / 泛光 / FXAA 保留，段本身不清空。
+    #[test]
+    fn disable_ssao_keeps_rest_of_postfx() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.scene_set_postfx(PostFxPatch {
+            exposure: Some(-0.5),
+            bloom_enabled: Some(true),
+            fxaa: Some(true),
+            ..Default::default()
+        })
+        .expect("postfx 补丁应成功");
+        api.scene_set_ssao(SsaoPatch {
+            enabled: Some(true),
+            intensity: Some(2.0),
+            ..Default::default()
+        })
+        .expect("ssao 补丁应成功");
+        let off = api
+            .scene_set_ssao(SsaoPatch {
+                enabled: Some(false),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(off["enabled"], false);
+        assert_eq!(off["neutral"], true);
+        let fx = scene.borrow().postfx.expect("段不该被清空");
+        assert!(!fx.ssao.enabled);
+        assert!((fx.ssao.intensity - 2.0).abs() < 1e-6, "强度应保留");
+        assert!((fx.exposure + 0.5).abs() < 1e-6);
+        assert!(fx.bloom.enabled);
+        assert!(fx.fxaa);
     }
 }

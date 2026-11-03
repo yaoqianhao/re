@@ -10,6 +10,7 @@ use glam::{Vec3, Vec4};
 use r3e_audio::Audio;
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::postfx::TonemapMode;
+use r3e_core::ssao::{MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
 use r3e_core::ui::{
     find_mut, hit_test_key, upsert_styled, Anchor, UiElement, UiEventKind, UiInteraction, UiKind,
@@ -78,6 +79,11 @@ impl UiWriteLog {
 
 fn f32_of(v: f64) -> f32 {
     v as f32
+}
+
+/// 样本数先上下夹再转 `u8`：直接 `as u8` 遇到负数是回绕，不是饱和。
+fn ssao_samples_of(v: i64) -> u8 {
+    v.clamp(i64::from(MIN_SSAO_SAMPLES), i64::from(MAX_SSAO_SAMPLES)) as u8
 }
 
 fn vec3_array(v: Vec3) -> Array {
@@ -792,6 +798,115 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .tonemap
             .name()
             .to_string()
+    });
+
+    // ---------------- 屏幕空间环境光遮蔽（扩展十七） ----------------
+    // 遮蔽图挂在后处理段下（`postfx.ssao`），所以这一族与 `set_postfx` 同规矩：
+    // 段不存在就先实体化成缺省值再写——不让脚本为了开个遮蔽而先手动开一遍后处理。
+    // 半径 / 偏置 / 强度在 core 里有硬区间，样本数夹进 [4, 16]；写入一律过
+    // `sanitized()`，脚本里算出来的 NaN 不会一路灌进 uniform。
+
+    // 一击式全量设置。`samples` 越大噪点越少、开销越高，8 是缺省平衡点。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_ssao",
+        move |enabled: bool, radius: f64, bias: f64, intensity: f64, samples: i64| {
+            let mut s = c.scene.borrow_mut();
+            let mut fx = s.postfx.unwrap_or_default();
+            fx.ssao.enabled = enabled;
+            fx.ssao.radius = f32_of(radius);
+            fx.ssao.bias = f32_of(bias);
+            fx.ssao.intensity = f32_of(intensity);
+            fx.ssao.samples = ssao_samples_of(samples);
+            s.postfx = Some(fx.sanitized());
+        },
+    );
+
+    // 只切开关：已调好的半径 / 强度不动，脚本里对比开关效果时不必重复写参数。
+    let c = ctx.clone();
+    engine.register_fn("set_ssao_enabled", move |enabled: bool| {
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.ssao.enabled = enabled;
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 单独调半径（世界空间单位，典型 0.2 ~ 1.5）：太小只有缝隙变脏，太大糊成一片。
+    let c = ctx.clone();
+    engine.register_fn("set_ssao_radius", move |radius: f64| {
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.ssao.radius = f32_of(radius);
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 单独调强度：0 等价于关闭（AO 系数恒为 1），4 是上限。
+    let c = ctx.clone();
+    engine.register_fn("set_ssao_intensity", move |intensity: f64| {
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.ssao.intensity = f32_of(intensity);
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 单独调样本数：会被夹进 [4, 16]，取偶数更好对齐。
+    let c = ctx.clone();
+    engine.register_fn("set_ssao_samples", move |samples: i64| {
+        let mut s = c.scene.borrow_mut();
+        let mut fx = s.postfx.unwrap_or_default();
+        fx.ssao.samples = ssao_samples_of(samples);
+        s.postfx = Some(fx.sanitized());
+    });
+
+    // 关掉遮蔽但**保留**后处理段里的曝光 / 泛光 / FXAA：与 `clear_postfx` 的区别
+    // 就在于只掐这一条支线，不把整段打回直通。
+    let c = ctx.clone();
+    engine.register_fn("clear_ssao", move || {
+        let mut s = c.scene.borrow_mut();
+        if let Some(mut fx) = s.postfx {
+            fx.ssao.enabled = false;
+            s.postfx = Some(fx);
+        }
+    });
+
+    // 只有「段存在且开了且强度非零」才算真的在算遮蔽——强度 0 时 GPU 那边整帧跳过。
+    let c = ctx.clone();
+    engine.register_fn("has_ssao", move || -> bool {
+        c.scene
+            .borrow()
+            .postfx
+            .map(|fx| !fx.ssao.is_neutral())
+            .unwrap_or(false)
+    });
+
+    // 当前生效值快照（脚本侧断言 / 编辑器回读用），未开启时给出缺省值。
+    let c = ctx.clone();
+    engine.register_fn("ssao_enabled", move || -> bool {
+        c.scene
+            .borrow()
+            .postfx
+            .map(|fx| fx.ssao.enabled)
+            .unwrap_or(false)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ssao_radius", move || -> f64 {
+        f64::from(c.scene.borrow().postfx.unwrap_or_default().ssao.radius)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ssao_bias", move || -> f64 {
+        f64::from(c.scene.borrow().postfx.unwrap_or_default().ssao.bias)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ssao_intensity", move || -> f64 {
+        f64::from(c.scene.borrow().postfx.unwrap_or_default().ssao.intensity)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("ssao_samples", move || -> i64 {
+        i64::from(c.scene.borrow().postfx.unwrap_or_default().ssao.samples)
     });
 
     // ---------------- 场景保存（M1） ----------------
