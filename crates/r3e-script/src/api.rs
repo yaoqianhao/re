@@ -17,7 +17,8 @@ use r3e_core::ui::{
     UiUpsert, UiValue, MAX_UI_ELEMENTS,
 };
 use r3e_core::{
-    InputState, KeyCode, LocalLight, MeshRef, NodeId, ObjectDesc, Scene, ScreenText, TextAlign,
+    BoneMask, InputState, KeyCode, LayerMode, LocalLight, MeshRef, NodeId, ObjectDesc, Scene,
+    ScreenText, TextAlign,
 };
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -84,6 +85,34 @@ fn f32_of(v: f64) -> f32 {
 /// 样本数先上下夹再转 `u8`：直接 `as u8` 遇到负数是回绕，不是饱和。
 fn ssao_samples_of(v: i64) -> u8 {
     v.clamp(i64::from(MIN_SSAO_SAMPLES), i64::from(MAX_SSAO_SAMPLES)) as u8
+}
+
+/// 骨骼遮罩字符串解析（扩展十八 A）：`"arm,hand"` 只作用于这两处；
+/// `"!root"` 作用于除 root 外全部；空串或 `"*"` 表示整副骨架。
+///
+/// 写成字符串而不是数组，是因为脚本里 `["arm","hand"]` 要打字更多、日志也更难看；
+/// 匹配规则与 [`BoneMask::path_matches`] 一致（按路径后缀），`"arm"` 命中 `root/spine/arm`。
+fn parse_bone_mask(spec: &str) -> BoneMask {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() || trimmed == "*" {
+        return BoneMask::pass_all();
+    }
+    let mut include = Vec::new();
+    let mut exclude = Vec::new();
+    for part in trimmed.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        match p.strip_prefix('!') {
+            Some(rest) if !rest.trim().is_empty() => exclude.push(rest.trim().to_string()),
+            _ => include.push(p.to_string()),
+        }
+    }
+    if include.is_empty() && exclude.is_empty() {
+        return BoneMask::pass_all();
+    }
+    BoneMask { include, exclude }
 }
 
 fn vec3_array(v: Vec3) -> Array {
@@ -588,6 +617,206 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .into_iter()
             .map(Into::into)
             .collect()
+    });
+
+    // ---------------- 动画混合树（扩展十八 A） ----------------
+    // 主片段是「当前动作」，层是同时进行的附加动作（上半身攻击、呼吸叠加）。
+    // 层用名字寻址（`layer` 传空串 = 第一层）；遮罩用逗号串表达：
+    // `"arm,hand"` 只作用于这两处骨骼，`"!root"` 表示除 root 外全部，
+    // 空串或 `"*"` 表示整副骨架（默认）——骨骼按路径后缀匹配，`"arm"` 命中 `root/spine/arm`。
+    let c = ctx.clone();
+    engine.register_fn("anim_layers", move |inst: &str| -> Array {
+        c.scene
+            .borrow()
+            .anim_layer_names(inst)
+            .into_iter()
+            .map(Dynamic::from)
+            .collect()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("anim_layer_count", move |inst: &str| -> i64 {
+        c.scene
+            .borrow()
+            .anim_layer_count(inst)
+            .map(|n| n as i64)
+            .unwrap_or(0)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_info",
+        move |inst: &str, layer: &str| -> String {
+            c.scene
+                .borrow()
+                .anim_layer_report(inst, layer)
+                .unwrap_or_else(|| format!("实例 `{inst}` 上没有名为 `{layer}` 的层"))
+        },
+    );
+
+    // 有效权重（含进行中的过渡），0 = 层此刻完全不参与合成。
+    let c = ctx.clone();
+    engine.register_fn("anim_layer_weight", move |inst: &str, layer: &str| -> f64 {
+        c.scene
+            .borrow()
+            .anim_layer_effective_weight(inst, layer)
+            .map(|w| w as f64)
+            .unwrap_or(0.0)
+    });
+
+    // 挂一层覆盖型（override）：命中遮罩的骨骼直接取层姿态。
+    let c = ctx.clone();
+    engine.register_fn(
+        "add_anim_layer",
+        move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
+            c.scene.borrow_mut().add_anim_layer_by_clip(
+                inst,
+                layer,
+                clip,
+                f32_of(weight),
+                LayerMode::Override,
+            )
+        },
+    );
+
+    // 挂一层加法型（additive）：层姿态相对首帧的增量叠到主姿态上，适合呼吸 / 抖动。
+    let c = ctx.clone();
+    engine.register_fn(
+        "add_anim_layer_additive",
+        move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
+            c.scene.borrow_mut().add_anim_layer_by_clip(
+                inst,
+                layer,
+                clip,
+                f32_of(weight),
+                LayerMode::Additive,
+            )
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_weight",
+        move |inst: &str, layer: &str, weight: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_weight(inst, layer, f32_of(weight))
+        },
+    );
+
+    // 带过渡地改层权重：`dur` 秒内线性+平滑过渡，游戏里淡入淡出层都用这个。
+    let c = ctx.clone();
+    engine.register_fn(
+        "fade_anim_layer",
+        move |inst: &str, layer: &str, weight: f64, dur: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .fade_anim_layer(inst, layer, f32_of(weight), dur as f32)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_mode",
+        move |inst: &str, layer: &str, mode: &str| -> bool {
+            let Some(mode) = LayerMode::parse(mode) else {
+                println!("[script] 未知叠加模式 `{mode}`（可用：override / additive）");
+                return false;
+            };
+            c.scene.borrow_mut().set_anim_layer_mode(inst, layer, mode)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_mask",
+        move |inst: &str, layer: &str, spec: &str| -> bool {
+            let mask = parse_bone_mask(spec);
+            c.scene.borrow_mut().set_anim_layer_mask(inst, layer, mask)
+        },
+    );
+
+    // 遮罩回显：`"*"` = 全部，其余按 `include,!exclude` 还原，便于脚本自检与日志验收。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_mask",
+        move |inst: &str, layer: &str| -> String {
+            let s = c.scene.borrow();
+            match s.anim_layer(inst, layer) {
+                Some(l) if l.mask.is_pass_all() => "*".to_string(),
+                Some(l) => {
+                    let mut parts = l.mask.include.clone();
+                    parts.extend(l.mask.exclude.iter().map(|e| format!("!{e}")));
+                    parts.join(",")
+                }
+                None => String::new(),
+            }
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_speed",
+        move |inst: &str, layer: &str, speed: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_speed(inst, layer, f32_of(speed))
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_clips",
+        move |inst: &str, layer: &str| -> Array {
+            c.scene
+                .borrow()
+                .anim_layer(inst, layer)
+                .map(|l| l.clip_names().into_iter().map(Dynamic::from).collect())
+                .unwrap_or_default()
+        },
+    );
+
+    // 层内多片段加权混合：走路层里叠加「走 / 跑」两路片段按权重过渡。
+    let c = ctx.clone();
+    engine.register_fn(
+        "add_anim_layer_clip",
+        move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .add_anim_layer_clip(inst, layer, clip, f32_of(weight))
+        },
+    );
+
+    // 把层的片段整体换成指定片段（层内收敛为单片段，权重保留）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_clip",
+        move |inst: &str, layer: &str, clip: &str| -> bool {
+            c.scene.borrow_mut().set_anim_layer_clip(inst, layer, clip)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "remove_anim_layer_clip",
+        move |inst: &str, layer: &str, clip: &str| -> bool {
+            c.scene
+                .borrow_mut()
+                .remove_anim_layer_clip(inst, layer, clip)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "remove_anim_layer",
+        move |inst: &str, layer: &str| -> bool {
+            c.scene.borrow_mut().remove_anim_layer(inst, layer)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("clear_anim_layers", move |inst: &str| -> bool {
+        c.scene.borrow_mut().clear_anim_layers(inst)
     });
 
     // ---------------- 相机 / 光照 / 环境 ----------------

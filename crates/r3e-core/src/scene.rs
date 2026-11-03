@@ -958,6 +958,26 @@ impl Scene {
         true
     }
 
+    /// 按片段名直接建层（脚本 / 编辑器入口，省去调用方自己取 `Arc<AnimClip>`）。
+    ///
+    /// 片段名按「实例名前缀」解析；同名层覆盖。
+    pub fn add_anim_layer_by_clip(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip_name: &str,
+        weight: f32,
+        mode: LayerMode,
+    ) -> bool {
+        let Some(clip) = self.find_anim_clip(instance, clip_name) else {
+            return false;
+        };
+        self.add_anim_layer(
+            instance,
+            AnimLayer::new(layer, clip, weight).with_mode(mode),
+        )
+    }
+
     /// 层名列表（按挂载顺序，顺序即叠加顺序）。
     pub fn anim_layer_names(&self, instance: &str) -> Vec<String> {
         self.anim_instance(instance)
