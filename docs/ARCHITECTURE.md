@@ -355,7 +355,8 @@ pub struct ShadowSettings {
 }
 ```
 
-只有一个平行光 + 环境光，没有点光、聚光；阴影只做「该方向光的单张正交深度图」，无级联/无心点光立方阴影。
+方向光是唯一的**全局**光源；扩展十五起另有最多 16 盏**局部光源**（点光 / 聚光，见 5.10），
+它们只影响直接光项、不投影。阴影只做「该方向光的单张正交深度图」，无级联、无点光立方阴影。
 `direction` 的语义是**光线行进方向**（从光源射出），不是"指向光源的方向"——着色器里取 `normalize(-light_dir)` 得到表面指向光源的向量。
 
 `ShadowSettings::sanitized()` 负责把越界值夹回可用区间：这份数据会被场景 JSON、脚本 API、CLI 三处写入，
@@ -785,7 +786,7 @@ quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整�
 | `emissive` | `vec4<f32>` | rgb = 自发光（线性 HDR，只加不减），a 保留 |
 | `t_base_color` / `s_base_color` | 纹理 + 采样器 | `params.z > 0.5` 时才采样 |
 
-`@group(2)` = 关节矩阵（P4 蒙皮，storage buffer）；`@group(3)` = 阴影贴图 + 阴影 uniform（阶段 D）。
+`@group(2)` = 关节矩阵（P4 蒙皮，storage buffer）；`@group(3)` = 阴影贴图 + 阴影 uniform（阶段 D） + 局部光源表（扩展十五，binding 4，与阴影同组见 5.10 的 `max_bind_groups` 说明）。
 材质按 `MaterialKey`（`to_bits` 比较）分桶：同材质的物件共用一份 48 字节 buffer，不逐物件复制。
 
 **顶点阶段**
@@ -902,6 +903,54 @@ wgpu 依靠同一个 encoder 内的顺序与资源状态自动插入 barrier，�
 
 **代价**：阴影通道的顶点开销 = 主通道的顶点开销（同一批网格再画一遍），片元只写深度、无着色；
 主通道每片元多 9 次比较采样。2048² 贴图在集显上实测仍为满帧，主要成本来自 PCF 采样而非贴图带宽。
+
+---
+
+### 5.10 局部光源表（点光 / 聚光，扩展十五）
+
+方向光解决「整体明暗」，解决不了「一束光打在某个物件上」。扩展十五加**定长光源表**：
+场景最多 16 盏点光 / 聚光，每帧整表打包进一个 uniform，片元着色器里循环累加。
+选「定长数组 + 计数」而不是 per-light bind group，是为了不加 pass、不加 draw call——
+灯多灯少都是同一套管线。
+
+**CPU 侧契约（`r3e-core::light`，零 wgpu 依赖）**
+
+| 项 | 内容 |
+| --- | --- |
+| 类型 | `LocalLight { key, kind: LocalLightKind::{Point, Spot}, pos, color, intensity, range, dir, inner_deg, outer_deg }` |
+| 收敛 | `LocalLight::sanitized()`：强度夹 `0..200`、颜色夹 `0..16`、半径夹 `0.05..500`、外角夹到 `0..89.9`、内角至少比外角小 `0.1`（角度退化会让锥因子除零） |
+| 衰减 | `attenuation(range, d) = (1 - (d/range)^4)² / (d² + ε)`，`d ≥ range` 直接 0，`ε = 0.01` 防 `d→0` 爆白 |
+| 锥因子 | `spot_factor(cos, cos_inner, cos_outer)`：内外角之间 `smoothstep`，内角内为 1、外角外为 0；`cos_inner <= cos_outer` 时退化成硬边阶跃 |
+| CPU 参考 | `LocalLight::irradiance(world_position)` 与着色器逐式对应，脚本 `local_light_irradiance` 直接用它——脚本读到的值就是画面里的值 |
+| 上限 | `MAX_LOCAL_LIGHTS = 16`，场景层 `upsert_local` 满员时返回 `false` 而不顶掉别人 |
+
+**GPU 侧布局**（`LightsUniform`，`1 + 16×64 = 1040` 字节）
+
+| 偏移 | 内容 |
+| --- | --- |
+| 0 | `count: vec4<f32>`，`x` = 本帧有效灯数 |
+| 16 | `items: array<LocalLight, 16>`，每盏 4 个 `vec4`：`pos_range` / `color_power` / `dir_inner` / `outer_kind` |
+
+`outer_kind.y` 是类型码（0 点光 / 1 聚光），着色器据此决定要不要算锥因子；
+余弦在 CPU 侧由 `cos_inner()` / `cos_outer()` 算好，片元里省掉两次 `cos`。
+
+**绑定位置：`@group(3) @binding(4)`，与阴影贴图同组。**
+WebGPU core 规范 `max_bind_groups = 4`（group 索引 0..3），第五组 `@group(4)` 在创建 pipeline layout 时
+就过不了校验——第一版正是这么写的，启动即 `wgpu Validation Error: Shader @group(4) ... max_bind_groups`。
+于是光源表并入场景级绑定组的第 5 个槽位：`0..3` 仍是实例 / 材质 / 关节 / 阴影，`4` 让给光源表。
+`tests/local_lights_shader.rs` 现在同时断言「无 `@group(4)`」「`shadow_layout` 含 binding 4」「不存在独立
+`lights_bind_group`」，这三条一起锁死这次迁移，避免有人手滑把组拆回去。
+
+**总开关为什么写 `count.x = 0` 而不是跳过上传**：灯的数据留在 uniform 里，
+片元循环上界取 `min(count.x, 16)`，关掉即零次迭代；再打开不需要重新打包，
+也不存在「开关与数据不同步」的中间态。
+
+**片元侧三处早退**：超半径 → 背面（`ndl <= 0`）→ 聚光锥外，任一命中就 `continue`，
+没被照到的片元不为这盏灯付 GGX/Smith 的代价。局部光源复用方向光那套 Cook-Torrance 函数，
+差别只有两点：光向量逐灯不同（`l = normalize(pos - p)`）、每盏额外乘距离衰减与锥因子。
+
+**不投影**：16 盏灯各配一张立方阴影贴图的成本（16×6 个面、每面一次场景重绘）远超当前收益，
+所以局部光源只进直接光项，不进阴影通道。写实感不足的地方由「半径 + 强度」调，而不是靠影子暗示。
 
 ---
 
@@ -1172,6 +1221,25 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_fxaa(on)` | 在 composite 里做，零额外 pass |
 | `has_postfx()` / `clear_postfx()` | 是否带后处理段 / 清空回直通 |
 | `postfx_exposure()` / `postfx_tonemap()` | 回读（未开启时给缺省 0 / `none`） |
+
+**局部光源（扩展十五）**
+
+写入 `Scene::lights`（`upsert_local` 按 key 覆盖，满 16 盏返回 `false` 不顶人），渲染层下一帧自动打包上传。
+`light_*` 是写，`local_light_*` 是读——读侧走 CPU 参考实现，返回值与 GPU 算的一致。
+
+| 函数 | 说明 |
+| --- | --- |
+| `light_add_point(key, x, y, z, r, g, b, intensity, range)` | 建 / 覆盖一盏点光（9 参数，字段跑 `sanitized`） |
+| `light_add_spot(key, x,y,z, dx,dy,dz, r,g,b, intensity, range, inner_deg, outer_deg)` | 建 / 覆盖一盏聚光（13 参数，方向自动归一化，内外角自动收敛） |
+| `light_set_pos(key, x, y, z)` / `light_set_dir(key, x, y, z)` | 改位置 / 聚光朝向 |
+| `light_set_color(key, r, g, b)` / `light_set_intensity(key, v)` / `light_set_range(key, v)` | 改颜色 / 强度 / 影响半径 |
+| `light_set_cone(key, inner_deg, outer_deg)` | 改锥角（自动保证内角比外角小至少 0.1°） |
+| `light_remove(key)` / `light_clear()` | 删一盏 / 清空（返回删除数） |
+| `set_lights_enabled(on)` / `lights_enabled()` | 总开关：关掉只是 `count.x = 0`，灯的数据留着 |
+| `local_light_count()` / `local_light_keys()` / `local_light_exists(key)` | 数量 / key 列表 / 是否存在 |
+| `local_light(key)` | 整盏快照（`found` / `kind` / `pos` / `color` / `intensity` / `range` / `dir` / `inner_deg` / `outer_deg`） |
+| `local_light_intensity(key)` / `local_light_kind(key)` | 单字段快捷读（不存在时返回 0 / `""`） |
+| `local_light_irradiance(x, y, z)` | 世界点上所有局部光源的累加辐照度（CPU 参考：`LocalLight::irradiance`） |
 
 **时钟与随机**
 
@@ -1709,6 +1777,38 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 
 ---
 
+### 8.13 局部光源驱动与探针（扩展十五）
+
+渲染层只认 `Scene::lights` 这一份真源，app 层不额外维护光源缓存：
+
+| 环节 | 位置 | 做法 |
+| --- | --- | --- |
+| 打包 | `renderer.rs` 每帧 `LightsUniform::from_lights(&scene.lights, scene.lights_enabled)` | 逐盏再跑一次 `sanitized()`，越界值不上 GPU |
+| 上传 | 主通道 `prepare` 阶段一次 `write_buffer`（1040 B） | 与实例 / 材质共用同一个队列提交，不额外 sync |
+| 探针 | 起止日志 `局部光源：场景 N 盏 / 上传 M 盏 / 开关 bool` | 「场景」是 `Scene::lights.len()`，「上传」是 uniform 里实际 `count.x`，两者不等就是被截断或被开关清零 |
+| 演示 | `scripts/lights_demo.rhai` | 暖色点光绕原点画圆 + 半径呼吸、冷色聚光俯照；每 0.5 s 打印原点照度与单盏字段 |
+
+**探针为什么区分「场景」与「上传」**：开关关闭时 `count.x = 0` 但场景里灯还在；
+只看场景数会以为「关了还在算」，只看上传数又看不出是否超了 16 盏被截断。两个数一起打，
+一眼能区分「关掉了」和「太多被截」。
+
+**演示脚本踩到的两个坑**（都已写进脚本注释）：
+
+1. `light_add_spot` 是 **13 个位置参数**（key / 位置 / 方向 / 颜色 / 强度 / 半径 / 内角 / 外角），
+   少给一个不会编译报错，而是 `on_start` 里抛 `Function not found`——早期 `on_start` 的错误只记进
+   `last_error` 不打印，表现为「开场什么都没发生」。现在 `on_start` 出错会和 `on_update` 一样打一行
+   `[script] on_start 出错: ...`，并把重复报错压掉（同一句只打一次）。
+2. 一行里串 4 段 `+` 拼接会撞上 Rhai 的 `Expression exceeds maximum complexity`——
+   这是**编译期**失败，`load_file` 返回 `Err` 后整脚本不执行。所以 `format` 不支持多参数签名时，
+   也不要靠长拼接绕，先算到局部变量、再分两行 `log`。
+
+**编译守卫**：`crates/r3e-script/tests/scripts_compile.rs` 会把 `scripts/*.rhai` 全部 `load_file` 一遍。
+加这条的直接原因是上面第 2 点——编译期错误在 `cargo build` 里看不见、运行时只打一行 `log::error!`
+然后窗口照开、画面不变，极易被误判成渲染 bug。守卫上线当天就抓到 `ccd_demo.rhai` 早已踩中同一个坑
+（一行里两段 `if` 表达式 + 三段拼接），已一并修掉。
+
+---
+
 ## 9. 端到端数据流
 
 ```
@@ -1780,7 +1880,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
-| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；无点光/聚光、无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
+| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、**不投影**、无 IES/面光源、不参与环境项；无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
 | 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）；缺省直通 | **无 SSAO、无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮 |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
@@ -1838,6 +1938,9 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | **十三（已完成：HDR 后处理链）** | **bloom + tonemapping + FXAA**：`r3e-core::postfx` 纯函数契约（`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve`）+ `PostFxSettings` 收敛；常开 `Rgba16Float` 离屏 HDR 目标，主通道改写成线性 HDR；`postfx.wgsl` 三级泛光上采样 + composite（曝光→ACES/Reinhard→FXAA）；7 个脚本 API（`set_postfx` / `set_exposure` / `set_tonemap` / `set_bloom` / `set_fxaa` / `clear_postfx` / `has_postfx`，外加 `postfx_exposure` / `postfx_tonemap` 回读）；编辑器 `scene.set_postfx` 补丁式 RPC；演示场景 `assets/scene_hdr.json` | `core/postfx.rs` 新增；`scene.rs` 加 `postfx` 字段；`render/postfx.rs` + `postfx.wgsl` 新增，`renderer.rs` 主通道改 HDR 视图、文本 / UI 前插 composite；`script/api.rs` 注册 9 个 API；`editor/lib.rs` `PostFxPatch`；`app.rs` 后处理探针日志；`tests/postfx_shader.rs` / `postfx_contract.rs` / `r3e-editor/tests/postfx_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx` 缺省即"直通"，画面与扩展十二逐像素一致）；**不做 SSAO / 运动模糊 / 时间性抗锯齿**，泛光固定三级、单帧 pass 上限 6 |
 
 | **十四（已完成：UI 指针交互层）** | **命中测试 + 指针状态机 + 事件回灌脚本**：`r3e-core::ui` 增 `UiRect` / `resolve_rect` / `hit_test`（按 layer 取最上层、只判矩形、visible=false 点不到）/ `UiInteraction`（hover / active 两槽位 + 每帧有界事件队列 `MAX_UI_EVENTS_PER_FRAME = 64`，`clicked` 只在同一元素内按下并抬起时产出，`released` 有按下捕获时总发，`cancelled` 是移出后释放）；`r3e-app` 每帧把光标与左键边沿喂给状态机，**指针压在 UI 上时相机不吃这次拖动**；脚本注册 10 个只读 API（`ui_events` / `ui_event_count` / `ui_event_kind_name` / `ui_event_key` / `ui_hover` / `ui_active` / `ui_clicked` / `ui_hovered` / `ui_pointer_over_ui` / `ui_hit`）；编辑器新增 `ui.list` / `ui.set` / `ui.remove` / `ui.state` 四条 RPC（`UiPatch` 字段全可选，`"50%"` / `"120"` 两种写法都可）；演示 `scripts/ui_interaction_demo.rhai` | `core/ui.rs` 加交互层；`script/api.rs` 注册只读绑定；`r3e-editor` 加 `UiPatch` + 四个 trait 方法；`r3e-app/editor.rs` 实现四个方法 + `apply_ui_patch`；`app.rs` 加 `ui_interaction` 字段、`update_ui_interaction`、`cursor_over_ui`；`tests/ui_scene.rs` / `r3e-editor/tests/ui_rpc.rs` / `app.rs` 单测锁语义 | 无（纯增量；不接输入时行为与原 UI 层一致）。**不做**：键盘焦点 / Tab 遍历、滚轮与拖拽、IME、长按与双击、控件语义（按钮状态机仍在脚本里） |
+| **十五（已完成：局部光源）** | **点光 / 聚光定长光源表**：`r3e-core::light` 增 `LocalLight` / `LocalLightKind` / `attenuation`（平滑窗逆平方，`d ≥ range` 归零）/ `spot_factor`（内外角 smoothstep，退化时硬边）/ `irradiance`（CPU 参考，脚本与 GPU 同式）；`Scene` 提供 `upsert_local_light` / `remove_local_light` / `clear_local_lights` / `local_light` / `lights_enabled`，上限 `MAX_LOCAL_LIGHTS = 16`（满员返回 `false` 不顶人）；`r3e-render` 每帧把整表打包进 `LightsUniform`（1 + 16×64 = 1040 B）并挂在 **`@group(3) @binding(4)`**——WebGPU `max_bind_groups = 4`，第五组 `@group(4)` 直接过不了校验，故并入场景级绑定组；总开关写 `count.x = 0`（数据留着，循环零次迭代）；片元侧超半径 / 背面 / 锥外三处早退；脚本 19 个 API（`light_add_point` / `light_add_spot` / `light_set_*` / `light_remove` / `light_clear` / `set_lights_enabled` / `local_light*`）；编辑器 5 个 RPC （`light.list` / `light.set` / `light.remove` / `light.clear` / `light.set_enabled`，补丁式「给了才改」）；`scripts/lights_demo.rhai` + 起止探针 | `core/light.rs` 加局部光源契约与常量；`core/scene.rs` 加 `lights` + 增删改查；`render` 加 `LightsUniform` / `LocalLightRaw` / `shader.wgsl` 的 `local_lighting`；`script/api.rs` 注册读写；`r3e-editor` 加 `LightPatch`；`app/editor.rs` 实现 5 个 RPC | 无（场景 JSON 向后兼容：`lights` 缺省为空；着色器绑定从 5 组收到 4 组，是**修正**而非破坏——原先的 `@group(4)` 在任何合规设备上都创建失败） |
+
+| **十六（候选，按收益排序）** | **A 动画混合树**（分层 mask / additive，补 11.1 的动画边界）；**B SSAO + CSM**（环境光遮蔽 + 级联阴影，补后处理与阴影的单级限制）；**C 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**D 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高） | `core` 契约先行；后两者需动 render 的多目标与 pass 预算 | 视具体项 |
 
 两条与顺序相关的说明：
 
@@ -2036,7 +2139,7 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-core/src/text.rs` | `FontSet`（系统字体查找 / 指定字体加载）、`GlyphSource` 抽象、`layout_text`（换行 / 对齐 / 缺字回退）、`ScreenText` / `TextAlign` |
 | `crates/r3e-core/src/ui.rs` | `UiElement` / `UiKind` / `Anchor` / `UiUnit` / `UiValue`、`resolve_rect`（锚点 + 像素/百分比解析）、`slice_margins`（九宫格边距换算 + 夹取）、`sort_by_layer`（稳定排序） |
 | `crates/r3e-core/src/glyph_atlas.rs` | `GlyphAtlas` 分页图集、`ShelfAllocator` 货架分配、`GlyphKey`（face+glyph+像素量化） |
-| `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机 |
+| `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机；扩展十五的 `LocalLight` / `LocalLightKind`、`attenuation` / `spot_factor` / `irradiance` CPU 参考实现、`upsert_local` / `remove_local` / `with_local`、`MAX_LOCAL_LIGHTS = 16` 等常量 |
 | `crates/r3e-core/src/material.rs` | `SurfaceMaterial` 与 `sanitized`、`GeoTerms`、GGX / Smith / Schlick / `cook_torrance_brdf` / `direct_light` 纯函数参考实现（零 wgpu 依赖） |
 | `crates/r3e-core/src/env.rs` | `EnvironmentSettings`（7 字段）与 `sanitized`、`Sh9::project` 球谐投影、`env_brdf_approx` 解析环境项（零 wgpu） |
 | `crates/r3e-core/src/postfx.rs` | `PostFxSettings` / `BloomSettings` / `TonemapMode`、`sanitized`、`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve` 参考实现（零 wgpu） |

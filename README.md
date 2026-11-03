@@ -568,6 +568,34 @@ fn on_update(dt) {
 底框与描边、右上角金色圆形图标；拖动窗口改变大小时对话框保持居中贴底、血条保持左上贴边。
 把 `assets/ui/icon.png` 改名再热重载，图标位置会退化成纯色块（渲染层只记录一次加载失败，不刷日志、不崩）。
 
+### 局部光源：点光 / 聚光（扩展十五）
+
+场景最多 **16 盏**局部光源，`light_*` 写、`local_light_*` 读（读写同一份 `Scene::lights`）。
+强度夹 `0..200`、颜色夹 `0..16`、半径夹 `0.05..500`，聚光内角自动比外角小至少 `0.1°`——写入即收敛，脚本不用自己夹。
+
+```rhai
+fn on_start() {
+    light_add_point("torch", 0.0, 2.0, 6.0, 1.0, 0.72, 0.42, 6.0, 8.0);
+    light_add_spot("beam", 0.0, 4.0, 0.0, 0.0, -1.0, 0.0, 0.55, 0.78, 1.0, 14.0, 8.0, 12.0, 26.0);
+}
+```
+
+| 函数 | 说明 |
+| --- | --- |
+| `light_add_point(key, x,y,z, r,g,b, intensity, range)` | 建 / 覆盖点光（9 参数） |
+| `light_add_spot(key, x,y,z, dx,dy,dz, r,g,b, intensity, range, inner_deg, outer_deg)` | 建 / 覆盖聚光（13 参数，方向自动归一化） |
+| `light_set_pos` / `light_set_dir` / `light_set_color` / `light_set_intensity` / `light_set_range` | 逐字段改（第一参数都是 key） |
+| `light_set_cone(key, inner_deg, outer_deg)` | 改锥角 |
+| `light_remove(key)` / `light_clear()` | 删一盏 / 清空（返回删除数） |
+| `set_lights_enabled(on)` / `lights_enabled()` | 总开关（关掉只是不再上传有效灯数，灯的数据留着） |
+| `local_light_count()` / `local_light_keys()` / `local_light_exists(key)` | 数量 / key 列表 / 存在性 |
+| `local_light(key)` | 整盏快照 map |
+| `local_light_intensity(key)` / `local_light_kind(key)` | 单字段快捷读（`point` / `spot`） |
+| `local_light_irradiance(x, y, z)` | 某点上所有局部光源的累加辐照度（与画面同式，可直接拿来做「越亮越暖」之类的反馈） |
+
+满 16 盏后 `light_add_*` 返回 `false` 且**不顶掉已有灯**——要加新灯先 `light_remove`。
+演示：`cargo run -- assets/scene.json scripts/lights_demo.rhai`。
+
 ### 指针交互：命中测试 / 悬停 / 点击（扩展十四）
 
 UI 元素能被鼠标点到。命中测试只看**矩形**（边框空隙与图片透明像素也算点得到），
@@ -792,6 +820,8 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   **没有 HDR 立方体贴图、没有反射探针**：金属只映天 / 地 / 太阳，映不出场景物件，见
   [§16 IBL 环境探针](#16-ibl-环境探针)。方向光带单张正交阴影贴图（3×3 PCF，默认开启）；
   阴影限制：无点光/聚光阴影、无级联、透明物件也投实心影。
+- 局部光源：最多 16 盏点光 / 聚光，**不投影**（点光立方阴影代价太高），无 IES / 面光源，只进直接光项、
+  不参与环境项，见 [§19 局部光源](#19-局部光源扩展十五)。
 - 后处理：常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光，
   缺省直通，见 [§17 HDR 后处理链](#17-hdr-后处理链)。**无 SSAO、无运动模糊、无 TAA、无自动曝光**。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
@@ -1363,6 +1393,50 @@ set_fxaa(true);
 - `cargo test -p r3e-app --bin r3e`：`ui_set` 插入与就地打补丁、未知 key 不改状态、`ui_list` / `ui_remove` 往返、`ui_state` 反映指针；
 - `cargo test -p r3e-editor --test ui_rpc`：全量 / 局部 / 坏 key / 未知 anchor / 类型错误；
 - 视觉与手感（hover 反馈是否跟手、点击命中是否够宽容）**待人工窗口确认**，无自动化截图比对。
+
+---
+
+## 19. 局部光源（扩展十五）
+
+§15/§16 解决「整体明暗」，本节解决「一束光打在某个物件上」。**定长光源表**：16 盏灯整表打包进一个
+uniform（`1 + 16×64 = 1040` 字节），片元里循环累加，不加 pass、不加 draw call。
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 契约 | `crates/r3e-core/src/light.rs` | `LocalLight` / `LocalLightKind` / `attenuation` / `spot_factor` / `irradiance`（CPU 参考，零 wgpu） |
+| 打包 | `crates/r3e-render/src/renderer.rs` | `LightsUniform::from_lights(&scene.lights, scene.lights_enabled)`，每帧一次 `write_buffer` |
+| 驱动 | `r3e-script` / `r3e-editor` | 脚本 19 个 API；编辑器 `light.list` / `light.set` / `light.remove` / `light.clear` / `light.set_enabled`（补丁式） |
+
+**衰减与锥因子**（与 `shader.wgsl` 逐式对应）：
+
+| 项 | 公式 |
+| --- | --- |
+| 衰减 | `(1 - (d/range)^4)² / (d² + 0.01)`，`d ≥ range` 归零（平滑窗逆平方，没有硬截断的圆环感） |
+| 锥因子 | 内角内 1、外角外 0，中间 `smoothstep`；内外角相等时退化成硬边阶跃，避免除零 |
+
+**绑定在 `@group(3) @binding(4)`**：WebGPU `max_bind_groups = 4`（索引 0..3），第一版写成 `@group(4)`
+启动即 `wgpu Validation Error`。现在光源表与阴影贴图同组，`tests/local_lights_shader.rs` 断言
+「无 `@group(4)`」「`shadow_layout` 含 binding 4」「无独立 `lights_bind_group`」三条一起守。
+
+**总开关写 `count.x = 0`**：数据留在 uniform 里，片元循环上界 `min(count.x, 16)`，关掉即零次迭代。
+片元侧三处早退（超半径 / 背面 / 锥外）保证没被照到的片元不为该灯付 GGX/Smith 的代价。
+
+**探针**（`cargo run -- assets/scene.json scripts/lights_demo.rhai --run-seconds 3`）：
+
+```text
+[起始] 局部光源：场景 2 盏 / 上传 2 盏 / 开关 true
+```
+
+「场景」是 `Scene::lights.len()`，「上传」是 uniform 里的 `count.x`：两者不等就是被截断（超 16 盏）或被开关清零。
+
+**脚本侧两个坑**（写演示脚本时踩到的）：`light_add_spot` 是 13 个**位置参数**，少给一个不会编译报错而是
+`on_start` 里抛 `Function not found`；一行里串四段 `+` 拼接会撞 Rhai 的 `Expression exceeds maximum complexity`
+（编译期失败、整脚本不执行）。所以 `on_start` 的报错现在也会打一行 `[script] on_start 出错: ...`。
+
+**测试覆盖**：`cargo test -p r3e-core`（衰减 / 锥因子 / 收集与收敛 / 场景往返）、`-p r3e-render`
+（`LOCAL_LIGHT_STRIDE == 64`、`LIGHTS_UNIFORM_SIZE == 1040`、wgsl 常量比对）、`-p r3e-editor --test light_rpc`、
+`-p r3e-app`（`light_set` 插入与合并、坏 kind 无副作用、容量上限、空 key 拒绝）、`-p r3e-script --test scripts_compile`（`scripts/*.rhai` 全量编译守卫——Rhai 的表达式复杂度超限是**编译期**
+失败，运行时只打一行 error 不中断，这条守卫上线当天就抓到 `ccd_demo.rhai` 早已坏掉）。光照观感**待人工窗口确认**。
 
 ---
 
