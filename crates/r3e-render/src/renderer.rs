@@ -10,7 +10,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 use r3e_core::{
-    Aabb, AssetId, EnvironmentSettings, Frustum, Light, MeshRef, ProceduralProvider, Scene, Sh9,
+    Aabb, AssetId, EnvironmentSettings, Frustum, Light, LocalLight, MeshRef, ProceduralProvider,
+    Scene, Sh9,
 };
 use winit::window::Window;
 
@@ -139,6 +140,78 @@ impl Default for CameraUniform {
             env_sun_dir: [env.sun_dir[0], env.sun_dir[1], env.sun_dir[2], 0.0],
             env_sh: [[0.0; 4]; r3e_core::env::SH_COEFFICIENTS],
         }
+    }
+}
+
+/// 扩展十五：单盏局部光源的 GPU 布局（64 字节 = 4 个 vec4）。
+///
+/// 与 `shader.wgsl` 的 `struct LocalLight` 逐字段一致：
+/// `pos_range`（xyz 位置 + w 半径）、`color_power`（rgb 颜色 + w 强度）、
+/// `dir_inner`（xyz 方向 + w 内角余弦）、`outer_kind`（x 外角余弦 + y 类型码）。
+///
+/// 为什么打包成 vec4 而不是 `[f32; 16]`：GPU 侧的 uniform 读取本就按 16 字节对齐，
+/// 拆成 vec4 后 wgsl 里可以直接 `.xyz` / `.w` 取，省掉 CPU 侧的偏移手算。
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct LocalLightRaw {
+    pub pos_range: [f32; 4],
+    pub color_power: [f32; 4],
+    pub dir_inner: [f32; 4],
+    pub outer_kind: [f32; 4],
+}
+
+/// 单盏灯的字节步长。契约测试锁死它，防止哪天加字段忘了同步 wgsl 的数组长度。
+pub const LOCAL_LIGHT_STRIDE: u64 = std::mem::size_of::<LocalLightRaw>() as u64;
+
+/// 局部光源表 uniform：1 个计数 vec4 + 定长 16 盏灯。
+///
+/// `count.x` 是**实际参与计算**的灯数：总开关关闭时写 0（数据仍留在场景里，
+/// 再打开即恢复），wgsl 的循环上界取 `min(count.x, MAX_LOCAL_LIGHTS)`。
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct LightsUniform {
+    /// x = 有效灯数，yzw 保留
+    pub count: [f32; 4],
+    pub items: [LocalLightRaw; r3e_core::MAX_LOCAL_LIGHTS],
+}
+
+/// 局部光源表的 uniform 总字节数。
+pub const LIGHTS_UNIFORM_SIZE: u64 = std::mem::size_of::<LightsUniform>() as u64;
+
+impl Default for LightsUniform {
+    fn default() -> Self {
+        Self {
+            count: [0.0; 4],
+            items: [LocalLightRaw::zeroed(); r3e_core::MAX_LOCAL_LIGHTS],
+        }
+    }
+}
+
+impl LightsUniform {
+    /// 把场景里的灯打包成 uniform。
+    ///
+    /// 约定：
+    /// * `enabled == false` → 计数写 0，GPU 整个循环跳过（数据不动，打开即恢复）；
+    /// * 只取前 `MAX_LOCAL_LIGHTS` 盏（场景层已经截断过，这里再夹一次防越界）；
+    /// * 每盏灯先跑一次 `sanitized()`，保证漫延到 GPU 的数值一定合法；
+    /// * 余弦在 CPU 侧算好（`cos_inner` / `cos_outer`），省掉片元里两次 `cos`。
+    pub fn from_lights(lights: &[LocalLight], enabled: bool) -> Self {
+        let mut out = Self::default();
+        if !enabled {
+            return out;
+        }
+        let count = lights.len().min(r3e_core::MAX_LOCAL_LIGHTS);
+        for (i, light) in lights.iter().take(count).enumerate() {
+            let l = light.clone().sanitized();
+            out.items[i] = LocalLightRaw {
+                pos_range: [l.pos[0], l.pos[1], l.pos[2], l.range],
+                color_power: [l.color[0], l.color[1], l.color[2], l.intensity],
+                dir_inner: [l.dir[0], l.dir[1], l.dir[2], l.cos_inner()],
+                outer_kind: [l.cos_outer(), l.kind.gpu_code(), 0.0, 0.0],
+            };
+        }
+        out.count = [count as f32, 0.0, 0.0, 0.0];
+        out
     }
 }
 
@@ -417,6 +490,8 @@ pub struct RenderStats {
     pub ui_draws: u32,
     /// 本帧 HDR 后处理链的 pass 统计（扩展十三）。
     pub postfx: PostFxStats,
+    /// 本帧真正上传并参与计算的局部光源数（扩展十五）。0 = 场景没有灯 / 总开关关闭。
+    pub local_lights: u32,
 }
 
 pub struct Renderer {
@@ -447,6 +522,9 @@ pub struct Renderer {
     shadow_layout: wgpu::BindGroupLayout,
     shadow_bind_group: wgpu::BindGroup,
     shadow_uniform: wgpu::Buffer,
+    /// 扩展十五：局部光源表 uniform（1 个计数 + 16 盏灯）——随 `shadow_bind_group`
+    /// 一起以 group(3) binding(4) 绑定，不单开绑定组。
+    lights_buffer: wgpu::Buffer,
     /// 阴影通道专用：只含光源正交矩阵的 uniform 与绑定组（见 `ShadowPassUniform`）。
     shadow_pass_bind_group: wgpu::BindGroup,
     shadow_pass_uniform: wgpu::Buffer,
@@ -623,7 +701,28 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // 扩展十五：局部光源表（点光 / 聚光）。只被片元着色器读取。
+                // 塞进 group(3) 而不是另开 group(4)：WebGPU core 规范里
+                // `max_bind_groups` 就是 4，第 5 个组（索引 4）直接过不了校验。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
+        });
+
+        // 光源表 uniform：尺寸固定（1 个计数 vec4 + 16 × 64B），改灯数不需要重建。
+        let lights_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-lights-ubo"),
+            size: std::mem::size_of::<LightsUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         // 深度 pass 的独立 group(3)：只有 binding(3) 一个矩阵 uniform，
@@ -691,6 +790,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: shadow_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: lights_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -835,6 +938,7 @@ impl Renderer {
             shadow_layout,
             shadow_bind_group,
             shadow_uniform: shadow_uniform_buffer,
+            lights_buffer,
             shadow_pass_bind_group,
             shadow_pass_uniform,
             shadow_pipeline,
@@ -947,6 +1051,8 @@ impl Renderer {
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         let shadow_on = self.prepare_shadow(&groups, bounds, scene.light);
+        // 扩展十五：局部光源表每帧重传（灯可以被脚本逐帧移动，缓存反而要判等）
+        let local_lights = self.prepare_local_lights(scene);
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -1117,6 +1223,7 @@ impl Renderer {
                 ui_quads: 0,
                 ui_draws: 0,
                 postfx: PostFxStats::default(),
+                local_lights,
             };
         }
 
@@ -1199,6 +1306,18 @@ impl Renderer {
     }
 
     /// 阶段 D：把阴影贴图尺寸对齐场景配置；返回本帧是否要跑阴影通道。
+    /// 扩展十五：把场景里的局部光源打包上传，返回本帧生效的灯数。
+    ///
+    /// 每帧都传（而不是像球谐那样缓存）：灯可以被脚本逐帧移动，判等成本反而更高。
+    /// 总开关关闭时计数写 0，GPU 侧整个循环跳过——数据仍留在场景里，打开即恢复。
+    fn prepare_local_lights(&mut self, scene: &Scene) -> u32 {
+        let uniform = LightsUniform::from_lights(&scene.lights, scene.lights_enabled);
+        let count = uniform.count[0] as u32;
+        self.queue
+            .write_buffer(&self.lights_buffer, 0, bytemuck::bytes_of(&uniform));
+        count
+    }
+
     fn prepare_shadow(
         &mut self,
         groups: &[(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)],
@@ -1276,6 +1395,11 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.shadow_uniform.as_entire_binding(),
+                },
+                // 光源表与阴影贴图同组，重建时一并重新绑定（buffer 本身不变）
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.lights_buffer.as_entire_binding(),
                 },
             ],
         });

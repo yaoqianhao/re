@@ -172,6 +172,123 @@ struct ShadowPass {
 @group(3) @binding(3)
 var<uniform> u_shadow_pass: ShadowPass;
 
+// ---------------- 扩展十五：局部光源（点光 / 聚光） ----------------
+// 与 `r3e-core::light::{LocalLight, attenuation, spot_factor}` 逐式对应。
+// 每盏灯 4 个 vec4（64 字节），定长 16 盏 —— 长度必须与 `MAX_LOCAL_LIGHTS` 一致，
+// `tests/local_lights_shader.rs` 会解析本文件比对，改一处必须改三处。
+//
+//   pos_range   : xyz = 世界位置，w = 影响半径
+//   color_power : rgb = 线性颜色，w = 强度
+//   dir_inner   : xyz = 单位方向（聚光朝向），w = 内角余弦
+//   outer_kind  : x = 外角余弦，y = 类型码（0 点光 / 1 聚光），zw 保留
+struct LocalLight {
+    pos_range: vec4<f32>,
+    color_power: vec4<f32>,
+    dir_inner: vec4<f32>,
+    outer_kind: vec4<f32>,
+};
+
+struct Lights {
+    // x = 本帧有效灯数，yzw 保留
+    count: vec4<f32>,
+    items: array<LocalLight, 16>,
+};
+
+// 光源表挂在 group(3)（与阴影贴图同组）：WebGPU core 规范 `max_bind_groups` = 4，
+// 索引 4 的组直接过不了创建校验，所以这里复用场景级绑定组的第 5 个槽位。
+@group(3) @binding(4)
+var<uniform> u_lights: Lights;
+
+// 衰减分母的软化常数（与 CPU 侧 ATTENUATION_EPSILON 一致）：d→0 时仍有限
+const ATTENUATION_EPSILON: f32 = 0.01;
+// 平滑窗幂次（与 CPU 侧 ATTENUATION_WINDOW_POWER 一致）
+const ATTENUATION_WINDOW_POWER: f32 = 4.0;
+// 定长数组上界（与 CPU 侧 MAX_LOCAL_LIGHTS 一致，作为循环夹取的上限）
+const MAX_LOCAL_LIGHTS: u32 = 16u;
+
+/// 平滑窗逆平方衰减：(1 - (d/range)^4)² / (d² + ε)，d ≥ range 时为 0。
+fn local_attenuation(range: f32, distance: f32) -> f32 {
+    if range <= 0.0 {
+        return 0.0;
+    }
+    let d = max(distance, 0.0);
+    if d >= range {
+        return 0.0;
+    }
+    let t = clamp(d / range, 0.0, 1.0);
+    let window = 1.0 - pow(t, ATTENUATION_WINDOW_POWER);
+    return (window * window) / (d * d + ATTENUATION_EPSILON);
+}
+
+/// 聚光锥因子：内外角相等（角度退化）时退成硬边阶跃，避免除零。
+fn local_spot_factor(cos_angle: f32, cos_inner: f32, cos_outer: f32) -> f32 {
+    if cos_inner <= cos_outer {
+        return select(0.0, 1.0, cos_angle >= cos_inner);
+    }
+    let t = clamp((cos_angle - cos_outer) / (cos_inner - cos_outer), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+/// 把场景里所有局部光源算一遍，返回累加的出射辐亮度。
+///
+/// 与方向光用的是同一套 Cook-Torrance 函数，区别只有两处：
+/// 光向量逐灯不同（`l = normalize(pos - p)`），且每盏灯额外乘距离衰减与锥因子。
+/// 三处早退（超半径 / 背面 / 锥外）保证没被照到的片元不为它付 BRDF 的代价。
+fn local_lighting(
+    n: vec3<f32>,
+    v: vec3<f32>,
+    world_position: vec3<f32>,
+    albedo: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    f0: vec3<f32>,
+) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    let raw_count = u32(max(u_lights.count.x, 0.0));
+    let count = min(raw_count, MAX_LOCAL_LIGHTS);
+    for (var i = 0u; i < count; i = i + 1u) {
+        let light = u_lights.items[i];
+        let to_light = light.pos_range.xyz - world_position;
+        let distance = length(to_light);
+        let range = light.pos_range.w;
+        // 早退 1：超出影响半径
+        if range <= 0.0 || distance >= range {
+            continue;
+        }
+        // 片元与光源重合时方向无意义，退回法线（衰减此时仍有限，不会爆白）
+        let l = select(normalize(to_light), n, distance < 1e-4);
+        let ndl = clamp(dot(n, l), 0.0, 1.0);
+        // 早退 2：背面不接收这盏灯的光
+        if ndl <= 0.0 {
+            continue;
+        }
+        // 早退 3：聚光锥外
+        var cone = 1.0;
+        if light.outer_kind.y > 0.5 {
+            let cos_angle = dot(light.dir_inner.xyz, -l);
+            cone = local_spot_factor(cos_angle, light.dir_inner.w, light.outer_kind.x);
+            if cone <= 0.0 {
+                continue;
+            }
+        }
+        let half_sum = l + v;
+        let h = select(normalize(half_sum), n, length(half_sum) < 1e-4);
+        let ndv = max(clamp(dot(n, v), 0.0, 1.0), 1e-4);
+        let ndh = clamp(dot(n, h), 0.0, 1.0);
+        let vdh = clamp(dot(v, h), 0.0, 1.0);
+        let f = fresnel_schlick(vdh, f0);
+        let d = distribution_ggx(ndh, roughness);
+        let g = geometry_smith(ndv, ndl, roughness);
+        let specular = f * d * g / (4.0 * ndv * ndl);
+        let kd = (vec3<f32>(1.0) - f) * (1.0 - metallic);
+        let diffuse = kd * albedo / PI;
+        let radiance = light.color_power.rgb * light.color_power.w;
+        let falloff = local_attenuation(range, distance) * cone;
+        sum += (diffuse + specular) * radiance * ndl * falloff;
+    }
+    return sum;
+}
+
 @vertex
 fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
@@ -397,7 +514,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         ambient_term = (diffuse_ibl + specular_ibl) * u_camera.env_zenith.w;
     }
 
+    // 扩展十五：局部光源（点光 / 聚光）累加。与方向光同套 BRDF，只是逐灯重算光向量，
+    // 并额外乘「平滑窗衰减 × 聚光锥因子」。局部光源不投影（见文档「已知边界」）。
+    let local_term = local_lighting(n, v, in.world_position, albedo, metallic, roughness, f0);
+
     let lit = (diffuse + specular) * radiance * ndl * shadow
+        + local_term
         + ambient_term
         // 自发光只加不减：不乘 n·l、不受阴影影响、不参与光照计算
         + u_material.emissive.rgb;

@@ -13,7 +13,10 @@ pub mod ui;
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use pbr::{MaterialUniform, SurfaceKey};
 pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
-pub use renderer::{LayeredProvider, MeshCache, RenderStats, Renderer};
+pub use renderer::{
+    LayeredProvider, LightsUniform, LocalLightRaw, MeshCache, RenderStats, Renderer,
+    LIGHTS_UNIFORM_SIZE, LOCAL_LIGHT_STRIDE,
+};
 pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
 pub use ui::{
     images_to_load, plan_ui, plan_ui_limited, UiBatch, UiBuild, UiImageProvider, UiInstance,
