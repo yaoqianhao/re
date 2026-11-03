@@ -19,11 +19,13 @@ use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
+use r3e_core::{AnimLayer, BoneMask, LayerMode, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES};
 use r3e_editor::{
-    EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief, PhysicsInfo,
-    PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
+    AnimLayerPatch, EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief,
+    PhysicsInfo, PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch,
+    PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -329,6 +331,104 @@ impl EngineApi for LocalEngineApi<'_> {
             "neutral": applied.ssao.is_neutral(),
             "ssao": ssao_value(applied.ssao),
             "postfx": postfx_value(applied),
+        }))
+    }
+
+    /// 列出混合树层（扩展十八 A）。`instance` 缺省列出全部动画实例的层。
+    ///
+    /// 显式点名却找不到实例时报参数错误：编辑器把实例名拼错时，回空列表会让人以为
+    /// 「这个实例没有层」，比直接说「没有这个实例」难排查得多。
+    fn scene_anim_layers(
+        &mut self,
+        instance: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Value, RpcFailure> {
+        let scene = self.scene.borrow();
+        let mut layers = Vec::new();
+        let (mut total, mut instances) = (0usize, 0usize);
+        match instance {
+            Some(name) => {
+                let inst = scene.anim_instance(name).ok_or_else(|| {
+                    RpcFailure::invalid_params(format!("没有名为 `{name}` 的动画实例"))
+                })?;
+                instances = 1;
+                total = inst.layers.len();
+                for layer in inst.layers.iter().take(limit.unwrap_or(usize::MAX)) {
+                    layers.push(anim_layer_value(&inst.name, layer));
+                }
+            }
+            None => {
+                for inst in &scene.animations {
+                    instances += 1;
+                    total += inst.layers.len();
+                    for layer in &inst.layers {
+                        layers.push(anim_layer_value(&inst.name, layer));
+                    }
+                }
+                layers.truncate(limit.unwrap_or(usize::MAX));
+            }
+        }
+        Ok(json!({
+            "count": total,
+            "instances": instances,
+            "limit": MAX_ANIM_LAYERS,
+            "layers": layers,
+        }))
+    }
+
+    /// 混合树层补丁（扩展十八 A）：与 `light_set` 不同，层**不能**凭空创建——
+    /// 层必须绑定片段，凭空建层等于建一个播不了任何动作的空层，因此层不存在一律报错。
+    /// 所有字符串先解析完再落地，写错的模式 / 片段不会留下半个被改过的层。
+    fn scene_anim_layer_set(&mut self, patch: AnimLayerPatch) -> Result<Value, RpcFailure> {
+        let mode = match patch.mode.as_deref() {
+            Some(name) => Some(LayerMode::parse(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!(
+                    "未知叠加模式 `{name}`（可选：override / additive）"
+                ))
+            })?),
+            None => None,
+        };
+        let mask = patch.mask.as_deref().map(bone_mask_of);
+        let mut scene = self.scene.borrow_mut();
+        if scene.anim_instance(&patch.instance).is_none() {
+            return Err(RpcFailure::invalid_params(format!(
+                "没有名为 `{}` 的动画实例",
+                patch.instance
+            )));
+        }
+        if let Some(clip) = patch.clip.as_deref() {
+            if !scene.set_anim_layer_clip(&patch.instance, &patch.layer, clip) {
+                return Err(RpcFailure::invalid_params(format!(
+                    "实例 `{}` 上没有层 `{}`，或片段 `{clip}` 解析不到",
+                    patch.instance, patch.layer
+                )));
+            }
+        }
+        if let Some(v) = patch.weight {
+            if !scene.set_anim_layer_weight(&patch.instance, &patch.layer, v) {
+                return Err(layer_missing(&patch.instance, &patch.layer));
+            }
+        }
+        if let Some(v) = mode {
+            if !scene.set_anim_layer_mode(&patch.instance, &patch.layer, v) {
+                return Err(layer_missing(&patch.instance, &patch.layer));
+            }
+        }
+        if let Some(v) = mask {
+            if !scene.set_anim_layer_mask(&patch.instance, &patch.layer, v) {
+                return Err(layer_missing(&patch.instance, &patch.layer));
+            }
+        }
+        if let Some(v) = patch.speed {
+            if !scene.set_anim_layer_speed(&patch.instance, &patch.layer, v) {
+                return Err(layer_missing(&patch.instance, &patch.layer));
+            }
+        }
+        let layer = scene
+            .anim_layer(&patch.instance, &patch.layer)
+            .ok_or_else(|| layer_missing(&patch.instance, &patch.layer))?;
+        Ok(json!({
+            "layer": anim_layer_value(&patch.instance, layer),
         }))
     }
 
@@ -835,6 +935,93 @@ fn shadow_value(shadow: &ShadowSettings) -> Value {
     })
 }
 
+/// 层不存在时的统一报错（`layer` 给空串表示第一层）。
+fn layer_missing(instance: &str, layer: &str) -> RpcFailure {
+    let which = if layer.trim().is_empty() {
+        "（空名 = 第一层）".to_string()
+    } else {
+        format!("`{layer}`")
+    };
+    RpcFailure::invalid_params(format!("实例 `{instance}` 上没有名为 {which} 的层"))
+}
+
+/// 遮罩字符串 → [`BoneMask`]，规则与脚本侧 `parse_bone_mask` 完全一致：
+/// `"arm,hand"` 只作用这几处，`"!root"` 除 root 外全部，空串 / `"*"` / 只有分隔符
+/// 表示整副骨架——归一成 `pass_all` 而不是空遮罩，空遮罩会让整层都不出效果。
+fn bone_mask_of(spec: &str) -> BoneMask {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() || trimmed == "*" {
+        return BoneMask::pass_all();
+    }
+    let mut include = Vec::new();
+    let mut exclude = Vec::new();
+    for part in trimmed.split(',') {
+        let rule = part.trim();
+        if rule.is_empty() {
+            continue;
+        }
+        match rule.strip_prefix('!') {
+            Some(rest) => {
+                let name = rest.trim();
+                // 只有 `!` 没有名字的规则直接丢掉，不造一条空排除规则。
+                if !name.is_empty() {
+                    exclude.push(name.to_string());
+                }
+            }
+            None => include.push(rule.to_string()),
+        }
+    }
+    if include.is_empty() && exclude.is_empty() {
+        BoneMask::pass_all()
+    } else {
+        BoneMask { include, exclude }
+    }
+}
+
+/// 把一层混合树序列化成编辑器契约的 JSON。
+///
+/// `weight` 是层自己的目标权重，`effective_weight` 才含淡入淡出的当前值——
+/// 编辑器画「目标 vs 实际」两条线时两个都要。
+fn anim_layer_value(instance: &str, layer: &AnimLayer) -> Value {
+    let mask = if layer.mask.is_pass_all() {
+        "*".to_string()
+    } else {
+        let mut parts = layer.mask.include.clone();
+        parts.extend(layer.mask.exclude.iter().map(|rule| format!("!{rule}")));
+        parts.join(",")
+    };
+    let weights = layer.normalized_weights();
+    let clips: Vec<Value> = layer
+        .clips
+        .iter()
+        .zip(weights)
+        .map(|(lc, w)| {
+            json!({
+                "name": lc.clip.name,
+                "base_weight": lc.weight,
+                "weight": w,
+            })
+        })
+        .collect();
+    json!({
+        "instance": instance,
+        "layer": layer.name,
+        "mode": layer.mode.as_str(),
+        "weight": layer.weight,
+        "effective_weight": layer.effective_weight(),
+        "fading": layer.fade.is_some(),
+        "mask": mask,
+        "mask_include": layer.mask.include.clone(),
+        "mask_exclude": layer.mask.exclude.clone(),
+        "clips": clips,
+        "time": layer.sample_time(),
+        "duration": layer.duration(),
+        "speed": layer.speed,
+        "looping": layer.looping,
+        "playing": layer.playing,
+    })
+}
+
 /// RPC / 脚本共用的「一盏灯」JSON 形态。
 ///
 /// 字段与 `LocalLight` 一一对应，`kind` 用规范名而不是数字码——编辑器面板要能
@@ -873,8 +1060,10 @@ fn ui_element_value(el: &UiElement) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use r3e_core::anim::{AnimBinding, AnimInstance};
     use r3e_core::light::MIN_LIGHT_RANGE;
-    use r3e_core::InputState;
+    use r3e_core::{AnimClip, AnimKey, AnimTrack, InputState};
+    use std::sync::Arc;
 
     type Fixture = (Rc<RefCell<Scene>>, Rc<RefCell<Physics>>, ScriptHost);
 
@@ -1661,5 +1850,222 @@ mod tests {
         assert!((fx.exposure + 0.5).abs() < 1e-6);
         assert!(fx.bloom.enabled);
         assert!(fx.fxaa);
+    }
+    /// 造一个带混合树的场景：`hero/walk` 播 walk，`hero/atk` 供层叠加。
+    fn anim_fixture() -> Fixture {
+        let (scene, physics, scripts) = fixture();
+        {
+            let mut scene_ref = scene.borrow_mut();
+            let cube = scene_ref.find_id("cube").expect("cube 应存在");
+            let walk = Arc::new(anim_clip("walk", 10.0));
+            let mut inst = AnimInstance::new("hero/walk", walk);
+            inst.bindings = vec![AnimBinding {
+                node: cube,
+                node_index: 0,
+                path: "cube".to_string(),
+                track: 0,
+            }];
+            scene_ref.add_anim_instance(inst);
+            scene_ref.register_anim_clip("hero/atk", Arc::new(anim_clip("atk", 100.0)));
+        }
+        (scene, physics, scripts)
+    }
+
+    fn anim_clip(name: &str, end_x: f32) -> AnimClip {
+        AnimClip {
+            name: name.to_string(),
+            duration: 1.0,
+            tracks: vec![AnimTrack {
+                node_path: "cube".to_string(),
+                node_index: 0,
+                keys: vec![anim_key(0.0, 0.0), anim_key(1.0, end_x)],
+            }],
+        }
+    }
+
+    fn anim_key(time: f32, x: f32) -> AnimKey {
+        AnimKey {
+            time,
+            position: Vec3::new(x, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
+    }
+
+    #[test]
+    fn anim_layers_lists_instances_and_layers() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        // 层只能由脚本建（层必须绑定片段），编辑器只能读和调参。
+        let _ = scripts
+            .eval(r#"add_anim_layer("hero/walk", "upper", "atk", 1.0)"#)
+            .expect("建层应成功");
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let all = api.scene_anim_layers(None, None).expect("列层应成功");
+        assert_eq!(all["count"], json!(1));
+        assert_eq!(all["instances"], json!(1), "应报告扫了几个实例");
+        assert_eq!(all["limit"], json!(MAX_ANIM_LAYERS));
+        let layer = &all["layers"][0];
+        assert_eq!(layer["instance"], json!("hero/walk"));
+        assert_eq!(layer["layer"], json!("upper"));
+        assert_eq!(layer["mode"], json!("override"));
+        assert_eq!(layer["mask"], json!("*"), "默认整副骨架");
+        assert_eq!(layer["clips"][0]["name"], json!("atk"));
+        assert_eq!(layer["playing"], json!(true));
+
+        let one = api
+            .scene_anim_layers(Some("hero/walk"), None)
+            .expect("点名实例应成功");
+        assert_eq!(one["count"], json!(1));
+
+        let missing = api.scene_anim_layers(Some("nobody"), None);
+        assert!(missing.is_err(), "点名的实例不存在必须报错");
+    }
+
+    #[test]
+    fn anim_layer_set_patches_and_returns_layer() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        let _ = scripts
+            .eval(r#"add_anim_layer("hero/walk", "upper", "atk", 1.0)"#)
+            .expect("建层应成功");
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                weight: Some(0.4),
+                mode: Some("additive".to_string()),
+                mask: Some("cube,!root".to_string()),
+                speed: Some(2.0),
+                clip: None,
+            })
+            .expect("补丁应成功");
+        let layer = &out["layer"];
+        // f32→JSON 会有二进制尾差，按近似比。
+        let weight = layer["weight"].as_f64().expect("weight 应是数字");
+        assert!((weight - 0.4).abs() < 1e-6, "权重应为 0.4，实得 {weight}");
+        assert_eq!(layer["mode"], json!("additive"));
+        assert_eq!(layer["speed"], json!(2.0));
+        assert_eq!(layer["mask_include"], json!(["cube"]));
+        assert_eq!(layer["mask_exclude"], json!(["root"]));
+        assert_eq!(layer["mask"], json!("cube,!root"), "遮罩应能原样回写成串");
+
+        // 落到了 core 上，而不是只回了个好看的 JSON。
+        let stored = scene
+            .borrow()
+            .anim_layer("hero/walk", "upper")
+            .cloned()
+            .expect("层应存在");
+        assert!((stored.weight - 0.4).abs() < 1e-6);
+        assert_eq!(stored.mode, LayerMode::Additive);
+        assert!((stored.speed - 2.0).abs() < 1e-6);
+        assert!(stored.mask.contains("cube") && !stored.mask.contains("root"));
+    }
+
+    #[test]
+    fn anim_layer_set_rejects_unknown_mode_without_side_effect() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        let _ = scripts
+            .eval(r#"add_anim_layer("hero/walk", "upper", "atk", 0.8)"#)
+            .expect("建层应成功");
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let bad = api.scene_anim_layer_set(AnimLayerPatch {
+            instance: "hero/walk".to_string(),
+            layer: "upper".to_string(),
+            weight: Some(0.1),
+            mode: Some("multiply".to_string()),
+            ..Default::default()
+        });
+        assert!(bad.is_err(), "未知模式必须报错");
+
+        // 关键：模式写错时，同一次补丁里的权重也不该落地——不留半个改过的层。
+        let stored = scene
+            .borrow()
+            .anim_layer("hero/walk", "upper")
+            .cloned()
+            .expect("层应存在");
+        assert!((stored.weight - 0.8).abs() < 1e-6, "权重不该被改");
+        assert_eq!(stored.mode, LayerMode::Override, "模式不该被改");
+    }
+
+    #[test]
+    fn anim_layer_set_rejects_missing_instance_or_layer() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let no_instance = api.scene_anim_layer_set(AnimLayerPatch {
+            instance: "nobody".to_string(),
+            weight: Some(0.5),
+            ..Default::default()
+        });
+        assert!(no_instance.is_err(), "实例不存在必须报错");
+
+        // 实例在、层不在：同样报错，不凭空建层。
+        let no_layer = api.scene_anim_layer_set(AnimLayerPatch {
+            instance: "hero/walk".to_string(),
+            layer: "legs".to_string(),
+            weight: Some(0.5),
+            ..Default::default()
+        });
+        assert!(no_layer.is_err(), "层不存在必须报错");
+        assert!(
+            scene.borrow().anim_layer_names("hero/walk").is_empty(),
+            "失败调用不该建出任何层"
+        );
+
+        // 片段名解析不到也报错。
+        let no_clip = api.scene_anim_layer_set(AnimLayerPatch {
+            instance: "hero/walk".to_string(),
+            clip: Some("nosuchclip".to_string()),
+            ..Default::default()
+        });
+        assert!(no_clip.is_err(), "片段解析不到必须报错");
+    }
+
+    #[test]
+    fn anim_layers_limit_truncates_but_count_is_total() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        let _ = scripts
+            .eval(r#"add_anim_layer("hero/walk", "upper", "atk", 1.0); add_anim_layer("hero/walk", "lower", "atk", 0.5)"#)
+            .expect("建层应成功");
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let list = api.scene_anim_layers(None, Some(1)).expect("列层应成功");
+        assert_eq!(list["count"], json!(2), "count 报总数");
+        assert_eq!(
+            list["layers"].as_array().map(|v| v.len()),
+            Some(1),
+            "limit 只截断明细"
+        );
+    }
+
+    #[test]
+    fn bone_mask_spec_is_normalized() {
+        // 空 / `*` / 只有分隔符 → 整副骨架（空遮罩会让整层都不出效果）。
+        for spec in ["", "  ", "*", " , ", ",,"] {
+            let mask = bone_mask_of(spec);
+            assert!(mask.is_pass_all(), "`{spec}` 应归一成整副骨架");
+            assert_eq!(mask.rule_count(), 0);
+        }
+        let include = bone_mask_of("cube, sphere");
+        assert_eq!(
+            include.include,
+            vec!["cube".to_string(), "sphere".to_string()]
+        );
+        assert!(include.exclude.is_empty());
+
+        let exclude = bone_mask_of("!root");
+        assert!(exclude.include.is_empty());
+        assert_eq!(exclude.exclude, vec!["root".to_string()]);
+
+        let mixed = bone_mask_of("cube, !root");
+        assert_eq!(mixed.include, vec!["cube".to_string()]);
+        assert_eq!(mixed.exclude, vec!["root".to_string()]);
+        assert!(!mixed.is_pass_all());
+
+        // 只有 `!` 的规则没有名字，忽略而不是造一条空规则。
+        assert!(bone_mask_of("!").is_pass_all());
     }
 }
