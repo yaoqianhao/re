@@ -357,6 +357,38 @@ impl SsaoPatch {
     }
 }
 
+/// `scene.anim_layer_set` 的补丁（扩展十八 A）：只给要改的字段，其余保持原值。
+///
+/// 层由 `instance` + `layer` 定位（`layer` 给空串表示该实例的第一层）。
+/// 与 `SsaoPatch` 同一条原则：本层**不认识** `r3e_core` 的任何类型——`mode` /
+/// `mask` / `clip` 都是字符串，合法性由宿主判定后报参数错误；`mask` 的写法与脚本侧
+/// 完全一致（`"arm,hand"` / `"!root"` / `""` 或 `"*"` 表示整副骨架）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnimLayerPatch {
+    pub instance: String,
+    pub layer: String,
+    /// 目标权重（0 = 不参与合成，1 = 全量）；带过渡请走脚本的 `fade_anim_layer`。
+    pub weight: Option<f32>,
+    /// 叠加模式规范名（`override` / `additive`，大小写不敏感）。
+    pub mode: Option<String>,
+    /// 骨骼遮罩（逗号串，`!` 前缀表示排除）。
+    pub mask: Option<String>,
+    /// 层播放速度（负值倒放）。
+    pub speed: Option<f32>,
+    /// 把层内片段整体换成这一路（层内收敛为单片段）。
+    pub clip: Option<String>,
+}
+
+impl AnimLayerPatch {
+    pub fn is_empty(&self) -> bool {
+        self.weight.is_none()
+            && self.mode.is_none()
+            && self.mask.is_none()
+            && self.speed.is_none()
+            && self.clip.is_none()
+    }
+}
+
 /// `ui.set` 的补丁（扩展十四）：只给要改的字段，其余沿用旧值。
 ///
 /// 与 `PostFxPatch` 同一条原则：本层**不认识** `r3e_core` 的任何类型。位置与尺寸用
@@ -543,6 +575,25 @@ pub trait EngineApi {
     /// 例如「写回本场景的原始文件」）。实现方应返回落盘后的绝对路径与物件数量。
     fn scene_save(&mut self, _path: Option<&str>) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.save"))
+    }
+
+    /// 列出动画混合树层（扩展十八 A）：`{ count, limit, layers: [...] }`。
+    ///
+    /// `instance` 为 `None` 时列出全部动画实例的层；给了名字但实例不存在，
+    /// 宿主应报参数错误（编辑器拼错实例名时，回空列表比回错误更难排查）。
+    fn scene_anim_layers(
+        &mut self,
+        _instance: Option<&str>,
+        _limit: Option<usize>,
+    ) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.anim_layers"))
+    }
+
+    /// 改动一个混合树层（权重 / 模式 / 遮罩 / 速度 / 片段），返回收敛后的层对象。
+    ///
+    /// 编辑器侧改动一律**立即生效**，不做过渡——过渡是玩法逻辑，属于脚本。
+    fn scene_anim_layer_set(&mut self, _patch: AnimLayerPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.anim_layer_set"))
     }
 
     /// 列出当前 2D UI 元素（扩展十四）。
@@ -958,6 +1009,81 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 return Response::fail(id, RpcFailure::invalid_params("ssao 补丁至少要给一个字段"));
             }
             match api.scene_set_ssao(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        // 动画混合树契约（扩展十八 A）：`scene.anim_layers` 只读，`scene.anim_layer_set`
+        // 补丁式写入。模式名 / 遮罩串原样透传，认不认识由宿主的 `LayerMode::parse`
+        // 与遮罩解析决定——本层同样不认识 `r3e_core` 的任何类型。
+        "scene.animlayers" => {
+            // `opt_str` 已把显式 null 当「未给」：编辑器面板常把「没选实例」序列化成 null。
+            let instance = match opt_str(&req.params, "instance") {
+                Ok(v) => v.map(|s| s.to_string()),
+                Err(f) => return Response::fail(id, f),
+            };
+            let limit = match param(&req.params, "limit") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_u64() {
+                    Some(n) => Some(n as usize),
+                    None => {
+                        return Response::fail(
+                            id,
+                            RpcFailure::invalid_params("参数 `limit` 应为非负整数"),
+                        )
+                    }
+                },
+            };
+            match api.scene_anim_layers(instance.as_deref(), limit) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "scene.animlayerset" => {
+            let instance = match require_str(&req.params, "instance") {
+                Ok(s) if !s.trim().is_empty() => s.to_string(),
+                Ok(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `instance` 不能为空"),
+                    )
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            // `layer` 缺省 = 第一层，与脚本侧「空名取第一层」保持一致。
+            let layer = match opt_str(&req.params, "layer") {
+                Ok(v) => v.unwrap_or_default().to_string(),
+                Err(f) => return Response::fail(id, f),
+            };
+            let patch = match (
+                opt_num(&req.params, "weight"),
+                opt_str(&req.params, "mode"),
+                opt_str(&req.params, "mask"),
+                opt_num(&req.params, "speed"),
+                opt_str(&req.params, "clip"),
+            ) {
+                (Ok(weight), Ok(mode), Ok(mask), Ok(speed), Ok(clip)) => AnimLayerPatch {
+                    instance,
+                    layer,
+                    weight,
+                    mode: mode.map(|s| s.to_string()),
+                    mask: mask.map(|s| s.to_string()),
+                    speed,
+                    clip: clip.map(|s| s.to_string()),
+                },
+                (Err(f), ..)
+                | (_, Err(f), ..)
+                | (_, _, Err(f), ..)
+                | (_, _, _, Err(f), ..)
+                | (_, _, _, _, Err(f)) => return Response::fail(id, f),
+            };
+            if patch.is_empty() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params("anim_layer_set 补丁至少要给一个字段"),
+                );
+            }
+            match api.scene_anim_layer_set(patch) {
                 Ok(r) => Response::ok(id, r),
                 Err(f) => Response::fail(id, f),
             }
