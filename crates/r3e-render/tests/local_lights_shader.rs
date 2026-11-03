@@ -33,9 +33,16 @@ fn shader_still_parses_and_validates() {
 #[test]
 fn entry_points_unaffected() {
     let module = parsed_module();
-    let names: Vec<&str> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = module
+        .entry_points
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
     for expected in ["vs_main", "fs_main", "vs_shadow"] {
-        assert!(names.contains(&expected), "缺少入口点 {expected}，实际 {names:?}");
+        assert!(
+            names.contains(&expected),
+            "缺少入口点 {expected}，实际 {names:?}"
+        );
     }
 }
 
@@ -44,7 +51,9 @@ fn entry_points_unaffected() {
 #[test]
 fn local_light_struct_field_order_matches_rust() {
     let fields = ["pos_range", "color_power", "dir_inner", "outer_kind"];
-    let start = SHADER.find("struct LocalLight {").expect("wgsl 缺少 struct LocalLight");
+    let start = SHADER
+        .find("struct LocalLight {")
+        .expect("wgsl 缺少 struct LocalLight");
     let end = start + SHADER[start..].find('}').expect("struct LocalLight 未闭合");
     let body = &SHADER[start..end];
     let mut cursor = 0usize;
@@ -72,7 +81,10 @@ fn lights_array_length_matches_core_const() {
         "wgsl 的数组长度必须等于 MAX_LOCAL_LIGHTS（{MAX_LOCAL_LIGHTS}），否则超出部分被静默丢弃"
     );
     let count_const = format!("const MAX_LOCAL_LIGHTS: u32 = {MAX_LOCAL_LIGHTS}u;");
-    assert!(SHADER.contains(&count_const), "wgsl 缺少与之同步的 MAX_LOCAL_LIGHTS 常量");
+    assert!(
+        SHADER.contains(&count_const),
+        "wgsl 缺少与之同步的 MAX_LOCAL_LIGHTS 常量"
+    );
 }
 
 /// 光源表挂在 group(3) 的 binding(4) 上，**不能**另开 group(4)。
@@ -109,7 +121,9 @@ fn lights_binding_is_group3_binding4() {
         "不应再有独立的 lights_bind_group"
     );
     // shadow_layout 的 entries 里必须声明 binding 4
-    let idx = RENDERER.find("r3e-shadow-bgl").expect("renderer 缺少 r3e-shadow-bgl");
+    let idx = RENDERER
+        .find("r3e-shadow-bgl")
+        .expect("renderer 缺少 r3e-shadow-bgl");
     let tail = &RENDERER[idx..idx + 4000];
     assert!(
         tail.contains("binding: 4"),
@@ -145,7 +159,11 @@ fn attenuation_constants_match_core() {
 /// 三个纯函数必须齐备，且主通道确实调用了 `local_lighting`。
 #[test]
 fn lighting_helpers_exist_and_are_used() {
-    for f in ["fn local_attenuation(", "fn local_spot_factor(", "fn local_lighting("] {
+    for f in [
+        "fn local_attenuation(",
+        "fn local_spot_factor(",
+        "fn local_lighting(",
+    ] {
         assert!(SHADER.contains(f), "wgsl 缺少 {f}");
     }
     let fs_main = SHADER.find("fn fs_main(").expect("wgsl 缺少 fs_main");

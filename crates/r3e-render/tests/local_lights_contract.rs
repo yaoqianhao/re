@@ -46,9 +46,17 @@ fn lights_uniform_field_offsets() {
 
 #[test]
 fn disabled_writes_zero_count_and_keeps_data_out() {
-    let lights = vec![LocalLight::point("p", [1.0, 2.0, 3.0], [1.0, 1.0, 1.0], 5.0)];
+    let lights = vec![LocalLight::point(
+        "p",
+        [1.0, 2.0, 3.0],
+        [1.0, 1.0, 1.0],
+        5.0,
+    )];
     let off = LightsUniform::from_lights(&lights, false);
-    assert_eq!(off.count[0], 0.0, "总开关关闭时计数必须为 0，GPU 循环整体跳过");
+    assert_eq!(
+        off.count[0], 0.0,
+        "总开关关闭时计数必须为 0，GPU 循环整体跳过"
+    );
     assert_eq!(
         off.items[0].pos_range, [0.0; 4],
         "关闭时不应把灯数据传上去（数据留在场景里即可）"
@@ -75,7 +83,10 @@ fn spot_packs_cosine_and_kind_code() {
     let s = light.clone().sanitized();
     let u = LightsUniform::from_lights(&[light], true);
     let raw = u.items[0];
-    assert_eq!(raw.outer_kind[1], 1.0, "聚光类型码必须是 1（wgsl 用 >0.5 判定）");
+    assert_eq!(
+        raw.outer_kind[1], 1.0,
+        "聚光类型码必须是 1（wgsl 用 >0.5 判定）"
+    );
     assert!(
         (raw.dir_inner[3] - s.cos_inner()).abs() < 1e-6,
         "内角余弦必须在 CPU 侧算好塞进 w"
@@ -89,11 +100,11 @@ fn spot_packs_cosine_and_kind_code() {
 
 #[test]
 fn point_kind_code_is_zero() {
-    let u = LightsUniform::from_lights(
-        &[LocalLight::point("p", [0.0; 3], [1.0; 3], 1.0)],
-        true,
+    let u = LightsUniform::from_lights(&[LocalLight::point("p", [0.0; 3], [1.0; 3], 1.0)], true);
+    assert_eq!(
+        u.items[0].outer_kind[1], 0.0,
+        "点光类型码为 0，wgsl 不加锥因子"
     );
-    assert_eq!(u.items[0].outer_kind[1], 0.0, "点光类型码为 0，wgsl 不加锥因子");
 }
 
 #[test]

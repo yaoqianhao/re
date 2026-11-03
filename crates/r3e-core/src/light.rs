@@ -169,7 +169,11 @@ pub fn frustum_slice_corners(camera: &Camera, near: f32, far: f32) -> [Vec3; 8] 
     } else {
         Vec3::X
     };
-    let up = if up.length_squared() > 0.5 { up } else { Vec3::Y };
+    let up = if up.length_squared() > 0.5 {
+        up
+    } else {
+        Vec3::Y
+    };
     let forward = if forward.length_squared() > 0.5 {
         forward
     } else {
@@ -292,14 +296,8 @@ pub fn fit_cascade(light_dir: Vec3, corners: &[Vec3; 8], resolution: u32) -> Cas
 
     // view：先转到光空间，再把 (cx, cy) 与深度起点搬到原点附近
     let view = Mat4::from_translation(Vec3::new(-cx, -cy, shift)) * rot;
-    let proj = glam::camera::rh::proj::directx::orthographic(
-        -half,
-        half,
-        -half,
-        half,
-        0.05,
-        0.05 + span,
-    );
+    let proj =
+        glam::camera::rh::proj::directx::orthographic(-half, half, -half, half, 0.05, 0.05 + span);
 
     // 世界坐标下的切片中心（把光空间里的量化中心搬回世界）
     let center = rot
@@ -541,8 +539,8 @@ impl LocalLight {
     /// 内角 ∈ [0, MAX_CONE_ANGLE_DEG]，外角 ≥ 内角 + MIN_CONE_GAP_DEG（且不超过上限）。
     pub fn sanitized(mut self) -> Self {
         self.pos = sanitize_vec3(self.pos, [0.0, 0.0, 0.0]);
-        self.color = sanitize_vec3(self.color, [0.0, 0.0, 0.0])
-            .map(|c| c.clamp(0.0, MAX_LIGHT_COLOR));
+        self.color =
+            sanitize_vec3(self.color, [0.0, 0.0, 0.0]).map(|c| c.clamp(0.0, MAX_LIGHT_COLOR));
         self.intensity = if self.intensity.is_finite() {
             self.intensity.clamp(0.0, MAX_LIGHT_INTENSITY)
         } else {
@@ -846,7 +844,10 @@ mod tests {
                 ..CascadeSettings::default()
             },
         );
-        assert!((capped[2] - 40.0).abs() < 1e-2, "末切分被 max_distance 截断");
+        assert!(
+            (capped[2] - 40.0).abs() < 1e-2,
+            "末切分被 max_distance 截断"
+        );
 
         let uniform = cascade_splits(
             &camera,
@@ -944,7 +945,6 @@ mod tests {
         assert!(fit.view_proj.to_cols_array().iter().all(|v| v.is_finite()));
     }
 
-
     // ---------------- 扩展十五：局部光源 ----------------
 
     /// 平滑窗衰减：距离 0 时有限、range 边界归零、单调递减。
@@ -980,7 +980,8 @@ mod tests {
         // 沿方向轴正下方（角度 0）→ 满强度
         assert!((l.cone_factor(pos + Vec3::new(0.0, -1.0, 0.0)) - 1.0).abs() < 1e-6);
         // 偏 20°（= 内角）：仍应接近满强度
-        let at_inner = l.cone_factor(pos + Vec3::new(0.0, -1.0, 0.0).rotate_x(20f32.to_radians()) * 3.0);
+        let at_inner =
+            l.cone_factor(pos + Vec3::new(0.0, -1.0, 0.0).rotate_x(20f32.to_radians()) * 3.0);
         assert!(at_inner > 0.95, "内角边缘应接近满强度，实际 {at_inner}");
         // 偏 60°（> 外角 40°）：零
         let outside = pos + Vec3::new(0.0, -1.0, 0.0).rotate_x(60f32.to_radians()) * 3.0;
@@ -988,7 +989,10 @@ mod tests {
         // 偏 30°（内外角之间）：落在 (0,1) 开区间
         let mid = pos + Vec3::new(0.0, -1.0, 0.0).rotate_x(30f32.to_radians()) * 3.0;
         let at_mid = l.cone_factor(mid);
-        assert!(at_mid > 0.01 && at_mid < 0.99, "锥中间应平滑过渡，实际 {at_mid}");
+        assert!(
+            at_mid > 0.01 && at_mid < 0.99,
+            "锥中间应平滑过渡，实际 {at_mid}"
+        );
     }
 
     /// 角度退化（内外角相等）不能除零：退成硬边阶跃。

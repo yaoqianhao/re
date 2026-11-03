@@ -6,8 +6,8 @@ use std::path::Path;
 use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::text::ScreenText;
 use crate::light::{self, LocalLight};
+use crate::text::ScreenText;
 use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;

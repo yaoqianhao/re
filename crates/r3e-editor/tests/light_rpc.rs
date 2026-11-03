@@ -118,7 +118,11 @@ fn light_set_patch_is_parsed_field_by_field() {
 #[test]
 fn light_set_partial_patch_leaves_rest_none() {
     let mut api = Mock::default();
-    let resp = call(&mut api, "light.set", json!({ "key": "lamp", "intensity": 2.0 }));
+    let resp = call(
+        &mut api,
+        "light.set",
+        json!({ "key": "lamp", "intensity": 2.0 }),
+    );
     assert!(resp.error.is_none(), "应成功：{:?}", resp.error);
     let seen = api.seen.expect("宿主应收到补丁");
     assert_eq!(seen.intensity, Some(2.0));
@@ -159,7 +163,11 @@ fn light_set_key_only_is_rejected() {
 fn light_set_rejects_blank_key() {
     for key in ["", "   "] {
         let mut api = Mock::default();
-        let resp = call(&mut api, "light.set", json!({ "key": key, "intensity": 1.0 }));
+        let resp = call(
+            &mut api,
+            "light.set",
+            json!({ "key": key, "intensity": 1.0 }),
+        );
         let err = resp.error.expect("应报参数错误");
         assert_eq!(err.code, INVALID_PARAMS, "key={key:?}");
     }
@@ -192,7 +200,11 @@ fn method_name_is_normalized() {
     for method in ["light.set", "Light.Set", "LIGHT.SET"] {
         let mut api = Mock::default();
         let resp = call(&mut api, method, json!({ "key": "lamp", "intensity": 1.0 }));
-        assert!(resp.error.is_none(), "{method} 应命中分支：{:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "{method} 应命中分支：{:?}",
+            resp.error
+        );
         assert!(api.seen.is_some(), "{method} 应到达宿主");
     }
 }
@@ -205,11 +217,15 @@ fn light_list_limit_parsing() {
     assert_eq!(api.limit, Some(None));
 
     let mut api = Mock::default();
-    assert!(call(&mut api, "light.list", json!({ "limit": null })).error.is_none());
+    assert!(call(&mut api, "light.list", json!({ "limit": null }))
+        .error
+        .is_none());
     assert_eq!(api.limit, Some(None));
 
     let mut api = Mock::default();
-    assert!(call(&mut api, "light.list", json!({ "limit": 5 })).error.is_none());
+    assert!(call(&mut api, "light.list", json!({ "limit": 5 }))
+        .error
+        .is_none());
     assert_eq!(api.limit, Some(Some(5)));
 
     let mut api = Mock::default();
@@ -241,11 +257,17 @@ fn light_clear_and_enable_switch() {
     assert!(api.cleared);
 
     let mut api = Mock::default();
-    assert!(call(&mut api, "light.set_enabled", json!({ "enabled": false })).error.is_none());
+    assert!(
+        call(&mut api, "light.set_enabled", json!({ "enabled": false }))
+            .error
+            .is_none()
+    );
     assert_eq!(api.enabled, Some(Some(false)));
 
     let mut api = Mock::default();
-    assert!(call(&mut api, "light.set_enabled", json!({})).error.is_none());
+    assert!(call(&mut api, "light.set_enabled", json!({}))
+        .error
+        .is_none());
     assert_eq!(api.enabled, Some(None), "不给参数应是只读");
 
     let mut api = Mock::default();

@@ -1237,7 +1237,10 @@ mod postfx_script_tests {
         // 回读接口与场景一致。
         assert!((eval_float(&mut host, "postfx_exposure()") + 2.0).abs() < 1e-6);
         assert_eq!(
-            host.eval("postfx_tonemap()").unwrap().into_string().unwrap(),
+            host.eval("postfx_tonemap()")
+                .unwrap()
+                .into_string()
+                .unwrap(),
             "reinhard"
         );
     }
@@ -1269,7 +1272,9 @@ mod postfx_script_tests {
     #[test]
     fn unknown_tonemap_falls_back_to_none() {
         let (mut host, scene) = host();
-        let _ = host.eval(r#"set_postfx(1.0, "aces", false, 0.0, false)"#).unwrap();
+        let _ = host
+            .eval(r#"set_postfx(1.0, "aces", false, 0.0, false)"#)
+            .unwrap();
         let _ = host.eval(r#"set_tonemap("cinematic")"#).unwrap();
         let fx = scene.borrow().postfx.expect("postfx 段应实体化");
         assert_eq!(fx.tonemap, r3e_core::postfx::TonemapMode::None);
@@ -1290,7 +1295,6 @@ mod postfx_script_tests {
         assert_eq!(eval_float(&mut host, "postfx_exposure()"), 0.0);
     }
 }
-
 
 #[cfg(test)]
 mod ui_interaction_script_tests {
@@ -1329,9 +1333,12 @@ mod ui_interaction_script_tests {
         let list = scene.borrow().ui.clone();
 
         // 进入 → 按下 → 抬起：hovered / pressed / clicked / released
-        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), false, false, false);
-        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), true, true, false);
-        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), false, false, true);
+        ui.borrow_mut()
+            .update(&list, SCR, Some((20.0, 20.0)), false, false, false);
+        ui.borrow_mut()
+            .update(&list, SCR, Some((20.0, 20.0)), true, true, false);
+        ui.borrow_mut()
+            .update(&list, SCR, Some((20.0, 20.0)), false, false, true);
 
         assert_eq!(host.eval("ui_event_count()").unwrap().as_int().unwrap(), 4);
         assert_eq!(eval_str(&mut host, "ui_event_kind_name(0)"), "hovered");
@@ -1358,17 +1365,39 @@ mod ui_interaction_script_tests {
         let list = scene.borrow().ui.clone();
 
         assert_eq!(eval_str(&mut host, "ui_hover()"), "");
-        assert!(!host.eval("ui_pointer_over_ui()").unwrap().as_bool().unwrap());
+        assert!(!host
+            .eval("ui_pointer_over_ui()")
+            .unwrap()
+            .as_bool()
+            .unwrap());
 
-        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), true, true, false);
+        ui.borrow_mut()
+            .update(&list, SCR, Some((20.0, 20.0)), true, true, false);
         assert_eq!(eval_str(&mut host, "ui_hover()"), "btn");
         assert_eq!(eval_str(&mut host, "ui_active()"), "btn");
-        assert!(host.eval("ui_pointer_over_ui()").unwrap().as_bool().unwrap());
-        assert!(host.eval(r#"ui_hovered("btn")"#).unwrap().as_bool().unwrap());
-        assert!(!host.eval(r#"ui_clicked("btn")"#).unwrap().as_bool().unwrap());
+        assert!(host
+            .eval("ui_pointer_over_ui()")
+            .unwrap()
+            .as_bool()
+            .unwrap());
+        assert!(host
+            .eval(r#"ui_hovered("btn")"#)
+            .unwrap()
+            .as_bool()
+            .unwrap());
+        assert!(!host
+            .eval(r#"ui_clicked("btn")"#)
+            .unwrap()
+            .as_bool()
+            .unwrap());
 
-        ui.borrow_mut().update(&list, SCR, Some((20.0, 20.0)), false, false, true);
-        assert!(host.eval(r#"ui_clicked("btn")"#).unwrap().as_bool().unwrap());
+        ui.borrow_mut()
+            .update(&list, SCR, Some((20.0, 20.0)), false, false, true);
+        assert!(host
+            .eval(r#"ui_clicked("btn")"#)
+            .unwrap()
+            .as_bool()
+            .unwrap());
         assert_eq!(eval_str(&mut host, "ui_active()"), "");
     }
 
@@ -1380,7 +1409,8 @@ mod ui_interaction_script_tests {
         let ui = host.ui_interaction();
         {
             let list = scene.borrow().ui.clone();
-            ui.borrow_mut().update(&list, SCR, None, false, false, false);
+            ui.borrow_mut()
+                .update(&list, SCR, None, false, false, false);
         }
         assert_eq!(eval_str(&mut host, "ui_hit(20.0, 20.0)"), "btn");
         assert_eq!(eval_str(&mut host, "ui_hit(500.0, 400.0)"), "");
@@ -1407,8 +1437,10 @@ mod ui_interaction_script_tests {
         button(&scene, "b", 200.0, 0.0);
         let ui = host.ui_interaction();
         let list = scene.borrow().ui.clone();
-        ui.borrow_mut().update(&list, SCR, Some((10.0, 10.0)), false, false, false);
-        ui.borrow_mut().update(&list, SCR, Some((210.0, 10.0)), false, false, false);
+        ui.borrow_mut()
+            .update(&list, SCR, Some((10.0, 10.0)), false, false, false);
+        ui.borrow_mut()
+            .update(&list, SCR, Some((210.0, 10.0)), false, false, false);
 
         let src = r#"
             let n = 0;
@@ -1492,8 +1524,15 @@ mod local_light_script_tests {
             &mut host,
             r#"light_add_point("lamp", 4.0, 4.0, 4.0, 1.0, 1.0, 1.0, 2.0, 10.0)"#,
         );
-        assert_eq!(eval_i64(&mut host, "local_light_count()"), 1, "同 key 不应重复");
-        assert_eq!(scene.borrow().local_light("lamp").unwrap().pos, [4.0, 4.0, 4.0]);
+        assert_eq!(
+            eval_i64(&mut host, "local_light_count()"),
+            1,
+            "同 key 不应重复"
+        );
+        assert_eq!(
+            scene.borrow().local_light("lamp").unwrap().pos,
+            [4.0, 4.0, 4.0]
+        );
     }
 
     /// 单字段改写：位置 / 颜色 / 强度 / 半径 / 朝向 / 锥角各自独立生效。
@@ -1504,12 +1543,24 @@ mod local_light_script_tests {
             &mut host,
             r#"light_add_point("lamp", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 3.0, 10.0)"#,
         );
-        assert!(eval_bool(&mut host, r#"light_set_pos("lamp", 2.0, 3.0, 4.0)"#));
-        assert!(eval_bool(&mut host, r#"light_set_color("lamp", 0.2, 0.4, 0.6)"#));
+        assert!(eval_bool(
+            &mut host,
+            r#"light_set_pos("lamp", 2.0, 3.0, 4.0)"#
+        ));
+        assert!(eval_bool(
+            &mut host,
+            r#"light_set_color("lamp", 0.2, 0.4, 0.6)"#
+        ));
         assert!(eval_bool(&mut host, r#"light_set_intensity("lamp", 9.0)"#));
         assert!(eval_bool(&mut host, r#"light_set_range("lamp", 25.0)"#));
-        assert!(eval_bool(&mut host, r#"light_set_dir("lamp", 0.0, 1.0, 0.0)"#));
-        assert!(eval_bool(&mut host, r#"light_set_cone("lamp", 10.0, 20.0)"#));
+        assert!(eval_bool(
+            &mut host,
+            r#"light_set_dir("lamp", 0.0, 1.0, 0.0)"#
+        ));
+        assert!(eval_bool(
+            &mut host,
+            r#"light_set_cone("lamp", 10.0, 20.0)"#
+        ));
 
         let sc = scene.borrow();
         let l = sc.local_light("lamp").unwrap();
@@ -1530,7 +1581,11 @@ mod local_light_script_tests {
             !eval_bool(&mut host, r#"light_set_intensity("ghost", 5.0)"#),
             "不存在的 key 应返回 false"
         );
-        assert_eq!(eval_i64(&mut host, "local_light_count()"), 0, "不应凭空新建灯");
+        assert_eq!(
+            eval_i64(&mut host, "local_light_count()"),
+            0,
+            "不应凭空新建灯"
+        );
         assert_eq!(scene.borrow().lights.len(), 0);
     }
 
@@ -1538,13 +1593,26 @@ mod local_light_script_tests {
     #[test]
     fn script_remove_clear_and_exists() {
         let (mut host, scene) = host();
-        eval_bool(&mut host, r#"light_add_point("a", 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
-        eval_bool(&mut host, r#"light_add_point("b", 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
+        eval_bool(
+            &mut host,
+            r#"light_add_point("a", 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#,
+        );
+        eval_bool(
+            &mut host,
+            r#"light_add_point("b", 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#,
+        );
         assert!(eval_bool(&mut host, r#"local_light_exists("a")"#));
         assert!(eval_bool(&mut host, r#"light_remove("a")"#));
-        assert!(!eval_bool(&mut host, r#"light_remove("a")"#), "重复删除返回 false");
+        assert!(
+            !eval_bool(&mut host, r#"light_remove("a")"#),
+            "重复删除返回 false"
+        );
         assert!(!eval_bool(&mut host, r#"local_light_exists("a")"#));
-        assert_eq!(eval_i64(&mut host, "light_clear()"), 1, "清空应返回删掉的盏数");
+        assert_eq!(
+            eval_i64(&mut host, "light_clear()"),
+            1,
+            "清空应返回删掉的盏数"
+        );
         assert_eq!(scene.borrow().lights.len(), 0);
     }
 
@@ -1553,17 +1621,21 @@ mod local_light_script_tests {
     fn script_capacity_rejects_new_but_allows_overwrite() {
         let (mut host, scene) = host();
         for i in 0..r3e_core::MAX_LOCAL_LIGHTS {
-            let src = format!(
-                r#"light_add_point("l{i}", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#
-            );
+            let src = format!(r#"light_add_point("l{i}", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
             assert!(eval_bool(&mut host, &src), "第 {i} 盏应写入成功");
         }
         assert!(
-            !eval_bool(&mut host, r#"light_add_point("extra", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#),
+            !eval_bool(
+                &mut host,
+                r#"light_add_point("extra", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#
+            ),
             "满载后新 key 必须被拒"
         );
         assert!(
-            eval_bool(&mut host, r#"light_add_point("l0", 9.0, 9.0, 9.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#),
+            eval_bool(
+                &mut host,
+                r#"light_add_point("l0", 9.0, 9.0, 9.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#
+            ),
             "满载时同 key 覆盖必须仍生效"
         );
         assert_eq!(scene.borrow().lights.len(), r3e_core::MAX_LOCAL_LIGHTS);
@@ -1574,7 +1646,10 @@ mod local_light_script_tests {
     #[test]
     fn script_enable_switch_keeps_data() {
         let (mut host, scene) = host();
-        eval_bool(&mut host, r#"light_add_point("lamp", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 10.0, 20.0)"#);
+        eval_bool(
+            &mut host,
+            r#"light_add_point("lamp", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 10.0, 20.0)"#,
+        );
         assert!(eval_bool(&mut host, "lights_enabled()"));
         let on = host
             .eval("local_light_irradiance(0.0, 1.0, 0.0)")
@@ -1606,9 +1681,18 @@ mod local_light_script_tests {
             .eval(r#"local_light("beam")"#)
             .expect("应可调用")
             .cast::<rhai::Map>();
-        assert_eq!(map.get("key").unwrap().clone().into_string().unwrap(), "beam");
-        assert_eq!(map.get("kind").unwrap().clone().into_string().unwrap(), "spot");
-        assert_eq!(map.get("intensity").unwrap().clone().as_float().unwrap(), 7.0);
+        assert_eq!(
+            map.get("key").unwrap().clone().into_string().unwrap(),
+            "beam"
+        );
+        assert_eq!(
+            map.get("kind").unwrap().clone().into_string().unwrap(),
+            "spot"
+        );
+        assert_eq!(
+            map.get("intensity").unwrap().clone().as_float().unwrap(),
+            7.0
+        );
         assert_eq!(map.len(), 9, "快照应含 9 个字段");
 
         let empty = host
@@ -1622,8 +1706,14 @@ mod local_light_script_tests {
     #[test]
     fn script_keys_follow_insertion_order() {
         let (mut host, _scene) = host();
-        eval_bool(&mut host, r#"light_add_point("a", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
-        eval_bool(&mut host, r#"light_add_point("b", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
+        eval_bool(
+            &mut host,
+            r#"light_add_point("a", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#,
+        );
+        eval_bool(
+            &mut host,
+            r#"light_add_point("b", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#,
+        );
         let keys = host
             .eval("local_light_keys()")
             .expect("应可调用")
@@ -1645,8 +1735,16 @@ mod local_light_script_tests {
         );
         let sc = scene.borrow();
         let l = sc.local_light("bad").unwrap();
-        assert!(l.intensity >= 0.0, "负强度必须夹到非负，实际 {}", l.intensity);
-        assert!(l.range >= r3e_core::MIN_LIGHT_RANGE, "零半径必须抬到下限，实际 {}", l.range);
+        assert!(
+            l.intensity >= 0.0,
+            "负强度必须夹到非负，实际 {}",
+            l.intensity
+        );
+        assert!(
+            l.range >= r3e_core::MIN_LIGHT_RANGE,
+            "零半径必须抬到下限，实际 {}",
+            l.range
+        );
 
         drop(sc);
         eval_bool(

@@ -8,8 +8,10 @@
 //! * 色调映射与泛光的**数值系数**（ACES 五系数、FXAA 双阈值、Rec.709 权重）；
 //! * 六个入口点是否齐备（少一个 pass 就等于后处理链断了一节）。
 
-use r3e_core::postfx::{ACES_A, ACES_B, ACES_C, ACES_D, ACES_E, FXAA_EDGE_THRESHOLD_MIN,
-    FXAA_EDGE_THRESHOLD_RELATIVE, LUMA_WEIGHTS};
+use r3e_core::postfx::{
+    ACES_A, ACES_B, ACES_C, ACES_D, ACES_E, FXAA_EDGE_THRESHOLD_MIN, FXAA_EDGE_THRESHOLD_RELATIVE,
+    LUMA_WEIGHTS,
+};
 
 const POSTFX_SHADER: &str = include_str!("../src/postfx.wgsl");
 const POSTFX_RUST: &str = include_str!("../src/postfx.rs");
@@ -109,10 +111,7 @@ fn postfx_params_vector_alignment() {
         .split("hdr_texel")
         .next()
         .expect("应存在 hdr_texel");
-    let scalars_before = head
-        .matches(": f32,")
-        .count()
-        + head.matches(": u32,").count();
+    let scalars_before = head.matches(": f32,").count() + head.matches(": u32,").count();
     assert_eq!(
         scalars_before, 8,
         "hdr_texel 之前应恰好有 8 个 4 字节字段（32 字节偏移）"

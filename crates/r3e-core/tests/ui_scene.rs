@@ -115,8 +115,16 @@ fn scene_load_sanitizes_ui_values() {
     assert_eq!(el.color, [1.0, 0.0, 0.25, 1.0]);
     assert_eq!(el.border_width, 0.0, "负线宽夹到 0（= 不画）");
     // uv 两端被夹到合法区间并保证 u0 <= u1。
-    assert!(el.uv[0] <= el.uv[2] && el.uv[0] >= 0.0 && el.uv[2] <= 1.0, "{:?}", el.uv);
-    assert!(el.uv[1] <= el.uv[3] && el.uv[1] >= 0.0 && el.uv[3] <= 1.0, "{:?}", el.uv);
+    assert!(
+        el.uv[0] <= el.uv[2] && el.uv[0] >= 0.0 && el.uv[2] <= 1.0,
+        "{:?}",
+        el.uv
+    );
+    assert!(
+        el.uv[1] <= el.uv[3] && el.uv[1] >= 0.0 && el.uv[3] <= 1.0,
+        "{:?}",
+        el.uv
+    );
 }
 
 /// 未知枚举名不是 panic 也不是静默变成第一项，而是如实报错（编辑器能提示用户改场景）。
@@ -191,9 +199,14 @@ fn scene_ui_elements_drive_interaction_events() {
     assert!(it.pointer_over_ui());
     assert_eq!(it.active(), None, "抬起后不该还挂着按下捕获");
     assert!(
-        it.events().iter().any(|ev| ev.kind.name() == "clicked" && ev.key == "btn"),
+        it.events()
+            .iter()
+            .any(|ev| ev.kind.name() == "clicked" && ev.key == "btn"),
         "同元素内按下并抬起应产出 clicked: {:?}",
-        it.events().iter().map(|e| (e.kind.name(), e.key.clone())).collect::<Vec<_>>()
+        it.events()
+            .iter()
+            .map(|e| (e.kind.name(), e.key.clone()))
+            .collect::<Vec<_>>()
     );
 
     // 移出元素：unhovered，且不再算压在 UI 上（app 据此把相机拖动还回去）。
@@ -201,7 +214,9 @@ fn scene_ui_elements_drive_interaction_events() {
     assert_eq!(it.hover(), None);
     assert!(!it.pointer_over_ui());
     assert!(
-        it.events().iter().any(|ev| ev.kind.name() == "unhovered" && ev.key == "btn"),
+        it.events()
+            .iter()
+            .any(|ev| ev.kind.name() == "unhovered" && ev.key == "btn"),
         "移出应产出 unhovered"
     );
 }

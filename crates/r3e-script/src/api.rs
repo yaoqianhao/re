@@ -2082,8 +2082,16 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn(
         "light_add_point",
-        move |key: &str, x: f64, y: f64, z: f64, r: f64, g: f64, b: f64, intensity: f64,
-              range: f64| -> bool {
+        move |key: &str,
+              x: f64,
+              y: f64,
+              z: f64,
+              r: f64,
+              g: f64,
+              b: f64,
+              intensity: f64,
+              range: f64|
+              -> bool {
             let mut light = LocalLight::point(
                 key,
                 [f32_of(x), f32_of(y), f32_of(z)],
@@ -2099,8 +2107,21 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn(
         "light_add_spot",
-        move |key: &str, x: f64, y: f64, z: f64, dx: f64, dy: f64, dz: f64, r: f64, g: f64,
-              b: f64, intensity: f64, range: f64, inner_deg: f64, outer_deg: f64| -> bool {
+        move |key: &str,
+              x: f64,
+              y: f64,
+              z: f64,
+              dx: f64,
+              dy: f64,
+              dz: f64,
+              r: f64,
+              g: f64,
+              b: f64,
+              intensity: f64,
+              range: f64,
+              inner_deg: f64,
+              outer_deg: f64|
+              -> bool {
             let light = LocalLight::spot(
                 key,
                 [f32_of(x), f32_of(y), f32_of(z)],
@@ -2129,18 +2150,24 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     // 以下「改单个字段」全部走 `with_local_light`：key 不存在返回 false，
     // 不会悄悄新建一盏灯（拼错名字是最常见的脚本错误）。
     let c = ctx.clone();
-    engine.register_fn("light_set_pos", move |key: &str, x: f64, y: f64, z: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.pos = [f32_of(x), f32_of(y), f32_of(z)];
-        })
-    });
+    engine.register_fn(
+        "light_set_pos",
+        move |key: &str, x: f64, y: f64, z: f64| -> bool {
+            c.scene.borrow_mut().with_local_light(key, |l| {
+                l.pos = [f32_of(x), f32_of(y), f32_of(z)];
+            })
+        },
+    );
 
     let c = ctx.clone();
-    engine.register_fn("light_set_color", move |key: &str, r: f64, g: f64, b: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.color = [f32_of(r), f32_of(g), f32_of(b)];
-        })
-    });
+    engine.register_fn(
+        "light_set_color",
+        move |key: &str, r: f64, g: f64, b: f64| -> bool {
+            c.scene.borrow_mut().with_local_light(key, |l| {
+                l.color = [f32_of(r), f32_of(g), f32_of(b)];
+            })
+        },
+    );
 
     let c = ctx.clone();
     engine.register_fn("light_set_intensity", move |key: &str, v: f64| -> bool {
@@ -2157,19 +2184,25 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     });
 
     let c = ctx.clone();
-    engine.register_fn("light_set_dir", move |key: &str, x: f64, y: f64, z: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.dir = [f32_of(x), f32_of(y), f32_of(z)];
-        })
-    });
+    engine.register_fn(
+        "light_set_dir",
+        move |key: &str, x: f64, y: f64, z: f64| -> bool {
+            c.scene.borrow_mut().with_local_light(key, |l| {
+                l.dir = [f32_of(x), f32_of(y), f32_of(z)];
+            })
+        },
+    );
 
     let c = ctx.clone();
-    engine.register_fn("light_set_cone", move |key: &str, inner_deg: f64, outer_deg: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.inner_deg = f32_of(inner_deg);
-            l.outer_deg = f32_of(outer_deg);
-        })
-    });
+    engine.register_fn(
+        "light_set_cone",
+        move |key: &str, inner_deg: f64, outer_deg: f64| -> bool {
+            c.scene.borrow_mut().with_local_light(key, |l| {
+                l.inner_deg = f32_of(inner_deg);
+                l.outer_deg = f32_of(outer_deg);
+            })
+        },
+    );
 
     // 总开关：关掉只是不上传（场景数据保留），打开即整体恢复。
     let c = ctx.clone();
@@ -2217,17 +2250,32 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         m.insert("kind".into(), Dynamic::from(l.kind.name().to_string()));
         m.insert(
             "pos".into(),
-            Dynamic::from(l.pos.iter().map(|v| Dynamic::from(*v as f64)).collect::<Array>()),
+            Dynamic::from(
+                l.pos
+                    .iter()
+                    .map(|v| Dynamic::from(*v as f64))
+                    .collect::<Array>(),
+            ),
         );
         m.insert(
             "color".into(),
-            Dynamic::from(l.color.iter().map(|v| Dynamic::from(*v as f64)).collect::<Array>()),
+            Dynamic::from(
+                l.color
+                    .iter()
+                    .map(|v| Dynamic::from(*v as f64))
+                    .collect::<Array>(),
+            ),
         );
         m.insert("intensity".into(), Dynamic::from(l.intensity as f64));
         m.insert("range".into(), Dynamic::from(l.range as f64));
         m.insert(
             "dir".into(),
-            Dynamic::from(l.dir.iter().map(|v| Dynamic::from(*v as f64)).collect::<Array>()),
+            Dynamic::from(
+                l.dir
+                    .iter()
+                    .map(|v| Dynamic::from(*v as f64))
+                    .collect::<Array>(),
+            ),
         );
         m.insert("inner".into(), Dynamic::from(l.inner_deg as f64));
         m.insert("outer".into(), Dynamic::from(l.outer_deg as f64));
@@ -2256,19 +2304,22 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     // 某点受到的全部局部光照度（与 GPU 同式的 CPU 参考实现）：
     // 脚本可以用它做「站在灯下才回血」这类玩法，不必自己重写衰减公式。
     let c = ctx.clone();
-    engine.register_fn("local_light_irradiance", move |x: f64, y: f64, z: f64| -> f64 {
-        let scene = c.scene.borrow();
-        if !scene.lights_enabled {
-            return 0.0;
-        }
-        let p = Vec3::new(f32_of(x), f32_of(y), f32_of(z));
-        scene
-            .lights
-            .iter()
-            // `irradiance` 返回线性 RGB，取最大分量当「亮度」标量即可
-            .map(|l| l.irradiance(p).max_element().max(0.0) as f64)
-            .sum()
-    });
+    engine.register_fn(
+        "local_light_irradiance",
+        move |x: f64, y: f64, z: f64| -> f64 {
+            let scene = c.scene.borrow();
+            if !scene.lights_enabled {
+                return 0.0;
+            }
+            let p = Vec3::new(f32_of(x), f32_of(y), f32_of(z));
+            scene
+                .lights
+                .iter()
+                // `irradiance` 返回线性 RGB，取最大分量当「亮度」标量即可
+                .map(|l| l.irradiance(p).max_element().max(0.0) as f64)
+                .sum()
+        },
+    );
 
     // ------------------------------------------------------------------
     // UI 指针交互（只读）。

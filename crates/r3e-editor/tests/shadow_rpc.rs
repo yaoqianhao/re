@@ -161,7 +161,11 @@ fn method_name_is_normalized() {
     for method in ["scene.shadow", "Scene.Shadow", "SCENE.SHADOW"] {
         let mut api = Mock::default();
         let resp = call(&mut api, method, json!({ "cascades": 2 }));
-        assert!(resp.error.is_none(), "{method} 应命中分支：{:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "{method} 应命中分支：{:?}",
+            resp.error
+        );
         assert!(api.seen.is_some(), "{method} 应到达宿主");
     }
 }

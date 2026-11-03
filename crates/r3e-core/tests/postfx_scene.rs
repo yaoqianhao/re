@@ -32,15 +32,18 @@ fn missing_postfx_keeps_none() {
     let mut scene = Scene::new();
     scene.spawn(desc("ball")).expect("spawn");
     assert!(scene.postfx.is_none());
-    assert!(scene.to_scene_file().postfx.is_none(), "不该凭空写出 postfx 段");
+    assert!(
+        scene.to_scene_file().postfx.is_none(),
+        "不该凭空写出 postfx 段"
+    );
 }
 
 /// 只写一个字段时，其余字段必须回落到缺省值（serde default 生效），
 /// 而不是被整段归零——否则编辑器只改曝光会把泛光参数一起抹掉。
 #[test]
 fn partial_postfx_uses_field_defaults() {
-    let scene = Scene::from_json_str(&scene_json_with_postfx(r#"{ "exposure": 1.5 }"#))
-        .expect("载入场景");
+    let scene =
+        Scene::from_json_str(&scene_json_with_postfx(r#"{ "exposure": 1.5 }"#)).expect("载入场景");
     let fx = scene.postfx.expect("写了 postfx 段就该是 Some");
     let d = PostFxSettings::default();
     assert_eq!(fx.exposure, 1.5);
@@ -60,9 +63,17 @@ fn scene_load_sanitizes_postfx() {
     ))
     .expect("载入场景");
     let fx = scene.postfx.expect("Some");
-    assert_eq!(fx.exposure, r3e_core::postfx::MAX_EXPOSURE_EV, "曝光夹到上界");
+    assert_eq!(
+        fx.exposure,
+        r3e_core::postfx::MAX_EXPOSURE_EV,
+        "曝光夹到上界"
+    );
     assert_eq!(fx.tonemap, TonemapMode::Aces);
-    assert_eq!(fx.bloom.knee, r3e_core::postfx::MAX_BLOOM_KNEE, "软膝夹到上界");
+    assert_eq!(
+        fx.bloom.knee,
+        r3e_core::postfx::MAX_BLOOM_KNEE,
+        "软膝夹到上界"
+    );
     assert_eq!(fx.bloom.intensity, 0.0, "负强度归零");
     assert_eq!(fx.bloom.threshold, 0.0, "负阈值归零");
     assert!(fx.fxaa);
@@ -103,7 +114,10 @@ fn postfx_survives_json_roundtrip() {
 
     let text = scene.to_json_string().expect("导出场景 JSON");
     assert!(text.contains("\"postfx\""), "应写出 postfx 段：{text}");
-    assert!(text.contains("\"aces\""), "音调映射名应写成规范小写：{text}");
+    assert!(
+        text.contains("\"aces\""),
+        "音调映射名应写成规范小写：{text}"
+    );
 
     let reloaded = Scene::from_json_str(&text).expect("重新载入");
     assert_eq!(

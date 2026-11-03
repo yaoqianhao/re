@@ -15,12 +15,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::{Quat, Vec3};
+use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
-use r3e_core::light::MAX_LOCAL_LIGHTS;
-use r3e_core::{MAX_CASCADES, ShadowSettings};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
+use r3e_core::{ShadowSettings, MAX_CASCADES};
 use r3e_editor::{
     EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief, PhysicsInfo,
     PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
@@ -357,9 +357,7 @@ impl EngineApi for LocalEngineApi<'_> {
         // 名字先解析完再落地：写错的 kind 不该留下半盏被改的灯。
         let kind = match patch.kind.as_deref() {
             Some(name) => Some(LocalLightKind::parse(name).ok_or_else(|| {
-                RpcFailure::invalid_params(format!(
-                    "未知光源类型 `{name}`（可用：point / spot）"
-                ))
+                RpcFailure::invalid_params(format!("未知光源类型 `{name}`（可用：point / spot）"))
             })?),
             None => None,
         };
@@ -512,7 +510,9 @@ impl EngineApi for LocalEngineApi<'_> {
         };
         let anchor = match patch.anchor.as_deref() {
             Some(name) => Some(Anchor::parse(name).ok_or_else(|| {
-                RpcFailure::invalid_params(format!("未知锚点 `{name}`（可用：top_left / center ...）"))
+                RpcFailure::invalid_params(format!(
+                    "未知锚点 `{name}`（可用：top_left / center ...）"
+                ))
             })?),
             None => None,
         };
@@ -743,7 +743,6 @@ fn plain_abs_path(path: &std::path::Path) -> String {
         text
     }
 }
-
 
 /// 把 `UiPatch` 的字段并进一个元素（只覆盖给了的字段）。
 ///
@@ -1118,7 +1117,10 @@ mod tests {
                 ..Default::default()
             })
             .expect("应成功");
-        assert_eq!(clamped["postfx"]["exposure"], json!(r3e_core::postfx::MAX_EXPOSURE_EV));
+        assert_eq!(
+            clamped["postfx"]["exposure"],
+            json!(r3e_core::postfx::MAX_EXPOSURE_EV)
+        );
         assert_eq!(clamped["postfx"]["bloom"]["intensity"], json!(0.0));
 
         // 认不出的曲线名报参数错误，且不改动现有设置。
@@ -1274,13 +1276,10 @@ mod tests {
     #[test]
     fn ui_state_reports_pointer_interaction() {
         let (scene, physics, mut scripts) = fixture();
-        scene
-            .borrow_mut()
-            .ui
-            .push(UiElement {
-                key: "btn".to_string(),
-                ..Default::default()
-            });
+        scene.borrow_mut().ui.push(UiElement {
+            key: "btn".to_string(),
+            ..Default::default()
+        });
         // 直接把光标按在元素上（默认 100x100 从左上角起算），模拟一帧按下。
         {
             let interaction = scripts.ui_interaction();
@@ -1421,7 +1420,11 @@ mod tests {
                 ..Default::default()
             })
             .expect_err("满载后新增应报错");
-        assert!(err.message.contains(&MAX_LOCAL_LIGHTS.to_string()), "{}", err.message);
+        assert!(
+            err.message.contains(&MAX_LOCAL_LIGHTS.to_string()),
+            "{}",
+            err.message
+        );
 
         api.light_set(LightPatch {
             key: "l0".to_string(),
@@ -1455,14 +1458,26 @@ mod tests {
         assert_eq!(arr[0]["kind"], "point");
         // 九个字段都要在，编辑器靠这个面板直接渲染
         for field in [
-            "key", "kind", "pos", "dir", "color", "intensity", "range", "inner_deg", "outer_deg",
+            "key",
+            "kind",
+            "pos",
+            "dir",
+            "color",
+            "intensity",
+            "range",
+            "inner_deg",
+            "outer_deg",
         ] {
             assert!(arr[0].get(field).is_some(), "快照缺少字段 {field}");
         }
 
         let limited = api.light_list(Some(1)).expect("应成功");
         assert_eq!(limited["count"], 2, "count 是全量");
-        assert_eq!(limited["lights"].as_array().unwrap().len(), 1, "limit 只截结果");
+        assert_eq!(
+            limited["lights"].as_array().unwrap().len(),
+            1,
+            "limit 只截结果"
+        );
 
         let removed = api.light_remove("a").expect("应成功");
         assert_eq!(removed["removed"], true);
@@ -1503,8 +1518,17 @@ mod tests {
             "上限必须回给编辑器，面板才能画对滑块范围"
         );
         for field in [
-            "enabled", "size", "strength", "orthoSize", "bias", "normalBias", "cascades",
-            "maxCascades", "blend", "distance", "lambda",
+            "enabled",
+            "size",
+            "strength",
+            "orthoSize",
+            "bias",
+            "normalBias",
+            "cascades",
+            "maxCascades",
+            "blend",
+            "distance",
+            "lambda",
         ] {
             assert!(read.get(field).is_some(), "回包缺少字段 {field}");
         }
@@ -1535,8 +1559,14 @@ mod tests {
             }))
             .expect("应成功");
         assert_eq!(clamped["cascades"], MAX_CASCADES);
-        assert_eq!(clamped["blend"], 0.5, "混合比上限是 0.5（再大就跨级采到不存在的层）");
-        assert_eq!(clamped["size"], 1000, "只要在 64..8192 内就原样保留（不强行取整）");
+        assert_eq!(
+            clamped["blend"], 0.5,
+            "混合比上限是 0.5（再大就跨级采到不存在的层）"
+        );
+        assert_eq!(
+            clamped["size"], 1000,
+            "只要在 64..8192 内就原样保留（不强行取整）"
+        );
         let shadow = scene.borrow().light.shadow;
         assert_eq!(shadow.cascade.count, MAX_CASCADES as u32);
         assert_eq!(shadow.size, 1000);

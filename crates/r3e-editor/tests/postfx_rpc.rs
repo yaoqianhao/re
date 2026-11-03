@@ -40,10 +40,7 @@ impl EngineApi for Mock {
         }
     }
 
-    fn scene_set_postfx(
-        &mut self,
-        patch: PostFxPatch,
-    ) -> Result<Value, r3e_editor::RpcFailure> {
+    fn scene_set_postfx(&mut self, patch: PostFxPatch) -> Result<Value, r3e_editor::RpcFailure> {
         self.seen = Some(patch.clone());
         Ok(json!({ "enabled": true, "echo": patch.exposure }))
     }

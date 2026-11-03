@@ -14,11 +14,11 @@ pub mod ui;
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use pbr::{MaterialUniform, SurfaceKey};
 pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
-pub use ssao::{SsaoPass, SsaoStats, AO_FORMAT, AO_PASSES_PER_FRAME};
 pub use renderer::{
     LayeredProvider, LightsUniform, LocalLightRaw, MeshCache, RenderStats, Renderer,
     LIGHTS_UNIFORM_SIZE, LOCAL_LIGHT_STRIDE,
 };
+pub use ssao::{SsaoPass, SsaoStats, AO_FORMAT, AO_PASSES_PER_FRAME};
 pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
 pub use ui::{
     images_to_load, plan_ui, plan_ui_limited, UiBatch, UiBuild, UiImageProvider, UiInstance,

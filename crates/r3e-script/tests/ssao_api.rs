@@ -33,7 +33,8 @@ fn fixture() -> Fixture {
 
 impl Fixture {
     fn run(&mut self, src: &str) {
-        let _ = self.host
+        let _ = self
+            .host
             .eval(src)
             .unwrap_or_else(|e| panic!("脚本执行失败: {e}\n源码: {src}"));
     }

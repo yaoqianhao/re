@@ -955,10 +955,7 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 | (_, _, _, _, Err(f)) => return Response::fail(id, f),
             };
             if patch.is_empty() {
-                return Response::fail(
-                    id,
-                    RpcFailure::invalid_params("ssao 补丁至少要给一个字段"),
-                );
+                return Response::fail(id, RpcFailure::invalid_params("ssao 补丁至少要给一个字段"));
             }
             match api.scene_set_ssao(patch) {
                 Ok(r) => Response::ok(id, r),
@@ -988,10 +985,7 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             let key = match require_str(&req.params, "key") {
                 Ok(k) if !k.trim().is_empty() => k.to_string(),
                 Ok(_) => {
-                    return Response::fail(
-                        id,
-                        RpcFailure::invalid_params("参数 `key` 不能为空"),
-                    )
+                    return Response::fail(id, RpcFailure::invalid_params("参数 `key` 不能为空"))
                 }
                 Err(f) => return Response::fail(id, f),
             };
@@ -1055,10 +1049,7 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             let key = match require_str(&req.params, "key") {
                 Ok(k) if !k.trim().is_empty() => k,
                 Ok(_) => {
-                    return Response::fail(
-                        id,
-                        RpcFailure::invalid_params("参数 `key` 不能为空"),
-                    )
+                    return Response::fail(id, RpcFailure::invalid_params("参数 `key` 不能为空"))
                 }
                 Err(f) => return Response::fail(id, f),
             };
@@ -1121,10 +1112,7 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             let key = match require_str(&req.params, "key") {
                 Ok(k) if !k.trim().is_empty() => k,
                 Ok(_) => {
-                    return Response::fail(
-                        id,
-                        RpcFailure::invalid_params("参数 `key` 不能为空"),
-                    )
+                    return Response::fail(id, RpcFailure::invalid_params("参数 `key` 不能为空"))
                 }
                 Err(f) => return Response::fail(id, f),
             };
@@ -1225,9 +1213,7 @@ fn shadow_patch_from(params: &Value) -> Result<Option<ShadowPatch>, RpcFailure> 
         enabled: match param(params, "enabled") {
             None | Some(Value::Null) => None,
             Some(Value::Bool(b)) => Some(*b),
-            Some(_) => {
-                return Err(RpcFailure::invalid_params("参数 `enabled` 应为布尔"))
-            }
+            Some(_) => return Err(RpcFailure::invalid_params("参数 `enabled` 应为布尔")),
         },
         size: opt_uint(params, "size")?,
         strength: opt_num(params, "strength")?,
@@ -1237,16 +1223,22 @@ fn shadow_patch_from(params: &Value) -> Result<Option<ShadowPatch>, RpcFailure> 
         blend: opt_num(params, "blend")?,
         distance: opt_num(params, "distance")?,
     };
-    Ok(if patch.is_read_only() { None } else { Some(patch) })
+    Ok(if patch.is_read_only() {
+        None
+    } else {
+        Some(patch)
+    })
 }
 
 /// 可选无符号整数字段（`size` / `cascades`）；显式 `null` 当作没给。
 fn opt_uint(params: &Value, key: &str) -> Result<Option<u32>, RpcFailure> {
     match param(params, key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => n.as_u64().and_then(|v| u32::try_from(v).ok()).map(Some).ok_or_else(|| {
-            RpcFailure::invalid_params(format!("参数 `{key}` 应为非负整数"))
-        }),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| RpcFailure::invalid_params(format!("参数 `{key}` 应为非负整数"))),
         Some(_) => Err(RpcFailure::invalid_params(format!(
             "参数 `{key}` 应为非负整数"
         ))),
@@ -1280,7 +1272,6 @@ fn opt_limit(params: &Value) -> Result<Option<usize>, RpcFailure> {
         },
     }
 }
-
 
 #[cfg(test)]
 mod save_rpc_tests {

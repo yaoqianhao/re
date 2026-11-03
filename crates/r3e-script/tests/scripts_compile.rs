@@ -47,7 +47,11 @@ fn every_demo_script_compiles() {
         let mut host = ScriptHost::new(scene, physics, input);
 
         if let Err(e) = host.load_file(path) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             failures.push(format!("{name}: {e}"));
         }
     }

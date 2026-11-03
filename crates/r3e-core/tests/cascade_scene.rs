@@ -22,16 +22,21 @@ fn scene_json_with_shadow(shadow: &str) -> String {
 /// 老场景（shadow 段里没有级联字段）必须仍然是单级，行为与阶段 D 完全一致。
 #[test]
 fn missing_cascade_fields_keep_single_level() {
-    let scene =
-        Scene::from_json_str(&scene_json_with_shadow(r#"{ "enabled": true, "size": 2048 }"#))
-            .expect("载入场景");
+    let scene = Scene::from_json_str(&scene_json_with_shadow(
+        r#"{ "enabled": true, "size": 2048 }"#,
+    ))
+    .expect("载入场景");
     let cascade = scene.light.shadow.cascade;
     assert_eq!(cascade.count, 1);
     assert_eq!(cascade, CascadeSettings::default());
 
     // 存回去时也不该凭空多出 cascades / blend 字段
     let file = scene.to_scene_file();
-    let shadow = file.light.expect("应写出 light 段").shadow.expect("应写出 shadow 段");
+    let shadow = file
+        .light
+        .expect("应写出 light 段")
+        .shadow
+        .expect("应写出 shadow 段");
     assert_eq!(shadow.cascades, None, "单级是缺省，不该写进文件");
     assert_eq!(shadow.blend, None, "缺省混合比不该写进文件");
 }
@@ -63,15 +68,18 @@ fn scene_load_sanitizes_cascade() {
     assert_eq!(scene.light.shadow.cascade.count, MAX_CASCADES as u32);
     assert_eq!(scene.light.shadow.cascade.blend, 0.5);
 
-    let scene = Scene::from_json_str(&scene_json_with_shadow(r#"{ "cascades": 0 }"#))
-        .expect("载入场景");
-    assert_eq!(scene.light.shadow.cascade.count, 1, "0 级抬到 1，绝不能真关掉阴影");
+    let scene =
+        Scene::from_json_str(&scene_json_with_shadow(r#"{ "cascades": 0 }"#)).expect("载入场景");
+    assert_eq!(
+        scene.light.shadow.cascade.count, 1,
+        "0 级抬到 1，绝不能真关掉阴影"
+    );
 }
 
 /// `cascade` 单数别名也认（手写场景容易写成单数）。
 #[test]
 fn singular_alias_is_accepted() {
-    let scene = Scene::from_json_str(&scene_json_with_shadow(r#"{ "cascade": 2 }"#))
-        .expect("载入场景");
+    let scene =
+        Scene::from_json_str(&scene_json_with_shadow(r#"{ "cascade": 2 }"#)).expect("载入场景");
     assert_eq!(scene.light.shadow.cascade.count, 2);
 }

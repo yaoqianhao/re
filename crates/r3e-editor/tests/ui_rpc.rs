@@ -173,7 +173,10 @@ fn ui_state_and_list_pass_through() {
 
     // 宿主未实现 ui_list：走 unsupported → METHOD_NOT_FOUND，不 panic。
     let resp = call(&mut api, "ui.list", json!({}));
-    assert_eq!(resp.error.expect("应报未实现").code, r3e_editor::METHOD_NOT_FOUND);
+    assert_eq!(
+        resp.error.expect("应报未实现").code,
+        r3e_editor::METHOD_NOT_FOUND
+    );
 }
 
 #[test]

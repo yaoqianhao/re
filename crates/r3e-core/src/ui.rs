@@ -706,12 +706,7 @@ pub const MAX_UI_EVENTS_PER_FRAME: usize = 64;
 ///
 /// 只判矩形——边框的中间空隙、图片的透明像素都算「点得到」，因为对脚本而言
 /// 「元素的位置与大小」才是可预期的点击区域，按像素 alpha 命中会让人猜不到为什么点不动。
-pub fn hit_test(
-    elements: &[UiElement],
-    screen: (f32, f32),
-    x: f32,
-    y: f32,
-) -> Option<&UiElement> {
+pub fn hit_test(elements: &[UiElement], screen: (f32, f32), x: f32, y: f32) -> Option<&UiElement> {
     if !x.is_finite() || !y.is_finite() {
         return None;
     }
@@ -722,12 +717,7 @@ pub fn hit_test(
 }
 
 /// [`hit_test`] 的 key 版本（脚本 / RPC 侧只需要 key）。
-pub fn hit_test_key(
-    elements: &[UiElement],
-    screen: (f32, f32),
-    x: f32,
-    y: f32,
-) -> Option<&str> {
+pub fn hit_test_key(elements: &[UiElement], screen: (f32, f32), x: f32, y: f32) -> Option<&str> {
     hit_test(elements, screen, x, y).map(|el| el.key.as_str())
 }
 
@@ -1551,10 +1541,7 @@ mod tests {
         ui.reset();
         ui.update(&list, SCR, Some((11.0, 11.0)), false, false, true);
         let kinds: Vec<_> = ui.events().iter().map(|e| e.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![UiEventKind::Clicked, UiEventKind::Released]
-        );
+        assert_eq!(kinds, vec![UiEventKind::Clicked, UiEventKind::Released]);
         assert!(ui.clicked("btn"));
         assert_eq!(ui.active(), None);
     }
@@ -1600,10 +1587,7 @@ mod tests {
         assert_eq!(ui.hover(), None);
         let kinds: Vec<_> = ui.events().iter().map(|e| e.kind).collect();
         // 顺序：先「指针离开」（hover 迁移）再「捕获取消」，符合因果
-        assert_eq!(
-            kinds,
-            vec![UiEventKind::Unhovered, UiEventKind::Cancelled]
-        );
+        assert_eq!(kinds, vec![UiEventKind::Unhovered, UiEventKind::Cancelled]);
     }
 
     /// 丢失释放事件（窗口失焦）：active 必须被撤掉。

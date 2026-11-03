@@ -99,7 +99,9 @@ fn scene_file_sanitizes_bad_light_values() {
         ]
     }"#;
     let scene = Scene::from_file(serde_json::from_str(json).unwrap()).unwrap();
-    let l = scene.local_light("bad").expect("坏值光源仍应存在（只是被夹住）");
+    let l = scene
+        .local_light("bad")
+        .expect("坏值光源仍应存在（只是被夹住）");
     assert_eq!(l.intensity, 0.0, "负强度夹到 0");
     assert!(l.range > 0.0, "range=0 必须被抬到下限");
     assert_eq!(l.color[1], 0.0, "负颜色通道夹到 0");
@@ -160,7 +162,10 @@ fn scene_file_truncates_to_capacity() {
 #[test]
 fn scene_light_table_supports_upsert_patch_and_clear() {
     let mut scene = Scene::new();
-    assert!(!scene.upsert_local_light(LocalLight::default()), "空 key 必须拒绝");
+    assert!(
+        !scene.upsert_local_light(LocalLight::default()),
+        "空 key 必须拒绝"
+    );
     assert!(scene.upsert_local_light(LocalLight::point(
         "key1",
         [0.0, 3.0, 0.0],
@@ -188,12 +193,7 @@ fn scene_light_table_supports_upsert_patch_and_clear() {
 
     assert!(scene.remove_local_light("key1"));
     assert!(!scene.remove_local_light("key1"));
-    assert!(scene.upsert_local_light(LocalLight::point(
-        "a",
-        [0.0; 3],
-        [1.0; 3],
-        1.0
-    )));
+    assert!(scene.upsert_local_light(LocalLight::point("a", [0.0; 3], [1.0; 3], 1.0)));
     assert_eq!(scene.clear_local_lights(), 1);
     assert!(scene.lights.is_empty());
 }

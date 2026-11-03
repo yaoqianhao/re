@@ -313,11 +313,7 @@ pub fn bright_pass(color: Vec3, threshold: f32, knee: f32) -> Vec3 {
 /// Reinhard 色调映射：`x / (1 + x)`，逐通道。
 pub fn tonemap_reinhard(color: Vec3) -> Vec3 {
     let c = color.max(Vec3::ZERO);
-    Vec3::new(
-        c.x / (1.0 + c.x),
-        c.y / (1.0 + c.y),
-        c.z / (1.0 + c.z),
-    )
+    Vec3::new(c.x / (1.0 + c.x), c.y / (1.0 + c.y), c.z / (1.0 + c.z))
 }
 
 /// ACES 色调映射（Narkowicz 2015 有理拟合）：
@@ -444,7 +440,10 @@ mod tests {
         let bright = expose(Vec3::splat(0.5), MAX_EXPOSURE_EV);
         assert!(bright.is_finite() && bright.x > 0.5);
         // 负的 HDR 分量先归零，避免乘出负数
-        assert_eq!(expose(Vec3::new(-1.0, 0.5, -1.0), 0.0), Vec3::new(0.0, 0.5, 0.0));
+        assert_eq!(
+            expose(Vec3::new(-1.0, 0.5, -1.0), 0.0),
+            Vec3::new(0.0, 0.5, 0.0)
+        );
     }
 
     #[test]
@@ -461,7 +460,10 @@ mod tests {
         // w = (4-1)/4 = 0.75，三通道同乘 0.75。
         // 软膝：阈值处应有半程左右的过渡，而不是 0
         let mid = bright_pass(Vec3::splat(1.0), 1.0, 0.5);
-        assert!(mid.x > 0.0 && mid.x < 1.0, "软膝在阈值处应给出过渡，实际 {mid:?}");
+        assert!(
+            mid.x > 0.0 && mid.x < 1.0,
+            "软膝在阈值处应给出过渡，实际 {mid:?}"
+        );
         // 软膝上沿之后与硬阈值同解
         let soft = bright_pass(Vec3::splat(3.0), 1.0, 0.5);
         let hard = bright_pass(Vec3::splat(3.0), 1.0, 0.0);
@@ -494,7 +496,10 @@ mod tests {
             }
             // 极端高亮必须被压进 1.0，而不是继续增长
             let hot = tonemap(Vec3::splat(1000.0), mode);
-            assert!(hot.x <= 1.0 && hot.x > 0.9, "{mode:?} 高亮收敛异常: {hot:?}");
+            assert!(
+                hot.x <= 1.0 && hot.x > 0.9,
+                "{mode:?} 高亮收敛异常: {hot:?}"
+            );
         }
         // Reinhard 在 1.0 处正好给 0.5，是最好的解析对照点
         assert!(approx(tonemap_reinhard(Vec3::ONE).x, 0.5, 1e-6));
