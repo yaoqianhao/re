@@ -158,6 +158,23 @@ pub struct ShadowDesc {
     pub distance: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f32>,
+    /// 级联级数 1..=4（扩展十六）；省略或 1 = 单级，等价阶段 D 的老行为。
+    #[serde(default, alias = "cascade", skip_serializing_if = "Option::is_none")]
+    pub cascades: Option<u32>,
+    /// 级间混合带宽（占该级跨度的比例，0..0.5）；省略沿用默认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<f32>,
+    /// 级联最远距离（世界单位，沿相机前后方向）；省略或 0 = 用相机 `zfar`。
+    ///
+    /// 有意不复用上面的 `distance`：那个是阶段 D 阴影正交相机的前后偏移，
+    /// 两者语义不同，混用会让老场景在开启 CSM 后阴影突然被裁掉一截。
+    #[serde(
+        default,
+        rename = "cascadeDistance",
+        alias = "cascade_distance",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cascade_distance: Option<f32>,
 }
 
 /// 资产自带的动画播放声明（P3 起）。
@@ -968,6 +985,15 @@ impl Scene {
                 if let Some(v) = sd.strength {
                     s.strength = v;
                 }
+                if let Some(v) = sd.cascades {
+                    s.cascade.count = v;
+                }
+                if let Some(v) = sd.blend {
+                    s.cascade.blend = v;
+                }
+                if let Some(v) = sd.cascade_distance {
+                    s.cascade.max_distance = v;
+                }
                 scene.light.shadow = s.sanitized();
             }
         }
@@ -1089,6 +1115,13 @@ impl Scene {
                 normal_bias: Some(shadow.normal_bias),
                 distance: Some(shadow.distance),
                 strength: Some(shadow.strength),
+                // 1 级 + 缺省混合比是「没开 CSM」的等价形态，省掉噪声；
+                // 一旦开了多级或调过混合比就必须写进文件，否则重开场景会静默退回单级。
+                cascades: (shadow.cascade.count > 1).then_some(shadow.cascade.count),
+                blend: (shadow.cascade.blend != light::CascadeSettings::default().blend)
+                    .then_some(shadow.cascade.blend),
+                cascade_distance: (shadow.cascade.max_distance > 0.0)
+                    .then_some(shadow.cascade.max_distance),
             }),
         }
     }

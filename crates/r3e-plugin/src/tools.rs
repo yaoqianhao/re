@@ -591,6 +591,10 @@ fn light_json(light: &r3e_core::Light) -> Value {
             "size": light.shadow.size,
             "orthoSize": round(light.shadow.ortho_size),
             "strength": round(light.shadow.strength),
+            // 扩展十六：级联配置。模型据此判断「阴影糊」是分辨率不够还是级数太少。
+            "cascades": light.shadow.cascade.count,
+            "blend": round(light.shadow.cascade.blend),
+            "distance": round(light.shadow.cascade.max_distance),
         },
     })
 }

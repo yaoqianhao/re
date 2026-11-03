@@ -708,10 +708,12 @@ impl EngineApp {
                 pf.rebuilds()
             );
         }
-        // 阴影探针：0 = 本帧没跑阴影通道（场景未开启 / 无可见物件），
-        // 否则是深度通道里的 draw call 数（按网格合批，故通常 ≤ 主通道实例数）。
+        // 阴影探针：draw call 为 0 = 本帧没跑阴影通道（场景未开启 / 无可见物件），
+        // 否则是深度通道里的 draw call 数（按网格合批 × 级数）。
+        // `shadow_cascades` 是实际生效的级联数：1 = 单级（等价阶段 D），0 = 关闭。
         log::info!(
-            "[{tag}] 阴影通道：draw call {} / 主通道实例 {}",
+            "[{tag}] 阴影通道：级联 {} / draw call {} / 主通道实例 {}",
+            stats.shadow_cascades,
             stats.shadow_draws,
             stats.instances
         );
