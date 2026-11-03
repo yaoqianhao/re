@@ -17,11 +17,12 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::light::MAX_LOCAL_LIGHTS;
+use r3e_core::{MAX_CASCADES, ShadowSettings};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_editor::{
     EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief, PhysicsInfo,
-    PostFxPatch, RpcFailure, TransformPatch, UiPatch, PROTOCOL_VERSION,
+    PostFxPatch, RpcFailure, ShadowPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -401,6 +402,44 @@ impl EngineApi for LocalEngineApi<'_> {
         }))
     }
 
+    fn scene_shadow(&mut self, patch: Option<ShadowPatch>) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        let Some(patch) = patch else {
+            // 只读：直接回当前生效值，不做任何收敛（它本来就已经是收敛过的）
+            return Ok(shadow_value(&scene.light.shadow));
+        };
+        let mut shadow = scene.light.shadow;
+        if let Some(v) = patch.enabled {
+            shadow.enabled = v;
+        }
+        if let Some(v) = patch.size {
+            shadow.size = v;
+        }
+        if let Some(v) = patch.strength {
+            shadow.strength = v;
+        }
+        if let Some(v) = patch.ortho_size {
+            shadow.ortho_size = v;
+        }
+        if let Some(v) = patch.bias {
+            shadow.bias = v;
+        }
+        if let Some(v) = patch.cascades {
+            shadow.cascade.count = v;
+        }
+        if let Some(v) = patch.blend {
+            shadow.cascade.blend = v;
+        }
+        if let Some(v) = patch.distance {
+            shadow.cascade.max_distance = v;
+        }
+        // 一次性收敛：级数越界 / 混合比越界 / 尺寸非 2 的幂都在这里归位，
+        // 免得「编辑器改完看起来生效了，渲染器又按另一套规则夹一遍」。
+        shadow = shadow.sanitized();
+        scene.light.shadow = shadow;
+        Ok(shadow_value(&shadow))
+    }
+
     fn script_eval(&mut self, source: &str) -> Result<Value, RpcFailure> {
         let value = self.scripts.eval(source).map_err(RpcFailure::engine)?;
         Ok(dynamic_to_json(&value))
@@ -726,6 +765,26 @@ fn fmt_ui_value(value: UiValue) -> String {
 }
 
 /// 单个 UI 元素的 RPC 表示（声明层，未折算像素）。
+/// RPC 回包用的「一套阴影设置」JSON 形态。
+///
+/// 字段名沿用场景文件里的驼峰写法（`orthoSize`），`cascades` / `maxCascades` 是
+/// 扩展十六新增项；`maxCascades` 让编辑器不必自己硬编码上限就能画对滑块范围。
+fn shadow_value(shadow: &ShadowSettings) -> Value {
+    json!({
+        "enabled": shadow.enabled,
+        "size": shadow.size,
+        "strength": shadow.strength,
+        "orthoSize": shadow.ortho_size,
+        "bias": shadow.bias,
+        "normalBias": shadow.normal_bias,
+        "cascades": shadow.cascade.count,
+        "maxCascades": MAX_CASCADES,
+        "blend": shadow.cascade.blend,
+        "distance": shadow.cascade.max_distance,
+        "lambda": shadow.cascade.lambda,
+    })
+}
+
 /// RPC / 脚本共用的「一盏灯」JSON 形态。
 ///
 /// 字段与 `LocalLight` 一一对应，`kind` 用规范名而不是数字码——编辑器面板要能
@@ -1375,6 +1434,71 @@ mod tests {
         let cleared = api.light_clear().expect("应成功");
         assert_eq!(cleared["removed"], 1);
         assert_eq!(scene.borrow().lights.len(), 0);
+    }
+
+    /// 扩展十六：`scene.shadow` 的读 / 写 / 收敛三段语义。
+    #[test]
+    fn shadow_rpc_reads_writes_and_clamps() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        // 只读：不该改动任何值
+        let before = scene.borrow().light.shadow;
+        let read = api.scene_shadow(None).expect("应成功");
+        assert_eq!(read["enabled"], before.enabled);
+        assert_eq!(read["cascades"], before.cascade.count);
+        assert_eq!(
+            read["maxCascades"], MAX_CASCADES,
+            "上限必须回给编辑器，面板才能画对滑块范围"
+        );
+        for field in [
+            "enabled", "size", "strength", "orthoSize", "bias", "normalBias", "cascades",
+            "maxCascades", "blend", "distance", "lambda",
+        ] {
+            assert!(read.get(field).is_some(), "回包缺少字段 {field}");
+        }
+
+        // 写入：补丁合并后落地
+        let written = api
+            .scene_shadow(Some(ShadowPatch {
+                cascades: Some(4),
+                blend: Some(0.2),
+                distance: Some(80.0),
+                ..Default::default()
+            }))
+            .expect("应成功");
+        assert_eq!(written["cascades"], 4);
+        assert_eq!(written["blend"], 0.2_f64 as f32);
+        assert_eq!(written["distance"], 80.0);
+        let shadow = scene.borrow().light.shadow;
+        assert_eq!(shadow.cascade.count, 4);
+        assert_eq!(shadow.cascade.blend, 0.2);
+
+        // 越界一次性收敛，且回包给的是收敛后的值（不能「回包好看、实际另一套」）
+        let clamped = api
+            .scene_shadow(Some(ShadowPatch {
+                cascades: Some(99),
+                blend: Some(4.0),
+                size: Some(1000),
+                ..Default::default()
+            }))
+            .expect("应成功");
+        assert_eq!(clamped["cascades"], MAX_CASCADES);
+        assert_eq!(clamped["blend"], 0.5, "混合比上限是 0.5（再大就跨级采到不存在的层）");
+        assert_eq!(clamped["size"], 1000, "只要在 64..8192 内就原样保留（不强行取整）");
+        let shadow = scene.borrow().light.shadow;
+        assert_eq!(shadow.cascade.count, MAX_CASCADES as u32);
+        assert_eq!(shadow.size, 1000);
+
+        // 关掉阴影只关开关，级数等配置保留（编辑器取消勾选不该丢配置）
+        let off = api
+            .scene_shadow(Some(ShadowPatch {
+                enabled: Some(false),
+                ..Default::default()
+            }))
+            .expect("应成功");
+        assert_eq!(off["enabled"], false);
+        assert_eq!(off["cascades"], MAX_CASCADES, "关阴影不重置级联配置");
     }
 
     /// 空 key 一律拒绝（传输层已拦一次，宿主侧再兜一次，防止别的调用方绕过）。

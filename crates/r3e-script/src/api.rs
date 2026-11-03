@@ -847,9 +847,35 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     });
 
     // 正交相机半宽：0 = 按场景包围球自适应（默认），>0 = 固定覆盖范围（更清晰但更易裁切）。
+    // 扩展十六起它是「各级覆盖半宽的上限」，不是逐级固定值。
     let c = ctx.clone();
     engine.register_fn("set_shadow_extent", move |half: f64| {
         c.scene.borrow_mut().light.shadow.ortho_size = f32_of(half).max(0.0);
+    });
+
+    // 扩展十六：级联级数 1..=MAX_CASCADES（1 = 单级，等价阶段 D 的老行为）。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_cascades", move |count: i64| {
+        let max = r3e_core::MAX_CASCADES as i64;
+        c.scene.borrow_mut().light.shadow.cascade.count = count.clamp(1, max) as u32;
+    });
+
+    // 只读查询：当前级联级数。
+    let c = ctx.clone();
+    engine.register_fn("shadow_cascades", move || -> i64 {
+        c.scene.borrow().light.shadow.cascade.count as i64
+    });
+
+    // 级间混合带宽：占该级跨度的比例 0..1。0 = 硬切（能看到级间接缝），0.1~0.3 较自然。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_blend", move |blend: f64| {
+        c.scene.borrow_mut().light.shadow.cascade.blend = f32_of(blend).clamp(0.0, 1.0);
+    });
+
+    // 阴影覆盖的最远视距：0 = 由场景包围球自动推断，>0 = 固定值（越近越清晰）。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_distance", move |distance: f64| {
+        c.scene.borrow_mut().light.shadow.cascade.max_distance = f32_of(distance).max(0.0);
     });
 
     let c = ctx.clone();

@@ -405,6 +405,47 @@ impl LightPatch {
     }
 }
 
+/// `scene.shadow` 的补丁（扩展十六）：只给要改的阴影字段，其余沿用旧值。
+///
+/// 一个方法同时管读和写：**全部字段都不给 = 只读**，给了任意字段 = 合并后回写并
+/// 返回收敛后的最终值。这样编辑器拖滑块时每帧只发变化的那个字段，不必先读后写。
+///
+/// 与 `LightPatch` 同样的原则：本层不认识 `r3e_core` 的类型，收敛（级数夹到
+/// 1..=MAX_CASCADES、混合比夹到 0..1、尺寸夹到 64..8192）由宿主的 `sanitized` 完成。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShadowPatch {
+    /// 阴影总开关。
+    pub enabled: Option<bool>,
+    /// 阴影贴图边长（正方形）。
+    pub size: Option<u32>,
+    /// 阴影强度 0..1。
+    pub strength: Option<f32>,
+    /// 各级覆盖半宽的上限，0 = 自适应。
+    pub ortho_size: Option<f32>,
+    /// 深度比较偏移。
+    pub bias: Option<f32>,
+    /// 级联级数。
+    pub cascades: Option<u32>,
+    /// 级间混合带宽（占该级跨度的比例）。
+    pub blend: Option<f32>,
+    /// 阴影最远覆盖距离，0 = 由场景包围球推断。
+    pub distance: Option<f32>,
+}
+
+impl ShadowPatch {
+    /// 一个字段都没给——纯只读调用。
+    pub fn is_read_only(&self) -> bool {
+        self.enabled.is_none()
+            && self.size.is_none()
+            && self.strength.is_none()
+            && self.ortho_size.is_none()
+            && self.bias.is_none()
+            && self.cascades.is_none()
+            && self.blend.is_none()
+            && self.distance.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -521,6 +562,14 @@ pub trait EngineApi {
     /// 关掉只是不上传（场景数据保留），因此编辑器的「取消勾选」不会丢灯。
     fn light_set_enabled(&mut self, _enabled: Option<bool>) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("light.set_enabled"))
+    }
+
+    /// 读 / 写方向光阴影设置（扩展十六）：`None` = 只读，`Some(patch)` = 合并后回写。
+    ///
+    /// 回包固定给出收敛后的全部字段（含 `cascades` 与 `distance`），
+    /// 编辑器据此刷新面板，不必再补一次读。
+    fn scene_shadow(&mut self, _patch: Option<ShadowPatch>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.shadow"))
     }
 
     fn script_eval(&mut self, _source: &str) -> Result<Value, RpcFailure> {
@@ -1031,6 +1080,16 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 Err(f) => Response::fail(id, f),
             }
         }
+        "scene.shadow" => {
+            let patch = match shadow_patch_from(&req.params) {
+                Ok(p) => p,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.scene_shadow(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "script.eval" => {
             let source = match require_str(&req.params, "source")
                 .or_else(|_| require_str(&req.params, "code"))
@@ -1085,6 +1144,40 @@ fn light_patch_from(params: &Value) -> Result<LightPatch, RpcFailure> {
         inner_deg: opt_num(params, "inner_deg")?,
         outer_deg: opt_num(params, "outer_deg")?,
     })
+}
+
+/// 从 RPC 参数解析阴影补丁：一个字段都没有 = `None`（纯只读）。
+fn shadow_patch_from(params: &Value) -> Result<Option<ShadowPatch>, RpcFailure> {
+    let patch = ShadowPatch {
+        enabled: match param(params, "enabled") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(b)) => Some(*b),
+            Some(_) => {
+                return Err(RpcFailure::invalid_params("参数 `enabled` 应为布尔"))
+            }
+        },
+        size: opt_uint(params, "size")?,
+        strength: opt_num(params, "strength")?,
+        ortho_size: opt_num(params, "orthoSize")?,
+        bias: opt_num(params, "bias")?,
+        cascades: opt_uint(params, "cascades")?,
+        blend: opt_num(params, "blend")?,
+        distance: opt_num(params, "distance")?,
+    };
+    Ok(if patch.is_read_only() { None } else { Some(patch) })
+}
+
+/// 可选无符号整数字段（`size` / `cascades`）；显式 `null` 当作没给。
+fn opt_uint(params: &Value, key: &str) -> Result<Option<u32>, RpcFailure> {
+    match param(params, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n.as_u64().and_then(|v| u32::try_from(v).ok()).map(Some).ok_or_else(|| {
+            RpcFailure::invalid_params(format!("参数 `{key}` 应为非负整数"))
+        }),
+        Some(_) => Err(RpcFailure::invalid_params(format!(
+            "参数 `{key}` 应为非负整数"
+        ))),
+    }
 }
 
 /// 显式 `null` 等同于「没给」——不少 JSON 客户端会把没填的字段序列化成 `null`，
