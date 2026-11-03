@@ -45,8 +45,8 @@ fn missing_postfx_keeps_ssao_off() {
 /// 写了 `postfx` 但没写 `ssao`：整段回落到缺省值，而不是「开着但全零」。
 #[test]
 fn postfx_without_ssao_uses_defaults() {
-    let scene = Scene::from_json_str(&scene_json_with_postfx(r#"{ "exposure": 0.5 }"#))
-        .expect("载入场景");
+    let scene =
+        Scene::from_json_str(&scene_json_with_postfx(r#"{ "exposure": 0.5 }"#)).expect("载入场景");
     let fx = scene.postfx.expect("Some");
     let d = SsaoSettings::default();
     assert_eq!(fx.ssao, d);
@@ -123,4 +123,25 @@ fn enabled_ssao_breaks_neutrality() {
     assert!(fx.is_neutral());
     fx.ssao.enabled = true;
     assert!(!fx.is_neutral());
+}
+
+/// 随包发布的演示场景必须真的能载入，且遮蔽参数一个不差地落到场景上。
+///
+/// 这条是给「演示资产」兜底的：脚本能编译不代表场景合法，字段拼错会在运行时
+/// 静默回落缺省（serde default），画面上看不出差别，只有这里会红。
+#[test]
+fn shipped_ssao_demo_scene_loads() {
+    let text = include_str!("../../../assets/scene_ssao.json");
+    let scene = Scene::from_json_str(text).expect("assets/scene_ssao.json 必须合法");
+    assert_eq!(scene.name, "r3e-ssao-demo");
+    let fx = scene.postfx.expect("演示场景必须带 postfx 段");
+    let s = fx.ssao;
+    assert!(s.enabled, "演示场景应默认开着遮蔽");
+    assert_eq!(s.samples, MAX_SSAO_SAMPLES, "演示场景用满 16 个样本");
+    assert_eq!(s, s.sanitized(), "写进去的值本身就该是收敛后的值");
+    // 半径 / 强度落在「能看见接触阴影」的区间里：太小只剩缝隙，太大整面墙发灰。
+    assert!(s.radius > 0.5 && s.radius < 1.2, "半径超出演示意图: {s:?}");
+    assert!(s.intensity > 1.0, "强度太低看不见遮蔽: {s:?}");
+    // 场景里得有足够多的夹角（方块贴墙、台阶、缝隙），否则遮蔽无从体现。
+    assert!(scene.len() >= 10, "演示场景物件太少: {}", scene.len());
 }

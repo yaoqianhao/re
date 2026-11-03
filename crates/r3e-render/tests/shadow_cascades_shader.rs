@@ -14,6 +14,14 @@ fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// 在 [`flat`] 之上再抹掉「方括号贴空格」的排版差异。
+///
+/// rustfmt 会把短数组压成一行（`[a, b]`）、长数组拆成多行（`[\n a,` 压完是 `[ a`），
+/// 同一段代码换个行长就变形状。断言关心的是字段与顺序，不该被排版踩到。
+fn tight(s: &str) -> String {
+    flat(s).replace("[ ", "[").replace(" ]", "]")
+}
+
 #[test]
 fn shadow_map_is_a_depth_array_with_matching_layers() {
     assert!(
@@ -46,7 +54,9 @@ fn shader_matrix_array_length_matches_core_const() {
 #[test]
 fn shadow_uniform_field_order_matches_rust() {
     // WGSL 与 #[repr(C)] 的字段顺序必须严格一致，错位会静默读出垃圾矩阵
-    let struct_start = SHADER.find("struct Shadow {").expect("shader 缺少 Shadow 结构");
+    let struct_start = SHADER
+        .find("struct Shadow {")
+        .expect("shader 缺少 Shadow 结构");
     let struct_end = SHADER[struct_start..]
         .find("};")
         .map(|i| struct_start + i)
@@ -111,8 +121,9 @@ fn sampling_selects_level_by_camera_depth_and_blends() {
         "级间必须按 blend 带宽做混合"
     );
     assert!(
-        flat(RENDERER).contains("params2: [ shadow.strength, levels as f32, shadow.cascade.blend,"),
-        "params2 必须上传 强度 / 级数 / 混合带宽"
+        tight(RENDERER)
+            .contains("params2: [shadow.strength, levels as f32, shadow.cascade.blend, 0.0],"),
+        "params2 必须上传 强度 / 级数 / 混合带宽（尾位留给对齐）"
     );
 }
 

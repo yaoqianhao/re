@@ -195,6 +195,23 @@ fn scene_inspect(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, Too
         "assetMeshCount": asset_meshes,
         "camera": camera_json(&scene.camera),
         "light": light_json(&scene.light),
+        // 后处理整段（扩展十三起）。这里只摘要字段，不复刻 core 的收敛规则：
+        // 插件报的是场景文件里写了什么，实际生效值由引擎的 sanitized 决定。
+        "postfx": scene.postfx.map(|fx| json!({
+            "exposure": round(fx.exposure),
+            "tonemap": fx.tonemap.name(),
+            "fxaa": fx.fxaa,
+            "bloom": fx.bloom.enabled,
+            // 扩展十七：遮蔽配置。模型要判断「墙角发黑」是遮蔽还是曝光/泛光所致，
+            // 得先看得到这一段；`samples` 是写的原值，引擎会夹进 [4, 16]。
+            "ssao": {
+                "enabled": fx.ssao.enabled,
+                "radius": round(fx.ssao.radius),
+                "bias": round(fx.ssao.bias),
+                "intensity": round(fx.ssao.intensity),
+                "samples": fx.ssao.samples,
+            },
+        })),
         "physics": physics_desc_json(&scene.physics),
         "nodes": nodes,
     }))
@@ -698,6 +715,35 @@ mod tests {
         assert_eq!(report["nodes"][0]["name"], json!("floor"));
         assert_eq!(report["nodes"][0]["meshKind"], json!("builtin"));
         assert_eq!(report["nodes"][1]["physics"]["body"], json!("dynamic"));
+    }
+
+    #[test]
+    fn scene_inspect_reports_postfx_summary() {
+        // 没有 postfx 段：整段给 null，模型据此判断「这个场景是直通画面」。
+        let report = invoke("scene_inspect", &demo_args(), &mut NoHost).expect("scene_inspect");
+        assert!(report["postfx"].is_null(), "无 postfx 段时应为 null");
+
+        let mut args = demo_args();
+        args["scene"] = json!(
+            r#"{
+            "objects": [{ "name": "floor", "mesh": "plane" }],
+            "postfx": {
+                "exposure": 0.2,
+                "tonemap": "aces",
+                "bloom": { "enabled": true },
+                "ssao": { "enabled": true, "radius": 1.1, "intensity": 1.4, "samples": 12 }
+            }
+        }"#
+        );
+        let report = invoke("scene_inspect", &args, &mut NoHost).expect("scene_inspect");
+        let postfx = &report["postfx"];
+        assert_eq!(postfx["tonemap"], json!("aces"));
+        assert_eq!(postfx["bloom"], json!(true));
+        // 遮蔽段逐字段回显：半径 / 强度带两位小数，样本数原样。
+        assert_eq!(postfx["ssao"]["enabled"], json!(true));
+        assert_eq!(postfx["ssao"]["radius"], json!(1.1));
+        assert_eq!(postfx["ssao"]["intensity"], json!(1.4));
+        assert_eq!(postfx["ssao"]["samples"], json!(12));
     }
 
     #[test]

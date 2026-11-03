@@ -1401,7 +1401,8 @@ impl Renderer {
             if let Some(b) = bounds.filter(|b| !b.is_empty()) {
                 let radius = (b.size().length() * 0.5).max(0.25);
                 let reach = (b.center() - camera.position).length() + radius * 1.05;
-                cascade.max_distance = reach.clamp(camera.znear * 2.0, camera.zfar.max(camera.znear * 2.0));
+                cascade.max_distance =
+                    reach.clamp(camera.znear * 2.0, camera.zfar.max(camera.znear * 2.0));
             }
         }
         // 切分点长度 = 级数 + 1，首尾钉在 znear / 「max_distance 或 zfar」上
@@ -1453,12 +1454,7 @@ impl Renderer {
                 if shadow.enabled { 1.0 } else { 0.0 },
                 shadow.normal_bias * texel_world,
             ],
-            params2: [
-                shadow.strength,
-                levels as f32,
-                shadow.cascade.blend,
-                0.0,
-            ],
+            params2: [shadow.strength, levels as f32, shadow.cascade.blend, 0.0],
         };
         self.queue
             .write_buffer(&self.shadow_uniform, 0, bytemuck::bytes_of(&uniform));
@@ -2128,7 +2124,9 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // 主通道写这个深度附件，SSAO（扩展十七）还要把它当纹理采样：
+        // 少了 TEXTURE_BINDING，遮蔽通道的绑定组会在真机上直接校验失败。
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())

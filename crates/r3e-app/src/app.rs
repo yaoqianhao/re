@@ -717,6 +717,28 @@ impl EngineApp {
             stats.shadow_draws,
             stats.instances
         );
+        // 遮蔽探针（扩展十七）：passes 恒为 2（生成 + 散焦），为 0 说明本帧没提交——
+        // 段未开、强度为 0，或设置收敛成了中性值。`samples` 打印「场景要的 / 实际生效的」，
+        // 两者不等就说明被夹进了 [4, 16]（或场景压根没写这一段）。
+        // 世代号只在遮蔽图句柄变化时增长：逐帧增长说明 AO 图在每帧重建，设置判定失效。
+        let ssao_setting = match self.scene.borrow().postfx {
+            Some(fx) => fx.ssao.sanitized(),
+            None => r3e_core::ssao::SsaoSettings::default(),
+        };
+        log::info!(
+            "[{tag}] 遮蔽探针：段内启用 {} / GPU 启用 {} / 样本 {}/{} / pass {} / AO 图 {}×{} / 世代 {} / 半径 {:.2} / 偏置 {:.3} / 强度 {:.2}",
+            ssao_setting.enabled,
+            stats.ssao.enabled,
+            ssao_setting.samples,
+            stats.ssao.samples,
+            stats.ssao.passes,
+            stats.ssao.size.0,
+            stats.ssao.size.1,
+            renderer.ssao().generation(),
+            ssao_setting.radius,
+            ssao_setting.bias,
+            ssao_setting.intensity
+        );
         // 文本探针：glyphs > 0 说明字形真的排版并提交了；missing > 0 说明有字符
         // 当前字体集合里找不到（中文变方框的主因），据此可判断字体是否加载成功。
         let text_nodes = self.scene.borrow().texts.len();
