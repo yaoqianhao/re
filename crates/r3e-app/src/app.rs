@@ -754,6 +754,17 @@ impl EngineApp {
             ui.missing_images,
             ui.skipped
         );
+        // 局部光源探针（扩展十五）：场景盏数 / 真正上传到 UBO 的盏数 / 总开关。
+        // 三项关系能一眼定位问题：场景有灯但上传 0 → 总开关关了；上传数小于场景数
+        // → 超过 MAX_LOCAL_LIGHTS 的尾巴被截（core 写入时已拒绝，正常不会发生）。
+        let (light_nodes, lights_enabled) = {
+            let scene = self.scene.borrow();
+            (scene.lights.len(), scene.lights_enabled)
+        };
+        log::info!(
+            "[{tag}] 局部光源：场景 {light_nodes} 盏 / 上传 {} 盏 / 开关 {lights_enabled}",
+            stats.local_lights
+        );
         // 音频探针：设备不可用 = 静默降级（引擎照常跑，只是不出声）；「在播」数来自门面账本。
         log::info!("[{tag}] 音频：{}", self.audio.borrow_mut().status_line());
     }

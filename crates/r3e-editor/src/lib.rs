@@ -369,6 +369,42 @@ impl UiPatch {
     }
 }
 
+/// `light.set` 的补丁（扩展十五）：只给要改的字段，其余沿用旧值。
+///
+/// 与 `UiPatch` 同一条原则：本层**不认识** `r3e_core` 的任何类型。`kind` 用规范名
+/// （`point` / `spot`，大小写不敏感）透传，真正收敛（NaN / 负强度 / 零半径 /
+/// 内外角倒挂 / 朝向归一化）由宿主的 `LocalLight::sanitized` 完成。
+///
+/// 语义分两种，由宿主按「key 是否已存在」自行区分：
+/// - key 不存在 → **新建**（缺省字段取 `LocalLight` 的默认值）；
+/// - key 已存在 → **局部更新**（只覆盖给了的字段）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LightPatch {
+    pub key: String,
+    pub kind: Option<String>,
+    pub pos: Option<[f32; 3]>,
+    pub dir: Option<[f32; 3]>,
+    pub color: Option<[f32; 3]>,
+    pub intensity: Option<f32>,
+    pub range: Option<f32>,
+    pub inner_deg: Option<f32>,
+    pub outer_deg: Option<f32>,
+}
+
+impl LightPatch {
+    /// 除 `key` 之外一个字段都没给——对已有灯是无意义调用，对新灯则是「全部取默认」。
+    pub fn is_key_only(&self) -> bool {
+        self.kind.is_none()
+            && self.pos.is_none()
+            && self.dir.is_none()
+            && self.color.is_none()
+            && self.intensity.is_none()
+            && self.range.is_none()
+            && self.inner_deg.is_none()
+            && self.outer_deg.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -455,6 +491,36 @@ pub trait EngineApi {
     /// 读当前指针交互状态（hover / active / 本帧事件），供编辑器显示与联调。
     fn ui_state(&mut self) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("ui.state"))
+    }
+
+    /// 列出当前局部光源（扩展十五）：`{ enabled, count, lights: [...] }`。
+    ///
+    /// 每盏灯给出**声明态**（kind / pos / dir / color / intensity / range / 内外角），
+    /// 不含衰减后的辐亮度——那取决于查询点，属于 GPU / 脚本的认知范围。
+    fn light_list(&mut self, _limit: Option<usize>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("light.list"))
+    }
+
+    /// 写入 / 局部更新一盏局部光源（同 key 覆盖）。
+    fn light_set(&mut self, _patch: LightPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("light.set"))
+    }
+
+    /// 按 key 删除一盏局部光源。
+    fn light_remove(&mut self, _key: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("light.remove"))
+    }
+
+    /// 清空全部局部光源，返回删掉的盏数。
+    fn light_clear(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("light.clear"))
+    }
+
+    /// 读 / 写局部光照总开关（`None` 表示只读）。
+    ///
+    /// 关掉只是不上传（场景数据保留），因此编辑器的「取消勾选」不会丢灯。
+    fn light_set_enabled(&mut self, _enabled: Option<bool>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("light.set_enabled"))
     }
 
     fn script_eval(&mut self, _source: &str) -> Result<Value, RpcFailure> {
@@ -899,6 +965,72 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 Err(f) => Response::fail(id, f),
             }
         }
+        // 局部光源契约（扩展十五）：字段可分别给，一个都不给视为无意义调用；
+        // kind 的合法性、数值收敛全部由宿主完成，本层只做类型与空值校验。
+        "light.list" => {
+            let limit = match opt_limit(&req.params) {
+                Ok(l) => l,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.light_list(limit) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "light.set" => {
+            let patch = match light_patch_from(&req.params) {
+                Ok(p) => p,
+                Err(f) => return Response::fail(id, f),
+            };
+            if patch.is_key_only() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params(
+                        "除 `key` 外至少要给一个字段（否则这次调用没有意义）",
+                    ),
+                );
+            }
+            match api.light_set(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "light.remove" => {
+            let key = match require_str(&req.params, "key") {
+                Ok(k) if !k.trim().is_empty() => k,
+                Ok(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `key` 不能为空"),
+                    )
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.light_remove(key) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "light.clear" => match api.light_clear() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
+        "light.setenabled" => {
+            let enabled = match param(&req.params, "enabled") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(b)) => Some(*b),
+                Some(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `enabled` 应为布尔（可省略表示只读）"),
+                    )
+                }
+            };
+            match api.light_set_enabled(enabled) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "script.eval" => {
             let source = match require_str(&req.params, "source")
                 .or_else(|_| require_str(&req.params, "code"))
@@ -934,6 +1066,55 @@ fn with_node<T>(
     }
     f(node)
 }
+
+/// 从 RPC 参数解析局部光源补丁（全部字段可选，没给的留给宿主沿用原值）。
+fn light_patch_from(params: &Value) -> Result<LightPatch, RpcFailure> {
+    let key = match require_str(params, "key") {
+        Ok(k) if !k.trim().is_empty() => k.to_string(),
+        Ok(_) => return Err(RpcFailure::invalid_params("参数 `key` 不能为空")),
+        Err(f) => return Err(f),
+    };
+    Ok(LightPatch {
+        key,
+        kind: opt_str(params, "kind")?.map(str::to_string),
+        pos: opt_vec3(params, "pos")?,
+        dir: opt_vec3(params, "dir")?,
+        color: opt_vec3(params, "color")?,
+        intensity: opt_num(params, "intensity")?,
+        range: opt_num(params, "range")?,
+        inner_deg: opt_num(params, "inner_deg")?,
+        outer_deg: opt_num(params, "outer_deg")?,
+    })
+}
+
+/// 显式 `null` 等同于「没给」——不少 JSON 客户端会把没填的字段序列化成 `null`，
+/// 对这种输入报「类型错误」纯属刁难。真正的类型错误（字符串 / 布尔 / 短数组）照旧拒绝。
+fn opt_num(params: &Value, key: &str) -> Result<Option<f32>, RpcFailure> {
+    match param(params, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => opt_f32(params, key),
+    }
+}
+
+/// 同 [`opt_num`]，用于三元数组字段。
+fn opt_vec3(params: &Value, key: &str) -> Result<Option<[f32; 3]>, RpcFailure> {
+    match param(params, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => opt_f32_array::<3>(params, key),
+    }
+}
+
+/// 把 `limit` 参数解析成 `Option<usize>`（缺省 / `null` 表示不截断）。
+fn opt_limit(params: &Value) -> Result<Option<usize>, RpcFailure> {
+    match param(params, "limit") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(n) => Ok(Some(n as usize)),
+            None => Err(RpcFailure::invalid_params("参数 `limit` 应为非负整数")),
+        },
+    }
+}
+
 
 #[cfg(test)]
 mod save_rpc_tests {

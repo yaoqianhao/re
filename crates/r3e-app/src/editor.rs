@@ -16,11 +16,12 @@ use std::rc::Rc;
 
 use glam::{Quat, Vec3};
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
+use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
-use r3e_core::{Node, ObjectDesc, Scene};
+use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_editor::{
-    EngineApi, EngineInfo, EnvironmentPatch, MaterialPatch, NodeBrief, PhysicsInfo, PostFxPatch,
-    RpcFailure, TransformPatch, UiPatch, PROTOCOL_VERSION,
+    EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief, PhysicsInfo,
+    PostFxPatch, RpcFailure, TransformPatch, UiPatch, PROTOCOL_VERSION,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -291,6 +292,112 @@ impl EngineApi for LocalEngineApi<'_> {
         Ok(json!({
             "enabled": true,
             "postfx": postfx_value(applied),
+        }))
+    }
+
+    fn light_list(&mut self, limit: Option<usize>) -> Result<Value, RpcFailure> {
+        let scene = self.scene.borrow();
+        let lights: Vec<Value> = scene
+            .lights
+            .iter()
+            .take(limit.unwrap_or(usize::MAX))
+            .map(local_light_value)
+            .collect();
+        Ok(json!({
+            "count": scene.lights.len(),
+            "limit": MAX_LOCAL_LIGHTS,
+            "enabled": scene.lights_enabled,
+            "lights": lights,
+        }))
+    }
+
+    /// 局部光源补丁（扩展十五）：key 存在则叠加，不存在则从默认值起步新建，
+    /// 最后统一交给 `LocalLight::sanitized`——编辑器传 NaN / 负强度也污染不了场景。
+    fn light_set(&mut self, patch: LightPatch) -> Result<Value, RpcFailure> {
+        if patch.key.trim().is_empty() {
+            return Err(RpcFailure::invalid_params("参数 `key` 不能为空"));
+        }
+        // 名字先解析完再落地：写错的 kind 不该留下半盏被改的灯。
+        let kind = match patch.kind.as_deref() {
+            Some(name) => Some(LocalLightKind::parse(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!(
+                    "未知光源类型 `{name}`（可用：point / spot）"
+                ))
+            })?),
+            None => None,
+        };
+
+        let mut scene = self.scene.borrow_mut();
+        let existing = scene.local_light(&patch.key).cloned();
+        let inserted = existing.is_none();
+        let mut light = existing.unwrap_or_else(|| LocalLight {
+            key: patch.key.clone(),
+            ..LocalLight::default()
+        });
+        if let Some(v) = kind {
+            light.kind = v;
+        }
+        if let Some(v) = patch.pos {
+            light.pos = v;
+        }
+        if let Some(v) = patch.dir {
+            light.dir = v;
+        }
+        if let Some(v) = patch.color {
+            light.color = v;
+        }
+        if let Some(v) = patch.intensity {
+            light.intensity = v;
+        }
+        if let Some(v) = patch.range {
+            light.range = v;
+        }
+        if let Some(v) = patch.inner_deg {
+            light.inner_deg = v;
+        }
+        if let Some(v) = patch.outer_deg {
+            light.outer_deg = v;
+        }
+        let applied = light.sanitized();
+        // `upsert_local_light` 满载时只拒绝「新增」，同 key 覆盖照常生效——
+        // 因此这里的失败一定是容量问题，报错文案直接点明上限。
+        if !scene.upsert_local_light(applied) {
+            return Err(RpcFailure::invalid_params(format!(
+                "局部光源已达上限 {MAX_LOCAL_LIGHTS}，无法新增；请先删除或复用已有 key"
+            )));
+        }
+        let value = scene
+            .local_light(&patch.key)
+            .map(local_light_value)
+            .unwrap_or(Value::Null);
+        Ok(json!({
+            "key": patch.key,
+            "inserted": inserted,
+            "count": scene.lights.len(),
+            "light": value,
+        }))
+    }
+
+    fn light_remove(&mut self, key: &str) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        let removed = scene.remove_local_light(key);
+        Ok(json!({ "key": key, "removed": removed, "count": scene.lights.len() }))
+    }
+
+    fn light_clear(&mut self) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        let removed = scene.clear_local_lights();
+        Ok(json!({ "removed": removed, "count": 0 }))
+    }
+
+    fn light_set_enabled(&mut self, enabled: Option<bool>) -> Result<Value, RpcFailure> {
+        let mut scene = self.scene.borrow_mut();
+        if let Some(on) = enabled {
+            scene.lights_enabled = on;
+        }
+        Ok(json!({
+            "enabled": scene.lights_enabled,
+            "count": scene.lights.len(),
         }))
     }
 
@@ -619,6 +726,24 @@ fn fmt_ui_value(value: UiValue) -> String {
 }
 
 /// 单个 UI 元素的 RPC 表示（声明层，未折算像素）。
+/// RPC / 脚本共用的「一盏灯」JSON 形态。
+///
+/// 字段与 `LocalLight` 一一对应，`kind` 用规范名而不是数字码——编辑器面板要能
+/// 直接显示 `spot`，也不想为了一个枚举在两侧同步一份常量表。
+fn local_light_value(light: &LocalLight) -> Value {
+    json!({
+        "key": light.key,
+        "kind": light.kind.name(),
+        "pos": light.pos,
+        "dir": light.dir,
+        "color": light.color,
+        "intensity": light.intensity,
+        "range": light.range,
+        "inner_deg": light.inner_deg,
+        "outer_deg": light.outer_deg,
+    })
+}
+
 fn ui_element_value(el: &UiElement) -> Value {
     json!({
         "key": el.key,
@@ -639,6 +764,7 @@ fn ui_element_value(el: &UiElement) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use r3e_core::light::MIN_LIGHT_RANGE;
     use r3e_core::InputState;
 
     type Fixture = (Rc<RefCell<Scene>>, Rc<RefCell<Physics>>, ScriptHost);
@@ -1065,5 +1191,203 @@ mod tests {
         assert_eq!(state["active"], "btn");
         assert_eq!(state["pointer_over_ui"], true);
         assert_eq!(state["events"].as_array().expect("数组").len(), 2);
+    }
+
+    // ---------- 扩展十五：局部光源 RPC ----------
+
+    /// 新建点光：缺省字段取 `LocalLight::default`，给了的字段逐个落地。
+    #[test]
+    fn light_set_inserts_point_light() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        let out = api
+            .light_set(LightPatch {
+                key: "lamp".to_string(),
+                pos: Some([1.0, 2.0, 3.0]),
+                intensity: Some(8.0),
+                range: Some(12.0),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(out["inserted"], true);
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["light"]["kind"], "point");
+        assert_eq!(out["light"]["pos"], json!([1.0, 2.0, 3.0]));
+
+        let scene = scene.borrow();
+        let light = scene.local_light("lamp").expect("场景里应有这盏灯");
+        assert_eq!(light.intensity, 8.0);
+        assert_eq!(light.range, 12.0);
+        // 没给的字段保持默认，而不是被清零
+        assert_eq!(light.color, LocalLight::default().color);
+    }
+
+    /// 同 key 再写一次是叠加而非替换：没给的字段保留上一次的值。
+    #[test]
+    fn light_set_merges_into_existing() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.light_set(LightPatch {
+            key: "lamp".to_string(),
+            kind: Some("spot".to_string()),
+            pos: Some([0.0, 5.0, 0.0]),
+            dir: Some([0.0, -1.0, 0.0]),
+            inner_deg: Some(15.0),
+            outer_deg: Some(25.0),
+            ..Default::default()
+        })
+        .expect("应成功");
+        let out = api
+            .light_set(LightPatch {
+                key: "lamp".to_string(),
+                intensity: Some(20.0),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(out["inserted"], false, "第二次应是更新");
+        assert_eq!(out["count"], 1, "不应重复新增");
+        assert_eq!(out["light"]["kind"], "spot", "未给的 kind 保留");
+        assert_eq!(out["light"]["intensity"], 20.0);
+        assert_eq!(out["light"]["inner_deg"], 15.0, "未给的锥角保留");
+    }
+
+    /// 未知 kind 必须报参数错误，且不能留下半盏灯。
+    #[test]
+    fn light_set_rejects_unknown_kind_without_side_effect() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        let err = api
+            .light_set(LightPatch {
+                key: "bad".to_string(),
+                kind: Some("laser".to_string()),
+                ..Default::default()
+            })
+            .expect_err("应报参数错误");
+        assert!(err.message.contains("未知光源类型"), "{}", err.message);
+        assert_eq!(scene.borrow().lights.len(), 0, "坏 kind 不应落地");
+    }
+
+    /// 坏值收敛：NaN / 负强度 / 零半径 / 内外角倒挂都必须在进场景前被夹住。
+    #[test]
+    fn light_set_sanitizes_bad_values() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.light_set(LightPatch {
+            key: "bad".to_string(),
+            pos: Some([f32::NAN, 0.0, 0.0]),
+            intensity: Some(-3.0),
+            range: Some(0.0),
+            inner_deg: Some(40.0),
+            outer_deg: Some(10.0),
+            ..Default::default()
+        })
+        .expect("应成功（收敛后）");
+
+        let scene = scene.borrow();
+        let light = scene.local_light("bad").expect("应已落地");
+        assert!(light.pos[0].is_finite(), "NaN 位置必须被抹平");
+        assert_eq!(light.intensity, 0.0, "负强度夹到 0");
+        assert_eq!(light.range, MIN_LIGHT_RANGE, "零半径抬到下限");
+        assert!(light.outer_deg > light.inner_deg, "内外角必须修正");
+    }
+
+    /// 满载：新增被拒并报上限，同 key 覆盖仍生效。
+    #[test]
+    fn light_set_capacity_limit() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        for i in 0..MAX_LOCAL_LIGHTS {
+            api.light_set(LightPatch {
+                key: format!("l{i}"),
+                intensity: Some(1.0),
+                ..Default::default()
+            })
+            .expect("前 MAX_LOCAL_LIGHTS 盏应成功");
+        }
+        let err = api
+            .light_set(LightPatch {
+                key: "extra".to_string(),
+                intensity: Some(1.0),
+                ..Default::default()
+            })
+            .expect_err("满载后新增应报错");
+        assert!(err.message.contains(&MAX_LOCAL_LIGHTS.to_string()), "{}", err.message);
+
+        api.light_set(LightPatch {
+            key: "l0".to_string(),
+            intensity: Some(9.0),
+            ..Default::default()
+        })
+        .expect("满载时同 key 覆盖必须仍生效");
+        assert_eq!(scene.borrow().local_light("l0").unwrap().intensity, 9.0);
+    }
+
+    /// list / remove / clear / enabled 四件套。
+    #[test]
+    fn light_list_remove_clear_and_switch() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        for key in ["a", "b"] {
+            api.light_set(LightPatch {
+                key: key.to_string(),
+                pos: Some([0.0, 1.0, 0.0]),
+                intensity: Some(1.0),
+                ..Default::default()
+            })
+            .expect("应成功");
+        }
+        let listed = api.light_list(None).expect("应成功");
+        assert_eq!(listed["count"], 2);
+        assert_eq!(listed["enabled"], true);
+        let arr = listed["lights"].as_array().expect("数组");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["key"], "a");
+        assert_eq!(arr[0]["kind"], "point");
+        // 九个字段都要在，编辑器靠这个面板直接渲染
+        for field in [
+            "key", "kind", "pos", "dir", "color", "intensity", "range", "inner_deg", "outer_deg",
+        ] {
+            assert!(arr[0].get(field).is_some(), "快照缺少字段 {field}");
+        }
+
+        let limited = api.light_list(Some(1)).expect("应成功");
+        assert_eq!(limited["count"], 2, "count 是全量");
+        assert_eq!(limited["lights"].as_array().unwrap().len(), 1, "limit 只截结果");
+
+        let removed = api.light_remove("a").expect("应成功");
+        assert_eq!(removed["removed"], true);
+        assert_eq!(removed["count"], 1);
+        assert_eq!(
+            api.light_remove("a").expect("应成功")["removed"],
+            false,
+            "重复删除如实回报"
+        );
+
+        let switched = api.light_set_enabled(Some(false)).expect("应成功");
+        assert_eq!(switched["enabled"], false);
+        assert_eq!(switched["count"], 1, "关灯不删数据");
+        assert_eq!(
+            api.light_set_enabled(None).expect("应成功")["enabled"],
+            false,
+            "不给参数是只读"
+        );
+
+        let cleared = api.light_clear().expect("应成功");
+        assert_eq!(cleared["removed"], 1);
+        assert_eq!(scene.borrow().lights.len(), 0);
+    }
+
+    /// 空 key 一律拒绝（传输层已拦一次，宿主侧再兜一次，防止别的调用方绕过）。
+    #[test]
+    fn light_set_rejects_blank_key() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        assert!(api
+            .light_set(LightPatch {
+                key: "   ".to_string(),
+                ..Default::default()
+            })
+            .is_err());
+        assert_eq!(scene.borrow().lights.len(), 0);
     }
 }
