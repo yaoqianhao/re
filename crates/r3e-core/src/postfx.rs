@@ -16,6 +16,7 @@
 //! 与 [`crate::env`] 一样，本模块零 wgpu 依赖：GPU 侧只是把同样的公式搬到 WGSL，
 //! `crates/r3e-render/tests/shader_wgsl.rs` 用常量比对锁住两边不漂移。
 
+use crate::ssao::SsaoSettings;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -197,6 +198,9 @@ pub struct PostFxSettings {
     /// 弥补引擎没有 MSAA 的锯齿。
     #[serde(default)]
     pub fxaa: bool,
+    /// 屏幕空间环境光遮蔽（扩展十七）：缺省关闭，composite 乘 1。
+    #[serde(default)]
+    pub ssao: SsaoSettings,
 }
 
 fn default_exposure() -> f32 {
@@ -210,6 +214,7 @@ impl Default for PostFxSettings {
             tonemap: TonemapMode::None,
             bloom: BloomSettings::default(),
             fxaa: false,
+            ssao: SsaoSettings::default(),
         }
     }
 }
@@ -227,6 +232,7 @@ impl PostFxSettings {
             tonemap: self.tonemap,
             bloom: self.bloom.sanitized(),
             fxaa: self.fxaa,
+            ssao: self.ssao.sanitized(),
         }
     }
 
@@ -238,6 +244,7 @@ impl PostFxSettings {
             && self.tonemap == TonemapMode::None
             && !self.bloom.enabled
             && !self.fxaa
+            && self.ssao.is_neutral()
     }
 }
 
@@ -392,6 +399,7 @@ mod tests {
                 intensity: 99.0,
             },
             fxaa: true,
+            ssao: Default::default(),
         }
         .sanitized();
         assert_eq!(s.exposure, DEFAULT_EXPOSURE_EV);
@@ -508,6 +516,7 @@ mod tests {
                 intensity: 0.5,
             },
             fxaa: true,
+            ssao: Default::default(),
         }
         .sanitized();
         let hdr = Vec3::new(2.0, 0.5, 0.25);

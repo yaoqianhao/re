@@ -18,6 +18,7 @@ pub mod postfx;
 pub mod procedural;
 pub mod scene;
 pub mod skin;
+pub mod ssao;
 pub mod text;
 pub mod transform;
 pub mod ui;
@@ -60,6 +61,13 @@ pub use postfx::{
     MAX_BLOOM_INTENSITY, MAX_BLOOM_KNEE, MAX_BLOOM_THRESHOLD, MAX_EXPOSURE_EV, MIN_EXPOSURE_EV,
 };
 pub use procedural::ProceduralProvider;
+pub use ssao::{
+    ao_from_occlusion, hash_u32, hemisphere_kernel, is_occluded, kernel_dir, kernel_scale,
+    kernel_uniform, normal_from_neighbors, reconstruct_view_pos, SsaoSettings,
+    DEFAULT_SSAO_BIAS, DEFAULT_SSAO_INTENSITY, DEFAULT_SSAO_RADIUS, DEFAULT_SSAO_SAMPLES,
+    MAX_SSAO_INTENSITY, MAX_SSAO_RADIUS, MAX_SSAO_SAMPLES, MIN_AO_FACTOR, MIN_SSAO_BIAS,
+    MIN_SSAO_RADIUS, MIN_SSAO_SAMPLES,
+};
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
 };

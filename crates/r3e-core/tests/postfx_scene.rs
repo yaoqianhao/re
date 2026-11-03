@@ -96,6 +96,7 @@ fn postfx_survives_json_roundtrip() {
                 intensity: 0.22,
             },
             fxaa: true,
+            ssao: Default::default(),
         }
         .sanitized(),
     );
