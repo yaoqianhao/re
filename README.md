@@ -303,7 +303,10 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | `set_shadow(on)` / `shadow_enabled()` | 阴影开关（关后整帧跳过阴影通道） |
 | `set_shadow_strength(v)` | 阴影强度 0..1 |
 | `set_shadow_size(px)` | 阴影贴图边长（64..8192，改值重建纹理） |
-| `set_shadow_extent(half)` | 正交半宽；0 = 按场景包围球自适应 |
+| `set_shadow_extent(half)` | 正交半宽；0 = 按场景包围球自适应；开级联时作单级上限 |
+| `set_shadow_cascades(n)` / `shadow_cascades()` | 级联数 1..=4（`1` = 单级，等同阶段 D） |
+| `set_shadow_blend(v)` | 级间过渡带宽（占该级跨度比例），0..0.5 |
+| `set_shadow_distance(m)` | 阴影最远距离；0 = 用相机 zfar 或场景包围球最远点 |
 
 ### 材质：PBR 参数
 
@@ -819,7 +822,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   参数 metallic / roughness / emissive）。环境探针是解析式（三色天空 + 太阳 + 9 项球谐），
   **没有 HDR 立方体贴图、没有反射探针**：金属只映天 / 地 / 太阳，映不出场景物件，见
   [§16 IBL 环境探针](#16-ibl-环境探针)。方向光带单张正交阴影贴图（3×3 PCF，默认开启）；
-  阴影限制：无点光/聚光阴影、无级联、透明物件也投实心影。
+  扩展十六把这张图升级为**最多 4 级级联**（`light.shadow.cascades`，缺省 1 = 单级，老场景画面不变）：
+  视锥按深度切段、每段独立拟合光源正交相机，近处纹素更密、远处只求覆盖，级间按 `blend` 混合消接缝。
+  阴影限制：无点光/聚光阴影、级联上限 4、每级重复渲染全场景可见物件（未按级裁剪）、透明物件也投实心影。
 - 局部光源：最多 16 盏点光 / 聚光，**不投影**（点光立方阴影代价太高），无 IES / 面光源，只进直接光项、
   不参与环境项，见 [§19 局部光源](#19-局部光源扩展十五)。
 - 后处理：常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光，
@@ -906,15 +911,27 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai
 "light": {
   "direction": [-0.55, -0.62, -0.35],
   "intensity": 1.25,
-  "shadow": { "enabled": true, "size": 2048, "strength": 1.0 }
+  "shadow": {
+    "enabled": true, "size": 2048, "strength": 1.0,
+    "cascades": 4,          // 扩展十六：级联数 1..=4（缺省 1 = 单级）
+    "blend": 0.15,          // 级间过渡带宽（占该级跨度比例，0..0.5）
+    "cascadeDistance": 60.0 // 阴影最远距离；0 / 缺省 = 用相机 zfar 或包围球最远点
+  }
 }
 ```
 
-脚本侧四个开关：`set_shadow(on)` / `shadow_enabled()` / `set_shadow_strength(v)` /
-`set_shadow_size(px)` / `set_shadow_extent(half)`（半宽写 0 = 自适应）。
+脚本侧八个开关：`set_shadow(on)` / `shadow_enabled()` / `set_shadow_strength(v)` /
+`set_shadow_size(px)` / `set_shadow_extent(half)`（半宽写 0 = 自适应）/
+`set_shadow_cascades(n)` / `set_shadow_blend(v)` / `set_shadow_distance(m)`。
+
+**级联（扩展十六）**：`cascades > 1` 时阴影图变成 `texture_depth_2d_array`（层 = 级数），
+视锥按深度切段、每级独立拟合光源正交相机并做纹素量化（相机移动时影子不抖动），
+片元按相机深度选级、在 `blend` 带内与下一级混合。级数 1 就是阶段 D 的单级行为，
+因此老场景、老截图口径不变；代价是 `draw call × 级数` 的顶点开销。
 
 验证手段：`--run-seconds N` 的起止探针会打出
-`阴影通道：draw call X / 主通道实例 Y`，关闭阴影时为 0——这是「阴影通道真的跑了」的数值证据。
+`阴影通道：级联 N / draw call X / 主通道实例 Y`，关闭阴影时三者中后两项为 0——
+`draw call = 合批数 × 级数`（每级一次全场景深度 pass），这是「阴影通道真的跑了」的数值证据。
 设计细节与踩坑（独立 pipeline layout、深度图不可原地 resize）见
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 5.7 与 [`docs/ASSETS.md`](docs/ASSETS.md) 17。
 

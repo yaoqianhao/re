@@ -352,11 +352,20 @@ pub struct ShadowSettings {
     pub normal_bias: f32,   // 法线方向偏移（纹素），默认 1.5，夹到 [0, 8]
     pub distance: f32,      // 光源后退距离倍数，默认 2.0，夹到 [0.05, 16]
     pub strength: f32,      // 阴影强度 0..1，默认 1.0
+    pub cascade: CascadeSettings, // 扩展十六：级联（count / lambda / blend / max_distance）
+}
+
+pub struct CascadeSettings {
+    pub count: u32,         // 级联数 1..=MAX_CASCADES(4)，默认 1（单级 = 老行为）
+    pub lambda: f32,        // 切分混合：0 = 均匀、1 = 对数，默认 0.6，夹到 [0, 1]
+    pub blend: f32,         // 级间过渡带宽（占该级跨度比例），默认 0.1，夹到 [0, 0.5]
+    pub max_distance: f32,  // 阴影最远距离，0 = 用相机 zfar（或场景包围球最远点）
 }
 ```
 
 方向光是唯一的**全局**光源；扩展十五起另有最多 16 盏**局部光源**（点光 / 聚光，见 5.10），
-它们只影响直接光项、不投影。阴影只做「该方向光的单张正交深度图」，无级联、无点光立方阴影。
+它们只影响直接光项、不投影。阴影只做「该方向光的深度图」——扩展十六起最多 4 级级联共用同一张
+`texture_depth_2d_array`（层 = 级数），仍没有点光立方阴影。
 `direction` 的语义是**光线行进方向**（从光源射出），不是"指向光源的方向"——着色器里取 `normalize(-light_dir)` 得到表面指向光源的向量。
 
 `ShadowSettings::sanitized()` 负责把越界值夹回可用区间：这份数据会被场景 JSON、脚本 API、CLI 三处写入，
@@ -841,7 +850,8 @@ lit = (diffuse + specular) * light_color.rgb * light_color.w * ndl * shadow
 pub struct RenderStats {
     pub draw_calls: u32,   // 主通道 draw call（按网格合批）
     pub instances: u32,    // 主通道绘制实例数
-    pub shadow_draws: u32, // 阴影通道 draw call；0 = 本帧跳过了阴影通道
+    pub shadow_draws: u32, // 阴影通道 draw call（= 合批数 × 级数）；0 = 本帧跳过了阴影通道
+    pub shadow_cascades: u32, // 本帧实际生效的级联数；0 = 阴影关闭，1 = 单级
     pub culled: u32,       // 被视锥剔除的实例
     pub cull_unknown: u32, // 缺包围盒而 fail-open 放行的实例
     pub frame_index: u64,
@@ -853,7 +863,7 @@ pub struct RenderStats {
 }
 ```
 
-`--run-seconds` 的起止探针会把 `shadow_draws`、文本与 UI 通道的四边形/draw call 数一起打出来，
+`--run-seconds` 的起止探针会把 `shadow_cascades`、`shadow_draws`、文本与 UI 通道的四边形/draw call 数一起打出来，
 是「对应通道真的跑了」的数值证据（关闭时为 0）。UI 探针还会额外给出元素数、缓存贴图数、
 缺图回退数与超限跳过数（来自 `UiPass::stats()`，比 `RenderStats` 更细）。
 
@@ -951,6 +961,59 @@ WebGPU core 规范 `max_bind_groups = 4`（group 索引 0..3），第五组 `@gr
 
 **不投影**：16 盏灯各配一张立方阴影贴图的成本（16×6 个面、每面一次场景重绘）远超当前收益，
 所以局部光源只进直接光项，不进阴影通道。写实感不足的地方由「半径 + 强度」调，而不是靠影子暗示。
+
+---
+
+### 5.11 级联阴影（CSM，扩展十六）
+
+阶段 D 的阴影只有一张覆盖「整个场景包围球」的正交图：视距一拉远，全部纹素摊到几十米上，近处物件立刻出锯齿；
+想兼顾近处就得把 `ortho_size` 调小，远处又整片没影子。级联把相机视锥**按深度切段**，每段一张同分辨率的图。
+
+**切分（`r3e_core::cascade_splits`）**
+
+| 项 | 内容 |
+| --- | --- |
+| 切分公式 | `split_i = near·(far/near)^(i/n)` 与 `near + (far-near)·i/n` 按 `lambda` 线性插值：`lambda = 0` 均匀、`1` 纯对数 |
+| 首尾 | 钉在 `camera.znear` 与「`max_distance` 或 `zfar`」上 |
+| 自适应上限 | `max_distance = 0` 时取「场景包围球最远点 + 1.05·半径」，几何之外没有可投影的东西，摊过去纯属浪费纹素 |
+| 输出 | `Vec<f32>`，长度 = 级数 + 1（`splits[i]..splits[i+1]` 是第 i 级的深度区间） |
+
+**每级拟合（`r3e_core::frustum_slice_corners` + `fit_cascade`）**
+
+1. 用逆相机矩阵把该级 8 个视锥角点变换到世界空间；
+2. 光源沿 `-direction` 架正交相机罩住这 8 点，取**正方形外接**（半宽 = 8 点在光源空间 XY 的最大半径），
+   避免宽高比不一致导致纹素各向异性；
+3. **纹素量化**：把中心按 `2·radius/size` 对齐到纹素格，相机移动时阴影边缘不会「游动」（shadow shimmer）；
+4. `ortho_size > 0` 时作为**单级覆盖半宽上限**，超出就把矩阵整体缩放——保留阶段 D 那个手动旋钮的语义。
+
+**GPU 接线（`group(3)` 内完成，不开新组）**
+
+| 槽位 | 阶段 D | 扩展十六 |
+| --- | --- | --- |
+| `binding 0` | `texture_depth_2d` | `texture_depth_2d_array`（层数 = `MAX_CASCADES`），`binding 1` 采样器不变 |
+| `binding 2` | `ShadowUniform { light_view_proj: mat4, params }` | `light_view_proj: array<mat4x4<f32>, 4>` + `split_ndc: vec4<f32>`（相机空间切分点换算到 NDC 深度） |
+| `binding 3` | `ShadowPassUniform`（深度 pass 专用） | 不变，改为**每级一份** buffer，深度 pass 逐级写 |
+
+`max_bind_groups = 4` 的硬限制没有变通空间，级联信息全部塞进既有阴影 uniform，因此**没有新增绑定组、没有新增纹理槽**。
+未使用的级（`count < 4`）复制最后一级的矩阵与切分点：着色器即使因浮点误差选到它，也只会重复一次最近级的采样，不会采到未初始化的层。
+
+**采样（`shadow_factor`）**
+
+1. 相机空间深度 `view_z` 与 `split_ndc` 比较，二分/线性定位级联下标 `level`；
+2. 在 `level` 这一层做 3×3 PCF（`shadow_sample_level`）；
+3. 距该级远端 `blend` 比例以内的片元，同时采 `level + 1` 并按比例混合——级间接缝处不会有硬线；
+4. UV 越界或 `ndc.z > 1` 仍返回 1.0（受光），与阶段 D 口径一致。
+
+**统计口径**：`stats.shadow_draws = 合批数 × 级数`（每级一次全场景深度 pass），`stats.shadow_cascades` 记实际级数。
+冒烟实测（4 物件 4 网格）：`级联 1 → 4 draws`、`2 → 8`、`4 → 16`，线性可验；关阴影时两者都是 0。
+
+**已知边界**
+
+- 级数上限 4（`MAX_CASCADES`），由 `texture_depth_2d_array` 层数与 shader 定长数组共同决定；
+- 全部级共用一张图，因此**分辨率按级摊薄**：4 级 2048² 等于每级 2048²，但总显存与绘制开销 ×4；
+- 级间混合是「采两级取平均」，不是硬件过滤，两级覆盖率差异大时仍有轻微接缝；
+- 只有方向光投影；局部光源（扩展十五）依旧不投影，两者组合处阴影只来自方向光；
+- 未做「视锥剔除按级裁剪」：每级都渲染全场景可见物件，远景大物体在近级里是纯浪费（下一步优化点）。
 
 ---
 
@@ -1189,7 +1252,10 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_shadow(on)` / `shadow_enabled()` | 阴影总开关（关闭后整帧跳过阴影通道，零开销） |
 | `set_shadow_strength(v)` | 阴影强度 0..1，`mix(1.0, visible, v)` |
 | `set_shadow_size(px)` | 阴影贴图边长，夹到 64..8192，变化时重建深度纹理 |
-| `set_shadow_extent(half)` | 正交半宽，0 = 按场景包围球自适应 |
+| `set_shadow_extent(half)` | 正交半宽，0 = 按场景包围球自适应；开级联时作单级半宽上限 |
+| `set_shadow_cascades(n)` / `shadow_cascades()` | 级联数 1..=4（写 `1` 即退回阶段 D 的单级阴影） |
+| `set_shadow_blend(v)` | 级间过渡带宽（占该级跨度比例），夹到 0..0.5 |
+| `set_shadow_distance(m)` | 阴影最远距离（世界单位，沿相机前后）；0 = 用相机 `zfar` 或场景包围球最远点 |
 
 **材质（PBR）**
 
@@ -1880,7 +1946,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
-| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带单张正交阴影贴图（阶段三 D） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、**不投影**、无 IES/面光源、不参与环境项；无级联阴影、无全局光照；阴影分辨率固定单级，远景会随正交范围变大而变糙 |
+| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、**不投影**、无 IES/面光源、不参与环境项；无全局光照、无 SSAO；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
 | 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）；缺省直通 | **无 SSAO、无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮 |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
@@ -1902,9 +1968,11 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 - **世界矩阵求解**：`update_world_transforms` 带记忆化缓存 + 深度上限，深层次结构下仍是 O(n)。
 - **实测规模**：数千物件的群体动画（`example_swarm.rhai`）在 RTX 5060 Laptop / Vulkan 下运行正常，帧时间 1 ms 量级。
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配。
-- **阴影通道成本**：顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
-  主通道每片元多 9 次 `textureSampleCompare`（3×3 PCF）。2048² 贴图实测仍满帧，
-  瓶颈在 PCF 采样而非贴图带宽。关闭阴影后该 pass 整段跳过，`draw_calls` 与 `shadow_draws` 同时归零。
+- **阴影通道成本**：单级时顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
+  开启 N 级级联则为 N 倍（每级一次全场景深度 pass）。主通道每片元多 9 次 `textureSampleCompare`
+  （3×3 PCF），级联过渡带内翻倍到 18 次。2048² 单级贴图实测仍满帧；4 级 2048² 实测亦满帧
+  （集显未测），瓶颈在 PCF 采样而非贴图带宽。关闭阴影后该 pass 整段跳过，
+  `draw_calls`、`shadow_draws`、`shadow_cascades` 同时归零。
 
 ### 11.3 可加固点（按收益排序）
 
@@ -1939,6 +2007,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 
 | **十四（已完成：UI 指针交互层）** | **命中测试 + 指针状态机 + 事件回灌脚本**：`r3e-core::ui` 增 `UiRect` / `resolve_rect` / `hit_test`（按 layer 取最上层、只判矩形、visible=false 点不到）/ `UiInteraction`（hover / active 两槽位 + 每帧有界事件队列 `MAX_UI_EVENTS_PER_FRAME = 64`，`clicked` 只在同一元素内按下并抬起时产出，`released` 有按下捕获时总发，`cancelled` 是移出后释放）；`r3e-app` 每帧把光标与左键边沿喂给状态机，**指针压在 UI 上时相机不吃这次拖动**；脚本注册 10 个只读 API（`ui_events` / `ui_event_count` / `ui_event_kind_name` / `ui_event_key` / `ui_hover` / `ui_active` / `ui_clicked` / `ui_hovered` / `ui_pointer_over_ui` / `ui_hit`）；编辑器新增 `ui.list` / `ui.set` / `ui.remove` / `ui.state` 四条 RPC（`UiPatch` 字段全可选，`"50%"` / `"120"` 两种写法都可）；演示 `scripts/ui_interaction_demo.rhai` | `core/ui.rs` 加交互层；`script/api.rs` 注册只读绑定；`r3e-editor` 加 `UiPatch` + 四个 trait 方法；`r3e-app/editor.rs` 实现四个方法 + `apply_ui_patch`；`app.rs` 加 `ui_interaction` 字段、`update_ui_interaction`、`cursor_over_ui`；`tests/ui_scene.rs` / `r3e-editor/tests/ui_rpc.rs` / `app.rs` 单测锁语义 | 无（纯增量；不接输入时行为与原 UI 层一致）。**不做**：键盘焦点 / Tab 遍历、滚轮与拖拽、IME、长按与双击、控件语义（按钮状态机仍在脚本里） |
 | **十五（已完成：局部光源）** | **点光 / 聚光定长光源表**：`r3e-core::light` 增 `LocalLight` / `LocalLightKind` / `attenuation`（平滑窗逆平方，`d ≥ range` 归零）/ `spot_factor`（内外角 smoothstep，退化时硬边）/ `irradiance`（CPU 参考，脚本与 GPU 同式）；`Scene` 提供 `upsert_local_light` / `remove_local_light` / `clear_local_lights` / `local_light` / `lights_enabled`，上限 `MAX_LOCAL_LIGHTS = 16`（满员返回 `false` 不顶人）；`r3e-render` 每帧把整表打包进 `LightsUniform`（1 + 16×64 = 1040 B）并挂在 **`@group(3) @binding(4)`**——WebGPU `max_bind_groups = 4`，第五组 `@group(4)` 直接过不了校验，故并入场景级绑定组；总开关写 `count.x = 0`（数据留着，循环零次迭代）；片元侧超半径 / 背面 / 锥外三处早退；脚本 19 个 API（`light_add_point` / `light_add_spot` / `light_set_*` / `light_remove` / `light_clear` / `set_lights_enabled` / `local_light*`）；编辑器 5 个 RPC （`light.list` / `light.set` / `light.remove` / `light.clear` / `light.set_enabled`，补丁式「给了才改」）；`scripts/lights_demo.rhai` + 起止探针 | `core/light.rs` 加局部光源契约与常量；`core/scene.rs` 加 `lights` + 增删改查；`render` 加 `LightsUniform` / `LocalLightRaw` / `shader.wgsl` 的 `local_lighting`；`script/api.rs` 注册读写；`r3e-editor` 加 `LightPatch`；`app/editor.rs` 实现 5 个 RPC | 无（场景 JSON 向后兼容：`lights` 缺省为空；着色器绑定从 5 组收到 4 组，是**修正**而非破坏——原先的 `@group(4)` 在任何合规设备上都创建失败） |
+| **十六（已完成：级联阴影 CSM）** | **方向光级联阴影**：`r3e-core::light` 增 `CascadeSettings`（count / lambda / blend / max_distance）与纯函数 `cascade_splits`（均匀↔对数插值切分）、`frustum_slice_corners`（该级 8 角点）、`fit_cascade`（光源正交相机拟合 + 正方形外接 + 纹素量化），上限 `MAX_CASCADES = 4`；`r3e-render` 把阴影图换成 `texture_depth_2d_array`（层 = 级数）、`ShadowUniform` 改为 `array<mat4x4,4>` + `split_ndc`、深度 pass 逐级渲染、`shadow_pass_uniforms` 每级一份；`shader.wgsl` 的 `shadow_factor` 按相机深度选级 + 级间按 `blend` 混合；`RenderStats.shadow_cascades` 记录生效级数；脚本 4 个 API（`set_shadow_cascades` / `shadow_cascades` / `set_shadow_blend` / `set_shadow_distance`）；编辑器 `scene.shadow` RPC 的 `ShadowPatch`；场景 `light.shadow` 段新增 `cascades` / `blend` / `cascadeDistance` | `core/light.rs` 加级联契约与三个纯函数、`core/scene.rs` 加三个可选字段与往返；`render/renderer.rs` 数组化阴影目标与逐级 pass、`shader.wgsl` 换级联采样；`script/api.rs` 注册 4 API；`r3e-editor` 加 `ShadowPatch` 与 `scene.shadow` 分支；`app/editor.rs` 实现 RPC；新增 `tests/cascade_scene.rs` / `shadow_cascades_shader.rs` / `shadow_rpc.rs` | 无（场景 JSON 向后兼容：`cascades` 缺省 1 = 单级，老场景画面与统计口径不变；绑定槽位未新增，仍为 4 组） |
 
 | **十六（候选，按收益排序）** | **A 动画混合树**（分层 mask / additive，补 11.1 的动画边界）；**B SSAO + CSM**（环境光遮蔽 + 级联阴影，补后处理与阴影的单级限制）；**C 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**D 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高） | `core` 契约先行；后两者需动 render 的多目标与 pass 预算 | 视具体项 |
 
@@ -2139,7 +2208,7 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-core/src/text.rs` | `FontSet`（系统字体查找 / 指定字体加载）、`GlyphSource` 抽象、`layout_text`（换行 / 对齐 / 缺字回退）、`ScreenText` / `TextAlign` |
 | `crates/r3e-core/src/ui.rs` | `UiElement` / `UiKind` / `Anchor` / `UiUnit` / `UiValue`、`resolve_rect`（锚点 + 像素/百分比解析）、`slice_margins`（九宫格边距换算 + 夹取）、`sort_by_layer`（稳定排序） |
 | `crates/r3e-core/src/glyph_atlas.rs` | `GlyphAtlas` 分页图集、`ShelfAllocator` 货架分配、`GlyphKey`（face+glyph+像素量化） |
-| `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机；扩展十五的 `LocalLight` / `LocalLightKind`、`attenuation` / `spot_factor` / `irradiance` CPU 参考实现、`upsert_local` / `remove_local` / `with_local`、`MAX_LOCAL_LIGHTS = 16` 等常量 |
+| `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机；扩展十五的 `LocalLight` / `LocalLightKind`、`attenuation` / `spot_factor` / `irradiance` CPU 参考实现、`upsert_local` / `remove_local` / `with_local`、`MAX_LOCAL_LIGHTS = 16` 等常量；扩展十六的 `CascadeSettings`（含 `sanitized`）、`cascade_splits` / `frustum_slice_corners` / `fit_cascade` 三个纯函数、`MAX_CASCADES = 4` |
 | `crates/r3e-core/src/material.rs` | `SurfaceMaterial` 与 `sanitized`、`GeoTerms`、GGX / Smith / Schlick / `cook_torrance_brdf` / `direct_light` 纯函数参考实现（零 wgpu 依赖） |
 | `crates/r3e-core/src/env.rs` | `EnvironmentSettings`（7 字段）与 `sanitized`、`Sh9::project` 球谐投影、`env_brdf_approx` 解析环境项（零 wgpu） |
 | `crates/r3e-core/src/postfx.rs` | `PostFxSettings` / `BloomSettings` / `TonemapMode`、`sanitized`、`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve` 参考实现（零 wgpu） |
