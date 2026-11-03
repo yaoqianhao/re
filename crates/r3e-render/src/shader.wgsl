@@ -45,18 +45,21 @@ var s_base_color: sampler;
 @group(2) @binding(0)
 var<storage, read> u_joints: array<mat4x4<f32>>;
 
-// 阶段 D：方向光阴影贴图（正交深度图）。params:
-//   x = 1/size（纹素尺寸），y = 深度比较偏移，z = 是否启用（0/1），
-//   w = 法线方向偏移量（世界单位，已按纹素与世界尺寸换算）
+// 阶段 D / 扩展十六：方向光阴影贴图（正交深度**数组**，每级一层）。
+//   light_view_proj 按级下标存矩阵；split_ndc 存各级远端的相机裁剪空间 z
+//   params: x = 1/size（纹素尺寸），y = 深度比较偏移，z = 是否启用（0/1），
+//           w = 第 0 级的法线偏移量（世界单位，已按纹素与世界尺寸换算）
+//   params2: x = 阴影强度，y = 本帧级数，z = 级间混合带宽（占该级跨度的比例）
+// 长度 4 必须与 `r3e_core::MAX_CASCADES` 一致，`tests/shadow_wgsl.rs` 会解析比对。
 struct Shadow {
-    light_view_proj: mat4x4<f32>,
+    light_view_proj: array<mat4x4<f32>, 4>,
+    split_ndc: vec4<f32>,
     params: vec4<f32>,
-    // x = 阴影强度，yzw 保留
     params2: vec4<f32>,
 };
 
 @group(3) @binding(0)
-var shadow_map: texture_depth_2d;
+var shadow_map: texture_depth_2d_array;
 
 @group(3) @binding(1)
 var shadow_sampler: sampler_comparison;
@@ -300,16 +303,11 @@ fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
     return u_shadow_pass.light_view_proj * (model * vec4<f32>(local_position, 1.0));
 }
 
-// 3×3 PCF：把深度图比较结果在邻域里平均，边缘得到两三个纹素的柔和过渡。
-// 阴影贴图按「世界 → 光源裁剪空间」定位，越界或超出远平面一律按「受光」处理，
+// 单级采样的 3×3 PCF：把深度图比较结果在邻域里平均，边缘得到两三个纹素的柔和过渡。
+// 该级阴影图按「世界 → 光源裁剪空间」定位，越界或超出远平面一律按「受光」处理，
 // 避免视锥外物件出现硬边黑块。
-fn shadow_factor(world_position: vec3<f32>, n: vec3<f32>) -> f32 {
-    if u_shadow.params.z < 0.5 {
-        return 1.0;
-    }
-    let texel = u_shadow.params.x;
-    let biased_world = world_position + n * u_shadow.params.w;
-    let clip = u_shadow.light_view_proj * vec4<f32>(biased_world, 1.0);
+fn shadow_sample_level(level: i32, biased_world: vec3<f32>, texel: f32) -> f32 {
+    let clip = u_shadow.light_view_proj[level] * vec4<f32>(biased_world, 1.0);
     let ndc = clip.xyz / clip.w;
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0 {
@@ -320,11 +318,65 @@ fn shadow_factor(world_position: vec3<f32>, n: vec3<f32>) -> f32 {
     for (var y = -1; y <= 1; y = y + 1) {
         for (var x = -1; x <= 1; x = x + 1) {
             let offset = vec2<f32>(f32(x), f32(y)) * texel;
-            sum = sum + textureSampleCompare(shadow_map, shadow_sampler, uv + offset, cmp_depth);
+            sum = sum + textureSampleCompare(
+                shadow_map,
+                shadow_sampler,
+                uv + offset,
+                level,
+                cmp_depth,
+            );
         }
     }
-    let visible = sum / 9.0;
-    return mix(1.0, visible, u_shadow.params2.x);
+    return sum / 9.0;
+}
+
+// 级联阴影（扩展十六）：
+//   1) 用像素在相机裁剪空间的 ndc.z 找它属于哪一级（split_ndc 存各级远端 z）；
+//   2) 该级内做 3×3 PCF；
+//   3) 靠近本级远端时按 blend 带宽向下级渐变，消掉级间接缝的硬边。
+// 超过最后一级远端的像素直接判为受光（远处不再有阴影，但不会出现黑块）。
+fn shadow_factor(world_position: vec3<f32>, n: vec3<f32>) -> f32 {
+    if u_shadow.params.z < 0.5 {
+        return 1.0;
+    }
+    let levels = i32(u_shadow.params2.y);
+    if levels <= 0 {
+        return 1.0;
+    }
+    let cam_clip = u_camera.view_proj * vec4<f32>(world_position, 1.0);
+    if abs(cam_clip.w) < 1e-6 {
+        return 1.0;
+    }
+    let cam_z = cam_clip.z / cam_clip.w;
+    var level = -1;
+    for (var i = 0; i < levels; i = i + 1) {
+        if cam_z <= u_shadow.split_ndc[i] {
+            level = i;
+            break;
+        }
+    }
+    if level < 0 {
+        return 1.0;
+    }
+    let texel = u_shadow.params.x;
+    let biased = world_position + n * u_shadow.params.w;
+    let strength = u_shadow.params2.x;
+    let visible = shadow_sample_level(level, biased, texel);
+
+    let blend = u_shadow.params2.z;
+    if blend > 0.0 && level + 1 < levels {
+        var prev_split = 0.0;
+        if level > 0 {
+            prev_split = u_shadow.split_ndc[level - 1];
+        }
+        let band = (u_shadow.split_ndc[level] - prev_split) * blend;
+        if band > 0.0 && cam_z > u_shadow.split_ndc[level] - band {
+            let t = clamp((cam_z - (u_shadow.split_ndc[level] - band)) / band, 0.0, 1.0);
+            let next_visible = shadow_sample_level(level + 1, biased, texel);
+            return mix(1.0, mix(visible, next_visible, t), strength);
+        }
+    }
+    return mix(1.0, visible, strength);
 }
 
 // ---------------- 环境探针（IBL，扩展十二） ----------------
