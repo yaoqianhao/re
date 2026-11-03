@@ -140,16 +140,18 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 9,488 | 796 | 157 | `scene.rs` / `material.rs` / `env.rs` / `postfx.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 4,761 | 186 | 48 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-core | 12,057 | 1,599 | 239 | `scene.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 5,736 | 1,079 | 94 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 4,888 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
 | r3e-physics | 2,548 | 660 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
 | r3e-audio | 982 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
-| r3e-script | 3,215 | — | 25 | `api.rs` / `lib.rs`（含文本、UI、音频、材质、环境语义单测） |
-| r3e-editor | 1,193 | 133 | 12 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 3,299 | — | 14 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
-| r3e-plugin | 2,400 | — | 38 | `lib.rs`（插件宿主与 ABI） |
-| **合计** | **32,774** | **2,069** | **371** | **约 3.3 万行（含 556 行 WGSL）；`cargo test --workspace` 合计 371 passed** |
+| r3e-script | 4,440 | 222 | 54 | `api.rs` / `lib.rs`（含文本、UI、音频、材质、环境、遮蔽语义单测） |
+| r3e-editor | 1,827 | 1,134 | 51 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 4,500 | — | 30 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-plugin | 2,450 | — | 39 | `lib.rs`（插件宿主与 ABI） |
+| **合计** | **39,428（含 1,089 行 WGSL）** | **4,988** | **584** | **约 4.4 万行；`cargo test --workspace` 合计 584 passed** |
+
+行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，随扩展十七一次性重算（此前表格长期停在扩展十二时的快照）。
 
 Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
@@ -158,8 +160,8 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 414 passed / 0 failed（其中原有 337 项语义未改；IBL 环境探针新增 34 项：Sh9 投影、环境收敛、场景往返、着色器静态校验、RPC 补丁解析；HDR 后处理链新增 43 项：曲线与亮部纯函数、HDR 目标格式、pass 预算、`postfx.wgsl` 常量比对、场景往返、RPC 补丁解析、脚本 5 项写入与收敛） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 375 passed / 0 failed |
+| 单测（默认特性） | `cargo test --workspace` | 584 passed / 0 failed（扩展十七新增 47 项：半球核确定性、深度重建容差、邻域法线退化、遮挡判定与 AO 系数、`SsaoSettings` 夹紧与中性、`postfx.ssao` 场景往返、`ssao.wgsl` 常量与绑定比对、脚本写入/回读、RPC 补丁解析、演示场景载入） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 588 passed / 0 failed |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -461,6 +463,7 @@ pub struct EnvironmentSettings {
 
 ```text
 主通道 ──▶ Rgba16Float HDR 目标（线性）
+           ├─(SSAO，扩展十七) 深度 → 遮蔽图(R8) → 4×4 散焦 → composite 乘回
            ├─(bloom)  亮部提取 → 1/2 → 1/4 → 1/8 → 逐级加法回叠
            ▼
          composite: hdr + bloom·intensity → 曝光(2^ev) → 色调映射 → FXAA ──▶ sRGB surface
@@ -491,9 +494,59 @@ pub struct EnvironmentSettings {
    invalid params（不做静默回落）。脚本侧则相反——脚本是热重载的，未知名回落 `none` 并打印一行，
    免得一个拼写错误让整个脚本执行失败。
 
-**已知边界**：无 SSAO、无运动模糊、无时间性抗锯齿（TAA），FXAA 是纯后处理
+**已知边界**：无运动模糊、无时间性抗锯齿（TAA），FXAA 是纯后处理
 （边缘判定在 composite 里做，无法恢复已经丢失的几何信息）；泛光层级与核大小固定，
 不随分辨率自适应；曝光是手动旋钮，没有基于平均亮度的自动曝光。
+遮蔽不在本链内，见 4.10（扩展十七）——它排在 composite **之前**，属于「喂给后处理的 AO」。
+
+### 4.10 屏幕空间遮蔽（SSAO，扩展十七）
+
+阴影解决了「直接光照不到的地方」，但环境项（天空 / 球谐漫反射）是**无遮挡**的常量项：
+墙角的接缝、台阶与地面的夹角、两块贴着的板之间，亮度与开阔平地完全一样，读起来像纸片拼图。
+屏幕空间遮蔽用主通道的深度图反推法线，在半球核里数遮挡比例，把结果当环境项的折扣乘回去。
+
+**链路**
+
+```text
+主通道（写 HDR + Depth32Float）
+   │
+   ├─ pass 1：深度 → AO（R8Unorm，全屏三角形 + 16 样本半球核）
+   ├─ pass 2：AO → AO（4×4 盒式散焦，抹掉逐像素旋转带来的椒盐噪声）
+   ▼
+composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
+```
+
+1. **公式的权威实现在 `r3e-core::ssao`**（零 wgpu 依赖）：`hemisphere_kernel`（确定性半球核，
+   `hash_u32` 打散旋转）、`reconstruct_view_pos`（由深度与逆投影重建视空间坐标）、
+   `normal_from_neighbors`（邻域深度差打分算法线）、`is_occluded`、`ao_from_occlusion`。
+   `ssao.wgsl` 只是把这些公式搬到 GPU，参数与常量逐条对应。
+2. **`SsaoSettings` 的 `sanitized()` 三处入口共用**：场景 JSON、脚本 API、编辑器 `scene.set_ssao`。
+   口径：半径夹 `[0.01, 8]` 世界单位、偏置夹 `[0, 0.5]`、强度夹 `[0, 4]`、样本数夹 `[4, 16]`（默认 8）。
+   样本数比 4 更少时核退化成几个方向、能看出条纹；比 16 更多时收益被 4×4 散焦抹平，白花采样。
+3. **缺省中性**：`SsaoSettings::default()` 的 `enabled = false`，`is_neutral()` 为真时两个 pass 整段跳过、
+   composite 拿到一张全 1 的遮蔽图——**不写 `postfx.ssao` 的老场景画面逐像素不变**。
+4. **`AO_FORMAT = R8Unorm`**：遮蔽是单个乘数，8 位足够；换成 `R16Float` 只会多一倍带宽。
+   主深度纹理因此必须带 `TEXTURE_BINDING` 用法——缺这一条时绑定组在真机上校验失败，
+   而纯文本测试察觉不到（这条是首次真机运行时才炸出来的）。
+5. **AO 图有两份**：pass 1 写 A、pass 2 读 A 写 B，散焦后把 B 交给 composite。
+   同一张图既读又写会触发 wgpu 的读写冲突（阴影通道踩过同一个坑，见 5.9）。
+6. **每帧重算，没有历史累积**：相机一动遮蔽就要重算，靠「散焦 + 16 样本」而不是「时间累积」压噪。
+7. **世代号（`SsaoPass::generation`）**只在遮蔽图按新尺寸重建时 +1，composite 的绑定组据此判等复用。
+   没有它的话每帧都会重建一个绑定组——探针里「世代逐帧增长」就是这条失效的告警信号。
+
+**代价**：两个全屏 pass（1080p 各约 2M 像素）+ 每像素 16 次深度 `textureLoad`。
+实测开启后仍在满帧（集显未测）；关掉遮蔽段后 pass 数为 0，成本归零。
+
+**已知边界**（都写进了「不打算做」的清单，而不是「待修 bug」）：
+
+- **AO 乘在整幅画面上**（composite 里 `color *= ao`，见 `postfx.wgsl`），不是只乘环境项。
+  正确做法是把 AO 单独送进 PBR 的环境项分支，但 composite 拿不到逐像素的法线与材质，需要
+  多传一张 G-buffer 或在主通道里出图——代价远大于当前收益，先按近似接受：遮挡区整体压暗，
+  直接光也被压一点点，视觉上是「缝隙更脏」，不细看分不出。
+- **屏幕空间信息缺失处的伪影**：物件边缘外侧没有深度（背景是天空/远平面），采样会漏；
+  `reconstruct_view_pos` 在远平面返回 1.0（不遮挡），法线退化时也返回 1.0，宁可漏遮不误遮。
+- 不做双边滤波，4×4 盒式会在**深浅交界的台阶边缘**溢出一点灰边；半径调小可缓解。
+- 没有多尺度（MSSAO / HBAO+ 那种），大幅提升质量需要分层深度 Mip，本期不做。
 
 ---
 
@@ -860,8 +913,14 @@ pub struct RenderStats {
     pub text_missing: u32, // 缺字数（只占位不绘制）
     pub ui_quads: u32,     // UI 通道四边形数（矩形 1 / 边框 4 / 图片 1）
     pub ui_draws: u32,     // UI 通道 draw call；0 = 关闭 / 无元素
+    pub postfx: PostFxStats, // HDR 后处理链（扩展十三）：enabled / bloom_passes / passes
+    pub ssao: SsaoStats,   // 屏幕空间遮蔽（扩展十七）：enabled / passes / samples / size
+    pub local_lights: u32, // 真正上传并参与计算的局部光源数（扩展十五）
 }
 ```
+
+`ssao.passes` 的取值只有三种：`0`（场景没开遮蔽段，整条链跳过）、`2`（遮蔽 + 4×4 散焦各一次全屏 pass）。
+`ssao.samples` 是**实际生效**的核样本数（已被夹进 `[4, 16]`），与场景里写的值可能不同——这正是要观测它的原因。
 
 `--run-seconds` 的起止探针会把 `shadow_cascades`、`shadow_draws`、文本与 UI 通道的四边形/draw call 数一起打出来，
 是「对应通道真的跑了」的数值证据（关闭时为 0）。UI 探针还会额外给出元素数、缓存贴图数、
@@ -1287,6 +1346,18 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_fxaa(on)` | 在 composite 里做，零额外 pass |
 | `has_postfx()` / `clear_postfx()` | 是否带后处理段 / 清空回直通 |
 | `postfx_exposure()` / `postfx_tonemap()` | 回读（未开启时给缺省 0 / `none`） |
+
+**屏幕空间遮蔽（扩展十七）**
+
+写入 `postfx.ssao`（没有 `postfx` 段时自动建一个），渲染层下一帧重建 AO 图后生效。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_ssao(enabled, radius, bias, intensity, samples)` | 一击式全量：开关 / 半径(夹 0.01..8) / 偏置(0..0.5) / 强度(0..4) / 样本数(4..16) |
+| `set_ssao_enabled(on)` | 只要开关；关掉后两个 pass 整段跳过 |
+| `set_ssao_radius(v)` / `set_ssao_intensity(v)` / `set_ssao_samples(n)` | 单字段写，逐个走 `sanitized()`（样本数按整数夹） |
+| `has_ssao()` / `clear_ssao()` | 是否带遮蔽段 / 清空回中性（遮蔽图全 1） |
+| `ssao_enabled()` / `ssao_radius()` / `ssao_intensity()` / `ssao_samples()` / `ssao_bias()` | 回读（未开启时给 `SsaoSettings::default()`：false / 0.6 / 1.0 / 8 / 0.02） |
 
 **局部光源（扩展十五）**
 
@@ -1873,6 +1944,26 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 然后窗口照开、画面不变，极易被误判成渲染 bug。守卫上线当天就抓到 `ccd_demo.rhai` 早已踩中同一个坑
 （一行里两段 `if` 表达式 + 三段拼接），已一并修掉。
 
+### 8.14 屏幕空间遮蔽的驱动与探针（扩展十七）
+
+遮蔽不需要驱动——它是一个**无状态的全屏后处理**，每帧从当前深度图重算，没有「把输入喂给状态机」这一步
+（这是它比局部光源、CSD 那类驱动型扩展省事的地方）。app 层唯一要做的是**把统计打进探针**：
+
+| 环节 | 位置 | 做法 |
+| --- | --- | --- |
+| 打包 | `renderer.rs` 每帧 `SsaoParams` 从 `postfx.ssao.sanitized()` 出发 | 核数组由 `kernel_uniform()` 现算，416 B 一次 `write_buffer` |
+| 提交 | 主通道结束后、`postfx.render` 之前 | 场景没开遮蔽段时不进这个分支，`passes = 0` |
+| 探针 | 起止日志 `遮蔽探针：段内启用 b / GPU 启用 b / 样本 M/M / pass N / AO 图 WxH / 世代 g / 半径 r / 偏置 b / 强度 i` | 前后两组「启用 / 样本」是「场景里写的」与「GPU 实际用的」对照，不相等就是被夹紧或没接上 |
+| 回显 | 插件 `scene_inspect` 的 `postfx.ssao` 字段 | 与 HDR 后处理同一段摘要，编辑器/插件不必再单开一条读取路径 |
+| 演示 | `assets/scene_ssao.json` + `scripts/ssao_demo.rhai` | 台阶 + 内凹墙角 + 悬空板；脚本按键切换遮蔽、扫半径、1 s 打印一次探针 |
+
+**为什么探针把「启用」与「pass 数」分开打**：`enabled = true` 但 `passes = 0` 说明设置进了场景却没进渲染分支
+（例如渲染器拿的是另一份 `postfx` 快照），只有一个数时这种「配置生效但没画」的故障完全看不出来。
+
+**真机验收记录**（`--run-seconds 4`，集显）：`ssao.enabled = true` 时 `pass 2 / 样本 8`；
+把场景里 `ssao.enabled` 改成 `false` 后 `pass 0 / GPU 启用 false`，画面回到无遮蔽状态、draw call 不变——
+证明整段跳过而不是「画一张全 1 的图」。
+
 ---
 
 ## 9. 端到端数据流
@@ -1946,8 +2037,8 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
-| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM） | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、**不投影**、无 IES/面光源、不参与环境项；无全局光照、无 SSAO；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
-| 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）；缺省直通 | **无 SSAO、无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮 |
+| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM）；屏幕空间遮蔽（扩展十七）叠在 composite 前 | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、**不投影**、无 IES/面光源、不参与环境项；遮蔽是**整幅相乘的近似**（并非只压环境项）、无多尺度、无双边滤波；无全局光照；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
+| 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）+ 可选屏幕空间遮蔽两个全屏 pass（扩展十七）；缺省直通 | **无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮；遮蔽无历史累积，快速转动相机时高频噪声靠 4×4 散焦压制而非时间累积 |
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
@@ -2009,7 +2100,8 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | **十五（已完成：局部光源）** | **点光 / 聚光定长光源表**：`r3e-core::light` 增 `LocalLight` / `LocalLightKind` / `attenuation`（平滑窗逆平方，`d ≥ range` 归零）/ `spot_factor`（内外角 smoothstep，退化时硬边）/ `irradiance`（CPU 参考，脚本与 GPU 同式）；`Scene` 提供 `upsert_local_light` / `remove_local_light` / `clear_local_lights` / `local_light` / `lights_enabled`，上限 `MAX_LOCAL_LIGHTS = 16`（满员返回 `false` 不顶人）；`r3e-render` 每帧把整表打包进 `LightsUniform`（1 + 16×64 = 1040 B）并挂在 **`@group(3) @binding(4)`**——WebGPU `max_bind_groups = 4`，第五组 `@group(4)` 直接过不了校验，故并入场景级绑定组；总开关写 `count.x = 0`（数据留着，循环零次迭代）；片元侧超半径 / 背面 / 锥外三处早退；脚本 19 个 API（`light_add_point` / `light_add_spot` / `light_set_*` / `light_remove` / `light_clear` / `set_lights_enabled` / `local_light*`）；编辑器 5 个 RPC （`light.list` / `light.set` / `light.remove` / `light.clear` / `light.set_enabled`，补丁式「给了才改」）；`scripts/lights_demo.rhai` + 起止探针 | `core/light.rs` 加局部光源契约与常量；`core/scene.rs` 加 `lights` + 增删改查；`render` 加 `LightsUniform` / `LocalLightRaw` / `shader.wgsl` 的 `local_lighting`；`script/api.rs` 注册读写；`r3e-editor` 加 `LightPatch`；`app/editor.rs` 实现 5 个 RPC | 无（场景 JSON 向后兼容：`lights` 缺省为空；着色器绑定从 5 组收到 4 组，是**修正**而非破坏——原先的 `@group(4)` 在任何合规设备上都创建失败） |
 | **十六（已完成：级联阴影 CSM）** | **方向光级联阴影**：`r3e-core::light` 增 `CascadeSettings`（count / lambda / blend / max_distance）与纯函数 `cascade_splits`（均匀↔对数插值切分）、`frustum_slice_corners`（该级 8 角点）、`fit_cascade`（光源正交相机拟合 + 正方形外接 + 纹素量化），上限 `MAX_CASCADES = 4`；`r3e-render` 把阴影图换成 `texture_depth_2d_array`（层 = 级数）、`ShadowUniform` 改为 `array<mat4x4,4>` + `split_ndc`、深度 pass 逐级渲染、`shadow_pass_uniforms` 每级一份；`shader.wgsl` 的 `shadow_factor` 按相机深度选级 + 级间按 `blend` 混合；`RenderStats.shadow_cascades` 记录生效级数；脚本 4 个 API（`set_shadow_cascades` / `shadow_cascades` / `set_shadow_blend` / `set_shadow_distance`）；编辑器 `scene.shadow` RPC 的 `ShadowPatch`；场景 `light.shadow` 段新增 `cascades` / `blend` / `cascadeDistance` | `core/light.rs` 加级联契约与三个纯函数、`core/scene.rs` 加三个可选字段与往返；`render/renderer.rs` 数组化阴影目标与逐级 pass、`shader.wgsl` 换级联采样；`script/api.rs` 注册 4 API；`r3e-editor` 加 `ShadowPatch` 与 `scene.shadow` 分支；`app/editor.rs` 实现 RPC；新增 `tests/cascade_scene.rs` / `shadow_cascades_shader.rs` / `shadow_rpc.rs` | 无（场景 JSON 向后兼容：`cascades` 缺省 1 = 单级，老场景画面与统计口径不变；绑定槽位未新增，仍为 4 组） |
 
-| **十六（候选，按收益排序）** | **A 动画混合树**（分层 mask / additive，补 11.1 的动画边界）；**B SSAO + CSM**（环境光遮蔽 + 级联阴影，补后处理与阴影的单级限制）；**C 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**D 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高） | `core` 契约先行；后两者需动 render 的多目标与 pass 预算 | 视具体项 |
+| **十七（已完成：屏幕空间遮蔽 SSAO）** | **深度反推的半球核遮蔽**：`r3e-core::ssao` 纯函数契约（`hemisphere_kernel` 确定性核 + `reconstruct_view_pos` 深度重建 + `normal_from_neighbors` 邻域法线 + `is_occluded` / `ao_from_occlusion`）+ `SsaoSettings`（enabled / radius / bias / intensity / samples，`sanitized()` 夹 0.01..8 / 0..0.5 / 0..4 / 4..16）挂进 `PostFxSettings.ssao`；`r3e-render::ssao` 两个全屏 pass（深度→`R8Unorm` 遮蔽图、4×4 盒式散焦，`AO_PASSES_PER_FRAME = 2`）+ `ssao.wgsl`，composite 在曝光前 `color *= ao`；`RenderStats.ssao`；12 个脚本 API（写 6：`set_ssao` / `set_ssao_enabled` / `set_ssao_radius` / `set_ssao_intensity` / `set_ssao_samples` / `clear_ssao`；读 6：`has_ssao` / `ssao_enabled` / `ssao_radius` / `ssao_bias` / `ssao_intensity` / `ssao_samples`，其中 `bias` **只读**——写入走场景 `postfx.ssao.bias` 与 RPC `scene.set_ssao`）；编辑器 `scene.set_ssao`（`SsaoPatch`）；演示 `assets/scene_ssao.json` + `scripts/ssao_demo.rhai` | `core/ssao.rs` 新增、`postfx.rs` 挂段、`lib.rs` 导出；`render/ssao.rs` + `ssao.wgsl` 新增，`renderer.rs` 主通道深度加 `TEXTURE_BINDING` 用法并在 composite 前插入两个 pass；`script/api.rs` 注册；`r3e-editor` 加 `SsaoPatch`；`app.rs` 遮蔽探针；`tests/ssao_contract.rs` / `ssao_scene.rs` / `ssao_shader.rs` / `ssao_api.rs` / `ssao_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx.ssao` 缺省 `enabled = false`，整段跳过、画面与扩展十三逐像素一致）。**边界**：AO 乘整幅画面（非只乘环境项）、无非双边滤波、无多尺度、屏幕外信息缺失处保守取 1 |
+| **十八（候选，按收益排序）** | **A 动画混合树**（分层 mask / additive，补 11.1 的动画边界）；**B 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**C 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行；C、D 需动 render 的多目标与 pass 预算 | 视具体项 |
 
 两条与顺序相关的说明：
 
@@ -2211,9 +2303,10 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-core/src/light.rs` | `Light` 默认值与语义、`ShadowSettings`（含 `sanitized`）、`shadow_view_projection` 正交光源相机；扩展十五的 `LocalLight` / `LocalLightKind`、`attenuation` / `spot_factor` / `irradiance` CPU 参考实现、`upsert_local` / `remove_local` / `with_local`、`MAX_LOCAL_LIGHTS = 16` 等常量；扩展十六的 `CascadeSettings`（含 `sanitized`）、`cascade_splits` / `frustum_slice_corners` / `fit_cascade` 三个纯函数、`MAX_CASCADES = 4` |
 | `crates/r3e-core/src/material.rs` | `SurfaceMaterial` 与 `sanitized`、`GeoTerms`、GGX / Smith / Schlick / `cook_torrance_brdf` / `direct_light` 纯函数参考实现（零 wgpu 依赖） |
 | `crates/r3e-core/src/env.rs` | `EnvironmentSettings`（7 字段）与 `sanitized`、`Sh9::project` 球谐投影、`env_brdf_approx` 解析环境项（零 wgpu） |
-| `crates/r3e-core/src/postfx.rs` | `PostFxSettings` / `BloomSettings` / `TonemapMode`、`sanitized`、`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve` 参考实现（零 wgpu） |
+| `crates/r3e-core/src/postfx.rs` | `PostFxSettings` / `BloomSettings` / `SsaoSettings`（扩展十七挂载）/ `TonemapMode`、`sanitized`、`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve` 参考实现（零 wgpu） |
+| `crates/r3e-core/src/ssao.rs` | `SsaoSettings`（5 字段 + `sanitized` / `is_neutral` / `effective_samples`）、`hemisphere_kernel`（确定性半球核）、`reconstruct_view_pos`、`normal_from_neighbors`、`is_occluded`、`ao_from_occlusion`、`MAX/MIN/DEFAULT_SSAO_*` 常量（零 wgpu） |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
-| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass → 主 pass 写 HDR 目标 → `PostFxPass::render` composite → 文本 / UI）、`resize`、`RenderStats` |
+| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`prepare_instances`、`prepare_shadow`、`render`（阴影 pass → 主 pass 写 HDR 目标 → `SsaoPass::render` 两个遮蔽 pass → `PostFxPass::render` composite → 文本 / UI）、`resize`、`RenderStats` |
 | `crates/r3e-render/src/text.rs` | `TextPass`（独立无深度管线）、`build_text` 顶点装配、图集动态纹理按需扩容、`MAX_TEXT_INSTANCES` 安全阀 |
 | `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`plan_slice`（九宫格切 3×3）、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀（九宫格原子丢弃）、`UiStats` |
 | `crates/r3e-render/src/ui.wgsl` | UI 着色器：屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |
@@ -2221,7 +2314,9 @@ rodio → cpal（设备） + symphonia（解码）
 | `crates/r3e-render/src/shader.wgsl` | Cook-Torrance 前向着色（GGX / Smith / Schlick）、伴随矩阵法线变换、`vs_shadow` 深度 pass、3×3 PCF 阴影采样、环境光与自发光不吃阴影 |
 | `crates/r3e-render/src/pbr.rs` | `MaterialUniform`（48 B）组装、`SurfaceKey`（`to_bits` 精确键）、`MaterialData` 与 `overlay`（物件级覆盖文档级） |
 | `crates/r3e-render/src/postfx.rs` | `PostFxPass`：`Rgba16Float` 离屏目标、三级泛光纹理、composite pipeline、`PostFxParams`（64 B）、`PostFxStats`、`planned_passes` 预算 |
-| `crates/r3e-render/src/postfx.wgsl` | 亮部提取 / 降采样 / 加性上采样 / composite（曝光 → Reinhard·ACES → FXAA）四个片元入口 |
+| `crates/r3e-render/src/postfx.wgsl` | 亮部提取 / 降采样 / 加性上采样 / composite（曝光 → Reinhard·ACES → FXAA，遮蔽图在此乘入）四个片元入口 |
+| `crates/r3e-render/src/ssao.rs` | `SsaoPass`：`R8Unorm` 遮蔽图两份（raw / final）、生成 + 散焦两条全屏管线、`SsaoParams`（416 B，含 16 样本核）、`SsaoStats`、`generation` 世代号、`planned_passes` |
+| `crates/r3e-render/src/ssao.wgsl` | 全屏三角形顶点现算、`fs_ssao`（深度重建 + 半球核遮挡率）、`fs_blur`（4×4 盒式散焦） |
 | `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BackendCaps`、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面、查询层契约（`Ray` / `OverlapHit` / `CastShape`） |
 | `crates/r3e-physics/src/rapier_backend.rs` | Rapier 后端：刚体/碰撞体映射、接触求解、碰撞事件回传、parry 窄相查询（raycast / overlap / shape-cast） |
 | `crates/r3e-audio/src/lib.rs` | `Audio` 门面：实例账本、单条 × 总音量、通道开关、错误计数、`sanitize_volume`、静默降级、9 个单测（含 `MockBackend`） |
