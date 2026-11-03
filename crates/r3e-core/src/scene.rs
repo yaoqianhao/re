@@ -6,6 +6,10 @@ use std::path::Path;
 use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
+use crate::anim_blend::{
+    apply_additive, blend_override, sample_layer_pose, AnimLayer, BoneMask, LayerMode,
+    MAX_ANIM_LAYERS,
+};
 use crate::light::{self, LocalLight};
 use crate::text::ScreenText;
 use crate::ui::UiElement;
@@ -706,6 +710,9 @@ impl Scene {
             let time = inst.sample_time();
             let weight = inst.fade_weight();
             let fade_time = inst.fade_sample_time();
+
+            // 第一遍：逐绑定求出主片段姿态（`None` = 该节点没有主片段轨道）
+            let mut poses: Vec<Option<Transform>> = Vec::with_capacity(inst.bindings.len());
             for (i, b) in inst.bindings.iter().enumerate() {
                 let fresh = if b.track == crate::anim::NO_TRACK {
                     None
@@ -726,14 +733,49 @@ impl Scene {
                         .and_then(|track| track.sample(t)),
                     _ => None,
                 };
-                let transform = match (fresh, old) {
+                poses.push(match (fresh, old) {
                     // 新片段缺该轨道：过渡期间由旧片段继续驱动，结束后停在末姿态
-                    (None, Some(o)) => o,
-                    (Some(n), Some(o)) => crate::anim::blend_transform(&o, &n, weight),
-                    (Some(n), None) => n,
-                    (None, None) => continue,
-                };
-                writes.push((b.node, transform));
+                    (None, Some(o)) => Some(o),
+                    (Some(n), Some(o)) => Some(crate::anim::blend_transform(&o, &n, weight)),
+                    (Some(n), None) => Some(n),
+                    (None, None) => None,
+                });
+            }
+
+            // 第二遍：混合树层按挂载顺序叠加到主姿态上
+            for layer in inst.layers.iter() {
+                let layer_weight = layer.effective_weight();
+                if layer_weight <= 0.0 {
+                    continue;
+                }
+                let layer_time = layer.sample_time();
+                for (i, b) in inst.bindings.iter().enumerate() {
+                    let effective = layer_weight * layer.mask.weight_for(&b.path);
+                    if effective <= 0.0 {
+                        continue;
+                    }
+                    let Some(sample) =
+                        sample_layer_pose(&layer.clips, layer_time, b.node_index, &b.path)
+                    else {
+                        continue;
+                    };
+                    poses[i] = Some(match (layer.mode, poses[i]) {
+                        // 主片段没有该节点轨道：层姿态直接作为绝对姿态
+                        (_, None) => sample.pose,
+                        (LayerMode::Additive, Some(base)) => {
+                            apply_additive(&base, &sample.reference, &sample.pose, effective)
+                        }
+                        (LayerMode::Override, Some(base)) => {
+                            blend_override(&base, &sample.pose, effective)
+                        }
+                    });
+                }
+            }
+
+            for (i, b) in inst.bindings.iter().enumerate() {
+                if let Some(transform) = poses[i] {
+                    writes.push((b.node, transform));
+                }
             }
         }
 
@@ -893,6 +935,228 @@ impl Scene {
         self.anim_instance(instance)
             .and_then(|a| a.fade.as_ref().map(|f| f.clip.name.clone()))
             .unwrap_or_default()
+    }
+
+    // ---------- 动画混合树（扩展十八 A） ----------
+
+    /// 给实例挂一层（同名则整层覆盖）。
+    ///
+    /// 层与主片段互不影响：主片段负责「当前动作」，层负责同时进行的附加动作
+    /// （上半身攻击、呼吸叠加）。超过 [`MAX_ANIM_LAYERS`] 返回 `false`。
+    pub fn add_anim_layer(&mut self, instance: &str, layer: AnimLayer) -> bool {
+        let Some(inst) = self.anim_instance_mut(instance) else {
+            return false;
+        };
+        if let Some(existing) = anim_layer_mut(inst, &layer.name) {
+            *existing = layer;
+            return true;
+        }
+        if inst.layers.len() >= MAX_ANIM_LAYERS {
+            return false;
+        }
+        inst.layers.push(layer);
+        true
+    }
+
+    /// 层名列表（按挂载顺序，顺序即叠加顺序）。
+    pub fn anim_layer_names(&self, instance: &str) -> Vec<String> {
+        self.anim_instance(instance)
+            .map(|inst| inst.layers.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// 层数量；实例不存在时返回 `None`。
+    pub fn anim_layer_count(&self, instance: &str) -> Option<usize> {
+        self.anim_instance(instance).map(|inst| inst.layers.len())
+    }
+
+    /// 按名字取层；`layer` 为空时取第一层。
+    pub fn anim_layer(&self, instance: &str, layer: &str) -> Option<&AnimLayer> {
+        let inst = self.anim_instance(instance)?;
+        if layer.is_empty() {
+            return inst.layers.first();
+        }
+        inst.layers
+            .iter()
+            .find(|l| l.name == layer || l.name.eq_ignore_ascii_case(layer))
+    }
+
+    /// 层当前有效权重（含进行中的过渡）。
+    pub fn anim_layer_effective_weight(&self, instance: &str, layer: &str) -> Option<f32> {
+        self.anim_layer(instance, layer)
+            .map(|l| l.effective_weight())
+    }
+
+    /// 层信息摘要（脚本日志 / RPC 回显用）。
+    pub fn anim_layer_report(&self, instance: &str, layer: &str) -> Option<String> {
+        self.anim_layer(instance, layer)
+            .map(crate::anim_blend::layer_report)
+    }
+
+    /// 直接设定层权重（取消进行中的过渡）。
+    pub fn set_anim_layer_weight(&mut self, instance: &str, layer: &str, weight: f32) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.set_weight(weight);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 层权重过渡到 `weight`（`duration <= 0` 等价直接设定）。
+    pub fn fade_anim_layer(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        weight: f32,
+        duration: f32,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.fade_to(weight, duration);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 设置叠加模式（override / additive）。
+    pub fn set_anim_layer_mode(&mut self, instance: &str, layer: &str, mode: LayerMode) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.mode = mode;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 设置骨骼遮罩。
+    pub fn set_anim_layer_mask(&mut self, instance: &str, layer: &str, mask: BoneMask) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.mask = mask;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 设置层播放速度（负值倒放）。
+    pub fn set_anim_layer_speed(&mut self, instance: &str, layer: &str, speed: f32) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.speed = speed;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 把层的片段替换为指定片段（层内收敛为单片段、权重 1.0，其余属性保留）。
+    ///
+    /// 片段名按「实例名前缀」解析（`"tirger/idle_loop"` 的实例可只写 `"atk"`）。
+    pub fn set_anim_layer_clip(&mut self, instance: &str, layer: &str, clip_name: &str) -> bool {
+        let Some(clip) = self.find_anim_clip(instance, clip_name) else {
+            return false;
+        };
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.clips = vec![crate::anim_blend::LayerClip::new(clip, 1.0)];
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 给层增加一路参与混合的片段（走 / 跑按权重加权）。
+    pub fn add_anim_layer_clip(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip_name: &str,
+        weight: f32,
+    ) -> bool {
+        let Some(clip) = self.find_anim_clip(instance, clip_name) else {
+            return false;
+        };
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => l.add_clip(clip, weight),
+            None => false,
+        }
+    }
+
+    /// 调整层内某一路片段的权重。
+    pub fn set_anim_layer_clip_weight(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip_name: &str,
+        weight: f32,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => l.set_clip_weight(clip_name, weight),
+            None => false,
+        }
+    }
+
+    /// 移除层内某一路片段（最后一路不可移除）。
+    pub fn remove_anim_layer_clip(&mut self, instance: &str, layer: &str, clip_name: &str) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => l.remove_clip(clip_name),
+            None => false,
+        }
+    }
+
+    /// 移除一整层。
+    pub fn remove_anim_layer(&mut self, instance: &str, layer: &str) -> bool {
+        let Some(inst) = self.anim_instance_mut(instance) else {
+            return false;
+        };
+        let before = inst.layers.len();
+        inst.layers
+            .retain(|l| !(l.name == layer || l.name.eq_ignore_ascii_case(layer)));
+        inst.layers.len() != before
+    }
+
+    /// 清空实例的所有层。
+    pub fn clear_anim_layers(&mut self, instance: &str) -> bool {
+        match self.anim_instance_mut(instance) {
+            Some(inst) => {
+                let had = !inst.layers.is_empty();
+                inst.layers.clear();
+                had
+            }
+            None => false,
+        }
     }
 
     /// 按「实例名前缀 + 片段名（大小写不敏感）」解析出可切换片段。
@@ -1158,6 +1422,16 @@ fn physics_desc_is_empty(desc: &PhysicsSceneDesc) -> bool {
         && desc.gravity.is_none()
         && desc.ground.is_none()
         && desc.ccd.is_none()
+}
+
+/// 按名字取可变层；名字为空时取第一层（与 [`Scene::anim_layer`] 口径一致）。
+fn anim_layer_mut<'a>(inst: &'a mut AnimInstance, name: &str) -> Option<&'a mut AnimLayer> {
+    if name.is_empty() {
+        return inst.layers.first_mut();
+    }
+    inst.layers
+        .iter_mut()
+        .find(|l| l.name == name || l.name.eq_ignore_ascii_case(name))
 }
 
 #[cfg(test)]
@@ -1436,6 +1710,301 @@ mod anim_tests {
         assert_eq!(scene.anim_instance("demo/walk").unwrap().bindings.len(), 0);
         // 没有绑定也不该 panic
         scene.update_animations(0.1);
+    }
+
+    // ---------- 混合树（扩展十八 A） ----------
+
+    /// 一条 0 → `end` 的直线轨道，用于混合树断言。
+    fn line_track(index: u32, path: &str, end: Vec3) -> AnimTrack {
+        AnimTrack {
+            node_path: path.to_string(),
+            node_index: index,
+            keys: vec![
+                AnimKey {
+                    time: 0.0,
+                    position: Vec3::ZERO,
+                    rotation: glam::Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                AnimKey {
+                    time: 1.0,
+                    position: end,
+                    rotation: glam::Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+            ],
+        }
+    }
+
+    /// arm（下标 1）+ leg（下标 2）；主片段 walk 把两者都推到 x=10。
+    fn layer_scene() -> (Scene, NodeId, NodeId) {
+        let mut scene = Scene::new();
+        let arm = scene
+            .spawn(ObjectDesc {
+                name: "arm".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let leg = scene
+            .spawn(ObjectDesc {
+                name: "leg".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let walk = AnimClip {
+            name: "walk".to_string(),
+            duration: 1.0,
+            tracks: vec![
+                line_track(1, "root/arm", Vec3::new(10.0, 0.0, 0.0)),
+                line_track(2, "root/leg", Vec3::new(10.0, 0.0, 0.0)),
+            ],
+        };
+
+        let mut inst = AnimInstance::new("demo/walk", std::sync::Arc::new(walk));
+        inst.bindings = vec![
+            crate::anim::AnimBinding {
+                node: arm,
+                node_index: 1,
+                path: "root/arm".to_string(),
+                track: 0,
+            },
+            crate::anim::AnimBinding {
+                node: leg,
+                node_index: 2,
+                path: "root/leg".to_string(),
+                track: 1,
+            },
+        ];
+        scene.add_anim_instance(inst);
+        (scene, arm, leg)
+    }
+
+    fn atk_clip() -> AnimClip {
+        AnimClip {
+            name: "atk".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(100.0, 0.0, 0.0))],
+        }
+    }
+
+    #[test]
+    fn override_layer_replaces_masked_bone_only() {
+        let (mut scene, arm, leg) = layer_scene();
+        let atk = atk_clip();
+        scene.register_anim_clip("demo/atk", std::sync::Arc::new(atk.clone()));
+
+        let layer = AnimLayer::new("upper", std::sync::Arc::new(atk), 1.0)
+            .with_mask(BoneMask::only(["arm"]));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        scene.update_animations(0.5);
+        let arm_x = scene.get(arm).unwrap().transform.position.x;
+        let leg_x = scene.get(leg).unwrap().transform.position.x;
+        assert!(
+            (arm_x - 50.0).abs() < 1e-4,
+            "遮罩内骨骼应取层姿态，实际 {arm_x}"
+        );
+        assert!(
+            (leg_x - 5.0).abs() < 1e-4,
+            "遮罩外骨骼保持主片段，实际 {leg_x}"
+        );
+    }
+
+    #[test]
+    fn additive_layer_stacks_delta_on_base() {
+        let (mut scene, arm, _leg) = layer_scene();
+        let bob = AnimClip {
+            name: "bob".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(0.0, 0.0, 2.0))],
+        };
+        let layer =
+            AnimLayer::new("bob", std::sync::Arc::new(bob), 0.5).with_mode(LayerMode::Additive);
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        scene.update_animations(0.5);
+        let p = scene.get(arm).unwrap().transform.position;
+        // 主片段 x=5；加法层在 0.5s 的相对增量是 (0,0,1)，按 0.5 权重叠成 z=0.5
+        assert!((p.x - 5.0).abs() < 1e-4, "{p:?}");
+        assert!((p.z - 0.5).abs() < 1e-4, "加法层应叠加相对增量，实际 {p:?}");
+    }
+
+    #[test]
+    fn layer_fade_in_scales_contribution() {
+        let (mut scene, arm, _leg) = layer_scene();
+        let atk = atk_clip();
+        scene.register_anim_clip("demo/atk", std::sync::Arc::new(atk.clone()));
+        let layer = AnimLayer::new("upper", std::sync::Arc::new(atk), 0.0)
+            .with_mask(BoneMask::only(["arm"]));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        scene.update_animations(0.5);
+        let base_x = scene.get(arm).unwrap().transform.position.x;
+        assert!(
+            (base_x - 5.0).abs() < 1e-4,
+            "权重 0 时层不生效，实际 {base_x}"
+        );
+
+        assert!(scene.fade_anim_layer("demo/walk", "upper", 1.0, 0.4));
+        scene.update_animations(0.2);
+        let mid = scene.get(arm).unwrap().transform.position.x;
+        assert!(
+            mid > 5.0 && mid < 70.0,
+            "淡入半程应落在主姿态与层姿态之间，实际 {mid}"
+        );
+
+        scene.update_animations(0.2);
+        // 时间累积 0.5 + 0.2 + 0.2 = 0.9s，层姿态 90 完全取代主片段
+        let full = scene.get(arm).unwrap().transform.position.x;
+        assert!(
+            (full - 90.0).abs() < 1e-3,
+            "淡入结束应完全取层姿态，实际 {full}"
+        );
+        assert_eq!(
+            scene.anim_layer("demo/walk", "upper").unwrap().fade,
+            None,
+            "过渡完成后应清空"
+        );
+    }
+
+    #[test]
+    fn layer_management_api_roundtrip() {
+        let (mut scene, _arm, _leg) = layer_scene();
+        let atk = atk_clip();
+        let breathe = AnimClip {
+            name: "breathe".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(0.0, 0.0, 1.0))],
+        };
+        scene.register_anim_clip("demo/atk", std::sync::Arc::new(atk.clone()));
+        scene.register_anim_clip("demo/breathe", std::sync::Arc::new(breathe));
+
+        let layer = AnimLayer::new("upper", std::sync::Arc::new(atk), 0.5);
+        assert!(scene.add_anim_layer("demo/walk", layer));
+        assert_eq!(
+            scene.anim_layer_names("demo/walk"),
+            vec!["upper".to_string()]
+        );
+        assert_eq!(scene.anim_layer_count("demo/walk"), Some(1));
+
+        assert!(scene.set_anim_layer_weight("demo/walk", "upper", 1.0));
+        assert_eq!(
+            scene.anim_layer_effective_weight("demo/walk", "upper"),
+            Some(1.0)
+        );
+        assert!(scene.set_anim_layer_mode("demo/walk", "upper", LayerMode::Additive));
+        assert_eq!(
+            scene.anim_layer("demo/walk", "upper").unwrap().mode,
+            LayerMode::Additive
+        );
+        assert!(scene.set_anim_layer_mask("demo/walk", "upper", BoneMask::only(["arm"])));
+        assert_eq!(
+            scene.anim_layer("demo/walk", "upper").unwrap().mask.include,
+            vec!["arm".to_string()]
+        );
+        assert!(scene.set_anim_layer_speed("demo/walk", "upper", 2.0));
+
+        assert!(scene.add_anim_layer_clip("demo/walk", "upper", "breathe", 0.5));
+        assert_eq!(
+            scene.anim_layer("demo/walk", "upper").unwrap().clips.len(),
+            2
+        );
+        assert!(scene.set_anim_layer_clip_weight("demo/walk", "upper", "breathe", 2.0));
+        assert!(scene.remove_anim_layer_clip("demo/walk", "upper", "breathe"));
+
+        assert!(scene.set_anim_layer_clip("demo/walk", "upper", "atk"));
+        assert_eq!(
+            scene.anim_layer("demo/walk", "upper").unwrap().clips.len(),
+            1
+        );
+        assert!(scene
+            .anim_layer_report("demo/walk", "upper")
+            .unwrap()
+            .contains("upper"));
+
+        assert!(scene.remove_anim_layer("demo/walk", "upper"));
+        assert_eq!(scene.anim_layer_count("demo/walk"), Some(0));
+        assert!(!scene.remove_anim_layer("demo/walk", "upper"));
+        assert!(scene.anim_layer("demo/walk", "upper").is_none());
+        assert!(scene.anim_layer_names("nope").is_empty());
+    }
+
+    #[test]
+    fn layer_capacity_is_bounded() {
+        let (mut scene, _arm, _leg) = layer_scene();
+        let atk = std::sync::Arc::new(atk_clip());
+        for i in 0..MAX_ANIM_LAYERS {
+            assert!(
+                scene.add_anim_layer(
+                    "demo/walk",
+                    AnimLayer::new(format!("l{i}"), atk.clone(), 1.0)
+                ),
+                "第 {i} 层应能挂载"
+            );
+        }
+        assert!(
+            !scene.add_anim_layer("demo/walk", AnimLayer::new("overflow", atk.clone(), 1.0)),
+            "超出上限应拒绝"
+        );
+        // 同名覆盖不受上限限制
+        assert!(scene.add_anim_layer("demo/walk", AnimLayer::new("l0", atk, 0.5)));
+        assert_eq!(scene.anim_layer_count("demo/walk"), Some(MAX_ANIM_LAYERS));
+    }
+
+    #[test]
+    fn layers_survive_main_clip_switch() {
+        let (mut scene, arm, _leg) = layer_scene();
+        let atk = atk_clip();
+        let run = AnimClip {
+            name: "run".to_string(),
+            duration: 1.0,
+            tracks: vec![
+                line_track(1, "root/arm", Vec3::new(20.0, 0.0, 0.0)),
+                line_track(2, "root/leg", Vec3::new(20.0, 0.0, 0.0)),
+            ],
+        };
+        scene.register_anim_clip("demo/atk", std::sync::Arc::new(atk.clone()));
+        scene.register_anim_clip("demo/run", std::sync::Arc::new(run));
+
+        let layer = AnimLayer::new("upper", std::sync::Arc::new(atk), 1.0)
+            .with_mask(BoneMask::only(["arm"]));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        assert!(scene.set_anim_clip("demo/walk", "run"));
+        assert_eq!(
+            scene.anim_layer_count("demo/walk"),
+            Some(1),
+            "换主片段不应丢弃层"
+        );
+
+        scene.update_animations(0.5);
+        let arm_x = scene.get(arm).unwrap().transform.position.x;
+        assert!(
+            (arm_x - 50.0).abs() < 1e-4,
+            "换主片段后层仍应生效，实际 {arm_x}"
+        );
+    }
+
+    #[test]
+    fn clearing_layers_restores_base_pose() {
+        let (mut scene, arm, _leg) = layer_scene();
+        let atk = atk_clip();
+        let layer = AnimLayer::new("upper", std::sync::Arc::new(atk), 1.0)
+            .with_mask(BoneMask::only(["arm"]));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+        scene.update_animations(0.5);
+        assert!((scene.get(arm).unwrap().transform.position.x - 50.0).abs() < 1e-4);
+
+        assert!(scene.clear_anim_layers("demo/walk"));
+        assert!(!scene.clear_anim_layers("demo/walk"), "已空应返回 false");
+        // 只重算不推进时间：清层后应回到主片段在 0.5s 的姿态
+        scene.update_animations(0.0);
+        let base_x = scene.get(arm).unwrap().transform.position.x;
+        assert!(
+            (base_x - 5.0).abs() < 1e-4,
+            "清层后应回到主片段姿态，实际 {base_x}"
+        );
     }
 }
 

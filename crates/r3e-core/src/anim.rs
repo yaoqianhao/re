@@ -242,6 +242,12 @@ pub struct AnimInstance {
     pub playing: bool,
     /// 正在进行的交叉淡入（`None` = 单片段直出）。
     pub fade: Option<AnimFade>,
+    /// 混合树层（扩展十八 A）：主片段姿态之上按挂载顺序叠加，语义见 [`crate::anim_blend`]。
+    ///
+    /// 层不受 [`Self::set_clip`] / [`Self::cross_fade`] 影响——切主片段是「换动作」，
+    /// 而层是同时进行的分层动作（上半身攻击、呼吸叠加），合成由
+    /// [`crate::Scene::update_animations`] 统一完成。
+    pub layers: Vec<crate::anim_blend::AnimLayer>,
 }
 
 impl AnimInstance {
@@ -255,6 +261,7 @@ impl AnimInstance {
             looping: true,
             playing: true,
             fade: None,
+            layers: Vec::new(),
         }
     }
 
@@ -275,6 +282,10 @@ impl AnimInstance {
 
     /// 推进时间；非循环播放到末尾后自动停止。过渡随访同步推进，走完自动丢弃。
     pub fn advance(&mut self, dt: f32) {
+        // 层先推进：主片段暂停时层仍要能淡出 / 自行播放，因此不受下面的提前返回影响
+        for layer in &mut self.layers {
+            layer.advance(dt);
+        }
         if !self.playing {
             return;
         }
