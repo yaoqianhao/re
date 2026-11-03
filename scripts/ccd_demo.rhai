@@ -53,7 +53,10 @@ fn on_update(dt) {
         reported = true;
         let a = get_pos("bullet_ccd");
         let b = get_pos("bullet_no_ccd");
-        log("结论：ccd球 " + (if a[0] > 0.5 { "穿墙" } else { "被墙挡住" })
-            + " / 无ccd球 " + (if b[0] > 0.5 { "穿墙" } else { "被墙挡住" }));
+        // 先把结论算成变量：一行里塞两段 if-表达式 + 三段拼接会撞 Rhai 的
+        // 「表达式复杂度」上限（编译期失败，整个脚本都不会跑）
+        let verdict_ccd = if a[0] > 0.5 { "穿墙" } else { "被墙挡住" };
+        let verdict_raw = if b[0] > 0.5 { "穿墙" } else { "被墙挡住" };
+        log("结论：ccd球 " + verdict_ccd + " / 无ccd球 " + verdict_raw);
     }
 }

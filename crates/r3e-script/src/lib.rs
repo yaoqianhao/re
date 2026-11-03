@@ -158,7 +158,13 @@ impl ScriptHost {
                 .engine
                 .call_fn::<Dynamic>(&mut self.scope, &ast, "on_start", ())
             {
-                self.last_error = Some(format!("on_start 出错: {e}"));
+                // 与 on_update 一致：首次出错就打到控制台。on_start 原先只记不打印，
+                // 脚本里写错参数个数会表现成「开场什么都没发生」，排查极其难受。
+                let msg = format!("on_start 出错: {e}");
+                if self.last_error.as_deref() != Some(msg.as_str()) {
+                    println!("[script] {msg}");
+                }
+                self.last_error = Some(msg);
             }
         }
         self.last_error = None;
@@ -249,7 +255,11 @@ impl ScriptHost {
                     self.engine
                         .call_fn::<Dynamic>(&mut self.scope, &ast, "on_start", ())
                 {
-                    self.last_error = Some(format!("on_start 出错: {e}"));
+                    let msg = format!("on_start 出错: {e}");
+                    if self.last_error.as_deref() != Some(msg.as_str()) {
+                        println!("[script] {msg}");
+                    }
+                    self.last_error = Some(msg);
                 }
             }
         }
@@ -1408,5 +1418,248 @@ mod ui_interaction_script_tests {
             n
         "#;
         assert_eq!(host.eval(src).unwrap().as_int().unwrap(), 2);
+    }
+}
+
+#[cfg(test)]
+mod local_light_script_tests {
+    use super::*;
+
+    /// 空场景 + 物理/输入句柄的脚本宿主。
+    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        (ScriptHost::new(scene.clone(), physics, input), scene)
+    }
+
+    fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_bool()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回 bool"))
+    }
+
+    fn eval_i64(host: &mut ScriptHost, src: &str) -> i64 {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("`{src}` 执行失败: {e}"))
+            .as_int()
+            .unwrap_or_else(|_| panic!("`{src}` 应返回整数"))
+    }
+
+    /// 点光写入后，场景里的值必须与脚本参数逐字段一致（含 range）。
+    #[test]
+    fn script_adds_point_light() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"light_add_point("lamp", 1.0, 2.0, 3.0, 1.0, 0.5, 0.25, 8.0, 12.0)"#
+        ));
+        let sc = scene.borrow();
+        let l = sc.local_light("lamp").expect("灯应已写入场景");
+        assert_eq!(l.pos, [1.0, 2.0, 3.0]);
+        assert_eq!(l.color, [1.0, 0.5, 0.25]);
+        assert_eq!(l.intensity, 8.0);
+        assert_eq!(l.range, 12.0);
+        assert_eq!(l.kind, r3e_core::LocalLightKind::Point);
+    }
+
+    /// 聚光写入：朝向、内外角都要落到场景里，且已通过 sanitized 收敛。
+    #[test]
+    fn script_adds_spot_light() {
+        let (mut host, scene) = host();
+        assert!(eval_bool(
+            &mut host,
+            r#"light_add_spot("beam", 0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 20.0, 30.0, 15.0, 25.0)"#
+        ));
+        let sc = scene.borrow();
+        let l = sc.local_light("beam").expect("聚光应已写入场景");
+        assert_eq!(l.kind, r3e_core::LocalLightKind::Spot);
+        assert_eq!(l.dir, [0.0, -1.0, 0.0]);
+        assert_eq!(l.inner_deg, 15.0);
+        assert_eq!(l.outer_deg, 25.0);
+    }
+
+    /// 同 key 重复写入是「覆盖」而不是「追加」，顺带验证就地修改生效。
+    #[test]
+    fn script_upsert_same_key_overwrites() {
+        let (mut host, scene) = host();
+        eval_bool(
+            &mut host,
+            r#"light_add_point("lamp", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 10.0)"#,
+        );
+        eval_bool(
+            &mut host,
+            r#"light_add_point("lamp", 4.0, 4.0, 4.0, 1.0, 1.0, 1.0, 2.0, 10.0)"#,
+        );
+        assert_eq!(eval_i64(&mut host, "local_light_count()"), 1, "同 key 不应重复");
+        assert_eq!(scene.borrow().local_light("lamp").unwrap().pos, [4.0, 4.0, 4.0]);
+    }
+
+    /// 单字段改写：位置 / 颜色 / 强度 / 半径 / 朝向 / 锥角各自独立生效。
+    #[test]
+    fn script_field_setters_touch_only_target() {
+        let (mut host, scene) = host();
+        eval_bool(
+            &mut host,
+            r#"light_add_point("lamp", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 3.0, 10.0)"#,
+        );
+        assert!(eval_bool(&mut host, r#"light_set_pos("lamp", 2.0, 3.0, 4.0)"#));
+        assert!(eval_bool(&mut host, r#"light_set_color("lamp", 0.2, 0.4, 0.6)"#));
+        assert!(eval_bool(&mut host, r#"light_set_intensity("lamp", 9.0)"#));
+        assert!(eval_bool(&mut host, r#"light_set_range("lamp", 25.0)"#));
+        assert!(eval_bool(&mut host, r#"light_set_dir("lamp", 0.0, 1.0, 0.0)"#));
+        assert!(eval_bool(&mut host, r#"light_set_cone("lamp", 10.0, 20.0)"#));
+
+        let sc = scene.borrow();
+        let l = sc.local_light("lamp").unwrap();
+        assert_eq!(l.pos, [2.0, 3.0, 4.0]);
+        assert_eq!(l.color, [0.2, 0.4, 0.6]);
+        assert_eq!(l.intensity, 9.0);
+        assert_eq!(l.range, 25.0);
+        assert_eq!(l.dir, [0.0, 1.0, 0.0]);
+        assert_eq!(l.inner_deg, 10.0);
+        assert_eq!(l.outer_deg, 20.0);
+    }
+
+    /// 改不存在的 key 必须返回 false 且**不新建**灯：拼错名字不该悄悄多一盏。
+    #[test]
+    fn script_setter_on_missing_key_is_rejected() {
+        let (mut host, scene) = host();
+        assert!(
+            !eval_bool(&mut host, r#"light_set_intensity("ghost", 5.0)"#),
+            "不存在的 key 应返回 false"
+        );
+        assert_eq!(eval_i64(&mut host, "local_light_count()"), 0, "不应凭空新建灯");
+        assert_eq!(scene.borrow().lights.len(), 0);
+    }
+
+    /// 删除 / 清空 / 存在性查询的三态。
+    #[test]
+    fn script_remove_clear_and_exists() {
+        let (mut host, scene) = host();
+        eval_bool(&mut host, r#"light_add_point("a", 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
+        eval_bool(&mut host, r#"light_add_point("b", 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
+        assert!(eval_bool(&mut host, r#"local_light_exists("a")"#));
+        assert!(eval_bool(&mut host, r#"light_remove("a")"#));
+        assert!(!eval_bool(&mut host, r#"light_remove("a")"#), "重复删除返回 false");
+        assert!(!eval_bool(&mut host, r#"local_light_exists("a")"#));
+        assert_eq!(eval_i64(&mut host, "light_clear()"), 1, "清空应返回删掉的盏数");
+        assert_eq!(scene.borrow().lights.len(), 0);
+    }
+
+    /// 上限行为：满载后新增被拒，但同 key 覆盖仍然生效（每帧更新位置不会被吞）。
+    #[test]
+    fn script_capacity_rejects_new_but_allows_overwrite() {
+        let (mut host, scene) = host();
+        for i in 0..r3e_core::MAX_LOCAL_LIGHTS {
+            let src = format!(
+                r#"light_add_point("l{i}", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#
+            );
+            assert!(eval_bool(&mut host, &src), "第 {i} 盏应写入成功");
+        }
+        assert!(
+            !eval_bool(&mut host, r#"light_add_point("extra", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#),
+            "满载后新 key 必须被拒"
+        );
+        assert!(
+            eval_bool(&mut host, r#"light_add_point("l0", 9.0, 9.0, 9.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#),
+            "满载时同 key 覆盖必须仍生效"
+        );
+        assert_eq!(scene.borrow().lights.len(), r3e_core::MAX_LOCAL_LIGHTS);
+        assert_eq!(scene.borrow().local_light("l0").unwrap().pos, [9.0; 3]);
+    }
+
+    /// 总开关：关闭时辐照度查询返回 0，但灯数据保留；重新打开即恢复。
+    #[test]
+    fn script_enable_switch_keeps_data() {
+        let (mut host, scene) = host();
+        eval_bool(&mut host, r#"light_add_point("lamp", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 10.0, 20.0)"#);
+        assert!(eval_bool(&mut host, "lights_enabled()"));
+        let on = host
+            .eval("local_light_irradiance(0.0, 1.0, 0.0)")
+            .expect("辐照度查询应可调用")
+            .as_float()
+            .expect("应返回浮点");
+        assert!(on > 0.0, "开灯时该点应收到光照，实际 {on}");
+
+        let _ = host.eval("set_lights_enabled(false)").expect("应可关闭");
+        assert!(!eval_bool(&mut host, "lights_enabled()"));
+        let off = host
+            .eval("local_light_irradiance(0.0, 1.0, 0.0)")
+            .unwrap()
+            .as_float()
+            .unwrap();
+        assert_eq!(off, 0.0, "关灯后辐照度必须为 0");
+        assert_eq!(scene.borrow().lights.len(), 1, "关闭不应删数据");
+    }
+
+    /// 快照 map：字段齐全；查不到时返回空 map（脚本用 is_empty 判空）。
+    #[test]
+    fn script_light_snapshot_map() {
+        let (mut host, _scene) = host();
+        eval_bool(
+            &mut host,
+            r#"light_add_spot("beam", 1.0, 2.0, 3.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 7.0, 40.0, 12.0, 22.0)"#,
+        );
+        let map = host
+            .eval(r#"local_light("beam")"#)
+            .expect("应可调用")
+            .cast::<rhai::Map>();
+        assert_eq!(map.get("key").unwrap().clone().into_string().unwrap(), "beam");
+        assert_eq!(map.get("kind").unwrap().clone().into_string().unwrap(), "spot");
+        assert_eq!(map.get("intensity").unwrap().clone().as_float().unwrap(), 7.0);
+        assert_eq!(map.len(), 9, "快照应含 9 个字段");
+
+        let empty = host
+            .eval(r#"local_light("ghost")"#)
+            .expect("应可调用")
+            .cast::<rhai::Map>();
+        assert!(empty.is_empty(), "查不到时应返回空 map");
+    }
+
+    /// keys 列表顺序 = 写入顺序（渲染侧按同一顺序上传，脚本靠下标对齐也不会错位）。
+    #[test]
+    fn script_keys_follow_insertion_order() {
+        let (mut host, _scene) = host();
+        eval_bool(&mut host, r#"light_add_point("a", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
+        eval_bool(&mut host, r#"light_add_point("b", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0)"#);
+        let keys = host
+            .eval("local_light_keys()")
+            .expect("应可调用")
+            .cast::<rhai::Array>();
+        let names: Vec<String> = keys
+            .iter()
+            .map(|d| d.clone().into_string().unwrap())
+            .collect();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// 坏值必须被收敛，不能被脚本塞进场景：NaN / 负强度 / 零半径 / 角度倒挂。
+    #[test]
+    fn script_bad_values_are_sanitized() {
+        let (mut host, scene) = host();
+        eval_bool(
+            &mut host,
+            r#"light_add_point("bad", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, -5.0, 0.0)"#,
+        );
+        let sc = scene.borrow();
+        let l = sc.local_light("bad").unwrap();
+        assert!(l.intensity >= 0.0, "负强度必须夹到非负，实际 {}", l.intensity);
+        assert!(l.range >= r3e_core::MIN_LIGHT_RANGE, "零半径必须抬到下限，实际 {}", l.range);
+
+        drop(sc);
+        eval_bool(
+            &mut host,
+            r#"light_add_spot("cone", 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 30.0, 40.0, 10.0)"#,
+        );
+        let sc = scene.borrow();
+        let l = sc.local_light("cone").unwrap();
+        assert!(
+            l.outer_deg > l.inner_deg,
+            "内外角倒挂必须被修正：inner={} outer={}",
+            l.inner_deg,
+            l.outer_deg
+        );
     }
 }
