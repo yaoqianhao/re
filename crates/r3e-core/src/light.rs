@@ -411,6 +411,65 @@ pub const MAX_CONE_ANGLE_DEG: f32 = 89.9;
 /// 外角必须至少比内角大这么多度，否则 smoothstep 退化成硬边。
 pub const MIN_CONE_GAP_DEG: f32 = 0.1;
 
+// ---------------------------------------------------------------------------
+// 扩展十八 C：局部光源阴影
+// ---------------------------------------------------------------------------
+//
+// 方向光的阴影是一张正交深度图（+ 级联）；局部光源是「放在场景中间往外照」的透视
+// 相机——聚光只需要一面（锥内），点光要六面（立方体）。这一组常量把「预算」钉死在
+// core 里，渲染层与 wgsl 都只能照抄，不允许各自另定一个数：
+//
+// * 每盏投影灯固定占 [`POINT_SHADOW_FACES`] 层（聚光只用第 0 层，其余空着），
+//   这样「第 i 盏投影灯的第 f 面」= `i * 6 + f`，着色器不需要任何查表；
+// * 深度数组总层数 [`MAX_LOCAL_SHADOW_LAYERS`] = 4 × 6 = 24，一张 D2Array 纹理装下，
+//   主通道仍是 group(3) 的一组绑定（不新开 @group(4)，见 `tests/local_lights_shader.rs`）；
+// * 为什么是 4 盏：每盏点光 6 次深度 pass，4 盏 = 24 次 pass/帧，已经是前向渲染
+//   预算的上限；再多就该整块换成 clustered + 单页 atlas 了。
+
+/// 单帧最多真正投影的局部光源盏数（超出的灯照常发光，只是不投影）。
+pub const MAX_LOCAL_SHADOW_CASTERS: usize = 4;
+/// 点光的立方体阴影面数（±X / ±Y / ±Z）。
+pub const POINT_SHADOW_FACES: usize = 6;
+/// 局部阴影深度数组的总层数：每盏固定占 6 层。
+pub const MAX_LOCAL_SHADOW_LAYERS: usize = MAX_LOCAL_SHADOW_CASTERS * POINT_SHADOW_FACES;
+/// 局部阴影贴图缺省边长（正方形，像素）。24 层 × 512² 的深度纹理约 25 MiB。
+pub const DEFAULT_LOCAL_SHADOW_SIZE: u32 = 512;
+/// 局部阴影近平面下限（世界单位）。太近会让贴脸的物体把整面染黑。
+pub const MIN_LOCAL_SHADOW_NEAR: f32 = 0.05;
+/// 近平面相对 `range` 的比例：range 越小近平面越贴光源，深度精度才够。
+pub const LOCAL_SHADOW_NEAR_RATIO: f32 = 0.02;
+/// 点光各面的垂直视场角（度）。90° 是立方体六面无缝拼合的唯一选择。
+pub const POINT_SHADOW_FOV_DEG: f32 = 90.0;
+/// 聚光阴影的最小视场角（度）：锥角极小时保证仍有可用的深度图。
+pub const MIN_SPOT_SHADOW_FOV_DEG: f32 = 2.0;
+/// 聚光阴影的最大视场角（度）：逼近 180° 时 `tan` 爆掉，`perspective` 会退化。
+pub const MAX_SPOT_SHADOW_FOV_DEG: f32 = 170.0;
+/// 局部阴影深度偏移上限（NDC 0..1）。
+pub const MAX_LOCAL_SHADOW_BIAS: f32 = 0.05;
+
+/// 点光立方体 6 个面的观察方向（+X, -X, +Y, -Y, +Z, -Z）。
+///
+/// 顺序即层偏移顺序，**CPU 与 wgsl 必须完全一致**——wgsl 侧用
+/// [`point_shadow_face`] 同一套「主轴绝对值最大」的选面规则。
+pub const POINT_SHADOW_FACE_DIRS: [[f32; 3]; POINT_SHADOW_FACES] = [
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+];
+
+/// 每个面的 up 向量：避开与观察方向平行（look_at 会退化）。竖直方向换 Z 轴当 up。
+pub const POINT_SHADOW_FACE_UPS: [[f32; 3]; POINT_SHADOW_FACES] = [
+    [0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, -1.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+];
+
 /// 局部光源类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -475,6 +534,14 @@ pub struct LocalLight {
     pub inner_deg: f32,
     /// 光锥外角（度）：这个角度外是零。
     pub outer_deg: f32,
+    /// 是否投影（扩展十八 C）。缺省 `false`：老场景一字不改，画面与开销都不变。
+    ///
+    /// 打开后由渲染层做深度 pass —— 聚光跑单面透视阴影，点光跑立方体六面，
+    /// 每帧最多 [`MAX_LOCAL_SHADOW_CASTERS`] 盏灯真正投影（按「辐亮度 × 距离²」排序）。
+    pub cast_shadow: bool,
+    /// 阴影深度偏移（NDC 0..1，可与方向光的 `ShadowSettings::bias` 分开调）。
+    /// 规范化后夹到 [0, 0.05]。
+    pub shadow_bias: f32,
 }
 
 impl Default for LocalLight {
@@ -489,6 +556,8 @@ impl Default for LocalLight {
             dir: [0.0, -1.0, 0.0],
             inner_deg: 15.0,
             outer_deg: 30.0,
+            cast_shadow: false,
+            shadow_bias: 0.002,
         }
     }
 }
@@ -528,6 +597,7 @@ impl LocalLight {
             range,
             inner_deg,
             outer_deg,
+            ..Self::default()
         }
         .sanitized()
     }
@@ -572,6 +642,12 @@ impl LocalLight {
         // 外角必须比内角大一圈：先保证下界，再夹上界（内角已被夹到上限下方）
         let min_outer = (self.inner_deg + MIN_CONE_GAP_DEG).min(MAX_CONE_ANGLE_DEG);
         self.outer_deg = self.outer_deg.clamp(min_outer, MAX_CONE_ANGLE_DEG);
+        // 阴影偏移：NaN 退回缺省，负值夹 0（负偏移会加重 acne），上限 0.05
+        self.shadow_bias = if self.shadow_bias.is_finite() {
+            self.shadow_bias.clamp(0.0, MAX_LOCAL_SHADOW_BIAS)
+        } else {
+            LocalLight::default().shadow_bias
+        };
         self
     }
 
@@ -710,6 +786,186 @@ where
     f(slot);
     *slot = slot.clone().sanitized();
     Some(slot)
+}
+
+// ---------------------------------------------------------------------------
+// 扩展十八 C：局部光源的阴影相机契约
+// ---------------------------------------------------------------------------
+
+/// 点光：给定一个「从光源指向片元」的方向，返回它落在立方体哪一面。
+///
+/// 规则极简：主轴绝对值最大者胜出，符号定正负。顺序与
+/// [`POINT_SHADOW_FACE_DIRS`] 严格一致，wgsl 侧必须逐字复刻（有测试锁死）。
+pub fn point_shadow_face(direction: Vec3) -> usize {
+    let a = direction.abs();
+    if a.x >= a.y && a.x >= a.z {
+        if direction.x >= 0.0 {
+            0
+        } else {
+            1
+        }
+    } else if a.y >= a.z {
+        if direction.y >= 0.0 {
+            2
+        } else {
+            3
+        }
+    } else if direction.z >= 0.0 {
+        4
+    } else {
+        5
+    }
+}
+
+/// 一盏灯的深度平面 `(near, far)`：near 随 range 缩放，far 恰好等于 range。
+///
+/// far 取 range 是有意的——超出 range 的物体本来就不受这盏灯照亮，写进深度图
+/// 只是浪费精度。
+pub fn local_shadow_plane(range: f32) -> (f32, f32) {
+    let range = if range.is_finite() {
+        range.clamp(MIN_LIGHT_RANGE, MAX_LIGHT_RANGE)
+    } else {
+        LocalLight::default().range
+    };
+    // 先取「按比例」，再抬到下限，最后夹到 far 的一半以内：
+    // range 极小时下限会越过 range/2，必须由最后一步兜住（clamp 的 min>max 会 panic）。
+    let near = (range * LOCAL_SHADOW_NEAR_RATIO)
+        .max(MIN_LOCAL_SHADOW_NEAR)
+        .min(range * 0.5);
+    (near, range)
+}
+
+impl LocalLight {
+    /// 这盏灯的深度面数：点光 6（立方体），聚光 1（单面）。
+    pub fn shadow_faces(&self) -> usize {
+        match self.kind {
+            LocalLightKind::Point => POINT_SHADOW_FACES,
+            LocalLightKind::Spot => 1,
+        }
+    }
+
+    /// 第 `face` 面的观察方向（世界坐标，从光源射出）。
+    pub fn shadow_face_direction(&self, face: usize) -> Vec3 {
+        match self.kind {
+            LocalLightKind::Point => {
+                Vec3::from(POINT_SHADOW_FACE_DIRS[face.min(POINT_SHADOW_FACES - 1)])
+            }
+            LocalLightKind::Spot => {
+                let d = Vec3::from(self.dir);
+                if d.length_squared() > 1e-8 {
+                    d.normalize()
+                } else {
+                    Vec3::NEG_Y
+                }
+            }
+        }
+    }
+
+    /// 第 `face` 面的视场角（度）：点光恒 90°，聚光取外角的两倍（夹在可用区间）。
+    pub fn shadow_face_fov_deg(&self) -> f32 {
+        match self.kind {
+            LocalLightKind::Point => POINT_SHADOW_FOV_DEG,
+            LocalLightKind::Spot => {
+                (self.outer_deg * 2.0).clamp(MIN_SPOT_SHADOW_FOV_DEG, MAX_SPOT_SHADOW_FOV_DEG)
+            }
+        }
+    }
+
+    /// 第 `face` 面的「投影 × 观察」矩阵（右手系 + NDC 深度 0..1，与 wgpu 对齐）。
+    ///
+    /// 与方向光的 `shadow_view_projection` 同一套 glam `camera::rh` 约定；
+    /// 深度 pass 拿它写深度，主通道拿它把世界坐标投回纹理坐标。
+    pub fn shadow_face_view_projection(&self, face: usize) -> Mat4 {
+        let pos = Vec3::from(self.pos);
+        let (near, far) = local_shadow_plane(self.range);
+        let dir = self.shadow_face_direction(face);
+        let up = match self.kind {
+            LocalLightKind::Point => {
+                Vec3::from(POINT_SHADOW_FACE_UPS[face.min(POINT_SHADOW_FACES - 1)])
+            }
+            LocalLightKind::Spot => sun_like_up(dir),
+        };
+        let view = glam::camera::rh::view::look_at_mat4(pos, pos + dir, up);
+        let proj = glam::camera::rh::proj::directx::perspective(
+            self.shadow_face_fov_deg().to_radians(),
+            1.0,
+            near,
+            far,
+        );
+        proj * view
+    }
+
+    /// 这盏灯最深能影响多远（= `range`）。渲染层据此判断片元是否还需要采样阴影。
+    pub fn shadow_reach(&self) -> f32 {
+        self.range
+    }
+}
+
+/// 聚光阴影相机的 up：与方向光同一套防退化处理（近乎竖直时换 Z 轴）。
+fn sun_like_up(dir: Vec3) -> Vec3 {
+    if dir.y.abs() > 0.99 {
+        if dir.y >= 0.0 {
+            Vec3::NEG_Z
+        } else {
+            Vec3::Z
+        }
+    } else {
+        Vec3::Y
+    }
+}
+
+/// 一盏「本帧真正投影」的局部光源在深度数组里的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalShadowCaster {
+    /// 对应 `Scene::lights` 里的下标（着色器据此回查光源位置 / 方向）。
+    pub light_index: usize,
+    /// 深度数组里的起始层 = `slot * POINT_SHADOW_FACES`。
+    pub layer_base: u32,
+    /// 实际需要渲染的面数：点光 6，聚光 1。
+    pub faces: u32,
+}
+
+impl LocalShadowCaster {
+    /// 该灯占用的层区间（聚光的其余 5 层留空但已分配，保证下标可算）。
+    pub fn layer_range(&self) -> std::ops::Range<u32> {
+        self.layer_base..(self.layer_base + self.faces)
+    }
+}
+
+/// 从光源表里挑出本帧要投影的灯，并分配固定层槽位。
+///
+/// 选择口径：只看 `cast_shadow == true` 的灯，按「辐亮度 × range²」从大到小取前
+/// [`MAX_LOCAL_SHADOW_CASTERS`] 盏——「又亮又照得远」的灯最值得花 6 次 pass。
+/// 返回值按 `light_index` 升序，槽位 `layer_base = slot * POINT_SHADOW_FACES`，
+/// 因此结果对输入顺序稳定、可单测、着色器不需要任何查表。
+pub fn plan_local_shadows(lights: &[LocalLight]) -> Vec<LocalShadowCaster> {
+    let mut candidates: Vec<(usize, f32)> = lights
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.cast_shadow)
+        .map(|(i, l)| {
+            let r = l.radiance();
+            let luma = 0.2126 * r.x + 0.7152 * r.y + 0.0722 * r.z;
+            (i, luma.max(0.0) * l.range * l.range)
+        })
+        .collect();
+    // 大的在前；完全并列时按下标升序，保证同一份场景永远得到同一份计划
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    candidates.truncate(MAX_LOCAL_SHADOW_CASTERS);
+    candidates.sort_by_key(|(i, _)| *i);
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(slot, (light_index, _))| LocalShadowCaster {
+            light_index,
+            layer_base: (slot * POINT_SHADOW_FACES) as u32,
+            faces: if lights[light_index].kind == LocalLightKind::Point {
+                POINT_SHADOW_FACES as u32
+            } else {
+                1
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1038,6 +1294,8 @@ mod tests {
             dir: [0.0, 0.0, 0.0],
             inner_deg: 120.0,
             outer_deg: 5.0,
+            cast_shadow: true,
+            shadow_bias: f32::NAN,
         }
         .sanitized();
         assert!(l.pos.iter().all(|v| v.is_finite()));
@@ -1051,6 +1309,11 @@ mod tests {
         assert_eq!(l.inner_deg, MAX_CONE_ANGLE_DEG);
         assert!(l.outer_deg >= l.inner_deg);
         assert!(l.outer_deg <= MAX_CONE_ANGLE_DEG);
+        assert_eq!(
+            l.shadow_bias,
+            LocalLight::default().shadow_bias,
+            "NaN 偏移退回缺省"
+        );
     }
 
     /// 数量上限只拦新增、不拦覆盖：满载时同 key 更新仍然生效。
@@ -1098,5 +1361,230 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(lights[0].intensity, 5.0);
         assert_eq!(lights[0].range, 3.0);
+    }
+
+    // -----------------------------------------------------------------
+    // 扩展十八 C：局部光源阴影
+    // -----------------------------------------------------------------
+
+    /// 立方体选面：六个轴向各自落在对应层，对角线按「主轴绝对值最大」定胜负。
+    #[test]
+    fn point_shadow_face_picks_dominant_axis() {
+        assert_eq!(point_shadow_face(Vec3::X), 0);
+        assert_eq!(point_shadow_face(Vec3::NEG_X), 1);
+        assert_eq!(point_shadow_face(Vec3::Y), 2);
+        assert_eq!(point_shadow_face(Vec3::NEG_Y), 3);
+        assert_eq!(point_shadow_face(Vec3::Z), 4);
+        assert_eq!(point_shadow_face(Vec3::NEG_Z), 5);
+        // 主轴明显者胜出，与其它分量的符号无关
+        assert_eq!(point_shadow_face(Vec3::new(-5.0, 1.0, 2.0)), 1);
+        assert_eq!(point_shadow_face(Vec3::new(0.5, 0.4, -3.0)), 5);
+        // 与面方向表严格对应：每个面方向都能反查回自己的下标
+        for (i, d) in POINT_SHADOW_FACE_DIRS.iter().enumerate() {
+            assert_eq!(point_shadow_face(Vec3::from(*d)), i);
+        }
+    }
+
+    /// 面数 / 视场角：点光 6 面 × 90°，聚光 1 面 × 外角两倍。
+    #[test]
+    fn local_shadow_faces_and_fov() {
+        let point = LocalLight::point("p", [0.0; 3], [1.0; 3], 1.0);
+        assert_eq!(point.shadow_faces(), POINT_SHADOW_FACES);
+        assert_eq!(point.shadow_face_fov_deg(), POINT_SHADOW_FOV_DEG);
+
+        let spot = LocalLight::spot(
+            "s",
+            [0.0; 3],
+            [0.0, -1.0, 0.0],
+            [1.0; 3],
+            1.0,
+            10.0,
+            10.0,
+            20.0,
+        );
+        assert_eq!(spot.shadow_faces(), 1);
+        assert!((spot.shadow_face_fov_deg() - 40.0).abs() < 1e-4);
+
+        // 极窄锥不能退化成 0°，极宽锥不能让 tan 爆掉
+        let narrow = LocalLight::spot(
+            "n",
+            [0.0; 3],
+            [0.0, -1.0, 0.0],
+            [1.0; 3],
+            1.0,
+            10.0,
+            0.0,
+            MIN_CONE_GAP_DEG,
+        );
+        assert_eq!(narrow.shadow_face_fov_deg(), MIN_SPOT_SHADOW_FOV_DEG);
+        let wide = LocalLight::spot(
+            "w",
+            [0.0; 3],
+            [0.0, -1.0, 0.0],
+            [1.0; 3],
+            1.0,
+            10.0,
+            80.0,
+            MAX_CONE_ANGLE_DEG,
+        );
+        assert_eq!(wide.shadow_face_fov_deg(), MAX_SPOT_SHADOW_FOV_DEG);
+    }
+
+    /// 深度平面：near 随 range 缩放（且永远小于 far = range），非法 range 走缺省。
+    #[test]
+    fn local_shadow_plane_scales_with_range() {
+        let (near, far) = local_shadow_plane(1.0);
+        assert!(near >= MIN_LOCAL_SHADOW_NEAR);
+        assert_eq!(far, 1.0);
+        assert!(near < far);
+
+        let (near_l, far_l) = local_shadow_plane(100.0);
+        assert!(near_l > near, "range 越大近平面越远");
+        assert_eq!(far_l, 100.0);
+
+        let (near_bad, far_bad) = local_shadow_plane(f32::NAN);
+        assert!(near_bad.is_finite() && far_bad.is_finite());
+        assert!(near_bad < far_bad);
+        // 极小 range 也不能让 near ≥ far
+        let (near_min, far_min) = local_shadow_plane(0.0);
+        assert!(near_min < far_min);
+    }
+
+    /// 聚光阴影相机：光源自身落在矩阵中心，锥内一点投到 NDC 中心附近，锥外一点投出去。
+    #[test]
+    fn spot_shadow_frames_cone() {
+        let spot = LocalLight::spot(
+            "s",
+            [0.0, 5.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [1.0; 3],
+            1.0,
+            10.0,
+            10.0,
+            20.0,
+        );
+        let vp = spot.shadow_face_view_projection(0);
+        // 沿锥轴 3 米处：必须落在 NDC 的 x/y 中心、深度在 0..1
+        let on_axis = Vec3::new(0.0, 2.0, 0.0);
+        let clip = vp * on_axis.extend(1.0);
+        let ndc = clip / clip.w;
+        assert!(ndc.x.abs() < 1e-4, "ndc.x = {}", ndc.x);
+        assert!(ndc.y.abs() < 1e-4, "ndc.y = {}", ndc.y);
+        assert!((0.0..=1.0).contains(&ndc.z), "ndc.z = {}", ndc.z);
+        // 锥内 10° 边缘仍在裁剪空间内；反方向（背后）必须被裁掉
+        let edge = Vec3::new(3.0 * 10f32.to_radians().tan(), 2.0, 0.0);
+        let e = vp * edge.extend(1.0);
+        assert!(e.w > 0.0);
+        assert!((e.x / e.w).abs() <= 1.0);
+        let behind = Vec3::new(0.0, 9.0, 0.0);
+        let b = vp * behind.extend(1.0);
+        assert!(b.w <= 0.0, "光源背后的点必须落在视锥外");
+    }
+
+    /// 点光六面：每个面都把该面方向上的点收进 NDC 中心，六面朝向互不相同。
+    #[test]
+    fn point_shadow_six_faces_cover_cube() {
+        let point = LocalLight::point("p", [0.0; 3], [1.0; 3], 1.0);
+        let mut dirs = Vec::new();
+        for face in 0..POINT_SHADOW_FACES {
+            let dir = point.shadow_face_direction(face);
+            dirs.push(dir);
+            let vp = point.shadow_face_view_projection(face);
+            let target = dir * 2.0;
+            let clip = vp * target.extend(1.0);
+            let ndc = clip / clip.w;
+            assert!(ndc.x.abs() < 1e-4, "face {face} ndc.x = {}", ndc.x);
+            assert!(ndc.y.abs() < 1e-4, "face {face} ndc.y = {}", ndc.y);
+            assert!(
+                (0.0..=1.0).contains(&ndc.z),
+                "face {face} ndc.z = {}",
+                ndc.z
+            );
+            // 选面规则必须能把这盏灯的相对方向反查回同一面
+            assert_eq!(point_shadow_face(target), face);
+        }
+        for i in 0..POINT_SHADOW_FACES {
+            for j in (i + 1)..POINT_SHADOW_FACES {
+                assert_ne!(dirs[i], dirs[j], "六个面方向不能重复");
+            }
+        }
+    }
+
+    /// 缺省不投影：老场景零改动，`plan_local_shadows` 为空。
+    #[test]
+    fn local_shadow_plan_defaults_to_empty() {
+        let lights = vec![
+            LocalLight::point("a", [0.0; 3], [1.0; 3], 5.0),
+            LocalLight::spot(
+                "b",
+                [0.0; 3],
+                [0.0, -1.0, 0.0],
+                [1.0; 3],
+                5.0,
+                10.0,
+                10.0,
+                20.0,
+            ),
+        ];
+        assert!(plan_local_shadows(&lights).is_empty());
+    }
+
+    /// 计划：按「辐亮度 × range²」排序截断，槽位 = slot × 6，返回按下标升序。
+    #[test]
+    fn local_shadow_plan_ranks_and_slots() {
+        let mut lights: Vec<LocalLight> = Vec::new();
+        for i in 0..(MAX_LOCAL_SHADOW_CASTERS + 2) {
+            let mut l = LocalLight::point(
+                format!("l{i}"),
+                [i as f32, 2.0, 0.0],
+                [1.0; 3],
+                // 强度递增：越靠后的灯越亮，应当优先入选
+                (i + 1) as f32,
+            );
+            l.cast_shadow = true;
+            lights.push(l);
+        }
+        let plan = plan_local_shadows(&lights);
+        assert_eq!(plan.len(), MAX_LOCAL_SHADOW_CASTERS);
+        // 最亮的 4 盏 = 下标 2..6，但仍按下标升序返回
+        assert_eq!(
+            plan.iter().map(|c| c.light_index).collect::<Vec<_>>(),
+            vec![2, 3, 4, 5]
+        );
+        for (slot, caster) in plan.iter().enumerate() {
+            assert_eq!(caster.layer_base, (slot * POINT_SHADOW_FACES) as u32);
+            assert_eq!(caster.faces, POINT_SHADOW_FACES as u32);
+            assert_eq!(caster.layer_range().len(), POINT_SHADOW_FACES);
+        }
+        // 层区间严格不相交，且都在数组容量内
+        let mut used: Vec<u32> = Vec::new();
+        for caster in &plan {
+            for layer in caster.layer_range() {
+                assert!(layer < MAX_LOCAL_SHADOW_LAYERS as u32);
+                assert!(!used.contains(&layer), "层 {layer} 被重复分配");
+                used.push(layer);
+            }
+        }
+    }
+
+    /// 聚光只占 1 层，其余 5 层留空但仍参与槽位计算。
+    #[test]
+    fn local_shadow_plan_spot_uses_single_face() {
+        let mut spot = LocalLight::spot(
+            "s",
+            [0.0, 3.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [1.0; 3],
+            2.0,
+            8.0,
+            10.0,
+            20.0,
+        );
+        spot.cast_shadow = true;
+        let plan = plan_local_shadows(std::slice::from_ref(&spot));
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].faces, 1);
+        assert_eq!(plan[0].layer_range().len(), 1);
+        assert_eq!(plan[0].layer_base, 0);
     }
 }

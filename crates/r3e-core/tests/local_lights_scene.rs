@@ -77,7 +77,47 @@ fn lights_survive_json_round_trip() {
         assert!((a.range - b.range).abs() < 1e-6);
         assert!((a.inner_deg - b.inner_deg).abs() < 1e-6);
         assert!((a.outer_deg - b.outer_deg).abs() < 1e-6);
+        assert_eq!(a.cast_shadow, b.cast_shadow, "cast_shadow 必须往返保持");
+        assert!((a.shadow_bias - b.shadow_bias).abs() < 1e-6);
     }
+}
+
+/// 扩展十八 C：`"cast_shadow": true` 是唯一打开局部阴影的开关，
+/// 缺省（老场景不写这个键）必须保持 `false`，且能被 `plan_local_shadows` 选中。
+#[test]
+fn scene_file_cast_shadow_opt_in() {
+    let json = r#"{
+        "lights": [
+            { "key": "legacy", "kind": "point", "pos": [0.0, 2.0, 0.0], "range": 6.0 },
+            {
+                "key": "torch",
+                "kind": "spot",
+                "pos": [0.0, 3.0, 0.0],
+                "dir": [0.0, -1.0, 0.0],
+                "intensity": 4.0,
+                "range": 9.0,
+                "inner_deg": 12.0,
+                "outer_deg": 24.0,
+                "cast_shadow": true,
+                "shadow_bias": 0.01
+            }
+        ]
+    }"#;
+    let scene = Scene::from_file(serde_json::from_str(json).unwrap()).unwrap();
+    let legacy = scene.local_light("legacy").expect("老灯应存在");
+    assert!(
+        !legacy.cast_shadow,
+        "没写 cast_shadow 的老场景必须保持不投影"
+    );
+    let torch = scene.local_light("torch").expect("新灯应存在");
+    assert!(torch.cast_shadow);
+    assert!((torch.shadow_bias - 0.01).abs() < 1e-6);
+
+    let plan = r3e_core::plan_local_shadows(&scene.lights);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].light_index, 1, "只有 torch 投影");
+    assert_eq!(plan[0].faces, 1, "聚光单面");
+    assert_eq!(plan[0].layer_base, 0);
 }
 
 /// 场景文件里的坏值在入口就被收敛，不留到 GPU。
