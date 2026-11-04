@@ -391,6 +391,25 @@ impl SceneStack {
         self.entries.iter().map(|e| e.name.clone()).collect()
     }
 
+    /// 用内存里的场景现状刷新**当前层**（离开这一层之前调用）。
+    ///
+    /// 层里存的是"离开时的样子"，而内存里的场景一直在跑；不刷新就 `back` 回去，
+    /// 看到的会是进入这一层时的初始状态、而不是离开时的那一帧。返回 `false`
+    /// 表示栈为空、没有可刷新的层。
+    pub fn capture_current(&mut self, scene: &Scene) -> bool {
+        let Some(idx) = self.current else {
+            return false;
+        };
+        let Some(entry) = self.entries.get_mut(idx) else {
+            return false;
+        };
+        entry.source = scene
+            .to_json_pretty()
+            .unwrap_or_else(|_| String::from("{}"));
+        entry.runtime = RuntimeSnapshot::capture(scene);
+        true
+    }
+
     /// 清空。
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -918,5 +937,27 @@ mod tests {
                 path: "  scenes/a.json  ".into()
             }
         );
+    }
+
+    #[test]
+    fn capture_current_refreshes_only_the_top() {
+        let mut stack = SceneStack::new();
+        assert!(!stack.capture_current(&Scene::new()), "空栈没有可刷新的层");
+
+        stack.push(StackEntry::capture("a", "a.json", &Scene::new()));
+        stack.push(StackEntry::capture("b", "b.json", &Scene::new()));
+
+        let mut live = Scene::new();
+        live.name = "b-live".into();
+        live.frame = 42;
+        assert!(stack.capture_current(&live));
+
+        assert_eq!(stack.depth(), 2);
+        assert_eq!(stack.current_index(), Some(1));
+        let top = stack.current().expect("当前层应存在");
+        assert!(top.source.contains("b-live"), "层里应存下改名后的现状");
+        assert_eq!(top.runtime.frame, 42);
+        // 上一层不受影响
+        assert!(!stack.entries()[0].source.contains("b-live"));
     }
 }
