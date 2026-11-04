@@ -813,6 +813,25 @@ impl EngineApp {
             "[{tag}] 局部光源：场景 {light_nodes} 盏 / 上传 {} 盏 / 开关 {lights_enabled}",
             stats.local_lights
         );
+        // 局部阴影探针（扩展十八 C）：「意愿」= 场景里 `cast_shadow` 为真的盏数，
+        // 「本帧投影」= `plan_local_shadows` 按亮度选中的盏数（上限 MAX_LOCAL_SHADOW_CASTERS）。
+        // 意愿 > 本帧投影 → 被上限截断或被总开关清零；本帧投影 = 0 时占用层数必须也是 0，
+        // 否则说明 uniform 与深度 pass 的层号脱节（阴影图里会留着上一帧的旧矩阵）。
+        let (caster_wish, shadow_size, shadow_layer_capacity) = {
+            let scene = self.scene.borrow();
+            (
+                scene.lights.iter().filter(|l| l.cast_shadow).count(),
+                renderer.local_shadow_size(),
+                renderer.local_shadow_layer_count(),
+            )
+        };
+        log::info!(
+            "[{tag}] 局部阴影：意愿 {caster_wish} 盏 / 本帧投影 {} 盏（上限 {}）/ 占用 {} 层 / 图 {}² × {shadow_layer_capacity} 层",
+            stats.local_shadow_casters,
+            r3e_core::MAX_LOCAL_SHADOW_CASTERS,
+            stats.local_shadow_layers,
+            shadow_size
+        );
         // 音频探针：设备不可用 = 静默降级（引擎照常跑，只是不出声）；「在播」数来自门面账本。
         log::info!("[{tag}] 音频：{}", self.audio.borrow_mut().status_line());
     }

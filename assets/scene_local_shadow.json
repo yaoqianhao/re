@@ -1,0 +1,195 @@
+{
+  "name": "r3e-local-shadow-demo",
+  "background": [
+    0.035,
+    0.04,
+    0.058,
+    1.0
+  ],
+  "camera": {
+    "position": [
+      7.0,
+      5.2,
+      8.6
+    ],
+    "target": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "fov": 55.0
+  },
+  "light": {
+    "direction": [
+      -0.45,
+      -0.7,
+      -0.3
+    ],
+    "color": [
+      0.7,
+      0.76,
+      0.95
+    ],
+    "intensity": 0.35,
+    "ambient": [
+      0.1,
+      0.12,
+      0.16
+    ],
+    "shadow": {
+      "enabled": false,
+      "size": 1024
+    }
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        20,
+        1,
+        20
+      ],
+      "color": [
+        0.32,
+        0.33,
+        0.36,
+        1.0
+      ],
+      "physics": {
+        "body": "static",
+        "collider": "box"
+      }
+    },
+    {
+      "name": "block_a",
+      "mesh": "cube",
+      "position": [
+        -2.2,
+        1.0,
+        0.4
+      ],
+      "scale": [
+        1.6,
+        2.0,
+        1.6
+      ],
+      "color": [
+        0.9,
+        0.52,
+        0.28,
+        1.0
+      ]
+    },
+    {
+      "name": "block_b",
+      "mesh": "cube",
+      "position": [
+        1.8,
+        0.8,
+        -1.4
+      ],
+      "scale": [
+        1.2,
+        1.6,
+        1.2
+      ],
+      "color": [
+        0.4,
+        0.7,
+        0.92,
+        1.0
+      ]
+    },
+    {
+      "name": "orb",
+      "mesh": "sphere",
+      "position": [
+        2.4,
+        1.0,
+        1.8
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "color": [
+        0.5,
+        0.86,
+        0.62,
+        1.0
+      ]
+    },
+    {
+      "name": "pillar",
+      "mesh": "cylinder",
+      "position": [
+        -0.2,
+        2.0,
+        -3.0
+      ],
+      "scale": [
+        0.8,
+        4.0,
+        0.8
+      ],
+      "color": [
+        0.82,
+        0.84,
+        0.9,
+        1.0
+      ]
+    }
+  ],
+  "lights": [
+    {
+      "key": "lamp",
+      "kind": "point",
+      "pos": [
+        -2.0,
+        3.2,
+        1.6
+      ],
+      "color": [
+        1.0,
+        0.78,
+        0.42
+      ],
+      "intensity": 9.0,
+      "range": 12.0,
+      "cast_shadow": true,
+      "shadow_bias": 0.004
+    },
+    {
+      "key": "beam",
+      "kind": "spot",
+      "pos": [
+        0.0,
+        4.6,
+        0.0
+      ],
+      "dir": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "color": [
+        0.55,
+        0.8,
+        1.0
+      ],
+      "intensity": 12.0,
+      "range": 14.0,
+      "inner_deg": 10.0,
+      "outer_deg": 22.0,
+      "cast_shadow": true,
+      "shadow_bias": 0.003
+    }
+  ]
+}
