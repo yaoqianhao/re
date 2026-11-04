@@ -202,6 +202,114 @@ struct Lights {
 @group(3) @binding(4)
 var<uniform> u_lights: Lights;
 
+// ---------------- 扩展十八 C：局部光源阴影（点光立方 6 面 / 聚光单面） ----------------
+// 深度数组共 `MAX_LOCAL_SHADOW_LAYERS` 层，每盏投影灯固定占 6 层（聚光只用第 0 层，
+// 其余空着），因此「第 i 盏投影灯的第 f 面」= `slots[i].x + f`，着色器不需要任何查表。
+//
+//   params        : x = 本帧投影灯数，y = 1/size（纹素尺寸），z = 是否启用（0/1），w 保留
+//   params2       : x = 阴影强度，y = 本帧占用层数，zw 保留
+//   view_proj[l]  : 该层「光源 → 裁剪」矩阵（CPU 侧与深度 pass 共用同一份，不会写读错位）
+//   slots[i]      : x = layer_base（< 0 表示这盏灯本帧不投影），
+//                   y = 面数（点光 6 / 聚光 1），z = 深度偏移（NDC），
+//                   w = 法线偏移（世界单位，已按该灯单纹素世界尺寸换算）
+//
+// 长度 24 / 16 必须与 `r3e_core::MAX_LOCAL_SHADOW_LAYERS` / `MAX_LOCAL_LIGHTS` 一致：
+// `tests/local_shadow_shader.rs` 会解析本文件比对，改一处必须改三处。
+struct LocalShadow {
+    params: vec4<f32>,
+    params2: vec4<f32>,
+    view_proj: array<mat4x4<f32>, 24>,
+    slots: array<vec4<f32>, 16>,
+};
+
+@group(3) @binding(5)
+var local_shadow_map: texture_depth_2d_array;
+
+@group(3) @binding(6)
+var local_shadow_sampler: sampler_comparison;
+
+@group(3) @binding(7)
+var<uniform> u_local_shadow: LocalShadow;
+
+// 层数上界（与 CPU 侧 MAX_LOCAL_SHADOW_LAYERS 一致，作为下标夹取的上限）
+const MAX_LOCAL_SHADOW_LAYERS: i32 = 24;
+
+/// 点光立方体选面：主轴绝对值最大者胜出，符号定正负。
+/// 与 `r3e_core::point_shadow_face` 逐分支对应（顺序 +X, -X, +Y, -Y, +Z, -Z）。
+fn point_shadow_face(direction: vec3<f32>) -> i32 {
+    let a = abs(direction);
+    if a.x >= a.y && a.x >= a.z {
+        if direction.x >= 0.0 {
+            return 0;
+        }
+        return 1;
+    }
+    if a.y >= a.z {
+        if direction.y >= 0.0 {
+            return 2;
+        }
+        return 3;
+    }
+    if direction.z >= 0.0 {
+        return 4;
+    }
+    return 5;
+}
+
+/// 单盏局部光源的阴影因子：1 = 全亮，0 = 全遮。
+///
+/// 点光先按「光源→片元」方向选出立方体的那一面，再只用该面的矩阵投影；
+/// 聚光只有一面，直接用第 0 层。越出该面视锥（面边界上的邻域采样）按受光处理，
+/// 与方向光「视锥外不投影」同一口径，避免面接缝出现硬黑边。
+fn local_shadow_factor(
+    index: u32,
+    world_position: vec3<f32>,
+    n: vec3<f32>,
+    to_light: vec3<f32>,
+) -> f32 {
+    if u_local_shadow.params.z < 0.5 {
+        return 1.0;
+    }
+    let slot = u_local_shadow.slots[index];
+    // slot.x < 0：这盏灯本帧不投影（槽位默认值），直接全亮
+    if slot.x < 0.0 || slot.y <= 0.0 {
+        return 1.0;
+    }
+    var layer = i32(slot.x);
+    if slot.y > 1.5 {
+        layer = layer + point_shadow_face(-to_light);
+    }
+    let clamped = clamp(layer, 0, MAX_LOCAL_SHADOW_LAYERS - 1);
+    let biased = world_position + n * slot.w;
+    let clip = u_local_shadow.view_proj[clamped] * vec4<f32>(biased, 1.0);
+    if clip.w <= 1e-6 {
+        return 1.0;
+    }
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0 {
+        return 1.0;
+    }
+    let cmp_depth = ndc.z - slot.z;
+    let texel = u_local_shadow.params.y;
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel;
+            sum = sum + textureSampleCompare(
+                local_shadow_map,
+                local_shadow_sampler,
+                uv + offset,
+                clamped,
+                cmp_depth,
+            );
+        }
+    }
+    let lit = sum / 9.0;
+    // 强度混回 1：局部光源阴影只压直接光项，环境光不参与（否则暗部会死黑）
+    return mix(1.0, lit, clamp(u_local_shadow.params2.x, 0.0, 1.0));
+}
+
 // 衰减分母的软化常数（与 CPU 侧 ATTENUATION_EPSILON 一致）：d→0 时仍有限
 const ATTENUATION_EPSILON: f32 = 0.01;
 // 平滑窗幂次（与 CPU 侧 ATTENUATION_WINDOW_POWER 一致）
@@ -287,7 +395,9 @@ fn local_lighting(
         let diffuse = kd * albedo / PI;
         let radiance = light.color_power.rgb * light.color_power.w;
         let falloff = local_attenuation(range, distance) * cone;
-        sum += (diffuse + specular) * radiance * ndl * falloff;
+        // 扩展十八 C：只有投影灯才走深度比较，未投影的灯 slots 里是 -1，直接返回 1
+        let shadow = local_shadow_factor(i, world_position, n, to_light);
+        sum += (diffuse + specular) * radiance * ndl * falloff * shadow;
     }
     return sum;
 }
@@ -567,7 +677,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // 扩展十五：局部光源（点光 / 聚光）累加。与方向光同套 BRDF，只是逐灯重算光向量，
-    // 并额外乘「平滑窗衰减 × 聚光锥因子」。局部光源不投影（见文档「已知边界」）。
+    // 并额外乘「平滑窗衰减 × 聚光锥因子」。扩展十八 C 起，标了 `cast_shadow` 的灯
+    // 还会在灯内再乘一项局部阴影因子（点光立方 6 面 / 聚光单面），其余灯保持不投影。
     let local_term = local_lighting(n, v, in.world_position, albedo, metallic, roughness, f0);
 
     let lit = (diffuse + specular) * radiance * ndl * shadow

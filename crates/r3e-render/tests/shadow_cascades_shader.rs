@@ -37,8 +37,20 @@ fn shadow_map_is_a_depth_array_with_matching_layers() {
         "绑定布局的 binding 0 必须是 D2Array"
     );
     assert!(
-        RENDERER.contains("depth_or_array_layers: MAX_CASCADES as u32"),
-        "纹理数组层数必须等于 MAX_CASCADES"
+        RENDERER.contains("depth_or_array_layers: layers,"),
+        "分层深度数组的层数必须来自 layers 参数"
+    );
+    // 扩展十八 C 把方向光级联与局部阴影的建纹理逻辑抽成 create_shadow_array，
+    // 因此这里改成断言「调用处传的是 MAX_CASCADES」，语义与原来的字面量断言等价。
+    let map_label = RENDERER
+        .find("\"r3e-shadow-map\"")
+        .expect("renderer 缺少方向光阴影纹理");
+    let layers_arg = RENDERER
+        .find("MAX_CASCADES as u32")
+        .expect("方向光阴影纹理数组层数必须等于 MAX_CASCADES");
+    assert!(
+        layers_arg < map_label && map_label - layers_arg < 120,
+        "方向光阴影纹理的层数参数必须是 MAX_CASCADES"
     );
 }
 
