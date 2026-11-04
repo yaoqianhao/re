@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use r3e_audio::Audio;
-use r3e_core::{InputState, Scene, UiInteraction};
+use r3e_core::{InputState, Scene, SceneCommand, SceneStack, UiInteraction};
 use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
@@ -33,6 +33,10 @@ pub struct ScriptHost {
     audio: Rc<RefCell<Audio>>,
     /// UI 指针交互状态。`app` 每帧 `update`，脚本只读——同一个 `Rc`，不存在两份真源。
     ui_interaction: Rc<RefCell<UiInteraction>>,
+    /// 场景栈（扩展十八 B）。与 `app` 共用同一份：脚本只读，宿主负责压栈。
+    scene_stack: Rc<RefCell<SceneStack>>,
+    /// 场景命令槽（扩展十八 B）：脚本申请，宿主每帧取走执行。
+    scene_cmd: Rc<RefCell<Option<SceneCommand>>>,
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: Option<PathBuf>,
@@ -68,6 +72,10 @@ impl ScriptHost {
     ) -> Self {
         let clock = Rc::new(RefCell::new(Clock::default()));
         let ui_interaction = Rc::new(RefCell::new(UiInteraction::new()));
+        // 场景栈与命令槽在构造时就建好：它们会被 `bind_all` 的闭包捕获，
+        // 之后再换 `Rc` 不会影响已注册的绑定（与 `ui_interaction` 同一约束）。
+        let scene_stack = Rc::new(RefCell::new(SceneStack::new()));
+        let scene_cmd: Rc<RefCell<Option<SceneCommand>>> = Rc::new(RefCell::new(None));
         let ctx = api::ScriptContext {
             scene: scene.clone(),
             physics: physics.clone(),
@@ -77,6 +85,8 @@ impl ScriptHost {
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
             ui_log: Rc::new(RefCell::new(api::UiWriteLog::default())),
             ui_interaction: ui_interaction.clone(),
+            scene_stack: scene_stack.clone(),
+            scene_cmd: scene_cmd.clone(),
         };
 
         let mut engine = Engine::new();
@@ -91,6 +101,8 @@ impl ScriptHost {
             input,
             audio,
             ui_interaction,
+            scene_stack,
+            scene_cmd,
             ast: None,
             scope: Scope::new(),
             script_path: None,
@@ -195,6 +207,36 @@ impl ScriptHost {
     /// `ui_hover` / `ui_active` / `ui_hit` 读的就是同一份状态。
     pub fn ui_interaction(&self) -> Rc<RefCell<UiInteraction>> {
         self.ui_interaction.clone()
+    }
+
+    /// 场景栈句柄（扩展十八 B）。宿主拿它压栈 / 回退，脚本侧只读同一个栈。
+    pub fn scene_stack_handle(&self) -> Rc<RefCell<SceneStack>> {
+        self.scene_stack.clone()
+    }
+
+    /// 取走脚本申请的场景命令（每帧一次；没有则返回 `None`）。
+    ///
+    /// "取走"而不是"读取"是刻意的：命令是一次性意图，留在槽里会被下一帧重复执行。
+    pub fn take_scene_command(&self) -> Option<SceneCommand> {
+        self.scene_cmd.borrow_mut().take()
+    }
+
+    /// 脚本侧是否还压着一条没被执行的场景命令。
+    pub fn scene_command_pending(&self) -> bool {
+        self.scene_cmd.borrow().is_some()
+    }
+
+    /// 由宿主（而非脚本）登记一条场景命令；槽已满时返回 `false` 且不覆盖。
+    ///
+    /// 与 `take_scene_command` 共用一个槽：无论命令来自脚本还是宿主别的入口，
+    /// 都走同一条"帧首执行"的路径，不会出现两套切换逻辑。
+    pub fn request_scene_command(&self, cmd: SceneCommand) -> bool {
+        let mut slot = self.scene_cmd.borrow_mut();
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(cmd);
+        true
     }
 
     /// 每帧调用脚本的 `on_update(dt)`。
@@ -1759,5 +1801,153 @@ mod local_light_script_tests {
             l.inner_deg,
             l.outer_deg
         );
+    }
+}
+
+#[cfg(test)]
+mod scene_binding_tests {
+    use super::*;
+    use r3e_core::{Scene, StackEntry};
+
+    fn host() -> ScriptHost {
+        let scene = Rc::new(RefCell::new(Scene::new()));
+        let physics = Rc::new(RefCell::new(Physics::new()));
+        let input = Rc::new(RefCell::new(InputState::default()));
+        ScriptHost::new(scene, physics, input)
+    }
+
+    fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
+        host.eval(src)
+            .unwrap_or_else(|e| panic!("脚本 `{src}` 执行失败: {e}"))
+            .as_bool()
+            .unwrap_or_else(|_| panic!("脚本 `{src}` 应返回 bool"))
+    }
+
+    fn stack_with_two(host: &ScriptHost) {
+        let handle = host.scene_stack_handle();
+        let mut stack = handle.borrow_mut();
+        stack.push(StackEntry::capture("menu", "menu.json", &Scene::new()));
+        stack.push(StackEntry::capture("lv1", "lv1.json", &Scene::new()));
+    }
+
+    #[test]
+    fn script_queues_switch_command() {
+        let mut h = host();
+        assert!(eval_bool(&mut h, r#"scene_switch("levels/lv2.json")"#));
+        assert!(h.scene_command_pending());
+        match h.take_scene_command() {
+            Some(SceneCommand::Switch { path }) => assert_eq!(path, "levels/lv2.json"),
+            other => panic!("应排入 Switch 命令，实际: {other:?}"),
+        }
+        assert!(!h.scene_command_pending(), "取走后槽必须清空");
+        assert!(h.take_scene_command().is_none(), "命令是一次性意图");
+    }
+
+    #[test]
+    fn path_is_trimmed_and_blank_rejected() {
+        let mut h = host();
+        assert!(eval_bool(
+            &mut h,
+            r#"scene_load_archive("  slots/a.json  ")"#
+        ));
+        match h.take_scene_command() {
+            Some(SceneCommand::LoadArchive { path }) => assert_eq!(path, "slots/a.json"),
+            other => panic!("应排入 LoadArchive 命令，实际: {other:?}"),
+        }
+        // 空路径在脚本边界上就说不，不留给宿主去猜
+        assert!(!eval_bool(&mut h, r#"scene_switch("   ")"#));
+        assert!(!eval_bool(&mut h, r#"scene_load_archive("")"#));
+        assert!(!h.scene_command_pending(), "被拒绝的调用不该占槽");
+    }
+
+    #[test]
+    fn single_slot_rejects_second_command_without_overwrite() {
+        let mut h = host();
+        assert!(eval_bool(&mut h, "scene_back()"));
+        assert!(
+            !eval_bool(&mut h, r#"scene_switch("lv2.json")"#),
+            "槽已满时应拒绝，而不是覆盖上一条"
+        );
+        assert_eq!(h.take_scene_command(), Some(SceneCommand::Back));
+    }
+
+    #[test]
+    fn save_archive_blank_path_means_host_default() {
+        let mut h = host();
+        assert!(eval_bool(&mut h, r#"scene_save_archive("")"#));
+        assert_eq!(
+            h.take_scene_command(),
+            Some(SceneCommand::SaveArchive { path: None })
+        );
+        assert!(eval_bool(
+            &mut h,
+            r#"scene_save_archive("  slots/1.json ")"#
+        ));
+        assert_eq!(
+            h.take_scene_command(),
+            Some(SceneCommand::SaveArchive {
+                path: Some("slots/1.json".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn stack_readers_follow_shared_handle() {
+        let mut h = host();
+        assert_eq!(h.eval("scene_stack_depth()").unwrap().as_int(), Ok(0));
+        assert_eq!(h.eval("scene_stack_index()").unwrap().as_int(), Ok(-1));
+        assert_eq!(
+            h.eval("scene_stack_current()")
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            ""
+        );
+
+        stack_with_two(&h);
+        assert_eq!(h.eval("scene_stack_depth()").unwrap().as_int(), Ok(2));
+        assert_eq!(h.eval("scene_stack_index()").unwrap().as_int(), Ok(1));
+        assert_eq!(
+            h.eval("scene_stack_current()")
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            "lv1"
+        );
+        let names = h.eval("scene_stack_names()").unwrap();
+        let arr = names.into_array().expect("应返回数组");
+        let names: Vec<String> = arr
+            .into_iter()
+            .map(|d| d.into_string().expect("层名应为字符串"))
+            .collect();
+        assert_eq!(names, vec!["menu".to_string(), "lv1".to_string()]);
+    }
+
+    #[test]
+    fn queued_command_survives_scene_rebuild() {
+        let mut h = host();
+        assert!(eval_bool(&mut h, r#"scene_switch("lv2.json")"#));
+        let json = h
+            .scene_handle()
+            .borrow()
+            .to_json_pretty()
+            .expect("场景应可序列化");
+        h.rebuild_scene(&json).expect("空场景重建应成功");
+        // 重建会清脚本作用域，但命令槽在 Rc 里，属于宿主状态，不能被脚本重放抹掉
+        assert!(
+            matches!(h.take_scene_command(), Some(SceneCommand::Switch { .. })),
+            "重建不应吞掉已排队的命令"
+        );
+    }
+
+    #[test]
+    fn host_request_uses_the_same_slot() {
+        let h = host();
+        assert!(h.request_scene_command(SceneCommand::back()));
+        assert!(
+            !h.request_scene_command(SceneCommand::back()),
+            "满槽时拒绝覆盖"
+        );
+        assert_eq!(h.take_scene_command(), Some(SceneCommand::Back));
     }
 }

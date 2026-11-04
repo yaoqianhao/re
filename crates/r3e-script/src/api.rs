@@ -18,7 +18,7 @@ use r3e_core::ui::{
 };
 use r3e_core::{
     BoneMask, InputState, KeyCode, LayerMode, LocalLight, MeshRef, NodeId, ObjectDesc, Scene,
-    ScreenText, TextAlign,
+    SceneCommand, SceneStack, ScreenText, TextAlign,
 };
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -51,6 +51,14 @@ pub struct ScriptContext {
     /// 由 `app` 每帧 `update` 推进、脚本侧只读：两边共用同一个 `Rc`，所以脚本在
     /// `on_update` 里读到的事件一定是本帧的，不是上一帧的残留。
     pub ui_interaction: Rc<RefCell<UiInteraction>>,
+    /// 场景栈（扩展十八 B）。与 `app` 共用同一份：脚本只读（`scene_stack_names` 等），
+    /// 真正的压栈 / 回退由宿主做。
+    pub scene_stack: Rc<RefCell<SceneStack>>,
+    /// 场景命令槽（扩展十八 B）：脚本只能**申请**切场景 / 存档，宿主在帧首统一执行。
+    ///
+    /// 一个槽只放一条命令：满了就拒绝（`scene_switch` 等返回 `false`），这样脚本在
+    /// `on_update` 里每帧无脑调用也不会把队列堆成无限长的待办。
+    pub scene_cmd: Rc<RefCell<Option<SceneCommand>>>,
 }
 
 /// UI 写入的「不能静默失败」账本：只记最后一次原因 + 累计次数。
@@ -195,6 +203,29 @@ fn xorshift(state: &Cell<u64>) -> f64 {
 }
 
 /// 把引擎 API 注入 Rhai 引擎。
+/// 把一条场景命令放进槽里；槽已满（上一条还没被宿主取走）时返回 `false`。
+///
+/// 空路径一律拒绝：`scene_switch("")` 在宿主侧会退化成"重新载入当前场景"这类
+/// 意外行为，不如在脚本边界上就说不。`scene_save_archive("")` 是例外——空串
+/// 表示"存到宿主默认位置"，因此 `None` 与空串等价。
+fn queue_scene_cmd(ctx: &ScriptContext, cmd: SceneCommand) -> bool {
+    let mut slot = ctx.scene_cmd.borrow_mut();
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(cmd);
+    true
+}
+
+fn non_empty_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     engine.set_max_operations(50_000_000);
 
@@ -2777,6 +2808,75 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("audio_status", move || -> String {
         c.audio.borrow_mut().status_line()
+    });
+
+    // ---------- 场景切换与存档（扩展十八 B） ----------
+    //
+    // 这一组全是"申请"而不是"执行"：宿主在帧首统一处理命令，脚本再怎么调也
+    // 不会在 `on_start` / `on_update` 中途把世界换掉。
+    let c = ctx.clone();
+    engine.register_fn("scene_switch", move |path: &str| -> bool {
+        match non_empty_path(path) {
+            Some(p) => queue_scene_cmd(&c, SceneCommand::switch(p)),
+            None => false,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_back", move || -> bool {
+        queue_scene_cmd(&c, SceneCommand::back())
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_save_archive", move |path: &str| -> bool {
+        // 空串 = 交给宿主挑默认位置（与 `scene_save_archive_default` 同义）。
+        queue_scene_cmd(&c, SceneCommand::save_archive(non_empty_path(path)))
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_load_archive", move |path: &str| -> bool {
+        match non_empty_path(path) {
+            Some(p) => queue_scene_cmd(&c, SceneCommand::load_archive(p)),
+            None => false,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_command_pending", move || -> bool {
+        c.scene_cmd.borrow().is_some()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_stack_names", move || -> Array {
+        c.scene_stack
+            .borrow()
+            .names()
+            .into_iter()
+            .map(Dynamic::from)
+            .collect()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_stack_depth", move || -> i64 {
+        c.scene_stack.borrow().depth() as i64
+    });
+
+    // 游标位置：空栈返回 -1（而不是 0），"没有当前层"与"第 0 层"必须能区分。
+    let c = ctx.clone();
+    engine.register_fn("scene_stack_index", move || -> i64 {
+        match c.scene_stack.borrow().current_index() {
+            Some(i) => i as i64,
+            None => -1,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("scene_stack_current", move || -> String {
+        c.scene_stack
+            .borrow()
+            .current()
+            .map(|e| e.name.clone())
+            .unwrap_or_default()
     });
 }
 
