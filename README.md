@@ -21,7 +21,7 @@ AIGC:
 - 数学：`glam`（wgpu 兼容的 NDC 深度 0..1 投影）
 - 脚本：`rhai`（Rust 原生嵌入式脚本，语法接近 JS/Rust 混合体）
 - 物理：内置最简实现（重力 / 地面碰撞 / 弹性 / 摩擦 / 休眠），**默认关闭**，可选 `null` 空转；
-  契约固定，随时可换成 `rapier3d`；查询层 `raycast` / `overlap` / `shape_cast` 后端无关
+  另有 `rapier3d` 真实后端（`--features rapier`）可换，两者共用同一套契约；查询层 `raycast` / `overlap` / `shape_cast` 后端无关
 
 ---
 
@@ -719,6 +719,12 @@ fn on_update(dt) {
 }
 ```
 
+### 动画：片段切换与分层混合（扩展十八 A）
+
+片段播放走 `play_anim` / `set_anim_clip` / `set_anim_clip_fade`（交叉淡入，阶段三 C），
+分层混合走 18 个 `anim_layer*` API（挂层 / 遮罩 / 权重淡入淡出 / override 与 additive），
+**完整表与硬口径见 [§21 动画混合树](#21-动画混合树扩展十八-a)**，此处不重复。
+
 ### 物理
 
 | 函数 | 说明 |
@@ -769,7 +775,7 @@ cargo run --release -- assets\scene_physics.json scripts\physics_demo.rhai
 | 参数 | 取值 | 说明 |
 | --- | --- | --- |
 | `--physics` | `on` / `off` | 物理总开关，缺省沿用场景文件，都没有则关闭 |
-| `--physics-backend` | `builtin` / `null` / `rapier` | 后端；`rapier` 未编译进本构建，选它会提示并拒绝 |
+| `--physics-backend` | `builtin` / `null` / `rapier` | 后端；`rapier` 需 `--features rapier` 构建，未编译进当前构建时选它会提示并拒绝 |
 | `--gravity` | `x,y,z` | 重力加速度，默认 `0,-9.81,0` |
 | `--ground` | 浮点数 | 地面平面高度，默认 `0` |
 | `--ccd` | `on` / `off` | CCD 连续碰撞检测缺省值，默认 `on`（仅 `rapier` 后端支持） |
@@ -853,7 +859,8 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   见 [§20 屏幕空间遮蔽](#20-屏幕空间遮蔽ssao扩展十七)。**无运动模糊、无 TAA、无自动曝光**。
 - 遮蔽是**整幅相乘**的近似：没有只压环境项的版本、无多尺度、无双边滤波，快速转相机时靠 4×4 散焦压噪而非时间累积。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
-  骨骼蒙皮、交叉淡入与脚本状态机）；法线/粗糙度贴图、分层/叠加混合、morph target 尚未支持。
+  骨骼蒙皮、交叉淡入与脚本状态机、分层遮罩混合，见 [§21 动画混合树](#21-动画混合树扩展十八-a)）；
+  法线/粗糙度贴图、morph target 尚未支持。
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
@@ -870,8 +877,10 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 已落地：静态网格导入与 GPU 上传、材质分区 + base_color 贴图、场景 `assets` 段声明与 spawn、
 骨架节点树 + 节点级动画（多片段、速度、循环、热切换、场景热重载后自动补挂）、
 骨骼蒙皮（`skin_deformers` → 关节绑定 → `group(2)` 关节矩阵 + 顶点着色器 LBS，逐顶点形变）、
-交叉淡入（`set_anim_clip_fade`，smoothstep 双片段加权，位置/缩放 lerp + 旋转 slerp）与脚本层状态机。
-尚未做：分层 mask / additive 混合、morph target、DQS、GPU skinning。
+交叉淡入（`set_anim_clip_fade`，smoothstep 双片段加权，位置/缩放 lerp + 旋转 slerp）与脚本层状态机；
+分层混合树（遮罩 / 权重 / override 与 additive）由扩展十八 A 补上，见
+[§21 动画混合树](#21-动画混合树扩展十八-a)。
+尚未做：morph target、DQS、GPU skinning。
 
 ```bash
 # 临时加载一个 FBX 到默认场景（窗口里直接看造型与贴图）
@@ -1576,6 +1585,123 @@ RTX 5060 Laptop / Vulkan / DiscreteGpu，1920×1080）：
 与 `ssao.wgsl` 的 416 字节/16 槽/`MIN_SSAO_SAMPLES` 比对）、`tests/ssao_scene.rs`（`postfx.ssao` 往返与
 缺省中性）、`tests/ssao_shader.rs`（wgsl 结构守卫）、`tests/ssao_api.rs`（脚本 12 个 API 的读写与夹取）、
 `tests/ssao_rpc.rs`（补丁式 RPC 与坏值无副作用），合计 32 条独立用例。
+
+---
+
+## 21. 动画混合树（扩展十八 A）
+
+§8 的交叉淡入解决的是「A 动作换成 B 动作」：两段互斥，任意时刻只有一段占住整副骨架。
+真实角色还要**同时**播几段——上半身挥砍、下半身走路，每段只管一部分骨骼。逐骨骼加权就是混合树。
+
+实现落在 `crates/r3e-core/src/anim_blend.rs`（纯数据 + 纯函数，不碰场景与渲染），
+`Scene` 上只加一层管理薄壳。**渲染侧零改动**：层改的是 `update_animations` 求出的节点 TRS，
+蒙皮仍是同一套关节矩阵与同一条写关节的着色路径。
+
+### 21.1 三层结构
+
+| 结构 | 口径 |
+| --- | --- |
+| `BoneMask` | 按资产内**节点路径**决定谁参与本层：`pass_all`（整副）/ `only`（白名单）/ `except`（黑名单）。匹配**大小写不敏感**，支持**后缀片段**（规则 `hand` 命中 `root/arm_l/hand`） |
+| `AnimLayer` | 一层 = 若干片段及层内权重 + 层权重（可淡入淡出）+ 模式 + 遮罩 + 速度。上限 `MAX_ANIM_LAYERS = 8`，每层最多 `MAX_LAYER_CLIPS = 8` 个片段 |
+| `LayerMode` | `override`：命中遮罩的骨骼直接取层姿态；`additive`：层姿态**相对片段首帧**的增量叠到主姿态上（呼吸、受击抖动靠它） |
+
+两种模式的合成公式（`base` 是主片段求出的姿态，`w` = 层权重 × 遮罩权重）：
+
+```text
+override : pose = lerp(base, layer_pose, w)
+additive : pose = base + (layer_pose - reference) * w     // reference = 片段首帧姿态
+```
+
+### 21.2 求值顺序
+
+`Scene::update_animations` 逐实例按下面顺序走：
+
+1. 主片段采样（含交叉淡入的双片段加权）→ 得到 `base`；
+2. 按挂载顺序遍历各层：层内多片段按**归一化权重**加权采样出一个层姿态；
+3. 用该层遮罩把层姿态与 `base` 逐骨骼混合，写回节点本地 TRS；
+4. 遮罩外的骨骼原样保留 `base`，所以「只动上半身」不会把腿的相位带偏。
+
+### 21.3 几条硬口径
+
+- **层内多片段共享同一条时间轴**：走跑混合要求相位同步，各算各的计时会滑步；
+  不同层各有独立时间轴，层 `speed` 可单独调。
+- **遮罩是二值的，不是软权重**：命中就参与、没命中完全不参与；要渐变请调**层权重**
+  （`fade_anim_layer` 走 smoothstep）。
+- **`except` 优先于 `only`**：两者同时给定时黑名单生效，用来表达「整副骨架但别碰手指」。
+- **空遮罩 = 整副骨架**（`""` 与 `"*"` 同义），不是「什么也不动」，避免手滑清空遮罩把层变成空转。
+- **模式串写错不静默降级**：`set_anim_layer_mode` 收到 `override` / `additive` 以外的值打日志并返回
+  `false`，层保持原模式；层数超限同样返回 `false`，不做 LRU 淘汰。
+- **层是运行时状态，不写回场景 JSON**：热重载重导资产后层随实例重建，脚本在 `on_start` 挂一次即可；
+  没有任何层时，求值路径与老版本逐位一致。
+- **只作用于被绑定的节点**：层作用在 `AnimInstance` 的绑定节点上（FBX 资产实例即节点树），
+  对普通物件的 `transform` 脚本动画没有影响。
+
+### 21.4 脚本 API（18 个）
+
+实例名取自 `anims()`（`anim_info` 可查片段与播放进度）：
+
+| 用途 | API |
+| --- | --- |
+| 挂层 | `add_anim_layer(inst, layer, clip, w)`（override）/ `add_anim_layer_additive(inst, layer, clip, w)`（additive） |
+| 层内片段 | `add_anim_layer_clip(inst, layer, clip, w)` / `set_anim_layer_clip` / `remove_anim_layer_clip` / `anim_layer_clips(inst, layer)` |
+| 调参 | `set_anim_layer_weight` / `set_anim_layer_mode(inst, layer, "override"\|"additive")` / `set_anim_layer_mask(inst, layer, "arm,hand")` / `set_anim_layer_speed` |
+| 过渡 | `fade_anim_layer(inst, layer, w, dur)`：从当前权重起步，`dur` 秒到位 |
+| 删层 | `remove_anim_layer` / `clear_anim_layers` |
+| 查询 | `anim_layers(inst)` / `anim_layer_count` / `anim_layer_weight` / `anim_layer_mask` / `anim_layer_info(inst, layer)`（人读的一行报告） |
+
+遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
+
+| 输入 | 含义 | 回显 |
+| --- | --- | --- |
+| `""` / `"*"` | 整副骨架 | `*` |
+| `"arm,hand"` | 只这些节点（含其子节点） | `arm,hand` |
+| `"!root"` | 除这些之外的全副 | `!root` |
+| `"arm,!hand"` | 白名单先收，黑名单再扣（黑名单优先生效） | `arm,!hand` |
+
+```rhai
+// on_start：走路当主片段，上半身挂一层挥砍（只占 arm/hand，腿继续走 walk）
+let inst = anims()[0];
+add_anim_layer(inst, "upper", "atk", 1.0);
+set_anim_layer_mask(inst, "upper", "arm,hand");
+fade_anim_layer(inst, "upper", 0.0, 0.6);   // 先挂上不显形，需要时再淡入
+```
+
+```rhai
+// on_update：按住左键挥砍层 0.18s 淡入，松开 0.25s 淡出（层不删，避免反复重建）
+if is_mouse_down(0) { fade_anim_layer(inst, "upper", 1.0, 0.18); }
+else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
+```
+
+### 21.5 编辑器 RPC
+
+| 方法 | 用途 |
+| --- | --- |
+| `scene.animlayers` | 列实例名与每实例的层摘要（只读） |
+| `scene.animlayerset` | 补丁式改单层：`weight` / `mode` / `mask` / `speed`；未知字段、未知模式、不存在的实例或层一律返回 `ok=false` 且**不落任何副作用** |
+
+层只能在 RPC 里**调参**，不能凭空挂层——挂层要片段句柄，那是资产导入侧的职责，
+塞进 RPC 会绕过实例生命周期管理。
+
+### 21.6 已知边界
+
+能表达「上半身攻击 + 下半身走路」，但**不能调整层序**（固定按挂载顺序叠加）、
+**additive 参考帧固定为片段首帧**（不能指定任意参考姿势）、**没有 morph target**（表情 / 口型）、
+**没有 IK 与脚部对齐**（斜坡上脚会浮）、遮罩是二值而非软权重。
+这几条与 `docs/ARCHITECTURE.md` §11 的动画边界保持同一口径。
+
+### 21.7 测试覆盖
+
+新增 44 条用例，全 CPU 无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/anim_blend.rs` | 11 | override 端点、additive 增量、additive 旋转绕行、层内加权采样、缺轨道跳过、淡入曲线、时间推进与顺序、片段管理边界、模式解析 |
+| `crates/r3e-core/src/scene.rs` | 7 | override 只动遮罩内骨骼、additive 叠加、淡入缩放贡献、层管理往返、层数上限、主片段切换后层存活、清空后恢复主姿态 |
+| `crates/r3e-script/tests/anim_layers_api.rs` | 9 | 真跑 Rhai：遮罩生效、遮罩串解析回显、模式串校验、权重过渡推进、上限与实例缺失的中性返回 |
+| `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
+| `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
+
+`cargo test --workspace` 现为 48 个套件 / 628 passed / 0 failed。
 
 ---
 

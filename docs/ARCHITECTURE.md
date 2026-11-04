@@ -140,18 +140,22 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 12,057 | 1,599 | 239 | `scene.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-core | 13,412 | 1,599 | 257 | `scene.rs` / `anim_blend.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
 | r3e-render | 5,736 | 1,079 | 94 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 4,888 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
-| r3e-physics | 2,548 | 660 | 24 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs` |
+| r3e-asset | 5,272 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 982 | — | 9 | `lib.rs`（门面 / 账本）/ `backend.rs`（rodio + silent） |
-| r3e-script | 4,440 | 222 | 54 | `api.rs` / `lib.rs`（含文本、UI、音频、材质、环境、遮蔽语义单测） |
-| r3e-editor | 1,827 | 1,134 | 51 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 4,500 | — | 30 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-script | 4,669 | 618 | 63 | `api.rs` / `lib.rs`（含文本、UI、音频、材质、环境、遮蔽、动画层语义单测） |
+| r3e-editor | 1,953 | 1,411 | 62 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 4,906 | — | 36 | `app.rs` / `editor.rs`（`EngineApi` 实现）/ `main.rs` |
 | r3e-plugin | 2,450 | — | 39 | `lib.rs`（插件宿主与 ABI） |
-| **合计** | **39,428（含 1,089 行 WGSL）** | **4,988** | **584** | **约 4.4 万行；`cargo test --workspace` 合计 584 passed** |
+| **合计** | **41,928** | **5,661** | **632** | **约 4.2 万行 Rust + 1,089 行 WGSL；`cargo test --workspace` 48 个套件 / 628 passed / 0 failed** |
 
-行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，随扩展十七一次性重算（此前表格长期停在扩展十二时的快照）。
+行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`，
+着色器（1,089 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展十八 A 一次性重算
+（此前停在扩展十七快照：39,428 行 / 584 单测）。单测数一列是 `#[test]` **标注数**，
+其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 628。
 
 Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
@@ -160,8 +164,8 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 584 passed / 0 failed（扩展十七新增 47 项：半球核确定性、深度重建容差、邻域法线退化、遮挡判定与 AO 系数、`SsaoSettings` 夹紧与中性、`postfx.ssao` 场景往返、`ssao.wgsl` 常量与绑定比对、脚本写入/回读、RPC 补丁解析、演示场景载入） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 588 passed / 0 failed |
+| 单测（默认特性） | `cargo test --workspace` | 628 passed / 0 failed（48 个套件；较扩展十七的 584 增 44 项，全部来自扩展十八 A：混合算子与层求值 11、场景层管理 7、脚本绑定 9、宿主补丁 6、编辑器 RPC 11） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 632 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -547,6 +551,59 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
   `reconstruct_view_pos` 在远平面返回 1.0（不遮挡），法线退化时也返回 1.0，宁可漏遮不误遮。
 - 不做双边滤波，4×4 盒式会在**深浅交界的台阶边缘**溢出一点灰边；半径调小可缓解。
 - 没有多尺度（MSSAO / HBAO+ 那种），大幅提升质量需要分层深度 Mip，本期不做。
+
+### 4.11 动画混合树（扩展十八 A）
+
+一个 `AnimInstance` 只承载**一条主片段**（外加切片段时的交叉淡入），这足以表达 idle → run → atk
+这类互斥动作，但表达不了「上半身挥砍 + 下半身走路」——后者要求**同时**播放多段动画并逐骨骼加权。
+混合树补的就是这一层：主姿态之上再挂若干**层**，每层有自己的片段、权重、遮罩、时间轴与叠加模式。
+
+**分层模型**（`r3e-core::anim_blend`，零 wgpu / 零场景依赖）
+
+| 结构 | 字段口径 |
+| --- | --- |
+| `BoneMask` | `include` / `exclude` 两条规则表，按**节点路径后缀逐段**匹配（大小写不敏感） |
+| `AnimLayer` | `clips: Vec<LayerClip>`（层内按权重归一化混合）+ `weight` + `mode` + `mask` + 自己的 `time / speed / looping / playing` + `fade` |
+| `LayerMode` | `Override`（默认）/ `Additive` |
+| `LayerFade` | 层权重过渡：smoothstep 缓入缓出，与交叉淡入同一口径 |
+
+求值顺序（`Scene::update_animations` 第二遍）：
+
+```text
+主片段（含与旧片段的交叉淡入）→ 逐层按挂载顺序叠加
+  ├─ override：lerp(base, pose, w)
+  └─ additive：base + (pose - reference) * w     // reference = 片段首帧
+其中 w = 层有效权重（含过渡）× 遮罩权重（0 / 1）
+```
+
+1. **层内多片段共享同一条时间轴**：走 / 跑 / 冲刺按速度加权是同一个动作的不同强度，相位必须同步，
+   所以一层只有一个 `time`；不同层各有独立时间轴（上半身攻击与下半身走路本来就不该同步）。
+2. **`additive` 的参考姿态固定取片段首帧**（`sample.reference`），因此叠加的是「相对首帧的增量」
+   而不是绝对姿态——呼吸、受击抖动这类动作正是「首帧为基准的小幅偏移」。
+   代价是不能指定别的参考姿势（见 11.1）。
+3. **遮罩是二值的**：`BoneMask::weight_for` 只返回 0 或 1，没有软过渡。
+   半边骨骼硬切在低模上看不出来；要做「肩部软化」得把遮罩做成浮点权重场，本期不做。
+4. **`exclude` 优先于 `include`**：`"arm,!arm/hand"` 表示「手臂参与、手不参与」，与直觉一致。
+   规则只写尾段即可（`"hand"` 命中 `RootNode/Arm/Hand`），与 `AnimClip::track_of` 的路径口径一致，
+   导入 FBX 时不必抄全路径。
+5. **空遮罩 = 整副骨架，不是「都不作用」**：`BoneMask::pass_all()` 等价于不设遮罩。
+   这是个刻意的选择——把空遮罩解释成「全不通过」会让忘传遮罩的层完全静默失效，比画错更难查。
+6. **上限**：`MAX_ANIM_LAYERS = 8`（单实例）、`MAX_LAYER_CLIPS = 8`（单层）。
+   满了 `add_anim_layer` 返回 `false` 而不是顶掉已有层——游戏逻辑里「加不上」必须是显式信号。
+7. **层不写回场景 JSON**：层是运行时状态，随实例生灭。热重载重放场景后实例重建、层清空，
+   由脚本 `on_start` 重新挂（与状态机写在脚本层是同一个取舍，见 8.10）。
+8. **无层时逐位等于老路径**：`inst.layers` 为空时整段跳过，交叉淡入的结果原封不动，
+   因此老场景 / 老脚本的画面不变。
+9. **遮罩串的解析不在 core**：core 只认 `BoneMask` 规则表；`"arm,!hand"` 这种串由
+   脚本层 `parse_bone_mask` 与宿主层 `bone_mask_of` 各自解析（两边口径必须一致，各有单测）。
+
+**已知边界**（写进 11.1 的「不做」清单）：
+
+- 无 morph target（表情 / 口型），层只作用于骨骼 TRS。
+- 无 IK / 无脚部对齐：走路滑不滑仍由片段与移动速度的匹配程度决定。
+- `additive` 的参考帧不可指定（固定首帧），做「相对某个关键姿势的增量」需要扩接口。
+- 层只能在末尾追加 / 按名删除，不能调整顺序；顺序即叠加顺序。
+- 层内片段不能各自错相位（共享 `time`），做「每步触发一次受击抖」得靠层权重与时间手动控。
 
 ---
 
@@ -1085,7 +1142,7 @@ WebGPU core 规范 `max_bind_groups = 4`（group 索引 0..3），第五组 `@gr
 物理层被切成**两层**，互不耦合：
 
 1. **契约层**：`PhysicsBackend` trait，让场景格式（`physics` 段）与脚本 API（`attach_body` 等）先能写。
-2. **实现层**：默认 `NullBackend`（空转）/ `BuiltinBackend`（自实现最简物理）/ 预留 `RapierBackend`（未编译进默认构建）。
+2. **实现层**：默认 `NullBackend`（空转）/ `BuiltinBackend`（自实现最简物理）/ `RapierBackend`（真实后端，`rapier` feature 才编译）。
 
 好处是「有没有物理」变成**运行时开关**，而不是编译期分叉：同一份场景与脚本，开物理会掉、关物理由脚本驱动。
 
@@ -1130,7 +1187,7 @@ pub trait PhysicsBackend {
 | --- | --- | --- |
 | `NullBackend` | 默认 | 只分配句柄并登记，`step` / `sync_to_scene` 空转。用于「只想在脚本里表达物理意图、暂不模拟」 |
 | `BuiltinBackend` | 可用 | 半隐式欧拉 + 无限地面平面碰撞 + 弹性 + 摩擦 + 休眠，纯自实现零依赖，约 400 行 |
-| `RapierBackend` | 预留 | `physics_set_backend("rapier")` 会返回 false 并打印「未编译进本构建」，不静默降级 |
+| `RapierBackend` | 可用（`--features rapier`） | Rapier3D 真实物理：物件互撞 / 堆叠 / 旋转动力学 / 碰撞事件 / CCD / 射线-重叠-扫掠查询，约 520 行。未用该 feature 构建时 `physics_set_backend("rapier")` 返回 false 并打印「未编译进本构建」，不静默降级 |
 
 `NullBackend` 的 `take_all_handles` 返回 `Some(列表)`，让 `Physics::clear_bodies` 能整体清空——热重载不留幽灵句柄。
 
@@ -1172,15 +1229,17 @@ pub struct Physics {
 这条规则让「场景是静态描述、脚本是行为」的分工成立：场景写 `"physics": {...}` 就该掉，
 没写就归脚本管。窗口标题实时显示 `物理 builtin / N 刚体` 或 `物理关`。
 
-### 6.6 接入外部后端（Rapier）的路径
+### 6.6 外部后端接入：Rapier（已落地）
 
-改动面固定在三处，其余零改动：
+这条路在阶段一（Rapier 后端）与阶段七（CCD）里走完了，改动面确实只有下面三处，其余零改动：
 
-1. 新建 `crates/r3e-physics/src/rapier_backend.rs` 实现 `PhysicsBackend`：`BodyDesc.shape` → `SharedShape`，
-   `BodyKind` → `RigidBodyType`，`step` 内 `pipeline.step(&gravity, ...)`，`sync_to_scene` 内把
-   `translation` / `rotation` 写回节点，`update_world_transforms` 由 `app` 统一调。
-2. `PhysicsKind::Rapier` 分支接上真实实例（`Physics::rebuild_backend` 里一行）。
-3. `Cargo.toml` 加 `rapier3d`（当前刻意零依赖）。
+1. `crates/r3e-physics/src/rapier_backend.rs`（约 520 行）实现 `PhysicsBackend`：`BodyDesc.shape` → `SharedShape`，
+   `ColliderShape::Capsule` / `Cylinder` → 对应 `ColliderBuilder`，`BodyKind` → `RigidBodyType`，
+   `step` 内 `pipeline.step(&gravity, ...)`，`sync_to_scene` 内把 `translation` / `rotation` 写回节点，
+   `update_world_transforms` 仍由 `app` 统一调。
+2. `PhysicsKind::Rapier` 分支接上真实实例（`Physics::rebuild_backend` 里一行），能力位由 `BackendCaps` 自报
+   （`EXPOSED` 放开到 `CONTACT_CCD`，只留 `joints` 一个禁区）。
+3. `Cargo.toml` 把 `rapier3d` 挂成**可选依赖**（`rapier = ["dep:rapier3d"]`），默认构建仍然零物理依赖。
 
 场景格式、脚本 API、`app` 层、`core::Scene` **均无需改动**。
 唯一语义差异：外部后端做物件间碰撞与旋转动力学，内置后端不做——属能力升级，不是接口破坏。
@@ -1359,6 +1418,26 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `has_ssao()` / `clear_ssao()` | 是否带遮蔽段 / 清空回中性（遮蔽图全 1） |
 | `ssao_enabled()` / `ssao_radius()` / `ssao_intensity()` / `ssao_samples()` / `ssao_bias()` | 回读（未开启时给 `SsaoSettings::default()`：false / 0.6 / 1.0 / 8 / 0.02） |
 
+**动画混合树（扩展十八 A）**
+
+写入 `AnimInstance.layers`（`Scene::add_anim_layer` 按层名覆盖，满 8 层返回 `false` 不顶人）。
+遮罩用逗号串表达：`"arm,hand"` 只作用于这两处骨骼，`"!root"` 表示除 root 外全部，
+空串或 `"*"` 表示整副骨架；层按挂载顺序叠加。
+
+| 函数 | 说明 |
+| --- | --- |
+| `add_anim_layer(实例, 层, 片段, 权重)` / `add_anim_layer_additive(...)` | 挂一层，前者 `override`、后者 `additive`；片段名按实例前缀解析 |
+| `remove_anim_layer(实例, 层)` / `clear_anim_layers(实例)` | 删一层 / 清空该实例全部层 |
+| `set_anim_layer_weight(实例, 层, w)` / `fade_anim_layer(实例, 层, w, 秒)` | 直接设权重 / 带 smoothstep 过渡地改权重 |
+| `set_anim_layer_mode(实例, 层, 模式)` | `override` / `additive`，大小写不敏感；不认识时打日志并返回 `false` |
+| `set_anim_layer_mask(实例, 层, 串)` / `anim_layer_mask(实例, 层)` | 设遮罩 / 回显（全通过为 `"*"`，否则按 `include,!exclude` 还原） |
+| `set_anim_layer_speed(实例, 层, 倍率)` | 层自己的播放倍率（与主片段的 `set_anim_speed` 互不影响） |
+| `add_anim_layer_clip(实例, 层, 片段, w)` / `set_anim_layer_clip(实例, 层, 片段)` | 层内加一路片段（走 / 跑混合）/ 整体换成单片段 |
+| `remove_anim_layer_clip(实例, 层, 片段)` | 层内移除一路片段（最后一路不可移除） |
+| `anim_layers(实例)` / `anim_layer_count(实例)` | 层名列表（挂载顺序）/ 层数 |
+| `anim_layer_info(实例, 层)` | 整层快照（模式 / 权重 / 有效权重 / 遮罩 / 片段与归一权重 / 时间 / 速度 / 循环 / 播放中） |
+| `anim_layer_weight(实例, 层)` / `anim_layer_clips(实例, 层)` | 有效权重（含过渡）/ 层内片段名列表 |
+
 **局部光源（扩展十五）**
 
 写入 `Scene::lights`（`upsert_local` 按 key 覆盖，满 16 盏返回 `false` 不顶人），渲染层下一帧自动打包上传。
@@ -1504,7 +1583,7 @@ key 已存在时只刷新几何/颜色，**保留** `layer` / `visible` / `uv` /
 | `body_impulse(name, x, y, z)` | 施加瞬时冲量，会唤醒休眠体 |
 | `body_count()` | 当前刚体数（物理关闭时恒为 0） |
 | `physics_enabled()` / `physics_set_enabled(on)` | 读 / 写总开关，写入返回操作后的状态 |
-| `physics_backend()` / `physics_set_backend(name)` | 读 / 换后端（`null` / `builtin` / 预留 `rapier`），换后端会清空已有刚体 |
+| `physics_backend()` / `physics_set_backend(name)` | 读 / 换后端（`null` / `builtin` / `rapier`；`rapier` 需 `--features rapier` 构建，否则返回 false），换后端会清空已有刚体 |
 | `physics_gravity()` / `physics_set_gravity(x,y,z)` | 读 / 写重力 |
 | `physics_ground()` / `physics_set_ground(y)` | 读 / 写地面平面高度 |
 
@@ -1964,6 +2043,47 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 把场景里 `ssao.enabled` 改成 `false` 后 `pass 0 / GPU 启用 false`，画面回到无遮蔽状态、draw call 不变——
 证明整段跳过而不是「画一张全 1 的图」。
 
+### 8.15 混合树的驱动与探针（扩展十八 A）
+
+与 8.14 的遮蔽相反，混合树是**有状态**的：每层有自己的 `time` 与 `fade`，必须逐帧推进。
+推进点就是 `Scene::update_animations` 的第一遍之后——主片段推进完，紧接着按挂载顺序把层叠上去，
+**没有额外的驱动入口**，因此 app 层不需要为它新增帧内探针，也不需要改渲染侧任何代码。
+app 侧只补两条 RPC，把「看」和「调」两件事交给编辑器：
+
+| 环节 | 做法 |
+| --- | --- |
+| 列层 | `scene.animlayers` —— 给 `instance` 就只列该实例的层，不给就列出全部实例（`instances` 计数）；`limit` 截断、`count` 给总数、`limit` 字段回显层上限 `MAX_ANIM_LAYERS = 8` |
+| 调参 | `scene.animlayerset` —— `AnimLayerPatch`：`clip / weight / mode / mask / speed` 任一子集 |
+| 回显 | `anim_layer_value`：`mode / weight / effective_weight / fading / mask / mask_include / mask_exclude / clips[{name, base_weight, weight}] / time / duration / speed / looping / playing` |
+| 脚本绑定 | `r3e-script` 18 个 `*_anim_layer*` 函数（见 7.4），层由脚本建，RPC 只调参 |
+| 测试 | workspace 48 个测试套件 / 628 passed：core 18 项（混合算子与层求值 11 项：override 端点、additive 增量、additive 旋转绕行、层内加权采样、缺轨道跳过、淡入曲线、时间推进与顺序、片段管理边界、模式解析；场景层管理 7 项：override 只动遮罩内骨骼、additive 叠加增量、淡入缩放贡献、管理 API 往返、容量上限、切主片段后层存活、清层回主姿态），宿主补丁 6 项（列层 / 补丁落地 / 未知模式无副作用 / 缺实例或层报错 / limit 截断但 count 报总数 / 遮罩归一），编辑器 RPC 11 项（`tests/anim_layer_rpc.rs`） |
+
+**为什么 RPC 只能调参、不能建层**：层必须绑定片段，凭空建一层等于建一个播不了任何动作的空层，
+只会让「层存在但画面不动」这类故障更难查。建层走脚本的 `add_anim_layer`（片段名一次给定），
+RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 不存在则新建）刻意不同。
+
+**为什么补丁先把字符串解析完再落地**：`mode` / `clip` 先解析、`mask` 先归一，
+任何一项写错都直接报错返回，不留下「模式改成功了但片段没换成」的半残状态。
+这与扩展十五 `light_set` 的「先解析 kind 再改」是同一条纪律。
+
+**为什么要同时回 `weight` 与 `effective_weight`**：前者是目标权重，后者含淡入淡出的当前值。
+编辑器画「目标 vs 实际」两条线必须两个都要——只有一个数时，
+`fade_anim_layer` 没生效（权重卡在原地）这种故障完全看不出来。
+
+**遮罩串的归一规则**（脚本 `parse_bone_mask` 与宿主 `bone_mask_of` 必须逐条一致，两边各有单测）：
+
+| 输入 | 归一结果 |
+| --- | --- |
+| `""` / `"*"` / 只有逗号 | `pass_all()`（整副骨架） |
+| `"cube, sphere"` | `include = [cube, sphere]` |
+| `"!root"` | `exclude = [root]`（其余全通过） |
+| `"cube, !root"` | 两者并存，`exclude` 优先 |
+| `"!"` / `"! "` | 该条规则丢弃（不造空排除规则），只剩空规则时归为 `pass_all()` |
+
+**已知边界**：没有帧内 GPU 探针（混合树是纯 CPU 姿态契约，出错只会表现成画面僵硬或骨骼跳动）；
+`effective_weight` 的过渡只有 smoothstep 一种曲线，没有自定义曲线；
+层不能调整顺序、也不能在中间插入，顺序即叠加顺序。
+
 ---
 
 ## 9. 端到端数据流
@@ -2042,8 +2162,8 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
 | 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
-| 物理 | 默认关闭；开启后仅刚体 vs 地面平面 | 物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚 |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；**无上半身 mask/分层混合**、无 additive、无 morph target |
+| 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**仍无 morph target / 表情、无混合空间（blend space）、无 IK、无根运动提取**
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 音频 | 非空间化：wav / ogg / mp3 一次性解码播放、多路混音 + 总音量、暂停/循环 | **无 3D 声源**（距离衰减、多普勒、HRTF 都不做）；无流式/边下载边播；无 DSP 效果链（混响、EQ）；单文件整体解码进内存，长音乐占内存 |
@@ -2081,7 +2201,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 
 | 阶段 | 内容 | 改动位置 | 破坏性 |
 | --- | --- | --- | --- |
-| 一 | Rapier 物理后端（替换内置实现） | 新增 `r3e-physics/src/rapier_backend.rs` + 接上 `PhysicsKind::Rapier` 分支 | 无（契约与开关已就位） |
+| **一（已完成：Rapier 后端）** | **Rapier 物理后端**：`rapier_backend.rs` 实现 `PhysicsBackend`（形状/刚体类型映射、`pipeline.step`、`sync_to_scene` 回写、碰撞事件、射线/重叠/扫掠查询），`rapier3d` 挂可选依赖（`rapier = ["dep:rapier3d"]`），默认构建仍零物理依赖 | 新增 `r3e-physics/src/rapier_backend.rs` + 接上 `PhysicsKind::Rapier` 分支 + `Cargo.toml` 可选依赖 | 无（契约与开关早已就位；不开 feature 时行为与内置后端完全一致） |
 | 二 | 纹理与 UV | `Vertex` 加 `uv`、`MeshData` 生成 UV、新增材质表与 bind group | 场景 JSON 向后兼容（新增可选字段） |
 | **三（已完成：A、C）** | **A 视锥剔除 + AABB**：`MeshProvider::aabb()` 打通到 `MeshRef::Asset`，`prepare_instances` 6 平面测试，物理碰撞体改用真实 AABB；**C 动画交叉淡入 + 脚本状态机**：`AnimInstance.fade` 双片段加权混合、`set_anim_clip_fade` 脚本 API、`scripts/anim_state.rhai` 三态示例 | `core/mesh.rs` 加 `aabb()` 与 `MeshProvider::aabb`；`render` 增 `MeshCache::bounds` + `Frustum`；`r3e-physics` 按 AABB 推导半长；`core/anim.rs` 加 `AnimFade`/`blend_transform`/`NO_TRACK`，`scene.rs` 混合写回 | 无（场景 JSON 不变，`set_anim_clip` 仍为硬切） |
 | **四（已完成：D）** | **D 方向光阴影贴图**：`ShadowSettings` 进 `Light`、场景 `light.shadow` 段、`ShadowPassUniform` 独立绑定、`vs_shadow` 深度 pass、3×3 PCF + 法线偏移、4 个脚本 API | `core/light.rs` 加 `ShadowSettings` / `shadow_view_projection`；`render` 加深度纹理 + 第二 pass + 独立 pipeline layout；`script/api.rs` 注册 `set_shadow*` / `shadow_enabled`；`assets/scene_shadow.json` + `scripts/shadow_demo.rhai` | 着色器与 uniform 布局变化（场景 JSON 向后兼容：`light.shadow` 缺省即默认开启阴影，可用 `enabled:false` 关闭） |
@@ -2101,7 +2221,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 | **十六（已完成：级联阴影 CSM）** | **方向光级联阴影**：`r3e-core::light` 增 `CascadeSettings`（count / lambda / blend / max_distance）与纯函数 `cascade_splits`（均匀↔对数插值切分）、`frustum_slice_corners`（该级 8 角点）、`fit_cascade`（光源正交相机拟合 + 正方形外接 + 纹素量化），上限 `MAX_CASCADES = 4`；`r3e-render` 把阴影图换成 `texture_depth_2d_array`（层 = 级数）、`ShadowUniform` 改为 `array<mat4x4,4>` + `split_ndc`、深度 pass 逐级渲染、`shadow_pass_uniforms` 每级一份；`shader.wgsl` 的 `shadow_factor` 按相机深度选级 + 级间按 `blend` 混合；`RenderStats.shadow_cascades` 记录生效级数；脚本 4 个 API（`set_shadow_cascades` / `shadow_cascades` / `set_shadow_blend` / `set_shadow_distance`）；编辑器 `scene.shadow` RPC 的 `ShadowPatch`；场景 `light.shadow` 段新增 `cascades` / `blend` / `cascadeDistance` | `core/light.rs` 加级联契约与三个纯函数、`core/scene.rs` 加三个可选字段与往返；`render/renderer.rs` 数组化阴影目标与逐级 pass、`shader.wgsl` 换级联采样；`script/api.rs` 注册 4 API；`r3e-editor` 加 `ShadowPatch` 与 `scene.shadow` 分支；`app/editor.rs` 实现 RPC；新增 `tests/cascade_scene.rs` / `shadow_cascades_shader.rs` / `shadow_rpc.rs` | 无（场景 JSON 向后兼容：`cascades` 缺省 1 = 单级，老场景画面与统计口径不变；绑定槽位未新增，仍为 4 组） |
 
 | **十七（已完成：屏幕空间遮蔽 SSAO）** | **深度反推的半球核遮蔽**：`r3e-core::ssao` 纯函数契约（`hemisphere_kernel` 确定性核 + `reconstruct_view_pos` 深度重建 + `normal_from_neighbors` 邻域法线 + `is_occluded` / `ao_from_occlusion`）+ `SsaoSettings`（enabled / radius / bias / intensity / samples，`sanitized()` 夹 0.01..8 / 0..0.5 / 0..4 / 4..16）挂进 `PostFxSettings.ssao`；`r3e-render::ssao` 两个全屏 pass（深度→`R8Unorm` 遮蔽图、4×4 盒式散焦，`AO_PASSES_PER_FRAME = 2`）+ `ssao.wgsl`，composite 在曝光前 `color *= ao`；`RenderStats.ssao`；12 个脚本 API（写 6：`set_ssao` / `set_ssao_enabled` / `set_ssao_radius` / `set_ssao_intensity` / `set_ssao_samples` / `clear_ssao`；读 6：`has_ssao` / `ssao_enabled` / `ssao_radius` / `ssao_bias` / `ssao_intensity` / `ssao_samples`，其中 `bias` **只读**——写入走场景 `postfx.ssao.bias` 与 RPC `scene.set_ssao`）；编辑器 `scene.set_ssao`（`SsaoPatch`）；演示 `assets/scene_ssao.json` + `scripts/ssao_demo.rhai` | `core/ssao.rs` 新增、`postfx.rs` 挂段、`lib.rs` 导出；`render/ssao.rs` + `ssao.wgsl` 新增，`renderer.rs` 主通道深度加 `TEXTURE_BINDING` 用法并在 composite 前插入两个 pass；`script/api.rs` 注册；`r3e-editor` 加 `SsaoPatch`；`app.rs` 遮蔽探针；`tests/ssao_contract.rs` / `ssao_scene.rs` / `ssao_shader.rs` / `ssao_api.rs` / `ssao_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx.ssao` 缺省 `enabled = false`，整段跳过、画面与扩展十三逐像素一致）。**边界**：AO 乘整幅画面（非只乘环境项）、无非双边滤波、无多尺度、屏幕外信息缺失处保守取 1 |
-| **十八（候选，按收益排序）** | **A 动画混合树**（分层 mask / additive，补 11.1 的动画边界）；**B 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**C 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行；C、D 需动 render 的多目标与 pass 预算 | 视具体项 |
+| **十八（A 已完成；B/C/D 候选）** | **A 动画混合树**（已落地：分层 mask / additive，补 11.1 的动画边界，见 §4.11 / §7.4 / §8.15）；**B 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**C 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行；C、D 需动 render 的多目标与 pass 预算 | 视具体项 |
 
 两条与顺序相关的说明：
 
