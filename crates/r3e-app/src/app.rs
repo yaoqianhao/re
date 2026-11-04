@@ -18,8 +18,8 @@ use r3e_core::input::{
 };
 use r3e_core::mesh::TextureImage;
 use r3e_core::{
-    AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SkinInstance,
-    UiInteraction,
+    AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SceneArchive,
+    SceneCommand, SceneStack, SkinInstance, StackEntry, UiInteraction,
 };
 use r3e_editor::RpcServer;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
@@ -221,6 +221,12 @@ pub struct EngineApp {
     /// 主循环每帧推进它，脚本侧 `ui_events()` / `ui_hover()` / `ui_hit()` 读的就是这份；
     /// 相机拖动也靠它判断「这一下点的是 UI 还是场景」。
     ui_interaction: Rc<RefCell<UiInteraction>>,
+    /// 场景栈（扩展十八 B）：与脚本宿主共享同一份 `Rc`。
+    ///
+    /// 归属很明确——**宿主独占写**：压栈 / 回退 / 读档都由 [`EngineApp::apply_scene_command`]
+    /// 在帧首做，脚本与 RPC 只能往命令槽里放一条意图。栈里每层存"离开时的样子"
+    /// （源文本 + 运行时快照），所以切走再切回来不必重跑整局。
+    scene_stack: Rc<RefCell<SceneStack>>,
 
     last_frame: Instant,
     last_watch: Instant,
@@ -346,7 +352,21 @@ impl EngineApp {
 
         // UI 指针交互与脚本宿主共用同一份状态：app 推进、脚本读。
         let ui_interaction = scripts.ui_interaction();
-        scripts.set_base_scene(scene_src);
+        scripts.set_base_scene(scene_src.clone());
+
+        // 场景栈与脚本宿主共用同一份状态：脚本只读层名，写只发生在宿主侧。
+        let scene_stack = scripts.scene_stack_handle();
+        {
+            // 起始场景就是第 0 层：这样 `scene_back()` 在"还没切过"时有确定的语义
+            // （没有更早的层 → 拒绝），而不是"栈为空"这种要和 0 层区分开的特例。
+            let mut stack = scene_stack.borrow_mut();
+            let entry = StackEntry::capture(
+                scene.borrow().name.clone(),
+                scene_path.display().to_string(),
+                &scene.borrow(),
+            );
+            stack.push(entry);
+        }
 
         // 资产节点：按资产内节点路径 spawn，重名自动加 `#N` 后缀
         let asset_nodes: Rc<RefCell<Vec<NodeId>>> = Rc::new(RefCell::new(Vec::new()));
@@ -446,6 +466,7 @@ impl EngineApp {
             gilrs,
             cursor_valid: false,
             ui_interaction,
+            scene_stack,
             last_frame: now,
             last_watch: now,
             time: 0.0,
@@ -529,6 +550,9 @@ impl EngineApp {
     fn step_and_render(&mut self) {
         self.pump_console();
         self.drain_editor_jobs();
+        // 编辑器 / 脚本排队的场景命令在这里落地：本帧脚本 tick 之前，
+        // 保证 `on_update` 看到的是切完之后的世界，而不是切一半的。
+        self.apply_pending_scene_command();
         self.poll_gamepad();
 
         let now = Instant::now();
@@ -1337,6 +1361,186 @@ impl EngineApp {
         Ok(std::fs::canonicalize(&target).unwrap_or(target))
     }
 
+    /// 帧首执行本帧排队的场景命令（每帧至多一条）。
+    ///
+    /// 命令一律在这里落地，而不是在脚本 / RPC 触发的那一刻落地：脚本可能在
+    /// `on_start` 中途申请切场景，边重建边被自己打断会把世界撕成两半。
+    fn apply_pending_scene_command(&mut self) {
+        let Some(cmd) = self.scripts.take_scene_command() else {
+            return;
+        };
+        match self.apply_scene_command(&cmd) {
+            Ok(note) => log::info!("场景命令 `{}` 完成：{note}", cmd.label()),
+            Err(e) => log::error!("场景命令 `{}` 失败：{e}", cmd.label()),
+        }
+    }
+
+    /// 执行一条场景命令；返回给日志看的简述。
+    fn apply_scene_command(&mut self, cmd: &SceneCommand) -> Result<String, String> {
+        match cmd {
+            SceneCommand::Switch { path } => {
+                let target = self.resolve_scene_path(path);
+                let src = std::fs::read_to_string(&target)
+                    .map_err(|e| format!("读取场景 `{}` 失败: {e}", target.display()))?;
+                self.push_current_layer();
+                let restored = self.enter_scene_source(&src, Some(target.clone()))?;
+                self.push_live_layer(&target);
+                Ok(format!(
+                    "已切到 `{}`（{} 个物件，恢复动画实例 {restored} 个）",
+                    target.display(),
+                    self.scene.borrow().len()
+                ))
+            }
+            SceneCommand::Back => {
+                let entry = {
+                    let mut stack = self.scene_stack.borrow_mut();
+                    stack.capture_current(&self.scene.borrow());
+                    stack.back().cloned()
+                };
+                let Some(entry) = entry else {
+                    return Err("已在最早一层，无法回退".to_string());
+                };
+                self.enter_stack_entry(&entry)?;
+                Ok(format!("已回到 `{}`", entry.name))
+            }
+            SceneCommand::SaveArchive { path } => {
+                let written = self.save_scene_archive(path.as_deref())?;
+                Ok(format!("存档已写入 `{}`", written.display()))
+            }
+            SceneCommand::LoadArchive { path } => {
+                let target = self.resolve_scene_path(path);
+                let src = std::fs::read_to_string(&target)
+                    .map_err(|e| format!("读取存档 `{}` 失败: {e}", target.display()))?;
+                self.push_current_layer();
+                // 读档不接管 `scene_path`：热重载仍盯着原来那个场景文件，
+                // 存档只是一次性输入，不是新的"当前场景来源"。
+                let restored = self.enter_scene_source(&src, None)?;
+                Ok(format!(
+                    "已读档 `{}`（恢复动画实例 {restored} 个）",
+                    target.display()
+                ))
+            }
+        }
+    }
+
+    /// 相对路径按进程工作目录解析；非绝对路径且不存在时，退回场景文件所在目录。
+    fn resolve_scene_path(&self, path: &str) -> PathBuf {
+        let candidate = PathBuf::from(path);
+        if candidate.is_absolute() || candidate.exists() {
+            return candidate;
+        }
+        let beside_scene = self
+            .scene_path
+            .parent()
+            .map(|dir| dir.join(path))
+            .unwrap_or_else(|| candidate.clone());
+        if beside_scene.exists() {
+            beside_scene
+        } else {
+            candidate
+        }
+    }
+
+    /// 把内存里的场景现状写回当前层（离开这一层之前必须做一次）。
+    fn push_current_layer(&mut self) {
+        let scene = self.scene.borrow();
+        self.scene_stack.borrow_mut().capture_current(&scene);
+    }
+
+    /// 以内存现状压入一层新层（切完场景后调用，让新层成为当前层）。
+    fn push_live_layer(&mut self, path: &Path) {
+        let entry = {
+            let scene = self.scene.borrow();
+            let base = if scene.name.trim().is_empty() {
+                path.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "scene".to_string())
+            } else {
+                scene.name.clone()
+            };
+            let name = self.scene_stack.borrow().unique_name(&base);
+            StackEntry::capture(name, path.display().to_string(), &scene)
+        };
+        let idx = self.scene_stack.borrow_mut().push(entry);
+        log::info!(
+            "场景栈：压入第 {idx} 层（共 {} 层）",
+            self.scene_stack.borrow().depth()
+        );
+    }
+
+    /// 装载一份场景源文本（裸场景或存档都可），返回恢复的动画实例数。
+    ///
+    /// 顺序是硬要求：**先换资产库**（重建回调要按新库补挂节点）→ 再就地换场景
+    /// （同一个 `Rc`，渲染层与脚本手里那份不会变成野指针）→ 最后叠运行时快照
+    /// （时间 / 帧号 / 通道开关 / 动画播放进度）。
+    fn enter_scene_source(&mut self, src: &str, follow: Option<PathBuf>) -> Result<usize, String> {
+        let archive = SceneArchive::from_json_str(src)?;
+        archive.validate()?;
+        let (scene_decl, _) = archive.build_scene()?;
+        let json = scene_decl
+            .to_json_pretty()
+            .map_err(|e| format!("场景声明序列化失败: {e}"))?;
+
+        self.refresh_assets_from_json(&json);
+        self.scripts.rebuild_scene(&json)?;
+
+        let restored = match &archive.runtime {
+            Some(runtime) if runtime.is_compatible() => runtime.apply(&mut self.scene.borrow_mut()),
+            _ => 0,
+        };
+
+        // 场景文件跟随：`watch_files` 要去盯新文件，否则在切过去的场景上改文件不会热重载。
+        if let Some(path) = follow {
+            self.scene_mtime = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok());
+            self.scene_path = path;
+        }
+        Ok(restored)
+    }
+
+    /// 从栈层恢复：层里存的是源文本 + 运行时快照，不重跑整局。
+    fn enter_stack_entry(&mut self, entry: &StackEntry) -> Result<(), String> {
+        let mut scene = Scene::from_json_str(&entry.source)
+            .map_err(|e| format!("层 `{}` 的场景解析失败: {e}", entry.name))?;
+        if entry.runtime.is_compatible() {
+            entry.runtime.apply(&mut scene);
+        }
+        let json = scene
+            .to_json_pretty()
+            .map_err(|e| format!("层 `{}` 场景序列化失败: {e}", entry.name))?;
+
+        self.refresh_assets_from_json(&json);
+        self.scripts.rebuild_scene(&json)?;
+        if !entry.path.is_empty() {
+            let path = PathBuf::from(&entry.path);
+            if path.exists() {
+                self.scene_mtime = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                self.scene_path = path;
+            }
+        }
+        Ok(())
+    }
+
+    /// 存一份带运行时快照的存档（`None` = 与场景同目录、同名 `.archive.json`）。
+    pub fn save_scene_archive(&mut self, path: Option<&str>) -> Result<PathBuf, String> {
+        let target = match path {
+            Some(p) => PathBuf::from(p),
+            None => default_archive_path(&self.scene_path),
+        };
+        if let Some(dir) = target.parent() {
+            if !dir.as_os_str().is_empty() && !dir.exists() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| format!("创建存档目录 `{}` 失败: {e}", dir.display()))?;
+            }
+        }
+        let archive = SceneArchive::from_scene(&self.scene.borrow());
+        archive.save_to_path(&target)?;
+        Ok(std::fs::canonicalize(&target).unwrap_or(target))
+    }
+
     fn watch_files(&mut self) {
         if self.last_watch.elapsed().as_millis() < 400 {
             return;
@@ -1859,6 +2063,14 @@ fn load_assets(specs: &[AssetSpec]) -> AssetLibrary {
         }
     }
     library
+}
+
+/// 存档默认落点：与场景文件同目录、同名 + `.archive.json`。
+///
+/// 单独成一个函数是为了让 RPC 侧（`scene.archive.save` 省略 path 时）与主循环
+/// 走同一条路径规则——两处各写一份是最容易长歪的地方。
+pub fn default_archive_path(scene_path: &Path) -> PathBuf {
+    scene_path.with_extension("archive.json")
 }
 
 /// 无窗口的「加载 → 规范化保存」：把场景读进内存再按引擎写法写回 `out`。

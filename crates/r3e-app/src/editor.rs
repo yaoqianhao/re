@@ -17,15 +17,16 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
+use r3e_core::scene_stack::{SceneArchive, SceneCommand, ARCHIVE_FORMAT, ARCHIVE_VERSION};
 use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
 use r3e_core::{AnimLayer, BoneMask, LayerMode, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
-use r3e_core::{ShadowSettings, MAX_CASCADES};
+use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_editor::{
     AnimLayerPatch, EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief,
     PhysicsInfo, PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch,
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -698,6 +699,128 @@ impl EngineApi for LocalEngineApi<'_> {
         }))
     }
 
+    /// 列出场景栈（扩展十八 B）。
+    ///
+    /// 每层只给**声明态**（层号 / 名字 / 来源路径 / 源文本字节数）：面板刷新每帧都在发，
+    /// 真把十几层的场景 JSON 全塞进一个响应，网络和 Rust 侧的序列化都会变成瓶颈。
+    fn scene_stack(&mut self, limit: Option<usize>) -> Result<Value, RpcFailure> {
+        let handle = self.scripts.scene_stack_handle();
+        let stack = handle.borrow();
+        let total = stack.depth();
+        let take = limit.unwrap_or(total).min(total);
+        let current = stack.current_index();
+        let entries: Vec<Value> = stack
+            .entries()
+            .iter()
+            .enumerate()
+            .take(take)
+            .map(|(index, entry)| {
+                json!({
+                    "index": index,
+                    "name": entry.name,
+                    "path": entry.path,
+                    "source_bytes": entry.source.len(),
+                    "frame": entry.runtime.frame,
+                    "time": entry.runtime.time,
+                    "current": current == Some(index),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "count": total,
+            "current": current,
+            "max": MAX_SCENE_STACK,
+            "entries": entries,
+        }))
+    }
+
+    /// 请求切到某个场景文件：只做「路径存在性校验 + 排队」，真正换世界由宿主帧首执行。
+    fn scene_switch(&mut self, path: &str) -> Result<Value, RpcFailure> {
+        let target = resolve_request_path(self.scene_label.as_str(), path);
+        if !target.is_file() {
+            return Err(RpcFailure::invalid_params(format!(
+                "场景文件不存在：{}",
+                target.display()
+            )));
+        }
+        queue_scene_command(
+            self.scripts,
+            SceneCommand::switch(target.display().to_string()),
+        )
+    }
+
+    /// 请求回到栈里的上一层（不删层）。
+    fn scene_back(&mut self) -> Result<Value, RpcFailure> {
+        // 先看一眼栈：已经在最早一层时立刻报错，比"排队成功但下一帧静默失败"好得多
+        let blocked = {
+            let handle = self.scripts.scene_stack_handle();
+            let stack = handle.borrow();
+            match stack.current_index() {
+                Some(0) | None => true,
+                Some(_) => false,
+            }
+        };
+        if blocked {
+            return Err(RpcFailure::engine(
+                "已在最早一层，无法回退（可用 `scene.stack` 查看栈）",
+            ));
+        }
+        queue_scene_command(self.scripts, SceneCommand::back())
+    }
+
+    /// 存一份带运行时快照的存档。
+    ///
+    /// 存档只写盘、不动世界，所以**当场写完**再返回真实路径：调用方拿到的是
+    /// 「文件已存在」这一确定结果，而不是一句"排队成功"。
+    fn scene_archive_save(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
+        let target = match path.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(p) => std::path::PathBuf::from(p),
+            None => {
+                if self.scene_label.trim().is_empty() {
+                    return Err(RpcFailure::invalid_params(
+                        "当前没有场景文件路径，请显式给出 `path`",
+                    ));
+                }
+                crate::app::default_archive_path(std::path::Path::new(&self.scene_label))
+            }
+        };
+        if let Some(dir) = target.parent() {
+            if !dir.as_os_str().is_empty() && !dir.exists() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| RpcFailure::engine(format!("创建存档目录失败: {e}")))?;
+            }
+        }
+        let archive = SceneArchive::from_scene(&self.scene.borrow());
+        archive.save_to_path(&target).map_err(RpcFailure::engine)?;
+        let abs =
+            std::fs::canonicalize(&target).unwrap_or_else(|_| std::path::PathBuf::from(&target));
+        let bytes = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
+        Ok(json!({
+            "path": plain_abs_path(&abs),
+            "format": ARCHIVE_FORMAT,
+            "version": ARCHIVE_VERSION,
+            "bytes": bytes,
+            "objects": archive.scene.objects.len(),
+            "anims": archive.runtime.as_ref().map(|r| r.anims.len()).unwrap_or(0),
+            "queued": false,
+        }))
+    }
+
+    /// 请求读档：与 `scene_switch` 同理，只校验 + 排队。
+    fn scene_archive_load(&mut self, path: &str) -> Result<Value, RpcFailure> {
+        let target = resolve_request_path(self.scene_label.as_str(), path);
+        if !target.is_file() {
+            return Err(RpcFailure::invalid_params(format!(
+                "存档文件不存在：{}",
+                target.display()
+            )));
+        }
+        queue_scene_command(
+            self.scripts,
+            SceneCommand::load_archive(target.display().to_string()),
+        )
+    }
+
     fn script_reload(&mut self) -> Result<Value, RpcFailure> {
         let path = self
             .scripts
@@ -841,6 +964,47 @@ fn plain_abs_path(path: &std::path::Path) -> String {
         rest.to_string()
     } else {
         text
+    }
+}
+
+/// 把一条场景命令塞进脚本宿主的命令槽（单槽：一帧一条）。
+///
+/// 槽被占时如实回 `server busy`，而不是覆盖掉别人那条——脚本刚在 `on_start` 里
+/// 申请的切场景如果被编辑器面板冲掉，表现就是"点了没反应"，比报错更难查。
+fn queue_scene_command(scripts: &ScriptHost, cmd: SceneCommand) -> Result<Value, RpcFailure> {
+    let label = cmd.label();
+    if !scripts.request_scene_command(cmd) {
+        return Err(RpcFailure::new(
+            SERVER_BUSY,
+            format!("场景命令槽已被占用，`{label}` 未排队，请下一帧重试"),
+        ));
+    }
+    let handle = scripts.scene_stack_handle();
+    let depth = handle.borrow().depth();
+    Ok(json!({
+        "queued": true,
+        "command": label,
+        "stack": depth,
+    }))
+}
+
+/// 解析请求里的路径：绝对路径照用；相对路径先按工作目录，再按"当前场景文件所在目录"。
+///
+/// 后一条是给编辑器用的：面板里填 `lv2.json` 时，用户心里那个"当前目录"是场景目录，
+/// 不是进程启动目录。两条都落空时返回原路径（由调用方按"不存在"报错）。
+fn resolve_request_path(scene_label: &str, path: &str) -> std::path::PathBuf {
+    let raw = std::path::PathBuf::from(path);
+    if raw.is_absolute() || raw.exists() {
+        return raw;
+    }
+    let beside_scene = std::path::Path::new(scene_label)
+        .parent()
+        .map(|dir| dir.join(&raw))
+        .unwrap_or_else(|| raw.clone());
+    if beside_scene.exists() {
+        beside_scene
+    } else {
+        raw
     }
 }
 
@@ -2067,5 +2231,99 @@ mod tests {
 
         // 只有 `!` 的规则没有名字，忽略而不是造一条空规则。
         assert!(bone_mask_of("!").is_pass_all());
+    }
+}
+
+#[cfg(test)]
+mod scene_route_tests {
+    //! 场景切换 / 存档这条链路上**不需要窗口**的那半段：路径解析规则与
+    //! 「存档写盘 → 读回」的往返。真正换世界的部分在 `EngineApp` 里，需要
+    //! 图形设备，交给 `cargo run` 的手动回归与 r3e-core 的纯函数单测覆盖。
+
+    use super::resolve_request_path;
+    use crate::app::default_archive_path;
+    use r3e_core::scene_stack::SceneArchive;
+    use r3e_core::Scene;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("r3e-scene-route-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    #[test]
+    fn default_archive_path_appends_archive_suffix() {
+        // `with_extension` 是整体替换后缀，所以 `lv1.json` → `lv1.archive.json`，
+        // 而不是 `lv1.json.archive.json`——这条是面板上"另存存档"看到的默认名。
+        assert_eq!(
+            default_archive_path(std::path::Path::new("D:/a/lv1.json")),
+            std::path::PathBuf::from("D:/a/lv1.archive.json")
+        );
+        // 没有后缀的场景文件也要产出可读的名字，不能变成 `lv1.archive`
+        assert_eq!(
+            default_archive_path(std::path::Path::new("D:/a/lv1")),
+            std::path::PathBuf::from("D:/a/lv1.archive.json")
+        );
+    }
+
+    #[test]
+    fn resolve_request_path_keeps_absolute_and_existing() {
+        let dir = temp_dir("abs");
+        let file = dir.join("lv2.json");
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(
+            resolve_request_path("D:/nowhere/lv1.json", file.to_str().unwrap()),
+            file
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_request_path_falls_back_to_scene_directory() {
+        let dir = temp_dir("rel");
+        let scene = dir.join("lv1.json");
+        std::fs::write(&scene, "{}").unwrap();
+        let target = dir.join("lv2.json");
+        std::fs::write(&target, "{}").unwrap();
+
+        // 面板里填的是相对名：用户心里的"当前目录"是场景所在目录
+        assert_eq!(
+            resolve_request_path(scene.to_str().unwrap(), "lv2.json"),
+            target
+        );
+        // 两边都不存在时原样返回，让调用方按"文件不存在"报错，而不是瞎猜
+        assert_eq!(
+            resolve_request_path(scene.to_str().unwrap(), "missing.json"),
+            std::path::PathBuf::from("missing.json")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_written_to_disk_reads_back_with_runtime_state() {
+        let dir = temp_dir("roundtrip");
+        let mut scene =
+            Scene::from_json_str(r#"{"name":"lv1","objects":[{"name":"box","mesh":"cube"}]}"#)
+                .expect("场景解析");
+        scene.time = 12.5;
+        scene.frame = 750;
+
+        let target = dir.join("lv1.archive.json");
+        let archive = SceneArchive::from_scene(&scene);
+        archive.save_to_path(&target).expect("存档写盘");
+
+        let back = SceneArchive::load_path(&target).expect("存档读回");
+        back.validate().expect("存档自校验");
+        let (restored_scene, restored_anims) = back.build_scene().expect("重建场景");
+        assert_eq!(restored_scene.len(), 1);
+        assert_eq!(restored_scene.name, "lv1");
+        // 声明态走 `scene` 段，运行时态走 `runtime` 段：时间 / 帧号这两样
+        // `to_scene_file` 刻意不写的字段，存档必须原样带回来。
+        assert!((restored_scene.time - 12.5).abs() < 1e-6);
+        assert_eq!(restored_scene.frame, 750);
+        // 场景里没有动画实例，恢复计数为 0 才是对的
+        assert_eq!(restored_anims, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
