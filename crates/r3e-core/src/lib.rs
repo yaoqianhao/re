@@ -18,6 +18,7 @@ pub mod node;
 pub mod postfx;
 pub mod procedural;
 pub mod scene;
+pub mod scene_stack;
 pub mod skin;
 pub mod ssao;
 pub mod text;
@@ -69,6 +70,10 @@ pub use postfx::{
 pub use procedural::ProceduralProvider;
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
+};
+pub use scene_stack::{
+    AnimRuntime, RuntimeSnapshot, SceneArchive, SceneStack, StackEntry, ARCHIVE_FORMAT,
+    ARCHIVE_VERSION, MAX_SCENE_STACK, SNAPSHOT_VERSION,
 };
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,

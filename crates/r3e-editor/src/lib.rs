@@ -596,6 +596,42 @@ pub trait EngineApi {
         Err(RpcFailure::unsupported("scene.anim_layer_set"))
     }
 
+    /// 列出场景栈（扩展十八 B）：`{ count, current, max, entries: [...] }`。
+    ///
+    /// 每层给出**声明态**（层号 / 名字 / 来源路径 / 物件数），不含场景内容本身——
+    /// 内容按层名另取（`scene.switch`），这样面板刷新不必搬运几 MB 的场景 JSON。
+    fn scene_stack(&mut self, _limit: Option<usize>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.stack"))
+    }
+
+    /// 切到一个场景文件：宿主把当前场景压栈，再把目标场景装进**同一个**场景真源。
+    ///
+    /// 这条路必须由宿主走完（换资产库、重建动画实例、重跑脚本、刷新渲染层缓存），
+    /// 编辑器只发路径，不关心顺序。
+    fn scene_switch(&mut self, _path: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.switch"))
+    }
+
+    /// 回到栈里的上一层（不删层，可再用前进语义回来）。
+    fn scene_back(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.back"))
+    }
+
+    /// 存一份带运行时快照的存档（`path` 为 `None` 时由宿主决定默认路径）。
+    ///
+    /// 与 `scene_save` 的区别：`scene_save` 只写场景**声明**（重开即源状态），
+    /// 存档还要把"这一局跑到哪"（时间 / 帧号 / 通道开关 / 动画播放进度）一起装进去。
+    fn scene_archive_save(&mut self, _path: Option<&str>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.archive.save"))
+    }
+
+    /// 读档：按存档重建当前场景并恢复运行时状态。
+    ///
+    /// 读档前宿主应把当前场景压栈，因此「读档 → 反悔」等价于一次 `scene.back`。
+    fn scene_archive_load(&mut self, _path: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.archive.load"))
+    }
+
     /// 列出当前 2D UI 元素（扩展十四）。
     ///
     /// 返回的是**声明**（单位串、层级、可见性），不是换算后的像素矩形——像素要屏幕
@@ -1277,6 +1313,64 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 Err(f) => Response::fail(id, f),
             }
         }
+        // 场景栈与存档契约（扩展十八 B）：只做参数校验，压栈 / 换资产库 / 重跑脚本
+        // 的顺序全在宿主侧——传输层不认识 Scene，也不该知道"换场景要先换资产"。
+        "scene.stack" => {
+            let limit = match opt_limit(&req.params) {
+                Ok(l) => l,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.scene_stack(limit) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "scene.switch" => {
+            let path = match require_str(&req.params, "path") {
+                Ok(s) if !s.trim().is_empty() => s,
+                Ok(_) => {
+                    return Response::fail(id, RpcFailure::invalid_params("参数 `path` 不能为空"))
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.scene_switch(path) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "scene.back" => match api.scene_back() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
+        "scene.archive.save" => {
+            let path = match param(&req.params, "path") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if !s.trim().is_empty() => Some(s.as_str()),
+                Some(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `path` 应为非空字符串（可省略）"),
+                    )
+                }
+            };
+            match api.scene_archive_save(path) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "scene.archive.load" => {
+            let path = match require_str(&req.params, "path") {
+                Ok(s) if !s.trim().is_empty() => s,
+                Ok(_) => {
+                    return Response::fail(id, RpcFailure::invalid_params("参数 `path` 不能为空"))
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.scene_archive_load(path) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "script.eval" => {
             let source = match require_str(&req.params, "source")
                 .or_else(|_| require_str(&req.params, "code"))
@@ -1479,5 +1573,179 @@ mod save_rpc_tests {
         let err = res.error.expect("缺省实现应报未实现");
         assert_eq!(err.code, METHOD_NOT_FOUND);
         assert!(err.message.contains("scene.save"), "错误消息应点名方法");
+    }
+}
+
+#[cfg(test)]
+mod scene_stack_rpc_tests {
+    use super::*;
+
+    /// 记录收到的参数、回报固定应答的桩宿主。
+    #[derive(Default)]
+    struct StackStub {
+        stack_limit: Option<Option<usize>>,
+        switched: Option<String>,
+        back_calls: usize,
+        archived: Option<Option<String>>,
+        loaded: Option<String>,
+    }
+
+    impl EngineApi for StackStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+
+        fn scene_stack(&mut self, limit: Option<usize>) -> Result<Value, RpcFailure> {
+            self.stack_limit = Some(limit);
+            Ok(json!({
+                "count": 1,
+                "current": 0,
+                "max": 16, // 与 r3e-core 的 MAX_SCENE_STACK 对齐；传输层不依赖 core，故写字面量
+                "entries": [{ "index": 0, "name": "main", "path": "main.json", "objects": 2 }],
+            }))
+        }
+
+        fn scene_switch(&mut self, path: &str) -> Result<Value, RpcFailure> {
+            self.switched = Some(path.to_string());
+            Ok(json!({ "path": path, "depth": 2 }))
+        }
+
+        fn scene_back(&mut self) -> Result<Value, RpcFailure> {
+            self.back_calls += 1;
+            Ok(json!({ "name": "main", "depth": 1 }))
+        }
+
+        fn scene_archive_save(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
+            self.archived = Some(path.map(str::to_string));
+            Ok(json!({ "path": path.unwrap_or("<default>"), "objects": 0 }))
+        }
+
+        fn scene_archive_load(&mut self, path: &str) -> Result<Value, RpcFailure> {
+            self.loaded = Some(path.to_string());
+            Ok(json!({ "path": path, "objects": 0, "anims": 0 }))
+        }
+    }
+
+    /// 什么都没实现的宿主：验证缺省实现一律拒绝。
+    struct BareStub;
+
+    impl EngineApi for BareStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+    }
+
+    fn request(method: &str, params: Value) -> Request {
+        Request {
+            jsonrpc: JSONRPC.to_string(),
+            id: Some(json!(1)),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[test]
+    fn scene_stack_passes_limit_through() {
+        let mut api = StackStub::default();
+        let res = dispatch(&mut api, &request("scene.stack", json!({ "limit": 3 })));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.stack_limit, Some(Some(3)), "limit 应原样传给宿主");
+        assert_eq!(res.result.unwrap()["count"], json!(1));
+    }
+
+    #[test]
+    fn scene_stack_defaults_to_no_limit() {
+        let mut api = StackStub::default();
+        // 归一化：`Scene.Stack` / `scene_stack` 都落到同一条分支
+        let res = dispatch(&mut api, &request("Scene.Stack", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.stack_limit, Some(None));
+    }
+
+    #[test]
+    fn scene_switch_requires_non_empty_path() {
+        let mut api = StackStub::default();
+        let res = dispatch(&mut api, &request("scene.switch", json!({ "path": "  " })));
+        let err = res.error.expect("空路径应报错");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(api.switched, None, "参数非法时不应调用宿主");
+
+        let res = dispatch(&mut api, &request("scene.switch", json!({})));
+        assert_eq!(res.error.expect("缺 path 应报错").code, INVALID_PARAMS);
+
+        let res = dispatch(
+            &mut api,
+            &request("scene.switch", json!({ "path": "lv2.json" })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.switched.as_deref(), Some("lv2.json"));
+    }
+
+    #[test]
+    fn scene_back_needs_no_params() {
+        let mut api = StackStub::default();
+        let res = dispatch(&mut api, &request("scene.back", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.back_calls, 1);
+    }
+
+    #[test]
+    fn scene_archive_save_path_semantics() {
+        let mut api = StackStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("scene.archive.save", json!({ "path": "slots/a.json" })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.archived, Some(Some("slots/a.json".to_string())));
+
+        let res = dispatch(&mut api, &request("scene.archive.save", json!({})));
+        assert!(
+            res.error.is_none(),
+            "省略 path 应交给宿主决定: {:?}",
+            res.error
+        );
+        assert_eq!(api.archived, Some(None));
+
+        let res = dispatch(
+            &mut api,
+            &request("scene.archive.save", json!({ "path": "   " })),
+        );
+        assert_eq!(res.error.expect("空白路径应报错").code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn scene_archive_load_requires_path() {
+        let mut api = StackStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("scene.archive.load", json!({ "path": "slots/a.json" })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.loaded.as_deref(), Some("slots/a.json"));
+
+        let res = dispatch(&mut api, &request("scene.archive.load", json!({})));
+        assert_eq!(res.error.expect("缺 path 应报错").code, INVALID_PARAMS);
+        assert_eq!(
+            api.loaded.as_deref(),
+            Some("slots/a.json"),
+            "参数非法时不改动"
+        );
+    }
+
+    #[test]
+    fn scene_stack_methods_unsupported_by_default() {
+        for method in [
+            "scene.stack",
+            "scene.switch",
+            "scene.back",
+            "scene.archive.save",
+            "scene.archive.load",
+        ] {
+            let mut api = BareStub;
+            let res = dispatch(&mut api, &request(method, json!({ "path": "x.json" })));
+            let err = res.error.expect("缺省实现应报未实现");
+            assert_eq!(err.code, METHOD_NOT_FOUND, "{method}");
+        }
     }
 }
