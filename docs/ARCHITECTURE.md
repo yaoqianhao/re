@@ -195,6 +195,7 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | `env.rs` | 三色天空 + 太阳的解析环境探针，Sh9 球谐投影与解析环境 BRDF（零 wgpu，可单测） | `EnvironmentSettings`, `Sh9`, `env_brdf_approx` |
 | `postfx.rs` | HDR 后处理的数值契约：曝光、软膝亮部提取、Reinhard / ACES 曲线、FXAA 边缘判定、composite 参考实现 | `PostFxSettings`, `BloomSettings`, `TonemapMode`, `expose`, `bright_pass`, `tonemap`, `resolve` |
 
+| `scene_stack.rs` | 场景栈、运行时快照与存档（扩展十八 B）：层里存「离开时的样子」、浏览器式历史语义、命令信封（纯数据 + 纯函数，唯一 IO 是 `SceneArchive` 的读写盘） | `SceneStack`, `StackEntry`, `RuntimeSnapshot`, `AnimRuntime`, `SceneArchive`, `SceneCommand`, `MAX_SCENE_STACK` |
 **为什么文本在 core 而不是 render**：字形栅格化（fontdue）与排版是纯 CPU 计算，与 wgpu 无关。
 放 core 有两个直接好处——① `r3e-core` 保持零 GPU 依赖，`architecture_guard` 测试守着这条线；
 ② 排版、对齐、缺字回退这些逻辑可以用假字体在无 GPU 环境跑单测，不必起窗口。
@@ -604,6 +605,62 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 - `additive` 的参考帧不可指定（固定首帧），做「相对某个关键姿势的增量」需要扩接口。
 - 层只能在末尾追加 / 按名删除，不能调整顺序；顺序即叠加顺序。
 - 层内片段不能各自错相位（共享 `time`），做「每步触发一次受击抖」得靠层权重与时间手动控。
+
+### 4.12 场景栈与存档（扩展十八 B）
+
+前十七个扩展都建立在一个隐含前提上：**一个进程从头到尾只跑一个场景**。启动读一次 `scene.json`，
+之后所有改动（脚本、RPC、热重载）都落在同一个 `Scene` 上。要做「主菜单 → 关卡 → 暂停设置 → 回关卡」，
+缺的从来不是"再解析一份 JSON"（`Scene::from_json_str` 早就会），而是三件配套的东西：
+
+| 缺的东西 | 落点 | 一句话 |
+| --- | --- | --- |
+| 来时的路 | `SceneStack` / `StackEntry` | 切走之后要能切回来，而且切回来是「接着那一局」，不是从头开始 |
+| 运行时的账 | `RuntimeSnapshot` | `to_scene_file` 刻意只写**声明**，被它省略的 `time` / `frame` / 通道开关 / 动画进度在这里单独成一节 |
+| 边界 | §11.1 的「场景」一行 | 同一时刻只有**一个**场景在跑；切换是**替换**，栈里存的是"离开时的样子"，不是活着的世界 |
+
+**五个类型的分工**（全在 `crates/r3e-core/src/scene_stack.rs`：纯数据 + 纯函数，
+唯一的 IO 是 `SceneArchive::save_to_path` / `load_path`，其余全是内存中的纯变换）：
+
+| 类型 | 内容 | 关键约束 |
+| --- | --- | --- |
+| `RuntimeSnapshot` | `to_scene_file` **刻意不写**的那部分：`time` / `frame` / 文本 / UI / 局部光源三个通道开关 / `ui_above_text` / `anims` | 带 `version` 与 `is_compatible()`；`apply` 把快照写回场景并返回**成功恢复的动画实例数**（名字对不上就静默跳过）；不含相机 / 灯光 / 物件（它们在场景源里），也不含世界矩阵这类每帧重算的派生量 |
+| `AnimRuntime` | 一条动画实例的运行时：`name` / `time` / `speed` / `playing` | 按 `name` 寻址；捕获时按名排序，序列化结果稳定、便于 diff |
+| `SceneArchive` | 一份存档 = `format` + `version` + `scene`（`SceneFile` 声明）+ `runtime`（`Option<RuntimeSnapshot>`） | 单独一个类型、不往 `SceneFile` 加字段，为的是保住「`to_scene_file` 只写声明」那条被单测锁着的对称性；`runtime` 缺省即"只还原场景"；`data_only` = 另存为场景 |
+| `StackEntry` | 一层 = `name`（展示名）+ `path`（来源路径，脚本 / 编辑器现场构建的场景为空串）+ `source`（源文本）+ `runtime`（离开时的快照） | `StackEntry::capture(name, path, &scene)` 一次性抄下源文本与快照；`to_json_pretty` 失败时退化为 `{}` 而不报错 |
+| `SceneStack` | `entries` + `index` | 语义完全照抄浏览器历史：`push` 截断"前进"侧、满 16 层（`MAX_SCENE_STACK`）丢**最老**一层、`back` 只移游标不删层 |
+
+**栈的语义**（每一条都有单测锁着，因为"回退到哪一层"是最容易写歪的地方）：
+
+| 操作 | 行为 |
+| --- | --- |
+| `push(entry)` | 先截断当前层之后的层（"还没走的路"），再追加；超过 `MAX_SCENE_STACK` 时从队首丢最老一层；返回新层号 |
+| `unique_name(base)` | 生成不重名的层名：`main` → `main#2` → `main#3`…（空串归 `scene`），保证面板里点得准 |
+| `back()` | `index - 1`，已到 0 返回 `None`（**不移除**层，所以能再前进回去） |
+| `forward()` | `index + 1`，已到末尾返回 `None` |
+| `jump(i)` | 越界返回 `None`；否则移游标并返回该层 |
+| `find(name)` | 从**当前层往回**找最近的同名层（往回找，所以"回主菜单"回的是上一个主菜单；当前层本身也匹配，切到自己即原地不动） |
+| `switch_by_name(name)` | `find` + `jump` 的组合，供按名字回退 |
+| `capture_current(&scene)` | 只刷新**当前层**的源文本与快照；栈为空时返回 `false` |
+| `pop_current()` | 弹出当前层，游标落到前一层（没有前一层则清空），只在"真的销毁一层"时用 |
+
+**命令信封 `SceneCommand`**：脚本与 RPC 都不能"直接换世界"（原因见 §8.16），只能申请一条命令。
+
+| 变体 | 载荷 | `is_world_change` | 说明 |
+| --- | --- | --- | --- |
+| `Switch { path }` | 场景文件路径 | `true` | 换到另一个场景 |
+| `Back` | — | `true` | 回退一层 |
+| `SaveArchive { path }` | `Option<String>` | `false` | `None` = 让宿主挑默认位置 |
+| `LoadArchive { path }` | 存档路径 | `true` | 从存档恢复（同样要先压栈） |
+
+`label()` 给日志与错误回执用（`switch` / `back` / `save_archive` / `load_archive`），
+`path()` 只对带路径的两个变体返回 `Some`，其余 `None`——这样宿主不用为"取路径"再写一遍 `match`。
+
+**显式不做**：
+
+- **不做并行场景**：没有"两个场景同时更新"，栈里的世界是冻结的源文本，不是后台还在跑的世界。
+- **快照不含刚体位姿**：物理按场景**声明**重建（`rebuild_scene` 里 `clear_bodies`，`generation` 自增），动态刚体的位置靠脚本 `on_start` 重跑决定。
+- **不接管热重载**：读档不修改 `scene_path`，热重载继续盯原来那个场景文件。
+- **不做异步 / 进度条**：切场景在一帧内同步做完，大场景会有一次帧尖峰。
 
 ---
 
@@ -1438,6 +1495,23 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `anim_layer_info(实例, 层)` | 整层快照（模式 / 权重 / 有效权重 / 遮罩 / 片段与归一权重 / 时间 / 速度 / 循环 / 播放中） |
 | `anim_layer_weight(实例, 层)` / `anim_layer_clips(实例, 层)` | 有效权重（含过渡）/ 层内片段名列表 |
 
+**场景切换与存档（扩展十八 B）**
+
+这一组函数全是**申请**而不是**执行**：参数被塞进宿主的单槽，由 `EngineApp` 在**帧首**统一落地
+（原因见 §8.16）。因此它们在 `on_start` / `on_update` 里随便调都不会把世界撕成两半，
+返回值 `true` 只表示"这一帧的换世界请求收下了"。
+
+| 函数 | 说明 |
+| --- | --- |
+| `scene_switch(path)` | 申请切到另一个场景文件；`path` 为空白返回 `false`，槽已占也返回 `false` |
+| `scene_back()` | 申请回到栈里上一层（不删层，可再 `forward` 回来）；已在第 0 层时命令照收、帧首报错打日志 |
+| `scene_save_archive(path)` | 申请存档；`path` 传空串 = 让宿主挑默认位置（`<场景名>.archive.json`，与场景文件同目录） |
+| `scene_load_archive(path)` | 申请读档；`path` 为空白返回 `false` |
+| `scene_command_pending()` | 槽里是否已有待落地命令（脚本配合限流用：`if !scene_command_pending() { ... }`） |
+| `scene_stack_names()` | 层名数组（按压栈顺序） |
+| `scene_stack_depth()` / `scene_stack_index()` | 层数 / 当前层号；**空栈的 `index` 是 `-1`**，与"第 0 层"区分开 |
+| `scene_stack_current()` | 当前层名；空栈返回 `""` |
+
 **局部光源（扩展十五）**
 
 写入 `Scene::lights`（`upsert_local` 按 key 覆盖，满 16 盏返回 `false` 不顶人），渲染层下一帧自动打包上传。
@@ -2084,6 +2158,48 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 `effective_weight` 的过渡只有 smoothstep 一种曲线，没有自定义曲线；
 层不能调整顺序、也不能在中间插入，顺序即叠加顺序。
 
+### 8.16 场景栈的驱动与探针（扩展十八 B）
+
+场景切换是**跨子系统**的动作：换世界要换资产库、重建动画实例、重跑脚本、刷新渲染层缓存。
+把它写进 `ScriptHost::rebuild_scene` 是错的——那会让 core / script 反过来认识宿主手里的资产账本。
+落地方式是「**命令信封 + 帧首统一执行**」：
+
+| 环节 | 做法 |
+| --- | --- |
+| 申请 | 脚本 `scene_switch` / `scene_back` / `scene_save_archive` / `scene_load_archive` 只往**单槽**里塞一条 `SceneCommand`（`ScriptContext::scene_cmd`）；槽被占就返回 `false`（不排队、不覆盖） |
+| 落地 | `EngineApp::step_and_render` 的帧首调 `apply_pending_scene_command`：取一条、执行、`info` 打成功日志 / `error` 打失败原因 |
+| 顺序（硬要求） | 先换资产库（`refresh_assets_from_json`，重建回调要按新库补挂节点）→ 再**就地**换场景（`scripts.rebuild_scene` 在同一个 `Rc<RefCell<Scene>>` 上替换内部值，清刚体、跑 rebuild hook、重跑 `on_start`）→ 最后叠运行时快照（时间 / 帧号 / 通道开关 / 动画进度） |
+| 切场景 | `Switch`：先校验读得到文件 → `capture_current`（把"离开时那一帧"写回当前层）→ `enter_scene_source(src, Some(path))`（`scene_path` 跟随新文件，热重载要盯它）→ `push_live_layer`（新场景压成当前层，层名取场景 `name`，重名走 `unique_name`） |
+| 回退 | `Back`：先 `capture_current` 再 `back()`；已在第 0 层直接报错（**回调层本身不 push 新层**，否则回退会越回越多） |
+| 读档 | `LoadArchive`：同样先压栈，但**不接管** `scene_path`——存档是一次性输入，热重载仍盯原来那个场景文件 |
+| 存档 | RPC `scene.archive.save` **当场写盘**再返回真实路径（只写文件、不动世界，`queued: false`）；脚本侧同名命令仍走队列（脚本没有"调用即返回结果"的位置） |
+| 路径解析 | 绝对路径直接用；相对路径先按进程工作目录，落空再按"当前场景文件所在目录"——面板里填 `lv2.json` 时，用户心里的当前目录是场景目录 |
+| 编辑器 | `scene.stack`（只给声明态：层号 / 名字 / 来源路径 / 源文本字节数 / 帧号 / 时间 / 是否当前层 + `count` 总数 + `max` 上限）/ `scene.switch` / `scene.back` / `scene.archive.save` / `scene.archive.load` |
+| 脚本 | 9 个绑定：写 `scene_switch` / `scene_back` / `scene_save_archive` / `scene_load_archive`，读 `scene_command_pending()` / `scene_stack_names()` / `scene_stack_depth()` / `scene_stack_index()` / `scene_stack_current()`（见 7.4） |
+| 测试 | core 27 项（快照往返 / 存档兼容裸场景 / `to_scene_file` 不含运行时状态 / 栈的截断与容量 / back-forward-jump / `find` 从当前层往回 / `capture_current` 只刷当前层 / 命令信封的 `label`、`is_world_change`、`path`）、脚本 7 项（绑定往返与槽满拒绝）、宿主 4 项（默认存档路径 / 绝对与已存在路径 / 相对回退场景目录 / 存档写盘读回）、编辑器 RPC 7 项 |
+
+**为什么命令必须等到帧首才执行**：脚本完全可能在 `on_start` 里申请切场景。若当场执行，
+就是"正在重建的场景被自己打断"——旧脚本作用域还在栈上、物理刚体刚被清空、渲染缓存刚更新一半，
+世界会停在半新半旧的状态。把执行点钉在帧首（脚本推进之前），一条命令要么完整生效、要么整帧不生效。
+
+**为什么是单槽而不是队列**：`on_update` 里写 `if hp <= 0 { scene_switch("over.json"); }` 是常见写法。
+有队列就会堆成无限长待办，还会出现"一帧切了三次最后停在第三个"的怪状。单槽 + 拒绝的语义是
+"这一帧已经有一条换世界请求在手，你这条没进来"，脚本拿到 `false` 就知道该等下一帧。
+
+**为什么存档不复用 `SceneFile`**：`to_scene_file` 只写**声明**（core 有单测锁着"保存再加载等于原场景"）。
+运行时状态自带 `version`，单独成节且缺省即"只还原场景"，所以裸 `scene.json` 也能被
+`SceneArchive::from_json_str` 直接吃进来——这条兼容是有意的，编辑器里"把当前关卡的初始状态另存为场景"
+与"存一局进度"走的正是同一条代码路径。
+
+**为什么 `scene.stack` 不返回完整源文本**：面板每帧都在刷新，十几层场景 JSON 全塞进一个响应，
+序列化与网络都会变成瓶颈。要给"这一层有多大"，`source_bytes` 就够了；真要拿源文本那是另一个动作。
+
+**已知边界**（与 §4.12 的"显式不做"同源，此处只列对调试最要紧的三条）：
+
+- **读档后动态刚体回到声明位置**：`rebuild_scene` 会 `clear_bodies`（`generation` 自增），下一帧 `sync_physics_bindings` 按声明重新绑定，位置由脚本 `on_start` 决定。这不是丢失状态，而是快照**有意不含**刚体位姿。
+- **脚本变量与随机序列不随存档还原**：脚本随场景重建重跑 `on_start`，`rand` 回到固定种子起点。
+- **切场景是同步的**：换资产库 + 重建 + 重跑脚本都在一帧内做完，大场景会有一次帧尖峰；没有异步加载、没有加载画面，也没有 `scene.forward` RPC（core 的 `forward` / `switch_by_name` 已就绪，面板只需要"回退"这一个动作）。
+
 ---
 
 ## 9. 端到端数据流
@@ -2166,6 +2282,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**仍无 morph target / 表情、无混合空间（blend space）、无 IK、无根运动提取**
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
+| 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
 | 音频 | 非空间化：wav / ogg / mp3 一次性解码播放、多路混音 + 总音量、暂停/循环 | **无 3D 声源**（距离衰减、多普勒、HRTF 都不做）；无流式/边下载边播；无 DSP 效果链（混响、EQ）；单文件整体解码进内存，长音乐占内存 |
 
 ### 11.2 性能特征
@@ -2221,7 +2338,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | **十六（已完成：级联阴影 CSM）** | **方向光级联阴影**：`r3e-core::light` 增 `CascadeSettings`（count / lambda / blend / max_distance）与纯函数 `cascade_splits`（均匀↔对数插值切分）、`frustum_slice_corners`（该级 8 角点）、`fit_cascade`（光源正交相机拟合 + 正方形外接 + 纹素量化），上限 `MAX_CASCADES = 4`；`r3e-render` 把阴影图换成 `texture_depth_2d_array`（层 = 级数）、`ShadowUniform` 改为 `array<mat4x4,4>` + `split_ndc`、深度 pass 逐级渲染、`shadow_pass_uniforms` 每级一份；`shader.wgsl` 的 `shadow_factor` 按相机深度选级 + 级间按 `blend` 混合；`RenderStats.shadow_cascades` 记录生效级数；脚本 4 个 API（`set_shadow_cascades` / `shadow_cascades` / `set_shadow_blend` / `set_shadow_distance`）；编辑器 `scene.shadow` RPC 的 `ShadowPatch`；场景 `light.shadow` 段新增 `cascades` / `blend` / `cascadeDistance` | `core/light.rs` 加级联契约与三个纯函数、`core/scene.rs` 加三个可选字段与往返；`render/renderer.rs` 数组化阴影目标与逐级 pass、`shader.wgsl` 换级联采样；`script/api.rs` 注册 4 API；`r3e-editor` 加 `ShadowPatch` 与 `scene.shadow` 分支；`app/editor.rs` 实现 RPC；新增 `tests/cascade_scene.rs` / `shadow_cascades_shader.rs` / `shadow_rpc.rs` | 无（场景 JSON 向后兼容：`cascades` 缺省 1 = 单级，老场景画面与统计口径不变；绑定槽位未新增，仍为 4 组） |
 
 | **十七（已完成：屏幕空间遮蔽 SSAO）** | **深度反推的半球核遮蔽**：`r3e-core::ssao` 纯函数契约（`hemisphere_kernel` 确定性核 + `reconstruct_view_pos` 深度重建 + `normal_from_neighbors` 邻域法线 + `is_occluded` / `ao_from_occlusion`）+ `SsaoSettings`（enabled / radius / bias / intensity / samples，`sanitized()` 夹 0.01..8 / 0..0.5 / 0..4 / 4..16）挂进 `PostFxSettings.ssao`；`r3e-render::ssao` 两个全屏 pass（深度→`R8Unorm` 遮蔽图、4×4 盒式散焦，`AO_PASSES_PER_FRAME = 2`）+ `ssao.wgsl`，composite 在曝光前 `color *= ao`；`RenderStats.ssao`；12 个脚本 API（写 6：`set_ssao` / `set_ssao_enabled` / `set_ssao_radius` / `set_ssao_intensity` / `set_ssao_samples` / `clear_ssao`；读 6：`has_ssao` / `ssao_enabled` / `ssao_radius` / `ssao_bias` / `ssao_intensity` / `ssao_samples`，其中 `bias` **只读**——写入走场景 `postfx.ssao.bias` 与 RPC `scene.set_ssao`）；编辑器 `scene.set_ssao`（`SsaoPatch`）；演示 `assets/scene_ssao.json` + `scripts/ssao_demo.rhai` | `core/ssao.rs` 新增、`postfx.rs` 挂段、`lib.rs` 导出；`render/ssao.rs` + `ssao.wgsl` 新增，`renderer.rs` 主通道深度加 `TEXTURE_BINDING` 用法并在 composite 前插入两个 pass；`script/api.rs` 注册；`r3e-editor` 加 `SsaoPatch`；`app.rs` 遮蔽探针；`tests/ssao_contract.rs` / `ssao_scene.rs` / `ssao_shader.rs` / `ssao_api.rs` / `ssao_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx.ssao` 缺省 `enabled = false`，整段跳过、画面与扩展十三逐像素一致）。**边界**：AO 乘整幅画面（非只乘环境项）、无非双边滤波、无多尺度、屏幕外信息缺失处保守取 1 |
-| **十八（A 已完成；B/C/D 候选）** | **A 动画混合树**（已落地：分层 mask / additive，补 11.1 的动画边界，见 §4.11 / §7.4 / §8.15）；**B 场景切换 + 存档**（场景栈与运行时快照，补「一个进程一个场景」）；**C 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行；C、D 需动 render 的多目标与 pass 预算 | 视具体项 |
+| **十八（A、B 已完成；C/D 候选）** | **A 动画混合树**（已落地：分层 mask / additive，补 11.1 的动画边界，见 §4.11 / §7.4 / §8.15）；**B 场景切换 + 存档**（已落地：场景栈 + 运行时快照 + 命令信封 + 5 条 RPC / 9 个脚本绑定，补「一个进程一个场景」的边界，见 §4.12 / §7.4 / §8.16）；**C 局部光源阴影**（点光立方阴影 / 聚光单面，代价最高）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行（A 落 `anim_blend.rs` + `scene.rs`，B 落 `scene_stack.rs`）；C、D 需动 render 的多目标与 pass 预算 | 无（A、B 均为纯增量：场景 JSON 与既有 RPC 一字不改，不调新 API 时行为与之前一致） |
 
 两条与顺序相关的说明：
 

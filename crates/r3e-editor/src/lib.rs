@@ -598,8 +598,9 @@ pub trait EngineApi {
 
     /// 列出场景栈（扩展十八 B）：`{ count, current, max, entries: [...] }`。
     ///
-    /// 每层给出**声明态**（层号 / 名字 / 来源路径 / 物件数），不含场景内容本身——
-    /// 内容按层名另取（`scene.switch`），这样面板刷新不必搬运几 MB 的场景 JSON。
+    /// 每层只给**声明态**（层号 / 名字 / 来源路径 / 源文本字节数 / 帧号与时间），
+    /// 不给场景内容本身——面板刷新是每帧都在发的请求，把十几层的场景 JSON 一起搬
+    /// 过去会让序列化变成瓶颈。层的内容只在 `scene.back` 时由宿主装载。
     fn scene_stack(&mut self, _limit: Option<usize>) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.stack"))
     }

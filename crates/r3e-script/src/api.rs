@@ -2829,7 +2829,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("scene_save_archive", move |path: &str| -> bool {
-        // 空串 = 交给宿主挑默认位置（与 `scene_save_archive_default` 同义）。
+        // 空串 = 交给宿主挑默认位置（与 RPC `scene.archive.save` 省略 path 同义）。
         queue_scene_cmd(&c, SceneCommand::save_archive(non_empty_path(path)))
     });
 

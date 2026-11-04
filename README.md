@@ -220,7 +220,7 @@ cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
 | `--rpc-max-per-frame <n>` | `8` | 每帧最多消化多少条请求，防止编辑器刷屏把帧时间顶爆 |
 
 协议：一行一个 JSON-RPC 2.0 请求 / 响应（NDJSON）。方法名大小写与下划线不敏感
-（`scene.setTransform` = `scene.set_transform`），共 12 个：
+（`scene.setTransform` = `scene.set_transform`），共 31 个：
 
 | 方法 | 作用 |
 | --- | --- |
@@ -235,7 +235,24 @@ cargo run --release -- --rpc-port 7878 --rpc-token secret --rpc-max-per-frame 4
 | `scene.set_environment` | 改场景环境探针（`sky_zenith` / `sky_horizon` / `ground` / `sun_dir` / `sun_color` / `sun_intensity` / `intensity`，可分别给；`enabled: false` 清空），回收敛后的 `environment` |
 | `scene.set_postfx` | 改 HDR 后处理（`exposure` / `tonemap` / `bloom_enabled` / `bloom_threshold` / `bloom_knee` / `bloom_intensity` / `fxaa`，可分别给；`enabled: false` 清空），回收敛后的 `postfx`（清空后为 `null`） |
 | `scene.set_ssao` | 改屏幕空间遮蔽（`enabled` / `radius` / `bias` / `intensity` / `samples`，可分别给；`enabled: false` 关掉），回收敛后的 `postfx.ssao` |
+| `scene.shadow` | 改级联阴影（`enabled` / `size` / `strength` / `orthoSize` / `bias` / `cascades` / `blend` / `distance`，可分别给），一个字段都不给即只读回当前段 |
+| `scene.anim_layers` | 列动画实例与每实例的层摘要（只读，见 [§21 动画混合树](#21-动画混合树扩展十八-a)） |
+| `scene.anim_layer_set` | 补丁式改单层：`weight` / `mode` / `mask` / `speed`；未知字段、未知模式、不存在的实例或层一律 `ok=false` 且不落副作用 |
+| `scene.stack` | 场景栈声明态：`index` / `name` / `path` / `source_bytes` / `frame` / `time` / `current` + `count` / `max`，支持 `limit`（见 [§22](#22-场景栈与存档扩展十八-b)） |
+| `scene.switch` | 请求切到另一个场景文件（`path` 必填且文件须存在），回 `{queued, command, stack}` |
+| `scene.back` | 请求回退一层（无参）；已在最早一层直接报错，不排空命令 |
+| `scene.archive.save` | 存档**当场写盘**后返回 `{path, format, version, bytes, objects, anims}`（`path` 省略则落 `<场景名>.archive.json`，所以是 `queued: false`） |
+| `scene.archive.load` | 请求读档（`path` 必填），回 `{queued, command, stack}` |
 | `scene.save` | 把内存场景写回 JSON（`path` 省略时为原场景文件），回 `{path, objects, bytes}` |
+| `ui.list` | 列 UI 元素与总数，支持 `limit` |
+| `ui.set` | 按 `key` 增改 UI 元素（`kind` / `anchor` / `x` / `y` / `width` / `height` / 颜色 / 边框 / 图片等，可分别给） |
+| `ui.remove` | 按 `key` 删除 |
+| `ui.state` | 指针交互状态（hover / active / 有界事件队列） |
+| `light.list` | 列局部光源与总数，支持 `limit` |
+| `light.set` | 按 `key` upsert 一盏（除 `key` 外至少给一个字段） |
+| `light.remove` | 按 `key` 删除 |
+| `light.clear` | 清空全部局部光源 |
+| `light.set_enabled` | 开关局部光；省略 `enabled` 表示只读 |
 | `script.eval` | 执行一段 Rhai，返回其求值结果（JSON 化） |
 | `script.reload` | 重载脚本文件 |
 
@@ -725,6 +742,37 @@ fn on_update(dt) {
 分层混合走 18 个 `anim_layer*` API（挂层 / 遮罩 / 权重淡入淡出 / override 与 additive），
 **完整表与硬口径见 [§21 动画混合树](#21-动画混合树扩展十八-a)**，此处不重复。
 
+### 场景切换与存档（扩展十八 B）
+
+这一组函数全是**申请**而不是**执行**：参数进宿主的单槽，由 `EngineApp` 在**帧首**统一落地
+（原因见 [§22](#22-场景栈与存档扩展十八-b)）。因此它们在 `on_start` / `on_update` 里随便调都不会
+把世界撕成两半，返回值 `true` 只表示"这一帧的换世界请求收下了"。
+
+| 函数 | 说明 |
+| --- | --- |
+| `scene_switch(path) -> bool` | 申请切到另一个场景文件；`path` 空白或槽已占返回 `false` |
+| `scene_back() -> bool` | 申请回到栈里上一层（只移游标、不删层，可再前进回来） |
+| `scene_save_archive(path) -> bool` | 申请存档；`path` 传空串 = 让宿主挑默认位置 |
+| `scene_load_archive(path) -> bool` | 申请读档；`path` 空白返回 `false` |
+| `scene_command_pending() -> bool` | 槽里是否已有待落地命令（配合限流：`if !scene_command_pending() { … }`） |
+| `scene_stack_names() -> array` | 层名数组（按压栈顺序） |
+| `scene_stack_depth() -> int` | 层数 |
+| `scene_stack_index() -> int` | 当前层号；**空栈返回 `-1`**，与"第 0 层"区分开 |
+| `scene_stack_current() -> string` | 当前层名；空栈返回 `""` |
+
+```rhai
+// 血量归零：单槽一帧只收一条，所以"先存一局、再切结算场景"要拆成两帧走
+let saved = false;                       // 放在脚本顶层
+// on_update 里：
+if hp <= 0 && !scene_command_pending() {
+    if !saved {
+        saved = scene_save_archive("");   // 空串 = 默认落在场景文件旁边
+    } else {
+        scene_switch("assets/scene_over.json");
+    }
+}
+```
+
 ### 物理
 
 | 函数 | 说明 |
@@ -864,6 +912,12 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - 每帧重建实例缓冲，物件量级到数千仍可运行；上万需改成持久化实例缓冲。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
+- 场景切换：**一个进程同一时刻只跑一个场景**。场景栈只是"来时的路"——每层存的是离开那一刻的
+  **源文本 + 运行时快照**，不是后台还在跑的世界；切走的场景不会继续更新物理与动画。
+  栈上限 16 层（超了丢最老的一层），切换是**同步**的（换资产库 + 重建世界 + 重跑脚本都在一帧内完成，
+  大场景会有一次帧尖峰，无加载画面、无异步加载、无 `scene.forward` RPC）。
+  脚本变量与随机序列不随存档还原，动态刚体回到声明位置后由 `on_start` 重跑决定，见
+  [§22 场景栈与存档](#22-场景栈与存档扩展十八-b)。
 - UI 只有矩形 / 边框 / 图片三类基本元素：**无圆角、无渐变、无旋转/缩放动画**；图片支持
   **九宫格（9-slice）拉伸**，圆角留待后续（先把九宫格做对再做角部描边更省事）；
   文本与 UI 的前后关系只有通道级开关（`set_ui_above_text`），不能逐元素互相穿插。
@@ -1701,7 +1755,127 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 48 个套件 / 628 passed / 0 failed。
+`cargo test --workspace` 现为 48 个套件 / 673 passed / 0 failed。
+
+---
+
+## 22. 场景栈与存档（扩展十八 B）
+
+前十七个扩展共享一个隐含前提：**一个进程从头到尾只跑一个场景**。要表达「主菜单 → 关卡 → 暂停 → 回关卡」，
+缺的并不是"再解析一份 JSON"（`Scene::from_json_str` 早就会），而是三件配套的东西：
+**来时的路**（栈）、**运行时的账**（快照）、**谁来完成这个动作**（宿主在帧首落地）。
+
+### 22.1 三层结构
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 契约 | `crates/r3e-core/src/scene_stack.rs` | `SceneStack` / `StackEntry` / `RuntimeSnapshot` / `AnimRuntime` / `SceneArchive` / `SceneCommand`，纯数据 + 纯函数，唯一 IO 是存档读写盘 |
+| 传输 | `crates/r3e-editor/src/lib.rs` | `EngineApi` 五个方法（`scene_stack` / `scene_switch` / `scene_back` / `scene_archive_save` / `scene_archive_load`，默认 `unsupported`）+ dispatch 分支 + 参数校验 |
+| 宿主 | `crates/r3e-app/src/app.rs`、`crates/r3e-app/src/editor.rs` | `EngineApp::apply_pending_scene_command` 在帧首取命令并执行；`LocalEngineApi` 只做校验后塞槽，重活留在 app 侧完整上下文里 |
+
+契约放在 core、传输只做校验、执行留在宿主——与前面十七个扩展同一套路数：
+**core 不知道渲染器存在，editor 不知道场景怎么装，只有 app 两边都摸得到。**
+
+### 22.2 栈的语义
+
+`SceneStack` 是"光标 + 线性列表"，不是"场景池"：
+
+| 操作 | 语义 |
+| --- | --- |
+| `push(entry)` | 压入并**截断游标之后的分支**（浏览器式：回退后再前进到别处，老前向就没了） |
+| `back()` / `forward()` | **只移游标，不删层**——所以"回主菜单再回关卡"能把关卡那层原样捡回来 |
+| `pop_current()` | 删当前层，游标退到前一层 |
+| `jump(i)` | 按层号跳；越界返回 `false` 不动栈 |
+| `find(name)` | 从当前层**往回**找（要找的是"我来的那个"），命中返回层号；同名层用 `unique_name` 加 `#2` 后缀 |
+| `capture_current(&scene)` | **只刷新栈顶**（当前层）的快照，别层的快照不许被当前世界污染 |
+| `MAX_SCENE_STACK = 16` | 超限丢**最老**一层（近处的手感比远处的历史重要） |
+
+栈里存的是 `StackEntry { name, path, source, runtime }`：**离开那一刻的源文本 + 运行时快照**。
+不是后台还在跑的世界——这是本节所有边界的根。
+
+### 22.3 快照里放什么
+
+`RuntimeSnapshot` 只补 `to_scene_file` **刻意省略**的那部分运行时：
+
+| 字段 | 内容 |
+| --- | --- |
+| `time` / `frame` | 场景时钟与帧号 |
+| `text` / `ui` / `lights` | 三个通道级开关（文本、UI、局部光源） |
+| `ui_above_text` | 文本与 UI 的前后关系 |
+| `anims` | 每个动画实例的 `name` / `time` / `speed` / `playing`（`AnimRuntime`） |
+
+刻意**不放**：相机、方向光、物件（都在场景源里）、世界矩阵等每帧重算的派生量。
+快照带 `version` 与 `is_compatible()`；`apply` 返回真正恢复的动画实例数，
+名字对不上的实例**静默跳过**（资产换了、实例消失了是常态，不该报错炸掉读档）。
+
+### 22.4 命令信封：为什么不当场切
+
+换世界要动四样东西：资产库、场景 `Rc` 里的内容、渲染缓存、脚本状态。谁都不能只动一半。
+所以脚本与 RPC 都**只提交意图**，由宿主在帧首统一落地：
+
+| 环节 | 位置 | 行为 |
+| --- | --- | --- |
+| 提交 | `ScriptHost::scene_cmd`（单槽）+ `LocalEngineApi` 校验 | 槽被占返回 `false` / `-32002`，脚本据此知道"该等" |
+| 取出 | `EngineApp::step_and_render` 帧首 → `apply_pending_scene_command` | 一帧最多执行一条 |
+| 落地 | `apply_scene_command` → `enter_scene_source` | **固定顺序**：`refresh_assets_from_json`（换库）→ `scripts.rebuild_scene`（同一个 `Rc` 就地换内部值）→ 叠 `RuntimeSnapshot` |
+
+- **单槽而不是队列**：`on_update` 每帧都可能调 `scene_switch`（血量 0 切结算），有队列会堆成无限待办，
+  还会出现"一帧切了三个、最后停在第三个"的怪状。单槽被占就返回 `false`，把节奏交给调用方。
+- **`ScriptCommand` 一次性**：`take_scene_command` 取走即清空，落地失败只记 `log::error!`，不重试——
+  把同一条命令反复重试会让脚本以为自己还在申请。
+- **`scene_save_archive` 是唯一不换世界的命令**，所以 RPC 侧它**当场写盘**再返回真实路径
+  （调用方拿到"文件已存在"，而不是一句"排队成功"）。
+
+### 22.5 脚本 API（9 个）
+
+| 函数 | 说明 |
+| --- | --- |
+| `scene_switch(path) -> bool` | 申请切场景；`path` 空白或槽已占返回 `false` |
+| `scene_back() -> bool` | 申请回上一层 |
+| `scene_save_archive(path) -> bool` | 申请存档；`path` 传空串 = 宿主挑默认位置 |
+| `scene_load_archive(path) -> bool` | 申请读档；`path` 空白返回 `false` |
+| `scene_command_pending() -> bool` | 槽里是否已有待落地命令 |
+| `scene_stack_names() -> array` | 层名数组（按压栈顺序） |
+| `scene_stack_depth() -> int` | 层数 |
+| `scene_stack_index() -> int` | 当前层号；**空栈返回 `-1`**，与"第 0 层"区分开 |
+| `scene_stack_current() -> string` | 当前层名；空栈返回 `""` |
+
+### 22.6 编辑器 RPC（5 条）
+
+| 方法 | 用途 |
+| --- | --- |
+| `scene.stack` | 只给**声明态**（不读盘）：`index` / `name` / `path` / `source_bytes` / `frame` / `time` / `current`，外加 `count` / `current` / `max`；支持 `limit`（截断 entries，`count` 仍是总数） |
+| `scene.switch` | `path` 必填且文件须存在，回 `{queued, command, stack}` |
+| `scene.back` | 无参；已在最早一层**当场报错**（`-32000`），而不是"排队成功但下一帧静默失败" |
+| `scene.archive.save` | `path` 可省（省则与场景同目录、同名 `.archive.json`）；**当场写盘**，回 `{path, format, version, bytes, objects, anims}` |
+| `scene.archive.load` | `path` 必填，回 `{queued, command, stack}` |
+
+路径解析规则两处一致（`resolve_request_path` / `resolve_scene_path`）：绝对路径照用；
+相对路径先按进程工作目录，落空再按**当前场景文件所在目录**——编辑器面板里填 `lv2.json`，
+用户心里那个"当前目录"是场景目录，不是启动目录。
+
+### 22.7 已知边界
+
+- **一个进程同一时刻只跑一个场景**：切走的场景不会继续更新物理与动画，栈层是冻结的源文本 + 快照。
+- 切换是**同步**的：换库 + 重建 + 重跑脚本都在一帧内完成，大场景会有一次帧尖峰；
+  无异步加载、无加载画面、无 `scene.forward` RPC（回退后再前进请重走 `scene.switch`）。
+- 读档/切场景后**动态刚体回到声明位置**（rebuild 重挂刚体、generation 自增），位置由 `on_start` 重跑决定。
+- **脚本变量、随机序列、`on_update` 局部状态不随存档还原**：只还原场景源 + 上述运行时快照。
+- 读档**不接管 `scene_path`**：热重载仍盯原来那个场景文件，存档是一次性输入，不是新的"当前场景来源"。
+- 栈上限 16 层，超限丢最老一层；同一进程内无法同时观察两个场景的画面。
+
+### 22.8 测试覆盖
+
+新增 45 条用例，全 CPU 无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/scene_stack.rs` | 27 | 快照 5（默认值对齐新场景 / JSON 往返 / 覆写开关与时间 / 未知实例跳过 / 拒绝未来版本）、存档 6（捕获源 + 运行时 / 纯数据模式省运行时 / 往返恢复场景与时钟 / 接受裸场景文件 / 版本与坏 JSON 拒绝 / 磁盘往返）、栈 11（空栈 / push 成当前 / back-forward 只移游标 / 回退后 push 截断前向分支 / 超限丢最老 / find 从当前往回 / jump 越界 / pop 移动游标 / unique_name 加后缀 / capture 保留源与运行时 / clear）、命令 5（标签稳定 / 路径跟随变体 / 只有 SaveArchive 不换世界 / 文本逐字携带 / capture_current 只刷栈顶） |
+| `crates/r3e-script/src/lib.rs` | 7 | 真跑 Rhai：切场景排入 `Switch`、路径去空白与空白拒绝、单槽拒绝第二条且不覆盖、空串存档语义、栈读取函数跟着共享句柄、命令跨 rebuild 存活、宿主取用同一槽 |
+| `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
+| `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
+
+`cargo test --workspace` 现为 48 个套件 / 673 passed / 0 failed。
 
 ---
 
