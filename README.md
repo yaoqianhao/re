@@ -40,6 +40,7 @@ D:\rust3d-engine
 │   ├─ scene_ibl.json         # IBL 演示场景（三色天空 + 三档金属球 + 亮面/哑光介电）
 │   ├─ scene_hdr.json         # HDR 后处理演示场景（高亮自发光条 + 金属球 + 泛光/ACES）
 │   ├─ scene_ssao.json        # SSAO 演示场景（墙角 / 台阶接缝 / 贴地球，遮蔽开关可对比）
+│   ├─ scene_local_shadow.json # 局部光源阴影演示场景（点光 + 聚光各一盏，均开 cast_shadow）
 │   ├─ audio/
 │   │   ├─ blip.wav           # 0.18s 短音效（880Hz 指数衰减，脚本合成，无版权素材）
 │   │   └─ ambience.wav       # 2.0s 可无缝循环环境音（220Hz + 330Hz，脚本合成）
@@ -54,7 +55,8 @@ D:\rust3d-engine
 │   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
 │   ├─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
 │   ├─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
-│   └─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
+│   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
+│   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
 ├─ crates/
 │   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
@@ -899,9 +901,10 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   [§16 IBL 环境探针](#16-ibl-环境探针)。方向光带单张正交阴影贴图（3×3 PCF，默认开启）；
   扩展十六把这张图升级为**最多 4 级级联**（`light.shadow.cascades`，缺省 1 = 单级，老场景画面不变）：
   视锥按深度切段、每段独立拟合光源正交相机，近处纹素更密、远处只求覆盖，级间按 `blend` 混合消接缝。
-  阴影限制：无点光/聚光阴影、级联上限 4、每级重复渲染全场景可见物件（未按级裁剪）、透明物件也投实心影。
-- 局部光源：最多 16 盏点光 / 聚光，**不投影**（点光立方阴影代价太高），无 IES / 面光源，只进直接光项、
-  不参与环境项，见 [§19 局部光源](#19-局部光源扩展十五)。
+  阴影限制：级联上限 4、每级重复渲染全场景可见物件（未按级裁剪）、透明物件也投实心影。
+- 局部光源：最多 16 盏点光 / 聚光，扩展十八 C 起其中**每帧最多 4 盏**可投影（`cast_shadow`，
+  点光 6 面 / 聚光单面，共用一张固定 512² × 24 层深度数组）；无 IES / 面光源，只进直接光项、
+  不参与环境项，见 [§19 局部光源](#19-局部光源扩展十五) 与 [§23 局部光源阴影](#23-局部光源阴影扩展十八-c)。
 - 后处理：常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光，
   缺省直通，见 [§17 HDR 后处理链](#17-hdr-后处理链)；可选屏幕空间遮蔽（两个全屏 pass）叠在 composite 之前，
   见 [§20 屏幕空间遮蔽](#20-屏幕空间遮蔽ssao扩展十七)。**无运动模糊、无 TAA、无自动曝光**。
@@ -1533,6 +1536,10 @@ uniform（`1 + 16×64 = 1040` 字节），片元里循环累加，不加 pass、
 
 「场景」是 `Scene::lights.len()`，「上传」是 uniform 里的 `count.x`：两者不等就是被截断（超 16 盏）或被开关清零。
 
+> 本节写的是**不投影**的局部光源（扩展十五的初版口径）。扩展十八 C 给其中最多 4 盏加了可选的
+> 「投影」能力（`cast_shadow`，点光立方 6 面 / 聚光单面），灯表本身、衰减与锥因子公式一个字没变，
+> 阴影细节见 [§23](#23-局部光源阴影扩展十八-c)。
+
 **脚本侧两个坑**（写演示脚本时踩到的）：`light_add_spot` 是 13 个**位置参数**，少给一个不会编译报错而是
 `on_start` 里抛 `Function not found`；一行里串四段 `+` 拼接会撞 Rhai 的 `Expression exceeds maximum complexity`
 （编译期失败、整脚本不执行）。所以 `on_start` 的报错现在也会打一行 `[script] on_start 出错: ...`。
@@ -1755,7 +1762,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 48 个套件 / 673 passed / 0 failed。
+`cargo test --workspace` 现为 51 个套件 / 704 passed / 0 failed。
 
 ---
 
@@ -1875,9 +1882,109 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
-`cargo test --workspace` 现为 48 个套件 / 673 passed / 0 failed。
+`cargo test --workspace` 现为 51 个套件 / 704 passed / 0 failed。
 
 ---
 
-*（内容由AI生成，仅供参考）*
+## 23. 局部光源阴影（扩展十八 C）
+
+点光与聚光现在**可以投影**了，但预算是硬的：**每帧最多 4 盏**真正投影，其余灯照旧只照亮不投影。
+一张图搞定全部——固定 `512² × 24 层` 的深度数组（4 盏 × 6 面），点光占 6 个面、聚光占 1 个面，
+两者共用同一套槽位。缺省 `cast_shadow: false`，**不写这两个字段的场景与扩展十五逐像素一致**。
+
+### 23.1 三条写入路径
+
+| 位置 | 写法 |
+| --- | --- |
+| 场景 JSON | `lights: [{ key: "lamp", kind: "point", cast_shadow: true, shadow_bias: 0.004, ... }]`（`shadow_bias` 缺省 `0.002`，夹在 `0 ~ 0.05`） |
+| 脚本 | `light_set_cast_shadow("lamp", true)` / `light_set_shadow_bias("lamp", 0.004)`，键不存在返回 `false` |
+| 编辑器 RPC | `light.set` 的补丁里带 `cast_shadow` / `shadow_bias`，与 `intensity` / `range` 等字段同一份补丁 |
+
+三处写的是**同一个 `Scene::lights`**，没有独立的阴影配置段、没有独立的 RPC、没有第二份灯表。
+`cast_shadow` 是「意愿」，渲染器每帧重新决定谁真的投影。
+
+### 23.2 谁在投影：亮度排序 + 4 盏上限
+
+`r3e_core::plan_local_shadows` 每帧做一次纯函数决策：
+
+1. 只留下 `cast_shadow == true` 的灯；
+2. 按 `luma(radiance) × range²` 从大到小排（辐射亮度 = 颜色 × 强度，乘 `range²` 是因为灯越大照得越远）；
+3. 截断前 4 盏，再按下标升序回到稳定顺序；
+4. 第 `slot` 盏灯的层基址 `layer_base = slot × 6`——**聚光也占 6 层**（只用第 0 面，其余 5 层空着），
+   这样层号永远是 `slot × 6 + face` 的简单算式，着色器不必查表。
+
+**代价可预测**：最坏情况 4 盏点光 = 24 个深度 pass，每 pass 一次全场景重绘；1 点光 + 1 聚光 = 7 个。
+探针里的「占用层数」就是这一帧实际跑的 pass 数。
+
+### 23.3 GPU 侧布局（`group(3)`，与灯表同组）
+
+| binding | 资源 | 说明 |
+| --- | --- | --- |
+| 5 | `texture_depth_2d_array` | 24 层、`512²`、`Depth32Float`，缺省全 1.0 |
+| 6 | `sampler_comparison` | 3×3 PCF 用，与方向光阴影共用同一套采样器配置 |
+| 7 | `LocalShadow` uniform | `params` / `params2` / `view_proj[24]` / `slots[16]` |
+
+- `slots[i].x = layer_base`，**默认 -1**：片元读到 -1 立刻返回全亮，不必等数组清零；
+- `slots[i].y` = 面数（6 = 点光，1 = 聚光），`z` = 该灯深度偏移，`w` = 该灯法线偏移（世界单位）；
+- `view_proj[layer]` 在 CPU 侧一次性算好（`shadow_face_view_projection`），**深度 pass 与主通道用同一个矩阵**，
+  不存在「写读不一致」的半像素偏移；
+- 数组长度 `24` / `16` 是编译期字面量，`shader.wgsl` 与 CPU 常量硬对齐，改一处必须改三处
+  （core 常量 / render uniform / wgsl），契约测试会盯着。
+
+### 23.4 采样逻辑
+
+片元侧对每盏灯调一次 `local_shadow_factor`：
+
+1. 全局开关关、或这盏灯 `layer_base < 0` → 直接 `1.0`（全亮），不采样；
+2. **点光选面**：拿 `-to_light`（光源相对片元的方向）的主轴绝对值最大的分量定面，与 CPU 的
+   `point_shadow_face` 逐分支对应（`+X, -X, +Y, -Y, +Z, -Z`）；聚光固定第 0 面；
+3. 法线偏移 `pos + n × slots[i].w`（`w = 1.5 × 单纹素世界尺寸`），再投影取 uv；
+4. uv 出界或 `ndc.z > 1`（超出灯的 `range`）→ 全亮；否则 3×3 `textureSampleCompare` 求平均；
+5. 最后 `mix(1.0, lit, 强度)`——阴影只压**直接光项**，环境光不参与，否则暗部会死黑。
+
+### 23.5 探针与演示
+
+```
+[起始] 局部阴影：意愿 2 盏 / 本帧投影 2 盏（上限 4）/ 占用 7 层 / 图 512² × 24 层
+```
+
+| 环节 | 说明 |
+| --- | --- |
+| **意愿** vs **本帧投影** | 前者是场景里 `cast_shadow` 为真的盏数，后者是 `plan_local_shadows` 选中的盏数。`意愿 5 / 投影 4` = 被上限截断；`意愿 2 / 投影 0` = 总开关关了 |
+| 占用层数 | 应恒等于各投影灯面数之和（1 点光 = 6、1 聚光 = 1、各一 = 7），对不上就是槽位算错 |
+| 图幅 | 固定 `512²`，**不跟**方向光的 `shadow.size` 走；24 层容量与投影盏数无关 |
+| 脚本读侧 | `local_light_cast_shadow(key)` 读意愿、`local_shadow_caster_count()` 读本帧实际投影数 |
+| 演示 | `assets/scene_local_shadow.json`（方向光压暗并关掉自己的阴影）+ `scripts/local_shadow_demo.rhai`（点光绕圈 + 聚光摆头） |
+
+```
+cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/local_shadow_demo.rhai
+```
+
+### 23.6 已知边界
+
+- **每帧最多 4 盏**投影，超出的灯退化为「只照亮不投影」，没有告警日志——看探针的意愿 / 投影差值；
+- 聚光**占满 6 层槽位只用 1 层**：24 层里最多 12 层被浪费，换成更紧的打包能省 4~5 个面，暂未做；
+- 图幅固定 `512²`、不可配；立方体面的透视相机 FOV 恒 90°，面接缝处**未做跨面 PCF**，掠射角度下有轻微接缝；
+- 阴影强度是**全局标量**（`params2.x`），不能逐灯调；`shadow_bias` 逐灯可调但只有深度偏移一项，没有 slope-scaled 版本；
+- 与方向光阴影是**两张独立的图、两段独立的 pass**，同一个物体会被两边各渲染一次；
+- 移动端需要注意：4 盏点光 = 24 次全场景深度重绘，是本项最贵的路径。
+
+### 23.7 测试覆盖
+
+新增 31 条用例，全 CPU 无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/light.rs` | 8 | 选灯按 `luma × range²` 排序与 4 盏截断、并列按下标稳定、槽位 `layer_base = slot × 6`、点光 6 面 / 聚光 1 面、选面六分支与边界、面相机近远平面（`near = 0.02 × range`）、`cast_shadow` / `shadow_bias` 收敛 |
+| `crates/r3e-core/tests/local_lights_scene.rs` | 1 | 场景 JSON 的 `cast_shadow` / `shadow_bias` 往返 |
+| `crates/r3e-render/tests/local_shadow_contract.rs` | 8 | uniform 字节布局与 `LOCAL_SHADOW_UNIFORM_SIZE`、`slots` 默认 -1、`from_lights` 与 `plan_local_shadows` 槽位一致、关闭时零投影、聚光只写 1 层 |
+| `crates/r3e-render/tests/local_shadow_shader.rs` | 6 | 解析 `shader.wgsl` 比对 `array<mat4x4<f32>, 24>` / `array<vec4<f32>, 16>` 字面量、`@group(3)` 的 5/6/7 三处绑定、`point_shadow_face` 六分支与 CPU 同序 |
+| `crates/r3e-script/tests/local_shadow_api.rs` | 6 | 写入读回、意愿与实际分离、键不存在返回 `false`、槽满时第 5 盏不投影、`shadow_bias` 夹取 |
+| `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
+| `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
+
+`cargo test --workspace` 现为 51 个套件 / 704 passed / 0 failed。
+
+---
+
 *（内容由AI生成，仅供参考）*
