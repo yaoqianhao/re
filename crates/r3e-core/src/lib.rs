@@ -72,8 +72,8 @@ pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
 };
 pub use scene_stack::{
-    AnimRuntime, RuntimeSnapshot, SceneArchive, SceneStack, StackEntry, ARCHIVE_FORMAT,
-    ARCHIVE_VERSION, MAX_SCENE_STACK, SNAPSHOT_VERSION,
+    AnimRuntime, RuntimeSnapshot, SceneArchive, SceneCommand, SceneStack, StackEntry,
+    ARCHIVE_FORMAT, ARCHIVE_VERSION, MAX_SCENE_STACK, SNAPSHOT_VERSION,
 };
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,

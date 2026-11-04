@@ -492,6 +492,68 @@ impl SceneStack {
     }
 }
 
+/// 场景命令：宿主与脚本 / RPC 之间的「意图信封」（扩展十八 B）。
+///
+/// 切场景不是"读一份 JSON 再替换"那么轻：宿主必须按「压栈 → 换资产库 → 重建场景
+/// （补挂资产节点、跑 rebuild hook）→ 重跑 `on_start`」的顺序做，而这套顺序是
+/// `r3e-app` 的知识。脚本层与 RPC 层都不该知道宿主手里还有几本账，所以它们只能
+/// **登记**一条命令，由宿主在帧首统一执行——这样「脚本在自己的 `on_start` 里申请
+/// 切场景」也不会在重建到一半时把世界撕成两半。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SceneCommand {
+    /// 切换到某个场景文件（相对路径按进程工作目录解析）。
+    Switch { path: String },
+    /// 回到栈里上一层。
+    Back,
+    /// 存档到文件；`None` 表示交给宿主挑默认位置。
+    SaveArchive { path: Option<String> },
+    /// 读回存档（既接受存档文件，也接受裸场景文件）。
+    LoadArchive { path: String },
+}
+
+impl SceneCommand {
+    pub fn switch(path: impl Into<String>) -> Self {
+        Self::Switch { path: path.into() }
+    }
+
+    pub fn back() -> Self {
+        Self::Back
+    }
+
+    pub fn save_archive(path: Option<String>) -> Self {
+        Self::SaveArchive { path }
+    }
+
+    pub fn load_archive(path: impl Into<String>) -> Self {
+        Self::LoadArchive { path: path.into() }
+    }
+
+    /// 命令标识（日志与 RPC 回执里的 `command` 字段）。
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Switch { .. } => "scene.switch",
+            Self::Back => "scene.back",
+            Self::SaveArchive { .. } => "scene.archive.save",
+            Self::LoadArchive { .. } => "scene.archive.load",
+        }
+    }
+
+    /// 是否会换掉当前场景。`SaveArchive` 只写盘，不动世界，因此不参与"每帧最多
+    /// 换一次世界"的互斥——存档与切换可以在同一帧里排着队走。
+    pub fn is_world_change(&self) -> bool {
+        !matches!(self, Self::SaveArchive { .. })
+    }
+
+    /// 命令携带的路径（`Back` 没有路径，`SaveArchive` 可以没有）。
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Switch { path } | Self::LoadArchive { path } => Some(path.as_str()),
+            Self::SaveArchive { path } => path.as_deref(),
+            Self::Back => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,5 +865,58 @@ mod tests {
         stack.clear();
         assert!(stack.is_empty());
         assert_eq!(stack.current_index(), None);
+    }
+
+    // ---------- 场景命令 ----------
+
+    #[test]
+    fn command_labels_are_stable() {
+        assert_eq!(SceneCommand::switch("a.json").label(), "scene.switch");
+        assert_eq!(SceneCommand::back().label(), "scene.back");
+        assert_eq!(
+            SceneCommand::save_archive(None).label(),
+            "scene.archive.save"
+        );
+        assert_eq!(
+            SceneCommand::load_archive("slot.json").label(),
+            "scene.archive.load"
+        );
+    }
+
+    #[test]
+    fn command_path_follows_variant() {
+        assert_eq!(SceneCommand::switch("a.json").path(), Some("a.json"));
+        assert_eq!(SceneCommand::back().path(), None);
+        assert_eq!(SceneCommand::save_archive(None).path(), None);
+        assert_eq!(
+            SceneCommand::save_archive(Some("slot.json".into())).path(),
+            Some("slot.json")
+        );
+        assert_eq!(
+            SceneCommand::load_archive("slot.json").path(),
+            Some("slot.json")
+        );
+    }
+
+    #[test]
+    fn only_save_archive_is_not_a_world_change() {
+        assert!(SceneCommand::switch("a.json").is_world_change());
+        assert!(SceneCommand::back().is_world_change());
+        assert!(SceneCommand::load_archive("slot.json").is_world_change());
+        assert!(!SceneCommand::save_archive(None).is_world_change());
+        assert!(!SceneCommand::save_archive(Some("slot.json".into())).is_world_change());
+    }
+
+    #[test]
+    fn command_carries_text_verbatim() {
+        // 命令只是信封：不做 trim、不做规范化，路径语义留给宿主（相对路径按 cwd 解析）。
+        let cmd = SceneCommand::switch("  scenes/a.json  ");
+        assert_eq!(cmd.path(), Some("  scenes/a.json  "));
+        assert_eq!(
+            cmd,
+            SceneCommand::Switch {
+                path: "  scenes/a.json  ".into()
+            }
+        );
     }
 }
