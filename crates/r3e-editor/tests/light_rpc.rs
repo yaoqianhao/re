@@ -114,6 +114,43 @@ fn light_set_patch_is_parsed_field_by_field() {
     assert_eq!(seen.outer_deg, Some(25.0));
 }
 
+/// 扩展十八 C：阴影两项同样是可选补丁字段，缺省必须保持 `None`（沿用宿主原值）。
+#[test]
+fn light_set_patch_parses_shadow_fields() {
+    let mut api = Mock::default();
+    let resp = call(
+        &mut api,
+        "light.set",
+        json!({ "key": "lamp", "cast_shadow": true, "shadow_bias": 0.004 }),
+    );
+    assert!(resp.error.is_none(), "应成功：{:?}", resp.error);
+    let seen = api.seen.expect("宿主应收到补丁");
+    assert_eq!(seen.cast_shadow, Some(true));
+    assert_eq!(seen.shadow_bias, Some(0.004));
+    assert!(!seen.is_key_only(), "只写阴影也算有效补丁");
+
+    // 只写 shadow_bias / 只写 cast_shadow 都不能被误判成「只有 key」
+    let mut api = Mock::default();
+    call(
+        &mut api,
+        "light.set",
+        json!({ "key": "lamp", "cast_shadow": false }),
+    );
+    assert!(api
+        .seen
+        .is_some_and(|p| p.cast_shadow == Some(false) && p.shadow_bias.is_none()));
+
+    // 类型不对要挡在传输层
+    let mut api = Mock::default();
+    let resp = call(
+        &mut api,
+        "light.set",
+        json!({ "key": "lamp", "cast_shadow": 1 }),
+    );
+    assert!(resp.error.is_some(), "cast_shadow 应为布尔，1 必须被拒");
+    assert!(api.seen.is_none(), "非法参数不得落到宿主");
+}
+
 /// 只给 key + 一个字段：其余必须是 `None`（补丁式语义，不是「补全默认值」）。
 #[test]
 fn light_set_partial_patch_leaves_rest_none() {

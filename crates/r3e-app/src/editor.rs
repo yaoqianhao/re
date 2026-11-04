@@ -494,6 +494,12 @@ impl EngineApi for LocalEngineApi<'_> {
         if let Some(v) = patch.outer_deg {
             light.outer_deg = v;
         }
+        if let Some(v) = patch.cast_shadow {
+            light.cast_shadow = v;
+        }
+        if let Some(v) = patch.shadow_bias {
+            light.shadow_bias = v;
+        }
         let applied = light.sanitized();
         // `upsert_local_light` 满载时只拒绝「新增」，同 key 覆盖照常生效——
         // 因此这里的失败一定是容量问题，报错文案直接点明上限。
@@ -1201,6 +1207,8 @@ fn local_light_value(light: &LocalLight) -> Value {
         "range": light.range,
         "inner_deg": light.inner_deg,
         "outer_deg": light.outer_deg,
+        "cast_shadow": light.cast_shadow,
+        "shadow_bias": light.shadow_bias,
     })
 }
 
@@ -1225,7 +1233,7 @@ fn ui_element_value(el: &UiElement) -> Value {
 mod tests {
     use super::*;
     use r3e_core::anim::{AnimBinding, AnimInstance};
-    use r3e_core::light::MIN_LIGHT_RANGE;
+    use r3e_core::light::{MAX_LOCAL_SHADOW_BIAS, MIN_LIGHT_RANGE};
     use r3e_core::{AnimClip, AnimKey, AnimTrack, InputState};
     use std::sync::Arc;
 
@@ -1751,6 +1759,56 @@ mod tests {
         assert_eq!(light.intensity, 0.0, "负强度夹到 0");
         assert_eq!(light.range, MIN_LIGHT_RANGE, "零半径抬到下限");
         assert!(light.outer_deg > light.inner_deg, "内外角必须修正");
+    }
+
+    /// 扩展十八 C：阴影两项走同一补丁通道，缺省不动原值，非法偏移被夹进合法区间。
+    #[test]
+    fn light_set_merges_shadow_fields() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.light_set(LightPatch {
+            key: "lamp".to_string(),
+            intensity: Some(2.0),
+            ..Default::default()
+        })
+        .expect("新建应成功");
+        assert!(
+            !scene.borrow().local_light("lamp").unwrap().cast_shadow,
+            "新灯默认不投影"
+        );
+
+        // 只给 cast_shadow：shadow_bias 必须沿用原值
+        let before_bias = scene.borrow().local_light("lamp").unwrap().shadow_bias;
+        let resp = api
+            .light_set(LightPatch {
+                key: "lamp".to_string(),
+                cast_shadow: Some(true),
+                ..Default::default()
+            })
+            .expect("应成功");
+        assert_eq!(resp["inserted"], json!(false), "同 key 是更新而非新增");
+        assert_eq!(resp["light"]["cast_shadow"], json!(true), "回包带新值");
+        assert_eq!(resp["light"]["shadow_bias"], json!(before_bias));
+        assert!(scene.borrow().local_light("lamp").unwrap().cast_shadow);
+
+        // 超上限的偏移被夹住，不会原样落进场景
+        api.light_set(LightPatch {
+            key: "lamp".to_string(),
+            shadow_bias: Some(99.0),
+            ..Default::default()
+        })
+        .expect("应成功（收敛后）");
+        let bias = scene.borrow().local_light("lamp").unwrap().shadow_bias;
+        assert!(bias <= MAX_LOCAL_SHADOW_BIAS, "偏移必须被夹到上限内");
+
+        // 关掉投影同样走这条通道
+        api.light_set(LightPatch {
+            key: "lamp".to_string(),
+            cast_shadow: Some(false),
+            ..Default::default()
+        })
+        .expect("应成功");
+        assert!(!scene.borrow().local_light("lamp").unwrap().cast_shadow);
     }
 
     /// 满载：新增被拒并报上限，同 key 覆盖仍生效。

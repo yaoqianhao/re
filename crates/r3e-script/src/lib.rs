@@ -1735,7 +1735,11 @@ mod local_light_script_tests {
             map.get("intensity").unwrap().clone().as_float().unwrap(),
             7.0
         );
-        assert_eq!(map.len(), 9, "快照应含 9 个字段");
+        assert_eq!(map.len(), 11, "快照应含 11 个字段（含扩展十八 C 的两项）");
+        assert!(
+            !map.get("cast_shadow").unwrap().clone().as_bool().unwrap(),
+            "新灯默认不投影"
+        );
 
         let empty = host
             .eval(r#"local_light("ghost")"#)

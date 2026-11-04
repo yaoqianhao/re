@@ -447,6 +447,13 @@ pub struct LightPatch {
     pub range: Option<f32>,
     pub inner_deg: Option<f32>,
     pub outer_deg: Option<f32>,
+    /// 扩展十八 C：是否允许这盏灯参与阴影（`None` = 沿用原值）。
+    ///
+    /// 这里给的是「意愿」；真正入选由渲染层的 `plan_local_shadows` 决定
+    /// （全世界最多 `MAX_LOCAL_SHADOW_CASTERS` 盏，按亮度排序）。
+    pub cast_shadow: Option<bool>,
+    /// 深度偏移（`None` = 沿用原值；宿主会夹进 `[0, MAX_LOCAL_SHADOW_BIAS]`）。
+    pub shadow_bias: Option<f32>,
 }
 
 impl LightPatch {
@@ -460,6 +467,8 @@ impl LightPatch {
             && self.range.is_none()
             && self.inner_deg.is_none()
             && self.outer_deg.is_none()
+            && self.cast_shadow.is_none()
+            && self.shadow_bias.is_none()
     }
 }
 
@@ -1425,6 +1434,8 @@ fn light_patch_from(params: &Value) -> Result<LightPatch, RpcFailure> {
         range: opt_num(params, "range")?,
         inner_deg: opt_num(params, "inner_deg")?,
         outer_deg: opt_num(params, "outer_deg")?,
+        cast_shadow: opt_bool(params, "cast_shadow")?,
+        shadow_bias: opt_num(params, "shadow_bias")?,
     })
 }
 

@@ -17,8 +17,8 @@ use r3e_core::ui::{
     UiUpsert, UiValue, MAX_UI_ELEMENTS,
 };
 use r3e_core::{
-    BoneMask, InputState, KeyCode, LayerMode, LocalLight, MeshRef, NodeId, ObjectDesc, Scene,
-    SceneCommand, SceneStack, ScreenText, TextAlign,
+    plan_local_shadows, BoneMask, InputState, KeyCode, LayerMode, LocalLight, MeshRef, NodeId,
+    ObjectDesc, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
 };
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -2464,6 +2464,29 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 扩展十八 C：投影开关与深度偏移。
+    //
+    // 「会不会真的投影」由渲染层的 `plan_local_shadows` 决定（全世界最多
+    // `MAX_LOCAL_SHADOW_CASTERS` 盏、按亮度排序），这里的 `on` 只是**允许**它参与
+    // 竞争——所以 `local_light_cast_shadow` 读回来是「意愿」，不是「本帧实际在投影」；
+    // 想查本帧有几盏真的在投影，用只读的 `local_shadow_caster_count`。
+    let c = ctx.clone();
+    engine.register_fn(
+        "light_set_cast_shadow",
+        move |key: &str, on: bool| -> bool {
+            c.scene.borrow_mut().with_local_light(key, |l| {
+                l.cast_shadow = on;
+            })
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("light_set_shadow_bias", move |key: &str, v: f64| -> bool {
+        c.scene.borrow_mut().with_local_light(key, |l| {
+            l.shadow_bias = f32_of(v);
+        })
+    });
+
     // 总开关：关掉只是不上传（场景数据保留），打开即整体恢复。
     let c = ctx.clone();
     engine.register_fn("set_lights_enabled", move |on: bool| {
@@ -2497,7 +2520,8 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow().local_light(key).is_some()
     });
 
-    // 一盏灯的完整快照：`#{ key, kind, pos, color, intensity, range, dir, inner, outer }`。
+    // 一盏灯的完整快照：
+    // `#{ key, kind, pos, color, intensity, range, dir, inner, outer, cast_shadow, shadow_bias }`。
     // 键不存在返回空 map（`map.is_empty()` 即可判空，不必先 exists）。
     let c = ctx.clone();
     engine.register_fn("local_light", move |key: &str| -> Map {
@@ -2539,6 +2563,8 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         );
         m.insert("inner".into(), Dynamic::from(l.inner_deg as f64));
         m.insert("outer".into(), Dynamic::from(l.outer_deg as f64));
+        m.insert("cast_shadow".into(), Dynamic::from(l.cast_shadow));
+        m.insert("shadow_bias".into(), Dynamic::from(l.shadow_bias as f64));
         m
     });
 
@@ -2559,6 +2585,27 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .local_light(key)
             .map(|l| l.kind.name().to_string())
             .unwrap_or_default()
+    });
+
+    // 投影意愿（场景里 `cast_shadow` 的原值），与「本帧实际投影」是两件事。
+    let c = ctx.clone();
+    engine.register_fn("local_light_cast_shadow", move |key: &str| -> bool {
+        c.scene
+            .borrow()
+            .local_light(key)
+            .map(|l| l.cast_shadow)
+            .unwrap_or(false)
+    });
+
+    // 本帧真正参与投影的灯数（= `plan_local_shadows` 选中的盏数）。
+    // 关掉局部光源时不投影，直接 0——脚本做「阴影预算是否吃满」的 HUD 很省事。
+    let c = ctx.clone();
+    engine.register_fn("local_shadow_caster_count", move || -> i64 {
+        let scene = c.scene.borrow();
+        if !scene.lights_enabled {
+            return 0;
+        }
+        plan_local_shadows(&scene.lights).len() as i64
     });
 
     // 某点受到的全部局部光照度（与 GPU 同式的 CPU 参考实现）：
