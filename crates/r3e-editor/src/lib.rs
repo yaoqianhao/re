@@ -639,6 +639,30 @@ pub trait EngineApi {
         Err(RpcFailure::unsupported("scene.save"))
     }
 
+    /// 读一帧的运行时统计（P0-4）：帧时间分位 + 绘制统计 + 场景规模。
+    ///
+    /// 返回值契约（宿主必须给全这些键，缺项会让上游的回归基线无从比对）：
+    /// `{ "frame": { "index", "fps", "frame_ms": {"p50","p95","p99","max","samples"} },
+    ///    "render": { "draw_calls", "instances", "culled", "cull_unknown",
+    ///                "shadow_draws", "shadow_cascades", "ssao", "local_lights",
+    ///                "ui_draws", "text_draws" },
+    ///    "scene": { "objects", "meshes", "materials", "animations", "scripts" },
+    ///    "size": { "width", "height" } }`
+    ///
+    /// 全是只读采样：调用本方法不改场景、不推进时间。
+    fn engine_stats(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("engine.stats"))
+    }
+
+    /// 离屏渲染一帧并落盘成图片（P0-4），返回 `{ "path", "width", "height", "bytes", "format" }`。
+    ///
+    /// `path` 为 `None` 时由宿主决定默认落盘位置（通常是工作目录下的 captures/）。
+    /// 与截图不同，这里**会推进一帧**（阴影 / 后处理历史前进一格），
+    /// 因此上游不该在逐帧动画的关键帧之间插调用。
+    fn capture_frame(&mut self, _path: Option<&str>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("capture.frame"))
+    }
+
     /// 列出动画混合树层（扩展十八 A）：`{ count, limit, layers: [...] }`。
     ///
     /// `instance` 为 `None` 时列出全部动画实例的层；给了名字但实例不存在，
@@ -1344,6 +1368,31 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 }
             };
             match api.scene_save(path) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        // P0-4 只读反馈：统计采样不改场景，直接透传宿主的快照。
+        // 别名 `enginestats`：`canonical` 会吃掉下划线，`engine_stats` 落到这里正是这个名字，
+        // 让插件工具名与 RPC 方法名保持一致，免得模型两边记两套写法。
+        "engine.stats" | "enginestats" => match api.engine_stats() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
+        // P0-4 只读反馈：截图路径可省略（宿主决定默认落盘位置），空串一律拒绝，
+        // 免得宿主把「没给」当成「写到空路径」。
+        "capture.frame" | "captureframe" => {
+            let path = match param(&req.params, "path") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if !s.trim().is_empty() => Some(s.as_str()),
+                Some(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `path` 应为非空字符串（可省略）"),
+                    )
+                }
+            };
+            match api.capture_frame(path) {
                 Ok(r) => Response::ok(id, r),
                 Err(f) => Response::fail(id, f),
             }
@@ -2229,5 +2278,160 @@ mod audio_spatial_rpc_tests {
             ),
         );
         assert_eq!(res.error.expect("set 也应报未实现").code, METHOD_NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod stats_capture_rpc_tests {
+    use super::*;
+
+    /// 只关心 P0-4 两个方法的桩：统计回固定快照，截图记录收到的路径。
+    #[derive(Default)]
+    struct FeedbackStub {
+        stats_calls: usize,
+        seen_path: Option<Option<String>>,
+    }
+
+    impl EngineApi for FeedbackStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+
+        fn engine_stats(&mut self) -> Result<Value, RpcFailure> {
+            self.stats_calls += 1;
+            Ok(json!({
+                "frame": { "index": 42, "fps": 60.0 },
+                "render": { "draw_calls": 7 },
+            }))
+        }
+
+        fn capture_frame(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
+            self.seen_path = Some(path.map(str::to_string));
+            Ok(json!({
+                "path": path.unwrap_or("<default>"),
+                "width": 64,
+                "height": 32,
+                "bytes": 8192,
+                "format": "rgba8unormsrgb",
+            }))
+        }
+    }
+
+    /// 什么都没实现的宿主：验证 trait 缺省实现拒绝这两个新方法。
+    struct BareStub;
+
+    impl EngineApi for BareStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+    }
+
+    fn request(method: &str, params: Value) -> Request {
+        Request {
+            jsonrpc: JSONRPC.to_string(),
+            id: Some(json!(1)),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[test]
+    fn engine_stats_returns_host_snapshot() {
+        let mut api = FeedbackStub::default();
+        let res = dispatch(&mut api, &request("engine.stats", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        let value = res.result.expect("应有结果");
+        assert_eq!(value["frame"]["index"], json!(42));
+        assert_eq!(value["render"]["draw_calls"], json!(7));
+        assert_eq!(api.stats_calls, 1, "应恰好调用宿主一次");
+    }
+
+    #[test]
+    fn engine_stats_accepts_underscore_alias() {
+        // 工具名 engine_stats 经 canonical 后是 enginestats，必须同样可达
+        let mut api = FeedbackStub::default();
+        let res = dispatch(&mut api, &request("engine_stats", json!({})));
+        assert!(res.error.is_none(), "别名应可用: {:?}", res.error);
+        assert_eq!(api.stats_calls, 1);
+    }
+
+    #[test]
+    fn engine_stats_ignores_unknown_params() {
+        // 上游可能顺手把 endpop2 等参数一起塞进来；统计是采样，多余参数不该拒
+        let mut api = FeedbackStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("engine.stats", json!({ "detail": true })),
+        );
+        assert!(res.error.is_none(), "多余参数不应报错: {:?}", res.error);
+    }
+
+    #[test]
+    fn capture_frame_passes_path_through() {
+        let mut api = FeedbackStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("capture.frame", json!({ "path": "shots/a.png" })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(
+            api.seen_path,
+            Some(Some("shots/a.png".to_string())),
+            "路径应原样传给宿主"
+        );
+        assert_eq!(res.result.unwrap()["bytes"], json!(8192));
+    }
+
+    #[test]
+    fn capture_frame_defaults_to_none_when_path_absent() {
+        let mut api = FeedbackStub::default();
+        // 方法名大小写不敏感
+        let res = dispatch(&mut api, &request("Capture.Frame", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.seen_path, Some(None), "省略 path 时应交给宿主决定落点");
+    }
+
+    #[test]
+    fn capture_frame_accepts_underscore_alias() {
+        let mut api = FeedbackStub::default();
+        let res = dispatch(&mut api, &request("capture_frame", json!({})));
+        assert!(res.error.is_none(), "别名应可用: {:?}", res.error);
+        assert_eq!(api.seen_path, Some(None));
+    }
+
+    #[test]
+    fn capture_frame_rejects_blank_path() {
+        let mut api = FeedbackStub::default();
+        let res = dispatch(&mut api, &request("capture.frame", json!({ "path": "  " })));
+        let err = res.error.expect("空路径应报错");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(api.seen_path, None, "参数非法时不应调用宿主");
+    }
+
+    #[test]
+    fn capture_frame_rejects_non_string_path() {
+        let mut api = FeedbackStub::default();
+        let res = dispatch(&mut api, &request("capture.frame", json!({ "path": 7 })));
+        assert_eq!(
+            res.error.expect("数字路径应报错").code,
+            INVALID_PARAMS,
+            "类型错应被参数层拦下"
+        );
+        assert_eq!(api.seen_path, None);
+    }
+
+    #[test]
+    fn feedback_methods_unsupported_by_default() {
+        let mut api = BareStub;
+        for method in ["engine.stats", "capture.frame"] {
+            let res = dispatch(&mut api, &request(method, json!({})));
+            let err = res.error.expect("缺省实现应报未实现");
+            assert_eq!(err.code, METHOD_NOT_FOUND, "{method}");
+            assert!(
+                err.message.contains(method),
+                "错误消息应点名方法: {}",
+                err.message
+            );
+        }
     }
 }
