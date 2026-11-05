@@ -1,0 +1,1283 @@
+{
+  "$defs": {
+    "Anchor": {
+      "description": "锚点：元素矩形在屏幕上的对齐方式。",
+      "oneOf": [
+        {
+          "const": "top_left",
+          "description": "左上角（默认）",
+          "type": "string"
+        },
+        {
+          "const": "top_center",
+          "description": "上边中点",
+          "type": "string"
+        },
+        {
+          "const": "top_right",
+          "description": "右上角",
+          "type": "string"
+        },
+        {
+          "const": "middle_left",
+          "description": "左边中点",
+          "type": "string"
+        },
+        {
+          "const": "center",
+          "description": "屏幕正中",
+          "type": "string"
+        },
+        {
+          "const": "middle_right",
+          "description": "右边中点",
+          "type": "string"
+        },
+        {
+          "const": "bottom_left",
+          "description": "左下角",
+          "type": "string"
+        },
+        {
+          "const": "bottom_center",
+          "description": "下边中点",
+          "type": "string"
+        },
+        {
+          "const": "bottom_right",
+          "description": "右下角",
+          "type": "string"
+        }
+      ]
+    },
+    "AnimDecl": {
+      "description": "资产自带的动画播放声明（P3 起）。\n\n写在场景 `assets[]` 项里，语义是「导入后立刻给这个资产实例挂一个播放器」。\n`clip` 省略时取该资产动画栈里的第一个片段。",
+      "properties": {
+        "clip": {
+          "description": "片段名（大小写不敏感）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "looping": {
+          "description": "是否循环，缺省 true。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "play": {
+          "description": "是否立即播放，缺省 true。false 时实例存在但处于暂停状态。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "speed": {
+          "description": "播放速度，缺省 1.0；负值为倒放。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "time": {
+          "description": "起始时间（秒），缺省 0。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AssetDecl": {
+      "description": "场景文件里声明的外部资产（P2 起）。路径相对场景文件所在目录解析。\n\n声明后由应用层导入并在导入成功后按资产内网格 spawn 物件；\n物件也可以通过 `\"mesh\": \"asset:<路径>#<序号>\"` 直接引用同一资产。",
+      "properties": {
+        "anim": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnimDecl"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "导入后自动挂载的动画播放器（P3 起）。"
+        },
+        "path": {
+          "description": "资产路径（FBX 等）。",
+          "type": "string"
+        },
+        "position": {
+          "description": "该资产下所有网格的整体偏移。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rotation": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scale": {
+          "description": "整体缩放（三轴相同时即可当作单位换算，例如 FBX 以厘米建模就填 0.01）。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "spawn": {
+          "description": "只导入不 spawn（供脚本 / 其它物件的 `asset:` 引用使用）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "BloomSettings": {
+      "description": "泛光（bloom）参数。",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "是否启用泛光。缺省关闭：泛光是风格化效果，不该在老场景上默认打开。",
+          "type": "boolean"
+        },
+        "intensity": {
+          "default": 0.18000000715255737,
+          "description": "泛光叠加强度：0 = 光晕不可见，0.1 左右为真实观感。",
+          "format": "float",
+          "type": "number"
+        },
+        "knee": {
+          "default": 0.5,
+          "description": "软膝宽度：阈值上下各这么多单位内做平滑过渡，0 表示硬阈值。",
+          "format": "float",
+          "type": "number"
+        },
+        "threshold": {
+          "default": 1.0,
+          "description": "亮部提取阈值（线性 HDR 单位）。只有亮度超过它的像素才参与光晕。",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "CameraDesc": {
+      "properties": {
+        "fov": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "position": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "target": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EnvironmentSettings": {
+      "description": "程序化天空参数。\n\n刻意不用 HDR 图片：场景是纯文本可编程的，环境也应该能被脚本一行改掉，\n而且省掉一次外部资产依赖。三色球面插值足以给出「天、地、太阳」三要素。",
+      "properties": {
+        "ground": {
+          "default": [
+            0.10000000149011612,
+            0.09000000357627869,
+            0.07999999821186066
+          ],
+          "description": "地面辐亮度（线性 RGB），只影响朝下的方向。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "intensity": {
+          "default": 1.0,
+          "description": "IBL 总强度：最终环境项的整体乘数，1.0 为物理值，调它是给美术留的旋钮。",
+          "format": "float",
+          "type": "number"
+        },
+        "sky_horizon": {
+          "default": [
+            0.30000001192092896,
+            0.33000001311302185,
+            0.3799999952316284
+          ],
+          "description": "地平线辐亮度（线性 RGB）。天与地的过渡都经过它，通常最亮。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "sky_zenith": {
+          "default": [
+            0.18000000715255737,
+            0.23999999463558197,
+            0.36000001430511475
+          ],
+          "description": "天顶辐亮度（线性 RGB）。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "sun_color": {
+          "default": [
+            1.0,
+            0.9599999785423279,
+            0.8999999761581421
+          ],
+          "description": "太阳颜色（线性 RGB）。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "sun_dir": {
+          "default": [
+            0.4223909080028534,
+            0.8447818756103516,
+            0.3285262882709503
+          ],
+          "description": "太阳方向（世界空间，指向太阳）。写入前会被归一化，零向量回退为正上方。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "sun_intensity": {
+          "default": 1.149999976158142,
+          "description": "太阳强度：0 表示阴天（只剩三色天空），数值越大太阳盘越亮。",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "LightDesc": {
+      "properties": {
+        "ambient": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "color": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "direction": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "intensity": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "shadow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShadowDesc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "阴影配置（阶段 D）；省略时沿用引擎默认（开启，2048²，自适应半宽）。"
+        }
+      },
+      "type": "object"
+    },
+    "LocalLight": {
+      "description": "一盏局部光源。\n\n字段布局刻意保持「能直接按 4 个 vec4 拍进 uniform」：位置 + 距离、颜色 + 强度、\n方向 + 内角余弦、外角余弦 + 类型码。字段用数组而非 `Vec3` 是为了让场景 JSON\n（`\"pos\": [1, 2, 3]`）与序列化严格对称，不引入 glam 的 serde feature。",
+      "properties": {
+        "cast_shadow": {
+          "default": false,
+          "description": "是否投影（扩展十八 C）。缺省 `false`：老场景一字不改，画面与开销都不变。\n\n打开后由渲染层做深度 pass —— 聚光跑单面透视阴影，点光跑立方体六面，\n每帧最多 [`MAX_LOCAL_SHADOW_CASTERS`] 盏灯真正投影（按「辐亮度 × 距离²」排序）。",
+          "type": "boolean"
+        },
+        "color": {
+          "default": [
+            1.0,
+            0.949999988079071,
+            0.8799999952316284
+          ],
+          "description": "线性 RGB 颜色（会被 `intensity` 放大）。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "dir": {
+          "default": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "description": "聚光的照射方向（从光源射出的方向）。点光忽略此字段。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "inner_deg": {
+          "default": 15.0,
+          "description": "光锥内角（度）：这个角度内是满强度。",
+          "format": "float",
+          "type": "number"
+        },
+        "intensity": {
+          "default": 1.0,
+          "description": "强度乘数（线性 HDR）。",
+          "format": "float",
+          "type": "number"
+        },
+        "key": {
+          "default": "",
+          "description": "脚本 / RPC / 场景里的唯一主键。重复写同一 key = 整体覆盖（不累积）。",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/LocalLightKind",
+          "default": "point"
+        },
+        "outer_deg": {
+          "default": 30.0,
+          "description": "光锥外角（度）：这个角度外是零。",
+          "format": "float",
+          "type": "number"
+        },
+        "pos": {
+          "default": [
+            0.0,
+            2.0,
+            0.0
+          ],
+          "description": "世界坐标下的光源位置。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "range": {
+          "default": 10.0,
+          "description": "影响半径：距离 ≥ range 的片元完全不受这盏灯影响。",
+          "format": "float",
+          "type": "number"
+        },
+        "shadow_bias": {
+          "default": 0.0020000000949949026,
+          "description": "阴影深度偏移（NDC 0..1，可与方向光的 `ShadowSettings::bias` 分开调）。\n规范化后夹到 [0, 0.05]。",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "LocalLightKind": {
+      "description": "局部光源类型。",
+      "oneOf": [
+        {
+          "const": "point",
+          "description": "点光：向四面八方发光，只看距离衰减。",
+          "type": "string"
+        },
+        {
+          "const": "spot",
+          "description": "聚光：在点光基础上再乘一个方向锥因子。",
+          "type": "string"
+        }
+      ]
+    },
+    "ObjectDesc": {
+      "description": "单个物件在场景文件 / 脚本 `spawn` 中的描述。",
+      "properties": {
+        "color": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "material": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SurfaceMaterial"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "PBR 表面材质（metallic / roughness / emissive）；省略表示不覆盖网格资产材质。"
+        },
+        "mesh": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "physics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhysicsDesc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "物理描述：只做数据承载，真正生效取决于启用的 `PhysicsBackend`。"
+        },
+        "position": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rotation": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scale": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "visible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "PhysicsDesc": {
+      "description": "物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。",
+      "properties": {
+        "body": {
+          "description": "\"dynamic\" | \"static\" | \"kinematic\"",
+          "type": "string"
+        },
+        "ccd": {
+          "description": "连续碰撞检测（CCD）：高速物体不穿过薄墙。\n\n省略表示「跟场景级 `physics.ccd`」（再缺省为开）；显式写 `false` 可让\n单个物件退出 CCD（例如大量慢速道具，省掉 sweep 开销）。\n后端不申报 `ccd` 能力时该字段无效。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "collider": {
+          "description": "\"box\" | \"sphere\" | \"cylinder\"，缺省由 mesh 推导",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "friction": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "half_extents": {
+          "description": "碰撞体半尺寸，缺省由 scale 推导",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mass": {
+          "format": "float",
+          "type": "number"
+        },
+        "restitution": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PhysicsSceneDesc": {
+      "description": "场景级物理配置：对应场景 JSON 顶层 `physics` 字段。\n\n所有字段都是可选的，缺省值由 `r3e_physics::PhysicsConfig` 决定：\n默认 enabled=false（物理关闭）、backend=\"builtin\"、重力 -9.81、地面 y=0。",
+      "properties": {
+        "backend": {
+          "description": "\"builtin\"（内置最简物理）| \"null\"（空转，只登记刚体）| \"rapier\"（需构建时启用）",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ccd": {
+          "description": "所有刚体的 CCD 缺省开关（逐物件 `physics.ccd` 优先）。\n\n缺省 `true`：后端申报 `ccd` 能力时默认开启，避免「高速物件穿墙」\n这种一看就是缺陷的表现。脚本可用 `physics_set_ccd(false)` 全局关。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "enabled": {
+          "description": "是否启用物理模拟。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gravity": {
+          "description": "重力加速度向量，缺省 [0.0, -9.81, 0.0]。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "ground": {
+          "description": "地面平面高度，缺省 0.0。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PostFxSettings": {
+      "description": "HDR 后处理链参数（场景 JSON 的 `postfx` 段）。\n\n场景里缺这个段（`Scene::postfx == None`）等价于 [`PostFxSettings::default`]：\n曝光 0、不调色、不开泛光、不开 FXAA —— 即「只有离屏 HDR 目标 + composite 直通」，\n画面与扩展十二一致。这样老场景一行不改也能继续跑。",
+      "properties": {
+        "bloom": {
+          "$ref": "#/$defs/BloomSettings",
+          "default": {
+            "enabled": false,
+            "intensity": 0.18000000715255737,
+            "knee": 0.5,
+            "threshold": 1.0
+          },
+          "description": "泛光参数。"
+        },
+        "exposure": {
+          "default": 0.0,
+          "description": "曝光（EV）。0 = 不缩放。",
+          "format": "float",
+          "type": "number"
+        },
+        "fxaa": {
+          "default": false,
+          "description": "是否开启 FXAA：在 composite 里按亮度梯度做一次边缘内插，\n弥补引擎没有 MSAA 的锯齿。",
+          "type": "boolean"
+        },
+        "ssao": {
+          "$ref": "#/$defs/SsaoSettings",
+          "default": {
+            "bias": 0.019999999552965164,
+            "enabled": false,
+            "intensity": 1.0,
+            "radius": 0.6000000238418579,
+            "samples": 8
+          },
+          "description": "屏幕空间环境光遮蔽（扩展十七）：缺省关闭，composite 乘 1。"
+        },
+        "tonemap": {
+          "$ref": "#/$defs/TonemapMode",
+          "default": "none",
+          "description": "色调映射曲线。"
+        }
+      },
+      "type": "object"
+    },
+    "ScreenText": {
+      "description": "一条屏幕空间文本。\n\n这些字段全部来自场景文件 / 脚本，渲染层每帧按当前值重新排版 —— 场景是唯一真源。",
+      "properties": {
+        "align": {
+          "$ref": "#/$defs/TextAlign",
+          "default": "left"
+        },
+        "color": {
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "description": "sRGB 颜色 + 透明度。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "content": {
+          "default": "",
+          "type": "string"
+        },
+        "key": {
+          "default": "",
+          "description": "唯一键：脚本用它来更新同一条文本（同名即覆盖）。",
+          "type": "string"
+        },
+        "line_height": {
+          "default": 0.0,
+          "description": "行高倍数（相对字体自然行高）；<= 0 表示用自然行高。",
+          "format": "float",
+          "type": "number"
+        },
+        "size": {
+          "default": 24.0,
+          "description": "字号（像素）。",
+          "format": "float",
+          "type": "number"
+        },
+        "visible": {
+          "default": true,
+          "type": "boolean"
+        },
+        "wrap": {
+          "default": 0.0,
+          "description": "自动换行的最大宽度（像素）；0 表示不自动换行，只按 `\\n` 硬换行。",
+          "format": "float",
+          "type": "number"
+        },
+        "x": {
+          "default": 0.0,
+          "description": "文本块左上角（像素，窗口坐标系，原点在左上）。",
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "default": 0.0,
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "ShadowDesc": {
+      "description": "场景文件里的阴影配置（阶段 D）。字段都可省略，省略即沿用默认值。",
+      "properties": {
+        "bias": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "blend": {
+          "description": "级间混合带宽（占该级跨度的比例，0..0.5）；省略沿用默认。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cascadeDistance": {
+          "description": "级联最远距离（世界单位，沿相机前后方向）；省略或 0 = 用相机 `zfar`。\n\n有意不复用上面的 `distance`：那个是阶段 D 阴影正交相机的前后偏移，\n两者语义不同，混用会让老场景在开启 CSM 后阴影突然被裁掉一截。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cascades": {
+          "description": "级联级数 1..=4（扩展十六）；省略或 1 = 单级，等价阶段 D 的老行为。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "distance": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "normal_bias": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ortho": {
+          "description": "正交相机半宽；省略或 0 表示按场景包围球自适应",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "size": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "strength": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SsaoSettings": {
+      "description": "场景 `postfx.ssao` 段。\n\n缺省 [`SsaoSettings::default`]（`enabled = false`）与场景里完全不写这一段等价：\n老场景不加 `ssao` 时，composite 采样的是一张 1×1 的白色占位纹理，\n画面与扩展十六逐像素一致。",
+      "properties": {
+        "bias": {
+          "default": 0.019999999552965164,
+          "description": "深度偏置：压掉同一表面上的自遮挡。",
+          "format": "float",
+          "type": "number"
+        },
+        "enabled": {
+          "default": false,
+          "description": "是否启用。缺省关闭——遮蔽是「加分项」，不该在老场景上默认改变观感。",
+          "type": "boolean"
+        },
+        "intensity": {
+          "default": 1.0,
+          "description": "强度：遮挡率乘上它再从 1 里扣。",
+          "format": "float",
+          "type": "number"
+        },
+        "radius": {
+          "default": 0.6000000238418579,
+          "description": "采样半径（视空间世界单位）。",
+          "format": "float",
+          "type": "number"
+        },
+        "samples": {
+          "default": 8,
+          "description": "半球核样本数（会被夹进 `[4, 16]`）。",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SurfaceMaterial": {
+      "description": "物件级 PBR 材质参数。\n\n只描述「表面如何反射光」，不含颜色：base color 由物件颜色（乘材质染色因子）\n提供，因此一个材质可以被多个不同颜色的物件复用。",
+      "properties": {
+        "emissive": {
+          "description": "自发光（线性 RGB）：直接加到出射亮度上，不参与任何光照计算。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "metallic": {
+          "default": 0.0,
+          "description": "金属度 0..1：0 = 绝缘体（塑料 / 石头），1 = 纯金属（漫反射归零）。",
+          "format": "float",
+          "type": "number"
+        },
+        "roughness": {
+          "description": "粗糙度 0..1：0 = 镜面，1 = 完全漫反射。",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "TextAlign": {
+      "description": "水平对齐方式。",
+      "enum": [
+        "left",
+        "center",
+        "right"
+      ],
+      "type": "string"
+    },
+    "TonemapMode": {
+      "description": "色调映射曲线。\n\n缺省 [`TonemapMode::None`]：只做 clamp，与没有后处理的旧画面逐像素一致——\n老场景不加 `postfx` 段时行为不变，是本扩展的兼容性保证。",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "直通：HDR 直接 clamp 到 [0,1]，高亮区仍是硬切平。",
+          "type": "string"
+        },
+        {
+          "const": "reinhard",
+          "description": "Reinhard：`x / (1 + x)`，压缩平缓但大面积高光会发灰。",
+          "type": "string"
+        },
+        {
+          "const": "aces",
+          "description": "ACES（Narkowicz 拟合）：对比更强，保留更多高光细节，缺省推荐给 HDR 场景。",
+          "type": "string"
+        }
+      ]
+    },
+    "UiElement": {
+      "description": "一个屏幕空间 UI 元素。字段复用同一结构（按 `kind` 取用），脚本层改起来最简单。",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/Anchor",
+          "default": "top_left",
+          "description": "锚点"
+        },
+        "border_width": {
+          "default": 2.0,
+          "description": "边框粗细（像素），仅 `UiKind::Border` 使用；`<= 0` 不画",
+          "format": "float",
+          "type": "number"
+        },
+        "color": {
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "description": "颜色（RGBA，0..1）；图片元素里用作染色，图片加载失败时作为回退填充色",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "image": {
+          "default": "",
+          "description": "图片路径（png / jpeg 等），仅 `UiKind::Image` 使用",
+          "type": "string"
+        },
+        "key": {
+          "default": "",
+          "description": "脚本侧主键。同名重复提交 = 整体覆盖（不会累积）。",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/UiKind",
+          "default": "rect"
+        },
+        "layer": {
+          "default": 0,
+          "description": "层级：小的先画（会被大的盖住）；同层按加入顺序稳定排序",
+          "format": "int32",
+          "type": "integer"
+        },
+        "offset": {
+          "default": [
+            {
+              "unit": "px",
+              "value": 0.0
+            },
+            {
+              "unit": "px",
+              "value": 0.0
+            }
+          ],
+          "description": "相对锚点的偏移；`Percent` 以屏幕宽 / 高为基准",
+          "items": {
+            "$ref": "#/$defs/UiValue"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "size": {
+          "default": [
+            {
+              "unit": "px",
+              "value": 100.0
+            },
+            {
+              "unit": "px",
+              "value": 100.0
+            }
+          ],
+          "description": "元素尺寸；`Percent` 以屏幕宽 / 高为基准",
+          "items": {
+            "$ref": "#/$defs/UiValue"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "slice_margin": {
+          "default": [
+            {
+              "unit": "px",
+              "value": 0.0
+            },
+            {
+              "unit": "px",
+              "value": 0.0
+            },
+            {
+              "unit": "px",
+              "value": 0.0
+            },
+            {
+              "unit": "px",
+              "value": 0.0
+            }
+          ],
+          "description": "九宫格边距 `[左, 上, 右, 下]`，仅 `UiKind::Image` 使用；全 `0` = 关闭九宫格。\n\n单位与 [`UiValue`] 一致：`Px` 是元素像素，`Percent` 以元素**自身**宽 / 高为基准\n（左右按宽、上下按高）。求解见 [`slice_margins`]：超出元素尺寸时等比夹取，\n所以不会画出负宽度的中间块。",
+          "items": {
+            "$ref": "#/$defs/UiValue"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "uv": {
+          "default": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ],
+          "description": "图片 uv 子区间 `[u0, v0, u1, v1]`，默认整张；九宫格切分时作为**整体**外边界",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "visible": {
+          "default": true,
+          "description": "是否绘制",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "UiKind": {
+      "description": "元素类型。",
+      "oneOf": [
+        {
+          "const": "rect",
+          "description": "纯色矩形（支持 alpha 混合）",
+          "type": "string"
+        },
+        {
+          "const": "border",
+          "description": "空心边框（四条边，`border_width` 为粗细）",
+          "type": "string"
+        },
+        {
+          "const": "image",
+          "description": "纹理图片（`image` 为 png 等文件路径，`color` 作为染色 / 回退色）",
+          "type": "string"
+        }
+      ]
+    },
+    "UiUnit": {
+      "description": "长度单位：像素或屏幕百分比。",
+      "oneOf": [
+        {
+          "const": "px",
+          "description": "像素（默认）",
+          "type": "string"
+        },
+        {
+          "const": "percent",
+          "description": "屏幕尺寸的百分比，`100` 表示整屏宽 / 整屏高",
+          "type": "string"
+        }
+      ]
+    },
+    "UiValue": {
+      "description": "带单位的长度值（偏移或尺寸）。",
+      "properties": {
+        "unit": {
+          "$ref": "#/$defs/UiUnit"
+        },
+        "value": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://r3e.dev/schema/scene.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "r3e 引擎场景 JSON 的完整契约，由 crates/r3e-core 的 serde 结构派生。所有字段均可省略（省略即取引擎默认值）；未声明的额外字段会被 serde 静默忽略，因此拼错字段名不会报错——请以本 schema 的 properties 列表为准。",
+  "properties": {
+    "assets": {
+      "description": "外部资产声明（应用层负责真正导入）。",
+      "items": {
+        "$ref": "#/$defs/AssetDecl"
+      },
+      "type": "array"
+    },
+    "background": {
+      "items": {
+        "format": "float",
+        "type": "number"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "camera": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CameraDesc"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EnvironmentSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "环境探针（IBL）。缺省表示沿用 `light.ambient` 常数环境光，与旧场景完全兼容。"
+    },
+    "light": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LightDesc"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lights": {
+      "description": "局部光源表（扩展十五：点光 / 聚光）。空表示场景只有方向光，画面与旧场景一致。",
+      "items": {
+        "$ref": "#/$defs/LocalLight"
+      },
+      "type": "array"
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "objects": {
+      "items": {
+        "$ref": "#/$defs/ObjectDesc"
+      },
+      "type": "array"
+    },
+    "physics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PhysicsSceneDesc"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "postfx": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PostFxSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "HDR 后处理链（扩展十三）。缺省表示直通（曝光 0 / 不调色 / 无泛光 / 无 FXAA），\n画面与「没有 postfx 段」的旧场景逐像素一致。"
+    },
+    "texts": {
+      "description": "2D 屏幕空间文本（HUD）。空表示场景没有文本层。",
+      "items": {
+        "$ref": "#/$defs/ScreenText"
+      },
+      "type": "array"
+    },
+    "ui": {
+      "description": "2D 屏幕空间 UI 元素（矩形 / 边框 / 图片）。空表示场景没有 UI 层。",
+      "items": {
+        "$ref": "#/$defs/UiElement"
+      },
+      "type": "array"
+    }
+  },
+  "title": "r3e 场景文件（assets/scene*.json）",
+  "type": "object"
+}

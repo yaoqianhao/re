@@ -70,7 +70,9 @@ pub const FXAA_EDGE_THRESHOLD_RELATIVE: f32 = 1.0 / 8.0;
 ///
 /// 缺省 [`TonemapMode::None`]：只做 clamp，与没有后处理的旧画面逐像素一致——
 /// 老场景不加 `postfx` 段时行为不变，是本扩展的兼容性保证。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum TonemapMode {
     /// 直通：HDR 直接 clamp 到 [0,1]，高亮区仍是硬切平。
@@ -113,7 +115,7 @@ impl TonemapMode {
 }
 
 /// 泛光（bloom）参数。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BloomSettings {
     /// 是否启用泛光。缺省关闭：泛光是风格化效果，不该在老场景上默认打开。
     #[serde(default)]
@@ -183,7 +185,7 @@ impl BloomSettings {
 /// 场景里缺这个段（`Scene::postfx == None`）等价于 [`PostFxSettings::default`]：
 /// 曝光 0、不调色、不开泛光、不开 FXAA —— 即「只有离屏 HDR 目标 + composite 直通」，
 /// 画面与扩展十二一致。这样老场景一行不改也能继续跑。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PostFxSettings {
     /// 曝光（EV）。0 = 不缩放。
     #[serde(default = "default_exposure")]

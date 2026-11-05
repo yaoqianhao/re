@@ -53,7 +53,7 @@ const LAMBERT_A2: f32 = PI / 4.0;
 ///
 /// 刻意不用 HDR 图片：场景是纯文本可编程的，环境也应该能被脚本一行改掉，
 /// 而且省掉一次外部资产依赖。三色球面插值足以给出「天、地、太阳」三要素。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EnvironmentSettings {
     /// 天顶辐亮度（线性 RGB）。
     #[serde(default = "default_zenith")]

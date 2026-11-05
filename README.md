@@ -169,6 +169,12 @@ cargo run --release -- assets\scene.json scripts\main.rhai
 
 `physics` 段在物理开启时真正参与模拟（默认关闭，见第 5 章）。只有声明了该段的物件才会被自动绑成刚体。
 
+**完整字段契约**：上面的示例只是子集。全字段（含取值范围、枚举、默认值）见
+`assets/scene.schema.json`（JSON Schema 2020-12），由 `r3e-core` 的 serde 结构派生，
+`cargo run -p r3e-core --bin scene_schema_dump` 重新生成——改了场景结构却没重生成会让
+`cargo test` 直接红灯（防漂移测试）。注意两个语义：字段**全部可省略**（省略取默认值）；
+**未知字段被静默忽略**，所以拼错字段名不会报错，判断字段是否存在要以 schema 的 `properties` 为准。
+
 ### 3.2 行为脚本 `scripts/main.rhai`
 
 脚本拥有两个约定钩子：

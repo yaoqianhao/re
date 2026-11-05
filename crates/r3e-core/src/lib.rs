@@ -18,6 +18,7 @@ pub mod node;
 pub mod postfx;
 pub mod procedural;
 pub mod scene;
+pub mod scene_schema;
 pub mod scene_stack;
 pub mod skin;
 pub mod ssao;

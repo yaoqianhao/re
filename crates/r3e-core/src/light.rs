@@ -471,7 +471,9 @@ pub const POINT_SHADOW_FACE_UPS: [[f32; 3]; POINT_SHADOW_FACES] = [
 ];
 
 /// 局部光源类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LocalLightKind {
     /// 点光：向四面八方发光，只看距离衰减。
@@ -514,7 +516,7 @@ impl LocalLightKind {
 /// 字段布局刻意保持「能直接按 4 个 vec4 拍进 uniform」：位置 + 距离、颜色 + 强度、
 /// 方向 + 内角余弦、外角余弦 + 类型码。字段用数组而非 `Vec3` 是为了让场景 JSON
 /// （`"pos": [1, 2, 3]`）与序列化严格对称，不引入 glam 的 serde feature。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct LocalLight {
     /// 脚本 / RPC / 场景里的唯一主键。重复写同一 key = 整体覆盖（不累积）。

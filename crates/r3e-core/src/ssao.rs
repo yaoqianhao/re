@@ -208,7 +208,7 @@ pub fn ao_from_occlusion(occluded: usize, total: usize, intensity: f32) -> f32 {
 /// 缺省 [`SsaoSettings::default`]（`enabled = false`）与场景里完全不写这一段等价：
 /// 老场景不加 `ssao` 时，composite 采样的是一张 1×1 的白色占位纹理，
 /// 画面与扩展十六逐像素一致。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SsaoSettings {
     /// 是否启用。缺省关闭——遮蔽是「加分项」，不该在老场景上默认改变观感。
     #[serde(default)]

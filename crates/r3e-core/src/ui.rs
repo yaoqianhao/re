@@ -42,7 +42,9 @@ pub const MAX_UI_ELEMENTS: usize = 1024;
 pub const DEFAULT_BORDER_WIDTH: f32 = 2.0;
 
 /// 锚点：元素矩形在屏幕上的对齐方式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
     /// 左上角（默认）
@@ -123,7 +125,9 @@ impl Anchor {
 }
 
 /// 长度单位：像素或屏幕百分比。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum UiUnit {
     /// 像素（默认）
@@ -154,7 +158,7 @@ impl UiUnit {
 }
 
 /// 带单位的长度值（偏移或尺寸）。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiValue {
     pub value: f32,
     pub unit: UiUnit,
@@ -215,7 +219,9 @@ impl UiValue {
 }
 
 /// 元素类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum UiKind {
     /// 纯色矩形（支持 alpha 混合）
@@ -250,7 +256,7 @@ impl UiKind {
 }
 
 /// 一个屏幕空间 UI 元素。字段复用同一结构（按 `kind` 取用），脚本层改起来最简单。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct UiElement {
     /// 脚本侧主键。同名重复提交 = 整体覆盖（不会累积）。

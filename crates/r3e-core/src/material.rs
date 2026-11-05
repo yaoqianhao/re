@@ -35,7 +35,7 @@ pub const PI: f32 = std::f32::consts::PI;
 ///
 /// 只描述「表面如何反射光」，不含颜色：base color 由物件颜色（乘材质染色因子）
 /// 提供，因此一个材质可以被多个不同颜色的物件复用。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SurfaceMaterial {
     /// 金属度 0..1：0 = 绝缘体（塑料 / 石头），1 = 纯金属（漫反射归零）。
     #[serde(default)]

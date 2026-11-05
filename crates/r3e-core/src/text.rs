@@ -22,7 +22,9 @@ pub const MAX_SIZE: f32 = 512.0;
 pub const TOFU_ADVANCE_RATIO: f32 = 0.5;
 
 /// 水平对齐方式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum TextAlign {
     #[default]
@@ -168,7 +170,7 @@ pub struct TextMeasure {
 /// 一条屏幕空间文本。
 ///
 /// 这些字段全部来自场景文件 / 脚本，渲染层每帧按当前值重新排版 —— 场景是唯一真源。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ScreenText {
     /// 唯一键：脚本用它来更新同一条文本（同名即覆盖）。

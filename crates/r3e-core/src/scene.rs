@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ObjectDesc {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,7 +47,7 @@ pub struct ObjectDesc {
 }
 
 /// 物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct PhysicsDesc {
     /// "dynamic" | "static" | "kinematic"
     #[serde(
@@ -80,7 +80,7 @@ pub struct PhysicsDesc {
 ///
 /// 所有字段都是可选的，缺省值由 `r3e_physics::PhysicsConfig` 决定：
 /// 默认 enabled=false（物理关闭）、backend="builtin"、重力 -9.81、地面 y=0。
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct PhysicsSceneDesc {
     /// 是否启用物理模拟。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,7 +119,7 @@ fn is_default_mass(mass: &f32) -> bool {
     *mass == 1.0
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CameraDesc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
@@ -129,7 +129,7 @@ pub struct CameraDesc {
     pub fov: Option<f32>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct LightDesc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<[f32; 3]>,
@@ -145,7 +145,7 @@ pub struct LightDesc {
 }
 
 /// 场景文件里的阴影配置（阶段 D）。字段都可省略，省略即沿用默认值。
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ShadowDesc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -185,7 +185,7 @@ pub struct ShadowDesc {
 ///
 /// 写在场景 `assets[]` 项里，语义是「导入后立刻给这个资产实例挂一个播放器」。
 /// `clip` 省略时取该资产动画栈里的第一个片段。
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AnimDecl {
     /// 片段名（大小写不敏感）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,7 +208,7 @@ pub struct AnimDecl {
 ///
 /// 声明后由应用层导入并在导入成功后按资产内网格 spawn 物件；
 /// 物件也可以通过 `"mesh": "asset:<路径>#<序号>"` 直接引用同一资产。
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AssetDecl {
     /// 资产路径（FBX 等）。
     pub path: String,
@@ -229,7 +229,7 @@ pub struct AssetDecl {
 }
 
 /// 场景文件结构（JSON）。
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SceneFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

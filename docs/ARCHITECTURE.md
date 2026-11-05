@@ -75,7 +75,9 @@ rust3d-engine/
 ├─ README.md
 ├─ .cargo/config.toml          # 构建环境配置
 ├─ assets/
-│  └─ scene.json               # 默认场景（也是编译期兜底场景）
+│  ├─ scene.json               # 默认场景（也是编译期兜底场景）
+│  ├─ scene_*.json             # 其余 10 个演示场景（HDR / IBL / SSAO / 物理 / 动画 / 局部光源…）
+│  └─ scene.schema.json        # 场景 JSON 的机器可读契约（由 serde 结构派生，见 §4.13）
 ├─ scripts/
 │  ├─ main.rhai                # 默认行为脚本
 │  └─ example_swarm.rhai       # 群体动画示例
@@ -143,7 +145,7 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 14,872 | 1,639 | 293 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-core | 14,872 | 1,639 | 297 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
 | r3e-render | 6,096 | 1,483 | 108 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 5,272 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
@@ -152,13 +154,13 @@ rust3d-engine/
 | r3e-editor | 2,233 | 1,448 | 79 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 5,453 | — | 46 | `app.rs`（含 `drive_spatial_audio`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs` |
 | r3e-plugin | 2,450 | — | 39 | `lib.rs`（插件宿主与 ABI） |
-| **合计** | **46,042** | **6,323** | **748** | **约 4.6 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 51 个套件 / 744 passed / 0 failed** |
+| **合计** | **46,042** | **6,323** | **752** | **约 4.6 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 54 个套件 / 748 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随路线表第十项一次性重算
 （此前停在扩展十八 C 快照：44,916 行 / 708 单测）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 744。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 748。
 
 Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
 
@@ -167,8 +169,8 @@ Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）�
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 744 passed / 0 failed（51 个套件；较扩展十八 C 收尾的 704 增 40 项，全部来自路线表第十项：音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 748 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 748 passed / 0 failed（54 个套件；较扩展十八 C 收尾的 704 增 44 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 752 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -664,6 +666,38 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 - **快照不含刚体位姿**：物理按场景**声明**重建（`rebuild_scene` 里 `clear_bodies`，`generation` 自增），动态刚体的位置靠脚本 `on_start` 重跑决定。
 - **不接管热重载**：读档不修改 `scene_path`，热重载继续盯原来那个场景文件。
 - **不做异步 / 进度条**：切场景在一帧内同步做完，大场景会有一次帧尖峰。
+
+### 4.13 场景 JSON schema（P0-1）
+
+场景的字段、取值范围、枚举选项、默认值此前只散落在本文档的散文与 `scene.rs` 的 serde 结构里，
+生成式使用方（AI / 外部工具）只能照抄 `assets/scene_*.json` 示例。现在把它们做成**机器可读契约**：
+
+| 项目 | 内容 |
+| --- | --- |
+| 契约文件 | `assets/scene.schema.json`（JSON Schema 2020-12，`$id` = `https://r3e.dev/schema/scene.schema.json`） |
+| 生成方式 | `cargo run -p r3e-core --bin scene_schema_dump`（`--stdout` 只打印，`-- <路径>` 指定输出） |
+| 来源 | `SceneFile` 及全部嵌套类型的 `schemars::JsonSchema` 派生，**不手写、不复制文档** |
+| 代码入口 | `r3e_core::scene_schema::{scene_schema, scene_schema_pretty, SCENE_SCHEMA_PATH}` |
+
+覆盖的结构：`SceneFile` / `CameraDesc` / `LightDesc` / `ShadowDesc` / `ObjectDesc` /
+`PhysicsDesc` / `PhysicsSceneDesc` / `LocalLight` / `LocalLightKind` / `EnvironmentSettings` /
+`PostFxSettings` / `BloomSettings` / `TonemapMode` / `SsaoSettings` / `SurfaceMaterial` /
+`AssetDecl` / `AnimDecl` / `ScreenText` / `TextAlign` / `UiElement` / `UiKind` / `Anchor` /
+`UiUnit` / `UiValue`。
+
+两条守卫测试（`crates/r3e-core/tests/scene_schema.rs`）：
+
+1. **防漂移**：磁盘上的 `scene.schema.json` 必须与派生结果**逐字节一致**；改了 serde 结构却没重新生成，
+   测试直接红灯并打印首个差异行与重生成命令。这样「结构变更」与「契约变更」永远同步落地。
+2. **交叉校验**：`assets/` 下 11 个演示场景全部必须通过该 schema 校验（含 1 个正例底线：空对象合法；
+   另有负例自检确认校验器不是空跑）。校验器是测试内 ~130 行的极简实现，只覆盖 schemars 实际产出的
+   关键字子集（`$ref` / `type` / `oneOf` / `anyOf` / `const` / `enum` / `properties` / `required` /
+   `items` / `minItems` / `maxItems` / `minimum` / `maximum` / `additionalProperties`），
+   不引入 JSON Schema 运行时依赖。
+
+两个语义要点，schema 里也已表述：**所有字段都可省略**（省略即取引擎默认值）；**未声明的额外字段被 serde
+静默忽略**，所以字段名拼错不会报错——判断"这个字段存不存在"要以 schema 的 `properties` 为准，而不是以
+"加载没报错"为准。
 
 ---
 

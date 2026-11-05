@@ -25,6 +25,17 @@ fn push_f32(bin: &mut Vec<u8>, values: &[f32]) -> (usize, usize) {
     push_bytes(bin, &bytes)
 }
 
+/// 为单个用例准备独占的夹具目录。
+///
+/// 三个用例都会写 `air_conformance.glb`，若共用 `CARGO_TARGET_TMPDIR` 顶层，
+/// 并行执行时会出现「A 正在写、B 读到 0 字节」的竞争（实测触发过）。
+/// 这里按用例名建独立子目录，写入与读取都只落在自己的目录内。
+fn fixture_dir(case: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(case);
+    std::fs::create_dir_all(&dir).expect("创建夹具目录失败");
+    dir
+}
+
 /// 拼一个最小 `.glb`：单三角形（法线 +Z）、深蓝色材质、一段 1 秒旋转动画。
 fn write_fixture(dir: &Path) -> PathBuf {
     // ---- 二进制块：POSITION / NORMAL / INDICES / TIME / ROTATION ----
@@ -131,8 +142,8 @@ fn write_fixture(dir: &Path) -> PathBuf {
 
 #[test]
 fn import_mirrors_z_and_flips_winding() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let path = write_fixture(dir);
+    let dir = fixture_dir("import_mirrors_z_and_flips_winding");
+    let path = write_fixture(&dir);
     let entry = import_glb(&path).expect("导入 glb 失败");
     let mesh = entry.meshes.first().expect("应有 1 个网格");
 
@@ -170,8 +181,8 @@ fn import_is_deterministic_and_audited() {
 
 #[test]
 fn gltf_and_glb_yield_the_same_air() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let glb_path = write_fixture(dir);
+    let dir = fixture_dir("gltf_and_glb_yield_the_same_air");
+    let glb_path = write_fixture(&dir);
     let glb_entry = import_glb(&glb_path).expect("导入 glb 失败");
 
     // 把同一个 glb 拆成 `.gltf` + 外部 `.bin`，模拟「同一模型的两种容器」。
