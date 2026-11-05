@@ -1,0 +1,170 @@
+{
+  "name": "r3e-spatial-audio-demo",
+  "background": [
+    0.03,
+    0.035,
+    0.05,
+    1.0
+  ],
+  "camera": {
+    "position": [
+      0.0,
+      4.2,
+      16.0
+    ],
+    "target": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "fov": 58.0
+  },
+  "light": {
+    "direction": [
+      -0.35,
+      -0.72,
+      -0.4
+    ],
+    "color": [
+      0.82,
+      0.86,
+      0.95
+    ],
+    "intensity": 0.95,
+    "ambient": [
+      0.14,
+      0.15,
+      0.19
+    ],
+    "shadow": {
+      "enabled": true,
+      "size": 2048
+    }
+  },
+  "objects": [
+    {
+      "name": "ground",
+      "mesh": "plane",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        26,
+        1,
+        26
+      ],
+      "color": [
+        0.3,
+        0.31,
+        0.34,
+        1.0
+      ],
+      "physics": {
+        "body": "static",
+        "collider": "box"
+      }
+    },
+    {
+      "name": "horn",
+      "mesh": "sphere",
+      "position": [
+        6.0,
+        1.2,
+        0.0
+      ],
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ],
+      "color": [
+        0.95,
+        0.66,
+        0.26,
+        1.0
+      ]
+    },
+    {
+      "name": "bell",
+      "mesh": "cylinder",
+      "position": [
+        0.0,
+        1.6,
+        -6.0
+      ],
+      "scale": [
+        0.8,
+        3.2,
+        0.8
+      ],
+      "color": [
+        0.42,
+        0.72,
+        0.94,
+        1.0
+      ]
+    },
+    {
+      "name": "marker_near",
+      "mesh": "cube",
+      "position": [
+        -1.6,
+        0.3,
+        3.0
+      ],
+      "scale": [
+        0.6,
+        0.6,
+        0.6
+      ],
+      "color": [
+        0.55,
+        0.88,
+        0.6,
+        1.0
+      ]
+    },
+    {
+      "name": "marker_far",
+      "mesh": "cube",
+      "position": [
+        -1.6,
+        0.3,
+        -9.0
+      ],
+      "scale": [
+        0.6,
+        0.6,
+        0.6
+      ],
+      "color": [
+        0.88,
+        0.5,
+        0.5,
+        1.0
+      ]
+    }
+  ],
+  "lights": [
+    {
+      "key": "key",
+      "kind": "point",
+      "pos": [
+        2.6,
+        6.0,
+        5.0
+      ],
+      "color": [
+        1.0,
+        0.94,
+        0.82
+      ],
+      "intensity": 26.0,
+      "range": 26.0,
+      "cast_shadow": true,
+      "shadow_bias": 0.004
+    }
+  ]
+}
