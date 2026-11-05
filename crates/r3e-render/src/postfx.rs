@@ -130,6 +130,7 @@ pub struct PostFxPass {
 impl PostFxPass {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         size: (u32, u32),
     ) -> Self {
@@ -288,7 +289,7 @@ impl PostFxPass {
         let width = size.0.max(1);
         let height = size.1.max(1);
         let (hdr_texture, hdr_view) = create_hdr_target(device, width, height);
-        let (ao_placeholder, ao_placeholder_view) = create_ao_placeholder(device);
+        let (ao_placeholder, ao_placeholder_view) = create_ao_placeholder(device, queue);
         let hdr_source = SourceBinding {
             bind_group: make_source_bind_group(
                 device,
@@ -714,7 +715,10 @@ fn make_source_bind_group(
 
 /// 1×1 全白遮蔽图（R8Unorm 的 255 = 1.0）：AO 关闭时 composite 绑它，
 /// 采样恒为 1，乘上去等于没乘。
-fn create_ao_placeholder(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+fn create_ao_placeholder(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("r3e-postfx-ao-placeholder"),
         size: wgpu::Extent3d {
@@ -729,6 +733,27 @@ fn create_ao_placeholder(device: &wgpu::Device) -> (wgpu::Texture, wgpu::Texture
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    // 必须真的写进去：纹理创建后内容是未定义的，多数后端给 0。
+    // 少了这一笔，AO 关闭时 composite 把整帧乘成黑色 —— 背景清除色也一起消失。
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[255u8],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: None,
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
 }

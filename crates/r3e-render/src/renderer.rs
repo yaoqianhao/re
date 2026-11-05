@@ -1299,7 +1299,7 @@ impl Renderer {
         let text = TextPass::new(&device, config.format);
         let ui = UiPass::new(&device, config.format);
         // 后处理链与窗口同级：主通道从此写离屏 HDR 目标，不再直接写 surface
-        let postfx = PostFxPass::new(&device, config.format, (width, height));
+        let postfx = PostFxPass::new(&device, &queue, config.format, (width, height));
         // 遮蔽吃主通道深度、产出与 HDR 同尺寸的 AO 图，所以与窗口同级创建
         let ssao = SsaoPass::new(&device, (width, height), &depth_view);
 
