@@ -513,6 +513,59 @@ impl ShadowPatch {
     }
 }
 
+/// `audio.spatial.set` 的补丁（§12 第十项）：只给要改的字段，其余沿用原值。
+///
+/// 与 [`LightPatch`] 同一套路数：本层不认识 `SpatialSettings` / `Vec3`，
+/// 距离夹到正数、模型名解析、上限拒绝全由宿主完成；这里只做类型与空值校验，
+/// 让「编辑器拼错了模型名」这种错误在宿主侧报出来（并保住原值不被改坏）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AudioSpatialPatch {
+    pub key: String,
+    /// 声源坐标 `[x, y, z]`（`None` = 沿用原值）。
+    pub position: Option<[f32; 3]>,
+    /// 绑定的场景节点名；`Some("")` = 解除绑定（改回纯脚本摆位）。
+    ///
+    /// 绑定只是**记名字**：节点变换每帧由宿主灌进声源，传输层不解析节点。
+    pub node: Option<String>,
+    /// 距离衰减起点（该距离内不衰减）。
+    pub min_distance: Option<f32>,
+    /// 距离衰减终点（超过即彻底听不见）。
+    pub max_distance: Option<f32>,
+    /// 距离模型名：`linear` / `inverse` / `exponential`（不区分大小写，`exp` 亦可）。
+    pub model: Option<String>,
+    /// 多普勒系数（0 = 关掉多普勒）。
+    pub doppler: Option<f32>,
+}
+
+impl AudioSpatialPatch {
+    /// 除 `key` 之外一个字段都没给——对已注册声源是无意义调用。
+    pub fn is_key_only(&self) -> bool {
+        self.position.is_none()
+            && self.node.is_none()
+            && self.min_distance.is_none()
+            && self.max_distance.is_none()
+            && self.model.is_none()
+            && self.doppler.is_none()
+    }
+}
+
+/// `audio.spatial.listener` 的补丁：两个字段都不给 = 纯只读。
+///
+/// 听者的 `forward` 决定多普勒的径向速度符号，`position` 决定距离衰减，
+/// 因此两者可以分别改（只挪位置不动朝向是常见操作）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListenerPatch {
+    pub position: Option<[f32; 3]>,
+    /// 朝向向量（宿主会归一化；零向量视为无效、沿用原值）。
+    pub forward: Option<[f32; 3]>,
+}
+
+impl ListenerPatch {
+    pub fn is_read_only(&self) -> bool {
+        self.position.is_none() && self.forward.is_none()
+    }
+}
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
@@ -693,6 +746,51 @@ pub trait EngineApi {
     /// 关掉只是不上传（场景数据保留），因此编辑器的「取消勾选」不会丢灯。
     fn light_set_enabled(&mut self, _enabled: Option<bool>) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("light.set_enabled"))
+    }
+
+    /// 列出已注册的 3D 空间化声源（§12 第十项）：
+    /// `{ enabled, count, limit, max, supports_speed, listener, sources: [...] }`。
+    ///
+    /// 每个声源同时给**声明态**与**上一帧结算结果**：`position` / `node` /
+    /// `model` / `minDistance` / `maxDistance` / `doppler` 是编辑器能改的，
+    /// `gain` / `rate` / `distance` 是宿主每帧推进出来的——面板要显示「这个声源
+    /// 现在多响、倍速多少」，编辑器自己算不出来，所以必须由宿主回传。
+    fn audio_spatial_list(&mut self, _limit: Option<usize>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("audio.spatial.list"))
+    }
+
+    /// 注册 / 局部更新一个空间化声源（同 key 覆盖），返回收敛后的声源对象。
+    ///
+    /// 注册与摆位是**同一个方法**：编辑器新建声源时一次把位置与衰减参数发全，
+    /// 免得先 attach 再 setPosition 发两趟。超上限时宿主应报参数错误而不是静默丢。
+    fn audio_spatial_set(&mut self, _patch: AudioSpatialPatch) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("audio.spatial.set"))
+    }
+
+    /// 解除一个声源的注册（正在播的声音继续播完，只是不再做空间化）。
+    fn audio_spatial_remove(&mut self, _key: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("audio.spatial.remove"))
+    }
+
+    /// 清空全部空间化声源，返回解除的条数。
+    fn audio_spatial_clear(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("audio.spatial.clear"))
+    }
+
+    /// 读 / 写听者位姿（`None` = 只读）。
+    ///
+    /// 正常运行时听者由「当前活动相机」每帧推导，编辑器手改只在暂停调试时有用；
+    /// 因此这里的写入是**一次性**的，下一帧会被 `app` 的相机推导覆盖。
+    fn audio_spatial_listener(
+        &mut self,
+        _patch: Option<ListenerPatch>,
+    ) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("audio.spatial.listener"))
+    }
+
+    /// 读 / 写空间化总开关（关掉 = 全部声源退回平面声，声源数据保留）。
+    fn audio_spatial_set_enabled(&mut self, _enabled: Option<bool>) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("audio.spatial.set_enabled"))
     }
 
     /// 读 / 写方向光阴影设置（扩展十六）：`None` = 只读，`Some(patch)` = 合并后回写。
@@ -1313,6 +1411,79 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 Err(f) => Response::fail(id, f),
             }
         }
+        // 3D 空间化音频契约（§12 第十项）：与 light.* 同构——传输层只校验
+        // 类型与空值，距离收敛 / 模型解析 / 上限拒绝全在宿主侧。
+        "audio.spatial.list" => {
+            let limit = match opt_limit(&req.params) {
+                Ok(l) => l,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.audio_spatial_list(limit) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "audio.spatial.set" => {
+            let patch = match audio_spatial_patch_from(&req.params) {
+                Ok(p) => p,
+                Err(f) => return Response::fail(id, f),
+            };
+            if patch.is_key_only() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params(
+                        "除 `key` 外至少要给一个字段（否则这次调用没有意义）",
+                    ),
+                );
+            }
+            match api.audio_spatial_set(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "audio.spatial.remove" => {
+            let key = match require_str(&req.params, "key") {
+                Ok(k) if !k.trim().is_empty() => k,
+                Ok(_) => {
+                    return Response::fail(id, RpcFailure::invalid_params("参数 `key` 不能为空"))
+                }
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.audio_spatial_remove(key) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "audio.spatial.clear" => match api.audio_spatial_clear() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
+        "audio.spatial.listener" => {
+            let patch = match listener_patch_from(&req.params) {
+                Ok(p) => p,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.audio_spatial_listener(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        "audio.spatial.setenabled" => {
+            let enabled = match param(&req.params, "enabled") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(b)) => Some(*b),
+                Some(_) => {
+                    return Response::fail(
+                        id,
+                        RpcFailure::invalid_params("参数 `enabled` 应为布尔（可省略表示只读）"),
+                    )
+                }
+            };
+            match api.audio_spatial_set_enabled(enabled) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "scene.shadow" => {
             let patch = match shadow_patch_from(&req.params) {
                 Ok(p) => p,
@@ -1436,6 +1607,37 @@ fn light_patch_from(params: &Value) -> Result<LightPatch, RpcFailure> {
         outer_deg: opt_num(params, "outer_deg")?,
         cast_shadow: opt_bool(params, "cast_shadow")?,
         shadow_bias: opt_num(params, "shadow_bias")?,
+    })
+}
+
+/// 从 RPC 参数解析空间化声源补丁（`key` 必填，其余可选）。
+fn audio_spatial_patch_from(params: &Value) -> Result<AudioSpatialPatch, RpcFailure> {
+    let key = match require_str(params, "key") {
+        Ok(k) if !k.trim().is_empty() => k.to_string(),
+        Ok(_) => return Err(RpcFailure::invalid_params("参数 `key` 不能为空")),
+        Err(f) => return Err(f),
+    };
+    Ok(AudioSpatialPatch {
+        key,
+        position: opt_vec3(params, "position")?,
+        node: opt_str(params, "node")?.map(str::to_string),
+        min_distance: opt_num(params, "minDistance")?,
+        max_distance: opt_num(params, "maxDistance")?,
+        model: opt_str(params, "model")?.map(str::to_string),
+        doppler: opt_num(params, "doppler")?,
+    })
+}
+
+/// 从 RPC 参数解析听者补丁：两个字段都没有 = `None`（纯只读）。
+fn listener_patch_from(params: &Value) -> Result<Option<ListenerPatch>, RpcFailure> {
+    let patch = ListenerPatch {
+        position: opt_vec3(params, "position")?,
+        forward: opt_vec3(params, "forward")?,
+    };
+    Ok(if patch.is_read_only() {
+        None
+    } else {
+        Some(patch)
     })
 }
 
@@ -1759,5 +1961,273 @@ mod scene_stack_rpc_tests {
             let err = res.error.expect("缺省实现应报未实现");
             assert_eq!(err.code, METHOD_NOT_FOUND, "{method}");
         }
+    }
+}
+
+#[cfg(test)]
+mod audio_spatial_rpc_tests {
+    use super::*;
+
+    /// 只关心空间化音频的桩：记下收到的补丁，回报最小应答。
+    #[derive(Default)]
+    struct SpatialStub {
+        set: Option<AudioSpatialPatch>,
+        removed: Option<String>,
+        cleared: u32,
+        listener: Option<Option<ListenerPatch>>,
+        enabled: Option<Option<bool>>,
+        limit: Option<Option<usize>>,
+    }
+
+    impl EngineApi for SpatialStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+
+        fn audio_spatial_list(&mut self, limit: Option<usize>) -> Result<Value, RpcFailure> {
+            self.limit = Some(limit);
+            Ok(json!({ "count": 1, "sources": [{ "key": "bell" }] }))
+        }
+
+        fn audio_spatial_set(&mut self, patch: AudioSpatialPatch) -> Result<Value, RpcFailure> {
+            let key = patch.key.clone();
+            self.set = Some(patch);
+            Ok(json!({ "key": key }))
+        }
+
+        fn audio_spatial_remove(&mut self, key: &str) -> Result<Value, RpcFailure> {
+            self.removed = Some(key.to_string());
+            Ok(json!({ "removed": true }))
+        }
+
+        fn audio_spatial_clear(&mut self) -> Result<Value, RpcFailure> {
+            self.cleared += 1;
+            Ok(json!({ "cleared": 2 }))
+        }
+
+        fn audio_spatial_listener(
+            &mut self,
+            patch: Option<ListenerPatch>,
+        ) -> Result<Value, RpcFailure> {
+            self.listener = Some(patch);
+            Ok(json!({ "position": [0.0, 0.0, 0.0] }))
+        }
+
+        fn audio_spatial_set_enabled(
+            &mut self,
+            enabled: Option<bool>,
+        ) -> Result<Value, RpcFailure> {
+            self.enabled = Some(enabled);
+            Ok(json!({ "enabled": enabled.unwrap_or(true) }))
+        }
+    }
+
+    struct BareStub;
+
+    impl EngineApi for BareStub {
+        fn info(&mut self) -> EngineInfo {
+            unimplemented!("本测试不查 info")
+        }
+    }
+
+    fn request(method: &str, params: Value) -> Request {
+        Request {
+            jsonrpc: JSONRPC.to_string(),
+            id: Some(json!(1)),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[test]
+    fn spatial_set_passes_fields_through() {
+        let mut api = SpatialStub::default();
+        let res = dispatch(
+            &mut api,
+            &request(
+                "audio.spatial.set",
+                json!({
+                    "key": "bell",
+                    "position": [1.0, 2.0, 3.0],
+                    "node": "bell_mesh",
+                    "minDistance": 2.0,
+                    "maxDistance": 40.0,
+                    "model": "INVERSE",
+                    "doppler": 0.0,
+                }),
+            ),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        let patch = api.set.expect("宿主应收到补丁");
+        assert_eq!(patch.key, "bell");
+        assert_eq!(patch.position, Some([1.0, 2.0, 3.0]));
+        assert_eq!(patch.node.as_deref(), Some("bell_mesh"));
+        assert_eq!(patch.min_distance, Some(2.0));
+        assert_eq!(patch.max_distance, Some(40.0));
+        // 大小写归一化交给宿主，传输层原样转交
+        assert_eq!(patch.model.as_deref(), Some("INVERSE"));
+        assert_eq!(patch.doppler, Some(0.0));
+    }
+
+    #[test]
+    fn spatial_set_requires_more_than_key() {
+        let mut api = SpatialStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("audio.spatial.set", json!({ "key": "bell" })),
+        );
+        assert_eq!(
+            res.error.expect("只给 key 应报错").code,
+            INVALID_PARAMS,
+            "无字段调用没有意义"
+        );
+        assert!(api.set.is_none(), "参数非法时不应调用宿主");
+    }
+
+    #[test]
+    fn spatial_set_rejects_bad_types() {
+        let mut api = SpatialStub::default();
+        for params in [
+            json!({ "key": "  ", "position": [0.0, 0.0, 0.0] }),
+            json!({ "key": "bell", "minDistance": "近" }),
+            json!({ "key": "bell", "position": [1.0, 2.0] }),
+            json!({ "key": "bell", "node": 7 }),
+        ] {
+            let res = dispatch(&mut api, &request("audio.spatial.set", params.clone()));
+            assert_eq!(
+                res.error.unwrap_or_else(|| panic!("{params} 应报错")).code,
+                INVALID_PARAMS
+            );
+        }
+        assert!(api.set.is_none(), "全部非法，宿主不该被调用");
+    }
+
+    #[test]
+    fn spatial_methods_are_name_normalized() {
+        let mut api = SpatialStub::default();
+        // 大小写不敏感（`canonical` 归一化）；点分是方法名的一部分，不能省
+        for method in [
+            "Audio.Spatial.List",
+            "AUDIO.SPATIAL.LIST",
+            "audio.spatial.list",
+        ] {
+            let res = dispatch(&mut api, &request(method, json!({ "limit": 5 })));
+            assert!(res.error.is_none(), "{method} 不应报错: {:?}", res.error);
+            assert_eq!(api.limit, Some(Some(5)), "{method}");
+        }
+    }
+
+    #[test]
+    fn spatial_remove_requires_non_empty_key() {
+        let mut api = SpatialStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("audio.spatial.remove", json!({ "key": "   " })),
+        );
+        assert_eq!(res.error.expect("空白 key 应报错").code, INVALID_PARAMS);
+        assert!(api.removed.is_none());
+
+        let res = dispatch(
+            &mut api,
+            &request("audio.spatial.remove", json!({ "key": "bell" })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.removed.as_deref(), Some("bell"));
+    }
+
+    #[test]
+    fn spatial_clear_needs_no_params() {
+        let mut api = SpatialStub::default();
+        let res = dispatch(&mut api, &request("audio.spatial.clear", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.cleared, 1);
+        assert_eq!(res.result.unwrap()["cleared"], json!(2));
+    }
+
+    #[test]
+    fn listener_patch_read_only_vs_write() {
+        let mut api = SpatialStub::default();
+        // 空参数 = 只读：宿主收到 None
+        let res = dispatch(&mut api, &request("audio.spatial.listener", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.listener, Some(None), "空参数应走只读");
+
+        // 只给 position
+        let res = dispatch(
+            &mut api,
+            &request(
+                "audio.spatial.listener",
+                json!({ "position": [4.0, 1.0, 0.0] }),
+            ),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        let patch = api.listener.flatten().expect("应转交补丁");
+        assert_eq!(patch.position, Some([4.0, 1.0, 0.0]));
+        assert_eq!(patch.forward, None, "没给的字段不填默认值");
+
+        // 只给 forward
+        let mut api = SpatialStub::default();
+        let res = dispatch(
+            &mut api,
+            &request(
+                "audio.spatial.listener",
+                json!({ "forward": [0.0, 0.0, -1.0] }),
+            ),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        let patch = api.listener.flatten().expect("应转交补丁");
+        assert_eq!(patch.forward, Some([0.0, 0.0, -1.0]));
+        assert_eq!(patch.position, None);
+    }
+
+    #[test]
+    fn enabled_is_readable_and_writable() {
+        let mut api = SpatialStub::default();
+        let res = dispatch(&mut api, &request("audio.spatial.setenabled", json!({})));
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.enabled, Some(None), "省略 enabled 应为只读");
+
+        let res = dispatch(
+            &mut api,
+            &request("audio.spatial.setenabled", json!({ "enabled": false })),
+        );
+        assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+        assert_eq!(api.enabled, Some(Some(false)));
+
+        let res = dispatch(
+            &mut api,
+            &request("audio.spatial.setenabled", json!({ "enabled": "yes" })),
+        );
+        assert_eq!(res.error.expect("非布尔应报错").code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn spatial_methods_unsupported_by_default() {
+        for method in [
+            "audio.spatial.list",
+            "audio.spatial.remove",
+            "audio.spatial.clear",
+            "audio.spatial.listener",
+            "audio.spatial.setenabled",
+        ] {
+            let mut api = BareStub;
+            let res = dispatch(&mut api, &request(method, json!({ "key": "bell" })));
+            assert_eq!(
+                res.error
+                    .unwrap_or_else(|| panic!("{method} 应报未实现"))
+                    .code,
+                METHOD_NOT_FOUND,
+                "{method}"
+            );
+        }
+        let mut api = BareStub;
+        let res = dispatch(
+            &mut api,
+            &request(
+                "audio.spatial.set",
+                json!({ "key": "bell", "doppler": 1.0 }),
+            ),
+        );
+        assert_eq!(res.error.expect("set 也应报未实现").code, METHOD_NOT_FOUND);
     }
 }
