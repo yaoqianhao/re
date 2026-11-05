@@ -9,7 +9,7 @@ use std::time::{Instant, SystemTime};
 use gilrs::{Axis, Button};
 use glam::{Mat4, Vec3};
 use r3e_asset::AssetLibrary;
-use r3e_audio::Audio;
+use r3e_audio::{Audio, ListenerPose};
 use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::input::{
     key_from_char, InputState, KeyCode, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE,
@@ -604,6 +604,11 @@ impl EngineApp {
             self.scene.borrow_mut().update_world_transforms();
         }
 
+        // 音频空间化（§12 第十项）：听者跟着活动相机走、声源位置从绑定节点灌，
+        // 再推进一帧算增益 / 倍速。必须排在 `update_world_transforms` 之后——
+        // 否则读到的是上一帧的世界矩阵，快速移动的声源会有一步延迟（多普勒直接用错速度）。
+        self.drive_spatial_audio(dt);
+
         // 音频回收：播完的实例在这里清账。放在暂停分支之外——暂停时也要回收，
         // 否则停掉的声音会一直占着「在播」名额。
         {
@@ -1032,6 +1037,42 @@ impl EngineApp {
         }
         if bound > 0 {
             log::info!("物理已绑定 {bound} 个场景刚体");
+        }
+    }
+
+    /// 每帧把「世界」翻译成「耳朵」：听者 ← 活动相机，声源 ← 绑定节点，然后结算一次。
+    ///
+    /// 三条约束决定了这个函数必须长这样：
+    /// * **听者只跟随活动相机**：相机是 `Scene::camera` 里那台（视角输入改的就是它），
+    ///   不额外维护一份，避免手柄 / 脚本各自推一个位置对不上；
+    /// * **节点位置先于结算**：先把所有绑定节点的世界坐标写进声源，再 `tick_spatial`，
+    ///   这样多普勒用的速度是本帧的真实位移，而不是「位置落后一帧」的假速度；
+    /// * **暂停时 `dt == 0`**：`tick_spatial` 对 `0` / `NaN` / 负数一律按 0 处理，
+    ///   速度归零 → 倍速回到 1，不会在暂停期间把声调拖偏。
+    fn drive_spatial_audio(&mut self, dt: f32) {
+        // 听者：位置直接取相机，朝向取 `target - position`（与 view 矩阵同一套语义）
+        {
+            let scene = self.scene.borrow();
+            let camera = &scene.camera;
+            let forward = (camera.target - camera.position).normalize_or_zero();
+            let pose = ListenerPose::new(camera.position.to_array(), forward.to_array());
+            self.audio.borrow_mut().set_listener(pose);
+        }
+
+        // 声源：绑定到节点的，位置每帧从世界矩阵灌下去（节点可能在动 / 被物理推）
+        let bindings = self.audio.borrow().spatial_bindings();
+        if !bindings.is_empty() {
+            let scene = self.scene.borrow();
+            let mut audio = self.audio.borrow_mut();
+            for (key, node) in &bindings {
+                if let Some(n) = scene.find(node) {
+                    audio.set_source_position(key, n.world.w_axis.truncate().to_array());
+                }
+            }
+        }
+
+        if self.audio.borrow().spatial_count() > 0 {
+            self.audio.borrow_mut().tick_spatial(dt);
         }
     }
 

@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::{Quat, Vec3};
+use r3e_audio::{Audio, DistanceModel, MAX_SPATIAL_SOURCES};
 use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::scene_stack::{SceneArchive, SceneCommand, ARCHIVE_FORMAT, ARCHIVE_VERSION};
@@ -24,9 +25,9 @@ use r3e_core::{AnimLayer, BoneMask, LayerMode, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_editor::{
-    AnimLayerPatch, EngineApi, EngineInfo, EnvironmentPatch, LightPatch, MaterialPatch, NodeBrief,
-    PhysicsInfo, PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch,
-    PROTOCOL_VERSION, SERVER_BUSY,
+    AnimLayerPatch, AudioSpatialPatch, EngineApi, EngineInfo, EnvironmentPatch, LightPatch,
+    ListenerPatch, MaterialPatch, NodeBrief, PhysicsInfo, PostFxPatch, RpcFailure, ShadowPatch,
+    SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
@@ -540,6 +541,154 @@ impl EngineApi for LocalEngineApi<'_> {
         Ok(json!({
             "enabled": scene.lights_enabled,
             "count": scene.lights.len(),
+        }))
+    }
+
+    /// 空间化音频列表（§12 第十项）：声明态 + 上一帧结算结果一起给。
+    ///
+    /// 这里**借用 `ScriptHost` 的 Audio 句柄**而不是另存一份：脚本、编辑器、帧驱动
+    /// 三方必须看到同一张声源表，否则面板上调完的参数会被脚本下一次 attach 覆盖掉。
+    fn audio_spatial_list(&mut self, limit: Option<usize>) -> Result<Value, RpcFailure> {
+        let audio = self.scripts.audio_handle();
+        let a = audio.borrow();
+        let sources: Vec<Value> = a
+            .spatial_keys()
+            .iter()
+            .take(limit.unwrap_or(usize::MAX))
+            .map(|key| spatial_source_value(&a, key))
+            .collect();
+        let listener = a.listener();
+        Ok(json!({
+            "enabled": a.spatial_enabled(),
+            "count": a.spatial_count(),
+            "limit": MAX_SPATIAL_SOURCES,
+            "listener": {
+                "position": listener.position,
+                "forward": listener.forward,
+            },
+            "sources": sources,
+        }))
+    }
+
+    /// 注册 / 局部更新一个声源：模型名与距离先解析完再落地，写错的名字不留半改状态。
+    fn audio_spatial_set(&mut self, patch: AudioSpatialPatch) -> Result<Value, RpcFailure> {
+        if patch.key.trim().is_empty() {
+            return Err(RpcFailure::invalid_params("参数 `key` 不能为空"));
+        }
+        let model = match patch.model.as_deref() {
+            Some(name) => Some(DistanceModel::parse(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!(
+                    "未知距离模型 `{name}`（可用：{}）",
+                    DistanceModel::all()
+                        .iter()
+                        .map(|m| m.name())
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                ))
+            })?),
+            None => None,
+        };
+
+        let audio = self.scripts.audio_handle();
+        let mut a = audio.borrow_mut();
+        let existed = a.spatial_settings(&patch.key);
+        let inserted = existed.is_none();
+        let mut settings = existed.unwrap_or_default();
+        if let Some(v) = patch.min_distance {
+            settings.min_distance = v;
+        }
+        if let Some(v) = patch.max_distance {
+            settings.max_distance = v;
+        }
+        if let Some(v) = model {
+            settings.model = v;
+        }
+        if let Some(v) = patch.doppler {
+            settings.doppler_factor = v;
+        }
+        // `attach_spatial` 内部会走 `sanitized()`，并把已有声源就地更新（不清位置）。
+        // 满载时它只拒绝「新增」，同 key 覆盖照常生效——因此失败一定是容量问题。
+        if !a.attach_spatial(&patch.key, settings) {
+            return Err(RpcFailure::invalid_params(format!(
+                "空间化声源已达上限 {MAX_SPATIAL_SOURCES}，无法新增；请先删除或复用已有 key"
+            )));
+        }
+        if let Some(pos) = patch.position {
+            a.set_source_position(&patch.key, pos);
+        }
+        if let Some(node) = patch.node.as_deref() {
+            // 空串 = 解绑（回到「只按手动 position 算」），与脚本侧 `audio_spatial_attach_node`
+            // 的语义一致：传空节点名就是清绑定。
+            let settings = a.spatial_settings(&patch.key).unwrap_or_default();
+            if !a.attach_spatial_node(&patch.key, node, settings) {
+                return Err(RpcFailure::invalid_params(format!(
+                    "声源 `{}` 注册失败，节点 `{node}` 未绑定",
+                    patch.key
+                )));
+            }
+        }
+        Ok(json!({
+            "key": patch.key,
+            "inserted": inserted,
+            "count": a.spatial_count(),
+            "source": spatial_source_value(&a, &patch.key),
+        }))
+    }
+
+    fn audio_spatial_remove(&mut self, key: &str) -> Result<Value, RpcFailure> {
+        let audio = self.scripts.audio_handle();
+        let mut a = audio.borrow_mut();
+        let removed = a.detach_spatial(key);
+        Ok(json!({ "key": key, "removed": removed, "count": a.spatial_count() }))
+    }
+
+    fn audio_spatial_clear(&mut self) -> Result<Value, RpcFailure> {
+        let audio = self.scripts.audio_handle();
+        let mut a = audio.borrow_mut();
+        let removed = a.spatial_count();
+        a.clear_spatial();
+        Ok(json!({ "removed": removed, "count": 0 }))
+    }
+
+    fn audio_spatial_listener(
+        &mut self,
+        patch: Option<ListenerPatch>,
+    ) -> Result<Value, RpcFailure> {
+        let audio = self.scripts.audio_handle();
+        let mut a = audio.borrow_mut();
+        if let Some(patch) = patch {
+            let mut pose = a.listener();
+            if let Some(pos) = patch.position {
+                pose.position = pos;
+            }
+            if let Some(forward) = patch.forward {
+                // 零向量是无效朝向（归一化会炸成 NaN），当作没给
+                if !forward.iter().all(|v| *v == 0.0) {
+                    pose.forward = forward;
+                }
+            }
+            a.set_listener(pose);
+            // 立刻结算一次：编辑器改完听者想马上看到增益变化，不该等下一帧
+            a.tick_spatial(0.0);
+        }
+        let listener = a.listener();
+        Ok(json!({
+            "position": listener.position,
+            "forward": listener.forward,
+            "count": a.spatial_count(),
+        }))
+    }
+
+    fn audio_spatial_set_enabled(&mut self, enabled: Option<bool>) -> Result<Value, RpcFailure> {
+        let audio = self.scripts.audio_handle();
+        let mut a = audio.borrow_mut();
+        if let Some(on) = enabled {
+            a.set_spatial_enabled(on);
+            a.tick_spatial(0.0);
+        }
+        Ok(json!({
+            "enabled": a.spatial_enabled(),
+            "count": a.spatial_count(),
         }))
     }
 
@@ -1209,6 +1358,27 @@ fn local_light_value(light: &LocalLight) -> Value {
         "outer_deg": light.outer_deg,
         "cast_shadow": light.cast_shadow,
         "shadow_bias": light.shadow_bias,
+    })
+}
+
+/// 一个声源的完整快照：声明态（编辑器改的）+ 结算态（上一帧算出来的）。
+///
+/// 结算字段缺失时用 `null`，不伪造 `1.0`——「这一帧没算过」和「算出来正好是 1」
+/// 对排查未注册 / 静默后端这两类问题完全是两回事。
+fn spatial_source_value(audio: &Audio, key: &str) -> Value {
+    let settings = audio.spatial_settings(key);
+    json!({
+        "key": key,
+        "position": audio.source_position(key),
+        "node": audio.spatial_node(key),
+        "distance": audio.spatial_distance(key),
+        "gain": settings.map(|_| audio.spatial_gain(key)),
+        "rate": settings.map(|_| audio.spatial_rate(key)),
+        "min_distance": settings.map(|s| s.min_distance),
+        "max_distance": settings.map(|s| s.max_distance),
+        "model": settings.map(|s| s.model.name()),
+        "doppler": settings.map(|s| s.doppler_factor),
+        "speed_of_sound": settings.map(|s| s.speed_of_sound),
     })
 }
 
@@ -2289,6 +2459,198 @@ mod tests {
 
         // 只有 `!` 的规则没有名字，忽略而不是造一条空规则。
         assert!(bone_mask_of("!").is_pass_all());
+    }
+
+    // ---- 3D 空间化音频（§12 第十项）宿主层 ----
+
+    fn spatial_patch(key: &str) -> AudioSpatialPatch {
+        AudioSpatialPatch {
+            key: key.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn audio_spatial_set_upserts_and_lists() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let created = api
+            .audio_spatial_set(AudioSpatialPatch {
+                position: Some([1.0, 0.0, 0.0]),
+                min_distance: Some(2.0),
+                max_distance: Some(20.0),
+                model: Some("inverse".to_string()),
+                doppler: Some(0.5),
+                ..spatial_patch("bell")
+            })
+            .expect("注册应成功");
+        assert_eq!(created["inserted"], json!(true));
+        assert_eq!(created["count"], json!(1));
+        assert_eq!(created["source"]["model"], json!("inverse"));
+        assert_eq!(created["source"]["min_distance"], json!(2.0));
+
+        // 同 key 再打一次是覆盖，不是新增
+        let updated = api
+            .audio_spatial_set(AudioSpatialPatch {
+                max_distance: Some(35.0),
+                ..spatial_patch("bell")
+            })
+            .expect("覆盖应成功");
+        assert_eq!(updated["inserted"], json!(false));
+        assert_eq!(updated["count"], json!(1));
+        assert_eq!(updated["source"]["max_distance"], json!(35.0));
+        // 没给的字段保持原值，不被默认值冲掉
+        assert_eq!(updated["source"]["min_distance"], json!(2.0));
+        assert_eq!(updated["source"]["position"], json!([1.0, 0.0, 0.0]));
+
+        let list = api.audio_spatial_list(None).expect("列表应成功");
+        assert_eq!(list["count"], json!(1));
+        assert_eq!(list["enabled"], json!(true));
+        assert_eq!(list["sources"].as_array().map(|v| v.len()), Some(1));
+        // 没注册的 key 不算声源
+        assert_eq!(api.audio_spatial_list(Some(0)).unwrap()["count"], json!(1));
+        assert_eq!(
+            api.audio_spatial_list(Some(0)).unwrap()["sources"]
+                .as_array()
+                .map(|v| v.len()),
+            Some(0),
+            "limit 只截断明细"
+        );
+    }
+
+    #[test]
+    fn audio_spatial_set_rejects_bad_input_without_side_effect() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        assert!(
+            api.audio_spatial_set(spatial_patch("   ")).is_err(),
+            "空 key 必须报错"
+        );
+        let bad_model = api.audio_spatial_set(AudioSpatialPatch {
+            model: Some("quadratic".to_string()),
+            ..spatial_patch("bell")
+        });
+        assert!(bad_model.is_err(), "未知距离模型必须报错");
+        // 失败不留半改：模型名解析在校验前完成，声源表应当还是空的
+        assert_eq!(
+            api.audio_spatial_list(None).unwrap()["count"],
+            json!(0),
+            "报错的调用不该注册出任何声源"
+        );
+    }
+
+    #[test]
+    fn audio_spatial_listener_drives_distance_and_gain() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.audio_spatial_set(AudioSpatialPatch {
+            position: Some([0.0, 0.0, 0.0]),
+            min_distance: Some(1.0),
+            max_distance: Some(20.0),
+            ..spatial_patch("bell")
+        })
+        .expect("注册应成功");
+
+        let near = api
+            .audio_spatial_listener(Some(r3e_editor::ListenerPatch {
+                position: Some([0.0, 0.0, 0.0]),
+                forward: Some([0.0, 0.0, -1.0]),
+            }))
+            .expect("写听者应成功");
+        assert_eq!(near["position"], json!([0.0, 0.0, 0.0]));
+
+        let far = api
+            .audio_spatial_listener(Some(r3e_editor::ListenerPatch {
+                position: Some([15.0, 0.0, 0.0]),
+                ..Default::default()
+            }))
+            .expect("写听者应成功");
+        assert_eq!(far["position"], json!([15.0, 0.0, 0.0]));
+
+        // 写完立刻结算：不用等下一帧就能在面板上看到距离与增益变化
+        let list = api.audio_spatial_list(None).expect("列表应成功");
+        let src = &list["sources"][0];
+        let distance = src["distance"].as_f64().expect("应有距离");
+        assert!(
+            (distance - 15.0).abs() < 1e-3,
+            "距离应约为 15，实际 {distance}"
+        );
+        let gain = src["gain"].as_f64().expect("应有增益");
+        assert!(gain < 1.0 && gain > 0.0, "远处应衰减但仍可闻，实际 {gain}");
+        assert_eq!(list["listener"]["position"], json!([15.0, 0.0, 0.0]));
+
+        // 只读模式（省略参数）不该改掉刚写的听者
+        let read = api.audio_spatial_listener(None).expect("只读应成功");
+        assert_eq!(read["position"], json!([15.0, 0.0, 0.0]));
+
+        // 零向量朝向被忽略，不能把朝向归一成 NaN
+        api.audio_spatial_listener(Some(r3e_editor::ListenerPatch {
+            forward: Some([0.0, 0.0, 0.0]),
+            ..Default::default()
+        }))
+        .expect("零朝向应被静默忽略");
+        let list = api.audio_spatial_list(None).expect("列表应成功");
+        assert_eq!(list["listener"]["forward"], json!([0.0, 0.0, -1.0]));
+    }
+
+    #[test]
+    fn audio_spatial_node_binding_and_detach() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.audio_spatial_set(AudioSpatialPatch {
+            node: Some("cube".to_string()),
+            ..spatial_patch("bell")
+        })
+        .expect("带节点注册应成功");
+        assert_eq!(
+            api.audio_spatial_list(None).unwrap()["sources"][0]["node"],
+            json!("cube")
+        );
+
+        // 空串 = 解绑（回到只按手动 position 算）
+        api.audio_spatial_set(AudioSpatialPatch {
+            node: Some("  ".to_string()),
+            ..spatial_patch("bell")
+        })
+        .expect("解绑应成功");
+        assert_eq!(
+            api.audio_spatial_list(None).unwrap()["sources"][0]["node"],
+            Value::Null,
+            "解绑后不该残留节点名"
+        );
+
+        let removed = api.audio_spatial_remove("bell").expect("移除应成功");
+        assert_eq!(removed["removed"], json!(true));
+        assert_eq!(removed["count"], json!(0));
+        // 重复移除不报错，只是 false
+        assert_eq!(
+            api.audio_spatial_remove("bell").unwrap()["removed"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn audio_spatial_capacity_and_clear() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+        for i in 0..MAX_SPATIAL_SOURCES {
+            api.audio_spatial_set(spatial_patch(&format!("s{i}")))
+                .unwrap_or_else(|e| panic!("第 {i} 个声源应注册成功: {e:?}"));
+        }
+        let over = api.audio_spatial_set(spatial_patch("overflow"));
+        assert!(over.is_err(), "满载后新增必须报错而不是挤掉别人");
+        assert_eq!(
+            api.audio_spatial_list(None).unwrap()["count"],
+            json!(MAX_SPATIAL_SOURCES)
+        );
+
+        let cleared = api.audio_spatial_clear().expect("清空应成功");
+        assert_eq!(cleared["removed"], json!(MAX_SPATIAL_SOURCES));
+        assert_eq!(cleared["count"], json!(0));
+        // 清空后能重新注册（不会因为计数残留而卡死）
+        assert!(api.audio_spatial_set(spatial_patch("fresh")).is_ok());
     }
 }
 
