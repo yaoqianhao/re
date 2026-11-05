@@ -583,6 +583,27 @@ impl MeshCache {
     }
 }
 
+/// 一帧的离屏读回结果（P0-4 截图）。
+///
+/// 只给「已转成 RGBA8、行填充已去掉」的紧密像素，编码成什么图片格式由上层决定
+/// （编码要引 `image` 之类的依赖，不该压进渲染层）。
+#[derive(Debug, Clone)]
+pub struct CapturedFrame {
+    pub width: u32,
+    pub height: u32,
+    /// 紧密排列的 RGBA8，长度恒为 `width * height * 4`；alpha 恒为 255。
+    pub rgba8: Vec<u8>,
+    /// 读回时用的目标纹理格式（排查偏色用）。
+    pub format: wgpu::TextureFormat,
+}
+
+impl CapturedFrame {
+    /// 像素总字节数，交给调用方做落盘前自检。
+    pub fn byte_len(&self) -> usize {
+        self.rgba8.len()
+    }
+}
+
 /// 一帧的绘制统计，便于日志 / HUD 观测。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
@@ -1280,6 +1301,44 @@ impl Renderer {
 
     /// 绘制一帧。场景的任何变化都会在下一帧生效，不需要重建管线。
     pub fn render(&mut self, scene: &Scene) {
+        let Some(frame) = self.acquire_surface_frame() else {
+            return;
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_to_view(scene, &view);
+        self.queue.present(frame);
+    }
+
+    /// 取一帧 swapchain 纹理。`None` = 本帧应跳过（surface 失效 / 非致命错误）。
+    ///
+    /// 抽出来是为了让 [`Self::render`] 与 [`Self::capture_frame`] 共用同一段
+    /// 「拿到可绘制目标」前后的错误处理，而不是各抄一份。
+    fn acquire_surface_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) => Some(f),
+            wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
+                self.surface.configure(&self.device, &self.config);
+                Some(f)
+            }
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                log::warn!("surface 已失效，重新配置");
+                self.surface.configure(&self.device, &self.config);
+                None
+            }
+            other => {
+                log::debug!("跳帧: {other:?}");
+                None
+            }
+        }
+    }
+
+    /// 把场景渲染到任意目标视图（窗口 swapchain 纹理或离屏纹理）。
+    ///
+    /// 这是**唯一**的绘制实现：窗口渲染与截图都走这里，所以截图内容与用户看到的
+    /// 画面逐像素同源（阴影 / 遮蔽 / 后处理 / 文本 / UI 全部包含）。
+    fn render_to_view(&mut self, scene: &Scene, view: &wgpu::TextureView) {
         let (groups, culled, cull_unknown, bounds) = self.prepare_instances(scene);
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
@@ -1288,27 +1347,6 @@ impl Renderer {
         let local_lights = self.prepare_local_lights(scene);
         // 扩展十八 C：本帧要跑深度 pass 的局部阴影层（空 = 没有灯投影）
         let (local_shadow_layers, local_shadow_casters) = self.prepare_local_shadow(scene);
-
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) => f,
-            wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                self.surface.configure(&self.device, &self.config);
-                f
-            }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                log::warn!("surface 已失效，重新配置");
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            other => {
-                log::debug!("跳帧: {other:?}");
-                return;
-            }
-        };
-
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let bg = scene.background;
         let mut encoder = self
@@ -1466,7 +1504,7 @@ impl Renderer {
             &self.device,
             &self.queue,
             &mut encoder,
-            &view,
+            view,
             &postfx_settings,
         );
         self.stats.postfx = self.postfx.stats();
@@ -1493,7 +1531,7 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &view,
+                view,
                 uis,
                 self.size,
             );
@@ -1501,7 +1539,7 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &view,
+                view,
                 texts,
                 self.size,
             );
@@ -1510,7 +1548,7 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &view,
+                view,
                 texts,
                 self.size,
             );
@@ -1518,7 +1556,7 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &view,
+                view,
                 uis,
                 self.size,
             );
@@ -1533,7 +1571,129 @@ impl Renderer {
         self.stats.ui_draws = ui_stats.draw_calls;
 
         self.queue.submit(Some(encoder.finish()));
-        self.queue.present(frame);
+    }
+
+    /// 离屏渲染一帧并把像素读回 CPU（P0-4 截图）。
+    ///
+    /// 走的是 [`Self::render_to_view`]，因此画面与窗口里看到的同源：阴影 / 遮蔽 /
+    /// 后处理 / 文本 / UI 全部在内。区别只有两点：目标是普通纹理（不碰 swapchain，
+    /// 不依赖窗口是否可见），以及读回后 alpha 一律写成 255（surface 的 alpha 模式
+    /// 可能是 Opaque，原样落盘会得到一张全透明 PNG）。
+    ///
+    /// 本方法会推进一帧：`frame_index`、阴影 pass、后处理累积历史都会前进一格。
+    pub fn capture_frame(&mut self, scene: &Scene) -> Result<CapturedFrame, String> {
+        let (width, height) = self.size;
+        if width == 0 || height == 0 {
+            return Err(format!("绘制尺寸异常（{width}x{height}），无法截图"));
+        }
+        let format = self.config.format;
+        // 复制粒度决定了读回的排布，非 8bit RGBA/BGRA 的 surface 这里直接拒绝，
+        // 而不是给出一张被解读错位的花屏图。
+        let swizzle_bgra = match format {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => true,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => false,
+            other => {
+                return Err(format!(
+                    "surface 格式 {other:?} 不是 8bit RGBA/BGRA，暂不支持截图"
+                ))
+            }
+        };
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("r3e-capture-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_to_view(scene, &view);
+
+        // copy_texture_to_buffer 要求每行按 256 字节对齐：行尾填充必须自己丢掉，
+        // 否则图像会沿对角线逐行倾斜。
+        let unpadded_row = width * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_row = unpadded_row.div_ceil(align) * align;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-capture-readback"),
+            size: u64::from(padded_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("r3e-capture-blit"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|err| format!("等待 GPU 读回失败: {err:?}"))?;
+        match receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(format!("映射截图缓冲失败: {err:?}")),
+            Err(err) => return Err(format!("截图回调未送达: {err}")),
+        }
+
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|err| format!("读取截图缓冲失败: {err:?}"))?;
+        let mut rgba8 = Vec::with_capacity((unpadded_row * height) as usize);
+        for row in 0..height {
+            let start = (row * padded_row) as usize;
+            let line = &mapped[start..start + unpadded_row as usize];
+            for px in line.chunks_exact(4) {
+                if swizzle_bgra {
+                    rgba8.extend_from_slice(&[px[2], px[1], px[0], 255]);
+                } else {
+                    rgba8.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                }
+            }
+        }
+        drop(mapped);
+        buffer.unmap();
+
+        Ok(CapturedFrame {
+            width,
+            height,
+            rgba8,
+            format,
+        })
     }
 
     /// 阶段 D：把阴影贴图尺寸对齐场景配置；返回本帧是否要跑阴影通道。

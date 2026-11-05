@@ -15,8 +15,8 @@ pub use mesh::{vertex_layout, InstanceRaw};
 pub use pbr::{MaterialUniform, SurfaceKey};
 pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
 pub use renderer::{
-    LayeredProvider, LightsUniform, LocalLightRaw, LocalShadowUniform, MeshCache, RenderStats,
-    Renderer, LIGHTS_UNIFORM_SIZE, LOCAL_LIGHT_STRIDE, LOCAL_SHADOW_NORMAL_BIAS,
+    CapturedFrame, LayeredProvider, LightsUniform, LocalLightRaw, LocalShadowUniform, MeshCache,
+    RenderStats, Renderer, LIGHTS_UNIFORM_SIZE, LOCAL_LIGHT_STRIDE, LOCAL_SHADOW_NORMAL_BIAS,
     LOCAL_SHADOW_SLOT_STRIDE, LOCAL_SHADOW_UNIFORM_SIZE,
 };
 pub use ssao::{SsaoPass, SsaoStats, AO_FORMAT, AO_PASSES_PER_FRAME};

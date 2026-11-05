@@ -41,6 +41,45 @@ pub use importer::{audit_entry, audit_issues, AssetImporter, FbxImporter, Import
 /// 目标单位：1.0 = 米。
 pub const TARGET_UNIT_METERS: f64 = 1.0;
 
+/// 把一帧 RGBA8 像素写成 PNG 文件（P0-4 截图落盘）。
+///
+/// 放在这里而不是渲染层：渲染层只产出像素，PNG 编码需要 `image`，而 `image`
+/// 已经是本 crate 的依赖（贴图解码在用），不必为此再给 `r3e-render` 加包袱。
+/// 目录不存在会自动创建；像素数与宽高不符时直接报错，绝不写出一张错位的图。
+pub fn write_png_rgba(
+    path: impl AsRef<Path>,
+    width: u32,
+    height: u32,
+    rgba8: &[u8],
+) -> Result<(), AssetError> {
+    let path = path.as_ref();
+    let expected = (width as usize) * (height as usize) * 4;
+    let fail = |message: String| AssetError::Load {
+        path: path.display().to_string(),
+        message,
+    };
+    if width == 0 || height == 0 {
+        return Err(fail(format!("尺寸不合法: {width}x{height}")));
+    }
+    if rgba8.len() != expected {
+        return Err(fail(format!(
+            "像素字节数 {} 与 {width}x{height} 不符（期望 {expected}）",
+            rgba8.len()
+        )));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| fail(format!("创建目录失败: {err}")))?;
+        }
+    }
+    let image = image::RgbaImage::from_raw(width, height, rgba8.to_vec())
+        .ok_or_else(|| fail("像素缓冲区尺寸不合法".to_string()))?;
+    image
+        .save(path)
+        .map_err(|err| fail(format!("PNG 编码失败: {err}")))?;
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum AssetError {
     #[error("加载资产失败 `{path}`: {message}")]
