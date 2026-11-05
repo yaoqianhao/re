@@ -944,6 +944,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   缺省直通，见 [§17 HDR 后处理链](#17-hdr-后处理链)；可选屏幕空间遮蔽（两个全屏 pass）叠在 composite 之前，
   见 [§20 屏幕空间遮蔽](#20-屏幕空间遮蔽ssao扩展十七)。**无运动模糊、无 TAA、无自动曝光**。
 - 遮蔽是**整幅相乘**的近似：没有只压环境项的版本、无多尺度、无双边滤波，快速转相机时靠 4×4 散焦压噪而非时间累积。
+- 像素级回归（[§24](#24-captureframe-像素级回归扩展二十)）是**逐像素**的：只覆盖单一夹具场景的 640x360 单帧，跨 GPU / 驱动 /
+  系统字体渲染不保证一致，换机器要先 `R3E_UPDATE_BASELINE=1` 重建；无 GPU 的机器整条用例自动跳过（计 passed），
+  等于那台机器没有这层保护。动画、输入、交互、编辑器 RPC 产出的图都不在基线内。
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
   骨骼蒙皮、交叉淡入与脚本状态机、分层遮罩混合，见 [§21 动画混合树](#21-动画混合树扩展十八-a)）；
   法线/粗糙度贴图、morph target 尚未支持。
@@ -1108,6 +1111,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features rapier -- -D warnings
 cargo test --workspace                         # 默认特性
 cargo test --workspace --features rapier       # Rapier 物理后端
+
+$env:R3E_VISUAL_REGRESSION = "1"               # 像素级回归（需要 GPU，见 §24）
+cargo test -p r3e-app --test visual_regression -- --nocapture
 ```
 
 `cargo clippy` 不加 `-D warnings` 等于没跑——本仓库的口径是**零 warning**，
@@ -1364,7 +1370,7 @@ CPU 侧是纯函数、不依赖 wgpu，所以能吃单测。
   粗糙绝缘体反射率接近 albedo、直接光不超光色、自发光只加不减、场景序列化往返。
 - `cargo test -p r3e-render`：材质 uniform 布局与着色器逐字段对齐（48 字节 / 16 对齐）、物件级材质键分桶。
 - `cargo test -p r3e-script`：`set_material` / `set_emissive` / `material_of` / `clear_material` 的写入、收敛与读回。
-- 视觉观感（金属是否像金属、高光带是否自然）**待人工窗口确认**：没有截图 / 像素比对测试。
+- 视觉观感（金属是否像金属、高光带是否自然）**待人工确认**：像素基线（[§24](#24-captureframe-像素级回归扩展二十)）只锁 `tests/fixtures/visual_regression` 那一个静止画面，覆盖面是「改了会不会变」而不是「好不好看」。
 
 ---
 
@@ -1425,7 +1431,7 @@ set_env_intensity(1.0);
 - `cargo test -p r3e-render`：`tests/shader_wgsl.rs`（naga 静态解析 + 语义校验 + 球谐数组与常量对齐 + CPU 参考实现一致）；
 - `cargo test -p r3e-editor`：`tests/environment_rpc.rs`（字段逐一解析、部分补丁保留原值、`enabled: false` 清空、空补丁与类型错误拒绝）；
 - 实机证据：`--run-seconds 2` 加载 `assets/scene_ibl.json`，`环境探针：启用 true / 总强度 1.00 / 太阳强度 1.40 / 球谐重投影 1 次`；
-- 视觉观感（金属暗部是否"活"了）**待人工窗口确认**：无截图 / 像素比对测试。
+- 视觉观感（金属暗部是否"活"了）**待人工确认**：像素基线（[§24](#24-captureframe-像素级回归扩展二十)）锁的是默认夹具画面，金属观感仍需人眼判断。
 
 ---
 
@@ -1514,7 +1520,7 @@ set_fxaa(true);
 - `cargo test -p r3e-render`：`tests/postfx_shader.rs`（naga 解析 `postfx.wgsl` + ACES 五系数 / Rec.709 权重 / 泛光与 FXAA 阈值与 Rust 常量逐项比对）；
 - `cargo test -p r3e-editor`：`tests/postfx_rpc.rs`（全量 / 局部 / 清空 / 未知曲线名 / 空补丁 / 类型错误）；
 - `cargo test -p r3e-script`：`set_postfx` 一族写入、逐项组合、越界收敛、未知名回落、清空回读；
-- 视觉观感（泛光是否"糊"、ACES 是否偏灰）**待人工窗口确认**：无截图 / 像素比对测试。
+- 视觉观感（泛光是否"糊"、ACES 是否偏灰）**待人工确认**：像素基线（[§24](#24-captureframe-像素级回归扩展二十)）能证明画面没漂移，不能证明观感达标。
 
 ---
 
@@ -1820,7 +1826,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 51 个套件 / 744 passed / 0 failed。
+`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed。
 
 ---
 
@@ -1940,7 +1946,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
-`cargo test --workspace` 现为 51 个套件 / 744 passed / 0 failed。
+`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed。
 
 ---
 
@@ -2041,7 +2047,108 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 | `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
 | `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
 
-`cargo test --workspace` 现为 51 个套件 / 744 passed / 0 failed。
+`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed。
+
+---
+
+## 24. capture.frame 像素级回归（扩展二十）
+
+`capture.frame`（P0-4 批次落库）解决了「能不能拍」，本节解决「拍出来的东西对不对」——
+顺带修掉一个只有在**整机出图**时才暴露的渲染 bug。
+
+### 24.1 先说那个 bug：AO 占位图没写初值，画面全黑
+
+| 项 | 内容 |
+| --- | --- |
+| **位置** | `crates/r3e-render/src/postfx.rs` 的 `create_ao_placeholder`（`PostFxPass` 构造时调用），共 1 处；`renderer.rs` 只是把 `&queue` 透传进来 |
+| **成因** | SSAO 关闭时 composite 仍要有一张遮蔽图可采样，代码建了 1×1 `R8Unorm` 纹理当占位图，**但只建不写**。WebGPU 规定纹理创建后内容未定义（实现上普遍清 0），而 composite 片元里是 `color *= ao` ——采到 0 就把整帧乘成黑色 |
+| **表现** | 窗口全黑，**连背景清除色都一起没了**；`RenderStats`（draw / instance / cull）完全正常，日志里 `渲染器就绪`、探针一个不缺，纯肉眼看不出问题出在后处理 |
+| **影响范围** | 默认配置（`postfx.ssao.enabled = false`）下**所有场景**；只有显式开 SSAO 时才有真实遮蔽图、才不黑。因此扩展十七之后的默认构建一直是坏的，肉眼验证存在窗口才会发现，无头测试全绿也发现不了 |
+| **修法** | 建完纹理立刻 `queue.write_texture(...)` 写一笔 `[255u8]`（`R8Unorm` 的 255 = 1.0，乘上去等于没乘）；`PostFxPass::new` 因此多收一个 `&wgpu::Queue` 参数 |
+| **为什么现在才炸出来** | 这条链路的产物此前只在人工看窗口时才被评价，而「全黑」与「场景本来就暗」在没有基准图时无法区分——这正是下面这套回归基线存在的理由 |
+
+### 24.2 分工：GPU 边界划在「产图」这一步
+
+| 层 | 位置 | 职责 | 要 GPU |
+| --- | --- | --- | --- |
+| 比对逻辑 | `crates/r3e-asset/src/visual_regression.rs` | `RgbaFrame`（RGBA8 + PNG 读写）、`Tolerance::sanitized`、`compare`、`compare_png`、`assert_png_matches`；产出 `DiffReport`（坏点数 / 坏点比例 / 最大与平均差 / 差异包围盒 / 最差 8 点） | 否 |
+| 产图 | `crates/r3e-app/tests/visual_regression.rs` | 起 `r3e` 子进程，固定尺寸跑到约定帧截图 | 是 |
+
+比对库**零 wgpu 依赖**，所以容差语义、差异统计算法在任何机器上都能单测；
+真正需要显卡的只有「拍一张新图」。这也是把「纯逻辑做单测、GPU 部分可跳过」落到实处的切法。
+
+### 24.3 三个命令行选项
+
+| 选项 | 语义 | 默认 |
+| --- | --- | --- |
+| `--window-size WxH` | 窗口**物理像素**尺寸（不乘 DPI 缩放；`x` / `X` / `*` 均可作分隔符，宽高须 ≥ 1） | 1280x720 逻辑尺寸 |
+| `--capture-frame PATH` | 跑到约定帧后截图、落盘并退出；**复用编辑器 `capture.frame` 同一条链路**（离屏渲染 → `write_png_rgba`） | 不产图 |
+| `--capture-after N` | 第 N 帧之后截（夹到 ≥ 1；首帧的后处理目标与字形图集还没热） | 2 |
+
+为什么要**物理**像素：基准图是逐像素比的，逻辑尺寸在 125% / 150% 缩放下会拍出不同分辨率，
+同一张基线换台机器必红。
+
+### 24.4 基准图、夹具与产物
+
+| 路径 | 作用 | 是否进版本库 |
+| --- | --- | --- |
+| `crates/r3e-app/tests/baselines/capture_frame_640x360.png` | 基准图（640x360、第 3 帧、21 KB 量级） | 是 |
+| `crates/r3e-app/tests/fixtures/visual_regression/scene.json` + `static.rhai` | 回归专用夹具：7 个静止物件 + 空脚本 | 是 |
+| `crates/r3e-app/target/visual-regression/*.png` | 实际截图 / 差异图 / 文本报告 | 否（`target/` 天然忽略） |
+
+刻意**不复用** `assets/scene.json` + `scripts/main.rhai`：演示脚本会转物件、每帧刷帧率文本，
+同一帧号下画面随运行时长变化，那种输入会让用例「代码没改也红」。
+
+### 24.5 怎么跑
+
+```powershell
+# 手动拍一张（与用例同口径），产物可直接打开看
+cargo run -- crates\r3e-app\tests\fixtures\visual_regression\scene.json `
+              crates\r3e-app\tests\fixtures\visual_regression\static.rhai `
+              --window-size 640x360 --capture-frame target\shot.png --capture-after 3
+
+# 真跑回归（需要 GPU）
+$env:R3E_VISUAL_REGRESSION = "1"
+cargo test -p r3e-app --test visual_regression -- --nocapture
+
+# 首次建档，或确认画面变化是有意的
+$env:R3E_UPDATE_BASELINE = "1"
+cargo test -p r3e-app --test visual_regression -- --nocapture
+```
+
+三道闸门保证**没显卡的机器不假失败**：① 只有 `R3E_VISUAL_REGRESSION=1` 才真跑，
+否则返回并打印跳过原因（CI 上仍计 passed）；② 子进程退出码 `2` = 渲染器 / 截图链路不可用，
+按跳过处理；③ 基准图缺失时明确报错并提示用 `R3E_UPDATE_BASELINE=1` 建档，不静默通过。
+
+### 24.6 判定口径
+
+- 单像素差 = 四通道 `|基准 - 实际|` 的**最大值**（alpha 也算：截图 alpha 恒 255，某条链路忘了写不透明会立刻炸出来）；
+- 单像素差 > `Tolerance::channel_delta` 即坏点，坏点掩码用来画差异图；
+- 通过 ⇔ `坏点比例 <= Tolerance::bad_pixel_ratio`；
+- 默认 `DEFAULT_CHANNEL_DELTA = 2`（8bit 量化的两级抖动）、`DEFAULT_BAD_PIXEL_RATIO = 0.001`（640x360 下约 230 个像素）：
+  单点噪声被容忍，整屏偏色 / 整体缺失必然超比例；
+- 可用 `R3E_VISUAL_CHANNEL_DELTA` / `R3E_VISUAL_BAD_RATIO` 放宽（换驱动时）；
+- 截图成功时日志：`[capture] 第 N 帧截图完成: {"bytes":21049,"width":640,...} | draws=5 instances=10`
+  ——绘制统计和路径一起打出来，挂掉时才能先分清「画了但颜色不对」和「一个 draw 都没提交」。
+
+### 24.7 已知边界
+
+- 逐像素比对**跨 GPU / 驱动不保证一致**，换机器先 `R3E_UPDATE_BASELINE=1` 重建再比；
+- 只覆盖单一夹具的**单帧静止画面**：动画、输入、交互、RPC 产图都不在基线内；
+- 无 GPU 时整条用例跳过（计 passed），等于那台机器上没有这层保护；
+- 无「多基准 / 分平台基线」机制，也没有对基准图做压缩以外的优化。
+
+### 24.8 测试覆盖
+
+新增 14 条，其中 12 条纯 CPU 无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-asset/src/visual_regression.rs` | 11 | 尺寸不一致报错、全等图零坏点、单通道单点差异判据、容差边界（等于 / 大于 delta）、坏点比例阈值、最差像素按差值降序且截断、差异包围盒、`Tolerance::sanitized` 夹取、alpha 差异参与判定、差异图着色、摘要文本 |
+| `crates/r3e-app/src/main.rs` | 2 | `parse_window_size` 的三种分隔符与非法输入（缺 `x`、0、非数字） |
+| `crates/r3e-app/tests/visual_regression.rs` | 1 | 端到端像素回归（无 GPU 时经三道闸门跳过） |
+
+`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed（`--features rapier` 为 805 passed）。
 
 ---
 

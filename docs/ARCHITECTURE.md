@@ -146,21 +146,21 @@ rust3d-engine/
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
 | r3e-core | 15,173 | 2,027 | 298 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 6,784 | 1,587 | 123 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 5,311 | 305 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-render | 6,809 | 1,587 | 123 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 6,077 | 305 | 55 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
 | r3e-script | 5,238 | 1,074 | 82 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、动画层、局部阴影语义单测） |
 | r3e-editor | 2,907 | 1,448 | 88 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 6,283 | — | 52 | `app.rs`（含 `drive_spatial_audio`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-app | 6,453 | 183 | 55 | `app.rs`（含 `drive_spatial_audio` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **50,282** | **7,101** | **791** | **约 5.0 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 55 个套件 / 787 passed / 0 failed** |
+| **合计** | **51,243** | **7,284** | **805** | **约 5.1 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 56 个套件 / 801 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展十九（半透明排序 + MSAA）收尾一次性重算
-（此前停在 P0-4 批次快照：49,736 行 / 776 单测）。单测数一列是 `#[test]` **标注数**，
+着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十（capture.frame 像素级回归基线）收尾一次性重算
+（此前停在扩展十九收尾快照：50,282 行 / 791 单测）。r3e-app 的 `tests/` 只在本次出现（此前该 crate 无 tests 目录）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 787。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 801。
 
 Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
@@ -170,8 +170,8 @@ Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 787 passed / 0 failed（55 个套件；较扩展十八 C 收尾的 704 增 83 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 791 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 801 passed / 0 failed（56 个套件；较扩展十八 C 收尾的 704 增 83 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）+ 扩展二十 14（`r3e-asset/src/visual_regression.rs` 纯函数契约 11 + `tests/visual_regression.rs` 像素回归入口 1（无 GPU 时跳过计 passed）+ `main.rs` `parse_window_size` 2）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 805 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -536,6 +536,10 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
    样本数比 4 更少时核退化成几个方向、能看出条纹；比 16 更多时收益被 4×4 散焦抹平，白花采样。
 3. **缺省中性**：`SsaoSettings::default()` 的 `enabled = false`，`is_neutral()` 为真时两个 pass 整段跳过、
    composite 拿到一张全 1 的遮蔽图——**不写 `postfx.ssao` 的老场景画面逐像素不变**。
+   **但"全 1"必须真的写进纹理**：`create_ao_placeholder` 建的是 1×1 `R8Unorm`，纹理创建后内容未定义
+   （多数后端给 0），早期实现只建不写，于是 composite 的 `color *= ao` 把整帧（含背景清除色）乘成纯黑，
+   窗口出图全黑而 `RenderStats` 一切正常——这是扩展二十修掉的那个 bug，修法是在建纹理后
+   `queue.write_texture` 一笔 `[255u8]`，`PostFxPass::new` 因此多收一个 `&wgpu::Queue`。
 4. **`AO_FORMAT = R8Unorm`**：遮蔽是单个乘数，8 位足够；换成 `R16Float` 只会多一倍带宽。
    主深度纹理因此必须带 `TEXTURE_BINDING` 用法——缺这一条时绑定组在真机上校验失败，
    而纯文本测试察觉不到（这条是首次真机运行时才炸出来的）。
@@ -2474,6 +2478,45 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 只要保证半透明批次**排在最后**并切换一次管线（关深度写入），就能在不增加 pass、不重传数据的前提下拿到正确顺序；
 多开一个 pass 反而要重绑四组绑定组、再走一次 render pass 开销。
 
+### 8.20 capture.frame 的像素级回归基线（扩展二十）
+
+`capture.frame` 此前只能证明"拍到了一张 PNG"，证明不了"这张 PNG 和上一版一模一样"。
+扩展二十把这条链路接成可自动断言的像素基线，**分工刻意切在 GPU 边界上**：
+
+| 层 | 位置 | 职责 | 需要 GPU |
+| --- | --- | --- | --- |
+| 比对逻辑（纯 CPU） | `r3e-asset::visual_regression`（`compare` / `compare_png` / `assert_png_matches`、`Tolerance`、`DiffReport`、`PixelDiff`、`PixelBox`、`RgbaFrame`） | 逐像素通道差、坏点统计与比例、最坏 8 个点、差异图落盘；无 wgpu、无窗口 | 否 |
+| 产图（唯一要显卡的一步） | `r3e-app/tests/visual_regression.rs` → 起 `r3e` 子进程 | 固定尺寸跑到约定帧截图，再交给上面的库比对 | 是 |
+
+**三条命令行选项**（都在 `main.rs` 解析、`CliOptions` 承载）：
+
+| 选项 | 语义 | 默认 |
+| --- | --- | --- |
+| `--window-size WxH` | 窗口**物理像素**尺寸（`PhysicalSize`，不乘 DPI 缩放；`x` / `X` / `*` 都可作分隔符，宽高必须 ≥1） | 1280x720 逻辑尺寸 |
+| `--capture-frame PATH` | 跑到约定帧后截图落盘并退出；**复用编辑器 `capture.frame` 的同一条链路**（`LocalEngineApi::capture_frame` → 离屏渲染 → `write_png_rgba`），保证回归图与 RPC 产图同口径 | 无（不产图） |
+| `--capture-after N` | 第 N 帧之后截（夹到 ≥1：首帧后处理目标与字形图集还没热） | 2 |
+
+**为什么用物理像素**：基准图是逐像素比的，逻辑尺寸在 125% / 150% 缩放下会拍出不同分辨率，同一张基线在别人机器上必然红。
+**为什么另建夹具**：`crates/r3e-app/tests/fixtures/visual_regression/`（`scene.json` 7 个物件 + 空 `static.rhai`）
+不复用演示场景——演示脚本会转物件、每帧刷帧率文本，同一帧号下画面随运行时长相变，那种输入会让用例"代码没改也红"。
+
+**三道闸门，避免在没显卡的机器上假失败**：
+
+1. `R3E_VISUAL_REGRESSION=1` 才真跑，否则直接返回并打印跳过原因（无 GPU 的 CI 上仍是 passed）；
+2. 子进程退出码 `2` = 渲染器 / 截图链路不可用（无 GPU、窗口建不出来），按跳过处理；
+3. 基准图缺失时既不"通过"也不"失败"，而是 `assert` 并且提示用 `R3E_UPDATE_BASELINE=1` 建档。
+
+**环境变量**：`R3E_VISUAL_REGRESSION`（总开关）、`R3E_UPDATE_BASELINE`（覆盖基准图）、
+`R3E_VISUAL_CHANNEL_DELTA`（单通道容差，默认 `DEFAULT_CHANNEL_DELTA = 2`）、
+`R3E_VISUAL_BAD_RATIO`（坏点比例上限，默认 `DEFAULT_BAD_PIXEL_RATIO = 0.001`）。
+
+**产物布局**：基准图 `crates/r3e-app/tests/baselines/capture_frame_640x360.png` 进版本库（640x360 只有 1280x720 的四分之一体积，
+排序 / MSAA / 后处理的变化已经看得出来）；实际图与差异图落 `target/visual-regression/`，天然不进版本库。
+
+**判读**：截图成功时日志是 `[capture] 第 N 帧截图完成: {...} | draws=5 instances=10 culled=0 cull_unknown=0`——
+把绘制统计和路径一起打出来，像素基线挂掉时才能先分清"画了但颜色不对"和"一个 draw 都没提交"。
+截图失败走 `std::process::exit(2)`，回归脚本靠"退出码 + 文件存在性"区分"没 GPU 跳过"和"拍了但坏了"。
+
 ---
 
 ## 9. 端到端数据流
@@ -2558,6 +2601,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
 | 音频 | wav / ogg / mp3 一次性解码播放、多路混音 + 总音量、暂停/循环；**3D 空间化**（路线表第十项）：声源可绑场景节点或给手动坐标，三种距离模型（inverse / linear / exponential）+ 边界平滑窗，多普勒经播放倍速落地，听者每帧由活动相机推导 | **无 HRTF、无左右声像**（增益是逐实例标量，相机 `forward` 只记录不参与计算）、无遮挡衍射、无房间混响、无 DSP 效果链（EQ / 压缩）；无流式/边下载边播；单文件整体解码进内存，长音乐占内存；空间化声源上限 32，多普勒只对有设备的后端生效（静默后端只算不下发） |
+| 视觉回归 | `capture.frame` 像素基线（扩展二十）：640x360 物理像素、单一静止夹具场景（7 物件 + 空脚本），默认容差 单通道 2 / 坏点 0.1%（见 §8.20） | 基线是**逐像素**的：跨 GPU / 驱动 / 系统字体渲染不保证一致，换机器先用 `R3E_UPDATE_BASELINE=1` 重建再比；无 GPU 时整条用例自动跳过（计 passed），等于该机器上没有这层保护；只覆盖单帧静画面，动画 / 交互 / 输入路径不在基线内 |
 
 ### 11.2 性能特征
 
@@ -2614,6 +2658,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | **十七（已完成：屏幕空间遮蔽 SSAO）** | **深度反推的半球核遮蔽**：`r3e-core::ssao` 纯函数契约（`hemisphere_kernel` 确定性核 + `reconstruct_view_pos` 深度重建 + `normal_from_neighbors` 邻域法线 + `is_occluded` / `ao_from_occlusion`）+ `SsaoSettings`（enabled / radius / bias / intensity / samples，`sanitized()` 夹 0.01..8 / 0..0.5 / 0..4 / 4..16）挂进 `PostFxSettings.ssao`；`r3e-render::ssao` 两个全屏 pass（深度→`R8Unorm` 遮蔽图、4×4 盒式散焦，`AO_PASSES_PER_FRAME = 2`）+ `ssao.wgsl`，composite 在曝光前 `color *= ao`；`RenderStats.ssao`；12 个脚本 API（写 6：`set_ssao` / `set_ssao_enabled` / `set_ssao_radius` / `set_ssao_intensity` / `set_ssao_samples` / `clear_ssao`；读 6：`has_ssao` / `ssao_enabled` / `ssao_radius` / `ssao_bias` / `ssao_intensity` / `ssao_samples`，其中 `bias` **只读**——写入走场景 `postfx.ssao.bias` 与 RPC `scene.set_ssao`）；编辑器 `scene.set_ssao`（`SsaoPatch`）；演示 `assets/scene_ssao.json` + `scripts/ssao_demo.rhai` | `core/ssao.rs` 新增、`postfx.rs` 挂段、`lib.rs` 导出；`render/ssao.rs` + `ssao.wgsl` 新增，`renderer.rs` 主通道深度加 `TEXTURE_BINDING` 用法并在 composite 前插入两个 pass；`script/api.rs` 注册；`r3e-editor` 加 `SsaoPatch`；`app.rs` 遮蔽探针；`tests/ssao_contract.rs` / `ssao_scene.rs` / `ssao_shader.rs` / `ssao_api.rs` / `ssao_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx.ssao` 缺省 `enabled = false`，整段跳过、画面与扩展十三逐像素一致）。**边界**：AO 乘整幅画面（非只乘环境项）、无非双边滤波、无多尺度、屏幕外信息缺失处保守取 1 |
 | **十八（A、B、C 已完成；D 候选）** | **A 动画混合树**（已落地：分层 mask / additive，补 11.1 的动画边界，见 §4.11 / §7.4 / §8.15）；**B 场景切换 + 存档**（已落地：场景栈 + 运行时快照 + 命令信封 + 5 条 RPC / 9 个脚本绑定，补「一个进程一个场景」的边界，见 §4.12 / §7.4 / §8.16）；**C 局部光源阴影**（已落地：点光立方 6 面 / 聚光单面，24 层深度数组，每帧最多 4 盏投影，见 §5.12 / §8.17）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行（A 落 `anim_blend.rs` + `scene.rs`，B 落 `scene_stack.rs`，C 落 `light.rs` 的 `plan_local_shadows` / `shadow_face_view_projection`）；C 动了 render 的多目标与 pass 预算（新增 24 层深度数组 + 每层一次 pass），D 尚未开始 | 无（A、B、C 均为纯增量：场景 JSON 与既有 RPC 一字不改——`cast_shadow` 缺省 `false`，没灯投影时整段 pass 跳过，画面与扩展十七逐像素一致） |
 | **十九（已完成：半透明排序 + MSAA）** | **半透明按深度由远及近**：新增 `r3e-render::transparency`（`is_transparent` / `view_depth` / `back_to_front` 三个纯函数），`prepare_instances` 把批次拆成「不透明段 + 半透明段」（`transparent_start`），组间按最远深度降序、组内稳定排序后搬进实例缓冲，半透明批次用**不写深度**的 `transparent_pipeline` 最后绘制；**MSAA 4×**：`MSAA_SAMPLE_COUNT = 4` + `create_msaa_targets`（4× `Rgba16Float` 颜色 + 4× 深度），主通道 resolve 进 `postfx.hdr_view()`，新增单采样**深度预通道**保证遮蔽通道仍有可采样深度；`RenderStats` 增 `transparent_draws` / `transparent_instances` / `depth_prepass_draws`，`--run-seconds` 探针与编辑器 `engine_stats.render` 同频输出（见 §5.13） | `render/transparency.rs` 新增 + `lib.rs` 导出 `MSAA_SAMPLE_COUNT`；`render/renderer.rs` 加两条管线与两组附件、`prepare_instances` 拆段排序、新增深度预通道；`app.rs` 与 `editor.rs` 各加探针字段；新增 `tests/transparency_contract.rs` 6 项 | 无（场景 JSON、脚本 API、RPC 一字不改：全不透明场景 `transparent_*` 恒 0，画面只多出 MSAA 边缘平滑；显存多一组 4× 颜色 + 4× 深度附件） |
+| **二十（已完成：capture.frame 像素级回归 + AO 占位修复）** | **像素级回归基线**：`r3e-asset::visual_regression` 纯 CPU 比对库（逐像素通道差 / 坏点比例 / 最坏 8 点 / 差异图，`Tolerance::sanitized()` 收敛容差，默认 `DEFAULT_CHANNEL_DELTA = 2` 与 `DEFAULT_BAD_PIXEL_RATIO = 0.001`）；`r3e-app/tests/visual_regression.rs` 起子进程产图后比对基准图 `tests/baselines/capture_frame_640x360.png`，三道闸门（开关 / 退出码 2 / 基准缺失）保证无 GPU 机器不假失败；**AO 占位图修复**：`create_ao_placeholder` 建完 1×1 `R8Unorm` 后补一笔 `queue.write_texture([255])`，此前不写初值导致 AO 关闭时 `color *= ao` 把整帧乘成纯黑（见 §4.10 / §8.20） | `r3e-asset/src/visual_regression.rs` 新增 + `lib.rs` 导出；`r3e-app/tests/`（用例 + 基准图 + 夹具）新增；`r3e-app/src/main.rs` 加 `--window-size` / `--capture-frame` / `--capture-after` 与 `parse_window_size`，`app.rs` 加 `window_attrs_size` / `capture_frame_now` / 第 N 帧截图退出的钩子；`r3e-render/postfx.rs` 的 `PostFxPass::new` 多收 `&wgpu::Queue`（`renderer.rs` 同步传参） | 无（命令行新增三项均为可选：不传时窗口仍 1280x720 逻辑尺寸、本进程不产图；`PostFxPass::new` 是 crate 内 API，签名变化不涉及场景 JSON、脚本与 RPC） |
 
 两条与顺序相关的说明：
 
@@ -2651,6 +2696,15 @@ cargo build --release
 
 # 或一键
 .\run.bat
+
+# 视觉回归：固定物理像素尺寸跑到第 3 帧截图（与 tests/visual_regression.rs 同口径）
+cargo run -- crates/r3e-app/tests/fixtures/visual_regression/scene.json `
+              crates/r3e-app/tests/fixtures/visual_regression/static.rhai `
+              --window-size 640x360 --capture-frame target\shot.png --capture-after 3
+
+# 真跑像素回归（需要 GPU；无显卡时用例自动跳过并计 passed）
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+# 首建档或确认画面变化是有意的：加 $env:R3E_UPDATE_BASELINE = "1"
 ```
 
 **实机验证记录**（Release 构建）：
@@ -2664,6 +2718,7 @@ cargo build --release
 | REPL | 输入指令后自动暂停脚本，指令立即反映到画面 |
 | 物理 | 默认关：`attach_body` 返回 false、`body_count()` 为 0；`--physics on` 后 5 个刚体落地反弹并进入休眠 |
 | 编译 | `cargo build --release` 零 warning |
+| 像素回归（扩展二十） | RTX 5060 Laptop / Vulkan 实跑 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression`：`captured_frame_matches_baseline ... ok`（5.20s），子进程日志 `渲染器就绪: 640x360` + `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，与基准图逐像素比对通过 |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
