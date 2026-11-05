@@ -146,21 +146,21 @@ rust3d-engine/
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
 | r3e-core | 15,173 | 2,027 | 298 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 6,256 | 1,483 | 108 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-render | 6,784 | 1,587 | 123 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 5,311 | 305 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
 | r3e-script | 5,238 | 1,074 | 82 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、动画层、局部阴影语义单测） |
 | r3e-editor | 2,907 | 1,448 | 88 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 6,265 | — | 52 | `app.rs`（含 `drive_spatial_audio`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-app | 6,283 | — | 52 | `app.rs`（含 `drive_spatial_audio`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs` |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **49,736** | **6,997** | **776** | **约 5.0 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 54 个套件 / 772 passed / 0 failed** |
+| **合计** | **50,282** | **7,101** | **791** | **约 5.0 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 55 个套件 / 787 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随 P0-4 批次收尾一次性重算
-（此前停在路线表第十项快照：46,042 行 / 752 单测）。单测数一列是 `#[test]` **标注数**，
+着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展十九（半透明排序 + MSAA）收尾一次性重算
+（此前停在 P0-4 批次快照：49,736 行 / 776 单测）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 772。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 787。
 
 Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
@@ -170,8 +170,8 @@ Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 772 passed / 0 failed（54 个套件；较扩展十八 C 收尾的 704 增 68 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 776 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 787 passed / 0 failed（55 个套件；较扩展十八 C 收尾的 704 增 83 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 791 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -752,10 +752,13 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 10. 创建 BindGroupLayout (binding 0, VERTEX|FRAGMENT, uniform buffer)
 11. 创建 BindGroup
 12. 编译 shader.wgsl（include_str! 编译期内嵌，无运行时文件依赖）
-13. 创建 PipelineLayout → RenderPipeline
-14. 创建深度纹理 Depth32Float 并取 view
-15. 创建实例缓冲（初始 512 个实例容量）
+13. 创建 PipelineLayout → 不透明 RenderPipeline + 半透明 RenderPipeline（唯一差别是深度写入）
+14. 创建单采样深度纹理 Depth32Float 并取 view（供遮蔽通道采样）
+15. 创建 MSAA 附件 create_msaa_targets(w, h)：4× 颜色（HDR_FORMAT）+ 4× 深度
+16. 创建实例缓冲（初始 512 个实例容量）
 ```
+
+`resize` 时第 14、15 步的两组附件一起按新尺寸重建（贴图句柄不能原地 resize）。
 
 **便携性处理**：`InstanceDescriptor::new_without_display_handle()` 是 wgpu 30 的新 API，不传 display handle，避免在 Windows 上额外的平台句柄耦合。
 
@@ -767,8 +770,19 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 | 正面 / 剔除 | `Ccw` / 剔除背面 | 绕序错了会看到"物体内部" |
 | 深度格式 | `Depth32Float` | 32 位浮点，避免 z-fighting 更敏感 |
 | 深度写入 / 比较 | `true` / `Less` | |
-| 混合 | `ALPHA_BLENDING` | 支持半透明色，但**未做前后排序**，半透明叠加顺序依赖 `order` |
-| 多重采样 | 默认（1x） | 无 MSAA，边缘有锯齿 |
+| 混合 | `ALPHA_BLENDING` | 支持半透明色，半透明批次按相机深度**由远及近**排序后最后绘制（扩展十九） |
+| 多重采样 | `MSAA_SAMPLE_COUNT = 4` | 主通道光栅化到 4× 颜色附件，硬件 resolve 进 HDR 目标；后处理链只看到单采样纹理 |
+
+两条管线共用同一份 `PipelineLayout` 与顶点布局，**唯一差别是深度写入**：
+
+| 管线 | 用途 | 混合 | 深度写入 / 比较 |
+| --- | --- | --- | --- |
+| `pipeline` | 不透明批次 `groups[..transparent_start]` | `ALPHA_BLENDING` | `true` / `Less` |
+| `transparent_pipeline` | 半透明批次 `groups[transparent_start..]` | `ALPHA_BLENDING` | `false` / `Less` |
+
+半透明不写深度的原因：它必须能和已画好的不透明内容混合，若写深度，后画的近处半透明
+会因深度测试把更远的半透明挡掉，反而丢掉本该可见的层次。顺序正确性完全由 CPU 侧排序保证
+（见 §5.4 与 §5.13）。
 
 管线只创建一次，之后场景怎么变都不重建——这是"文本改动下一帧即生效"的前提。
 
@@ -779,10 +793,15 @@ render(scene):
   ├─ prepare_instances(scene)
   │   ├─ camera.aspect ← 真实窗口比例
   │   ├─ 组装 CameraUniform 并 write_buffer（view_proj / camera_pos / light_dir / light_color+intensity / ambient）
-  │   ├─ 按固定顺序 [Cube, Sphere, Plane, Cylinder] 遍历 scene.iter()
-  │   │     └─ 跳过 !visible；用 node.world 与 node.color 组装 InstanceRaw
-  │   │        每组记录 Range<u32>（连续区间）
+  │   ├─ 先按网格 + 材质分出键表，再按「alpha = node.color.w × 网格材质 alpha」拆成
+  │   │   opaque_keys / transparent_keys，拼出 keys = 不透明 ++ 半透明
+  │   │   （`transparent_start` = 不透明批次数，绘制时切一次管线即可）
+  │   ├─ 遍历 scene.iter()：跳过 !visible；用 node.world 与 node.color 组装 InstanceRaw
+  │   │   ├─ 不透明实例直接进实例缓冲，每组记录 Range<u32>（连续区间）
+  │   │   └─ 半透明实例先攒 staged（带 view_depth 排序键），等整批收齐再排
   │   ├─ 顺带 union 出可见物件的世界包围盒，返回给阴影通道拟合光源相机
+  │   ├─ 半透明批次：组间按「组内最远深度」降序，组内按 transparency::back_to_front
+  │   │   由远及近搬进实例缓冲（同分保持原顺序，顺序稳定可复现）
   │   ├─ 惰性上传尚未创建的网格（首次用某网格才传）
   │   ├─ 实例数超过容量 → 2 倍扩容重建 buffer
   │   └─ write_buffer 上传全部实例
@@ -801,13 +820,23 @@ render(scene):
   │     set_bind_group(0..=2)  ← wgpu 要求布局里每个组都必须绑，哪怕着色器不用
   │     set_bind_group(3) = shadow_pass_bind_group（只含光源矩阵）
   │     for (mesh, range) in groups: draw_indexed(...)   → stats.shadow_draws++
-  ├─ [主通道] 开 RenderPass：clear 颜色 = scene.background，clear 深度 = 1.0
-  ├─ for (kind, range) in groups:
+  ├─ [深度预通道] 单采样 depth_view ≈ 不透明段铺一遍深度（扩展十九）
+  │     ← 主通道的深度挂在 4× 附件上，纹理用法不能给遮蔽通道采样，
+  │        所以先用单采样深度写满；只画 groups[..transparent_start]
+  │     → stats.depth_prepass_draws
+  ├─ [主通道] 开 RenderPass：
+  │     颜色附件 = msaa_color_view（4× HDR），resolve_target = postfx.hdr_view()，
+  │     clear 颜色 = scene.background；
+  │     深度附件 = msaa_depth_view（4×，LoadOp::Clear(1.0)、StoreOp::Discard）
+  │     set_pipeline(pipeline) → 不透明段 groups[..transparent_start]（写深度）
+  │     set_pipeline(transparent_pipeline) → 半透明段 groups[transparent_start..]（不写深度）
+  ├─ for (mesh, range) in 该段 groups:
   │     set_vertex_buffer(0, 该网格顶点)
   │     set_vertex_buffer(1, instance_buffer[range])
   │     set_index_buffer(Uint32)
   │     draw_indexed(index_count, 0, 0..1)     ← 1 次 call 画完该网格全部实例
-  ├─ 统计 RenderStats { draw_calls, instances, shadow_draws, culled, cull_unknown, frame_index }
+  ├─ 统计 RenderStats { draw_calls, instances, shadow_draws, culled, cull_unknown,
+  │                    transparent_draws, transparent_instances, depth_prepass_draws, frame_index }
   ├─ [UI 通道]（与文本通道同级，谁先谁后由 scene.ui_above_text 决定）
   │     ui_pass.render(scene.ui, (w, h))       ← ui 为空或 ui_enabled=false 则整段跳过
   │     ├─ sort_by_layer(scene.ui)              → 层级升序、同层按加入顺序（稳定）
@@ -1068,6 +1097,9 @@ pub struct RenderStats {
     pub postfx: PostFxStats, // HDR 后处理链（扩展十三）：enabled / bloom_passes / passes
     pub ssao: SsaoStats,   // 屏幕空间遮蔽（扩展十七）：enabled / passes / samples / size
     pub local_lights: u32, // 真正上传并参与计算的局部光源数（扩展十五）
+    pub transparent_draws: u32,     // 半透明通道 draw call（扩展十九）；0 = 本帧无半透明批次
+    pub transparent_instances: u32, // 半透明通道实例数
+    pub depth_prepass_draws: u32,   // 深度预通道 draw call（只画不透明段）
 }
 ```
 
@@ -1288,6 +1320,55 @@ WebGPU core 规范 `max_bind_groups = 4`（group 索引 0..3），第五组 `@gr
 - 图幅固定 512²，不随方向光 `shadow.size` 变化（点光 6 层，跟着 4096 走会吃掉 1 GiB 以上显存），也**不**按灯的距离自适应；
 - 阴影强度是全局标量（`params2.x` 当前恒 1.0），暂没有逐灯强度；
 - 立方体面接缝处靠「邻域越界按受光」回避，没有做跨面连续 PCF，掠射角下仍可能看到一道轻微亮度线。
+
+### 5.13 半透明排序与 MSAA（扩展十九）
+
+两件事都收在渲染器内部，`r3e-core` 的场景结构与脚本 API 一字未改。
+
+**A. 半透明按深度由远及近（`r3e-render/src/transparency.rs` + `renderer.rs`）**
+
+前向管线没有逐像素排序，半透明只能靠"先画远的、后画近的"让 alpha 混合叠出正确结果；
+顺序反了近处物体会被远处物体盖住。判定与排序都是纯函数，因而可脱离 GPU 单测：
+
+| 函数 | 语义 |
+| --- | --- |
+| `is_transparent(alpha)` | `alpha < ALPHA_OPAQUE_THRESHOLD(0.999)` 才算半透明；`NaN` / 无穷按**不透明**处理（半透明通道不写深度，排序键里混进 `NaN` 会让"谁更远"失去意义） |
+| `view_depth(world_pos, camera_pos)` | 排序键 = 距离**平方**，与真实深度同序但省一次 `sqrt` |
+| `back_to_front(depths)` | 返回由远及近的下标序列；稳定排序（同深度保持场景顺序）→ 同帧可复现、不抖动；`NaN` 视为最远以保证比较器全序 |
+
+批次的 alpha 取 **`node.color.w × 网格材质 alpha`**（两者都可能 < 1，只看节点色会漏判材质半透明）。
+键表拆成 `opaque_keys` / `transparent_keys` 后拼接，于是 `groups` 天然是「不透明段 + 半透明段」，
+绘制时只切一次管线：`transparent_start` = 不透明批次数，等于 `groups.len()` 表示本帧没有半透明物件。
+
+排序分两层：**组间**按「组内最远实例深度」降序（一次排序决定先画哪个网格，保持合批），**组内**再按
+`back_to_front` 排细。半透明批次因不写深度，`stats.transparent_draws / transparent_instances`
+直接反映它是否真的存在——默认 `assets/scene.json` 全不透明，这两个值恒为 0。
+
+**B. MSAA 4×（`MSAA_SAMPLE_COUNT = 4`，`r3e-render` 导出常量）**
+
+主通道不再直接写 `postfx.hdr_view()`，而是光栅化到 4× 颜色附件、由硬件 resolve 进同一个 HDR 目标：
+
+- **颜色附件**：`msaa_color_view`（`HDR_FORMAT` = `Rgba16Float`，4 样本），`resolve_target = postfx.hdr_view()`；
+- **深度附件**：`msaa_depth_view`（4 样本，`LoadOp::Clear(1.0)` / `StoreOp::Discard`——只服务本通道深度测试，用完即弃）；
+- **单采样深度仍保留**：遮蔽通道（扩展十七）要采样主通道深度，多重采样纹理不能当采样源，
+  因此新增**深度预通道** `draw_depth_prepass` 先把不透明段的深度写进单采样 `depth_view`。
+  它只画 `groups[..transparent_start]`（半透明本就不写深度），空批次也照常 clear 深度，避免上一帧残留；
+- **后处理链零改动**：bloom / composite / FXAA 全部照旧读单采样 HDR 纹理，resolve 由硬件完成。
+
+**代价与边界**
+
+| 项 | 影响 |
+| --- | --- |
+| 显存 / 带宽 | 多一组 4× 颜色（`Rgba16Float`）+ 一组 4× 深度附件，1920×1080 下约 4×1920×1080×(8+4) ≈ 95 MiB 量级 |
+| 额外 pass | 每帧多一次深度预通道，顶点开销 ≈ 不透明段重画一遍（片元只写深度） |
+| 排序粒度 | 按**实例**（中心点距离）排序，不做逐三角形、不用 OIT；同一网格内的相交半透明仍可能出错 |
+| 采样数 | 固定 4× 常量，不做运行时切换，也没有 per-scene 配置项 |
+| 阴影通道 | 阴影与局部阴影 pass 仍是单采样深度（不需要颜色 resolve），未受影响 |
+
+**取证口径**：`--run-seconds` 探针新增一行
+`[起始] 半透明与 MSAA：采样数 4× / 透明 draw N / 透明实例 M / 深度预通道 draw K`；
+编辑器 `engine_stats` 的 `render` 段同步新增 `msaa_samples` / `transparent_draws` / `transparent_instances` /
+`depth_prepass_draws` 四个字段。
 
 ---
 
@@ -2375,6 +2456,24 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 **已知边界**：无 HRTF、无左右声像（`forward` 只记录不参与增益，所以"声音没有左右之分"是设计取舍）、
 无遮挡衍射、无房间混响；距离衰减与多普勒都是**逐实例标量**，不做每帧重采样卷积。
 
+### 8.19 半透明与 MSAA 的探针（扩展十九）
+
+这两项都发生在渲染器内部，没有脚本 API，观测口径只有两条：`--run-seconds` 的起止探针行，与编辑器
+`engine_stats` RPC。
+
+| 观测点 | 内容 |
+| --- | --- |
+| 探针行 | `[起始] 半透明与 MSAA：采样数 4× / 透明 draw N / 透明实例 M / 深度预通道 draw K`，紧跟在既有阴影探针之后打印，退出前再打一次 |
+| 字段来源 | `RenderStats.transparent_draws` / `transparent_instances` / `depth_prepass_draws`，采样数读常量 `MSAA_SAMPLE_COUNT` |
+| 编辑器 | `engine_stats` 的 `render` 段新增 `msaa_samples` / `transparent_draws` / `transparent_instances` / `depth_prepass_draws`，与探针同源 |
+| 判读 | `assets/scene.json` 全不透明 → 透明两项恒 0，这是**正确**的（不是没生效）；把任一物件 `color` 的第四位改成 0.35（或用临时场景文件）后应看到「透明 draw ≥ 1 / 透明实例 ≥ 1」，且深度预通道的 draw 数相应减少一个批次 |
+| 冒烟 | `cargo run -- ... --run-seconds 2`，退出码 0 + 探针显示 `采样数 4×` 即 MSAA 生效；含半透明物件的场景应看到透明两项非零 |
+| 测试 | `tests/transparency_contract.rs` 6 项：常量等于 4、`RenderStats` 默认值无半透明工作、不透明批次排在半透明之前、半透明实例由远及近、相机绕到另一侧后顺序整体反转、排序结果始终是所有实例的一个排列 |
+
+**为什么用"批次切段"而不是另开一个 pass**：主通道已经绑好相机 / 材质 / 阴影三组、实例缓冲也已连续上传，
+只要保证半透明批次**排在最后**并切换一次管线（关深度写入），就能在不增加 pass、不重传数据的前提下拿到正确顺序；
+多开一个 pass 反而要重绑四组绑定组、再走一次 render pass 开销。
+
 ---
 
 ## 9. 端到端数据流
@@ -2450,9 +2549,9 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
 | 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM）；屏幕空间遮蔽（扩展十七）叠在 composite 前 | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、扩展十八 C 起其中最多 4 盏可投影（点光 6 面 / 聚光单面、图幅固定 512²、聚光与点光同占 6 层槽位），无 IES/面光源、不参与环境项、阴影强度只有全局标量、立方体面接缝未做跨面 PCF；遮蔽是**整幅相乘的近似**（并非只压环境项）、无多尺度、无双边滤波；无全局光照；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
 | 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）+ 可选屏幕空间遮蔽两个全屏 pass（扩展十七）；缺省直通 | **无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮；遮蔽无历史累积，快速转动相机时高频噪声靠 4×4 散焦压制而非时间累积 |
-| 抗锯齿 | 无 MSAA | 几何边缘有锯齿 |
+| 抗锯齿 | **MSAA 4×**（扩展十九，固定采样数，主通道 4× 附件 resolve 进 HDR 目标）；后处理末端另有 FXAA（扩展十三） | 采样数写死为 `MSAA_SAMPLE_COUNT = 4`，不可运行时切换；MSAA 只作用于几何边缘，后处理之后画的文本 / UI 走自己的通道、边际改善有限；无 TAA（需要历史缓冲） |
+| 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
 | 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
-| 透明 | 开启 alpha blend 但**不排序** | 多个半透明物件互相遮挡时顺序可能错误 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**仍无 morph target / 表情、无混合空间（blend space）、无 IK、无根运动提取**
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
@@ -2481,8 +2580,8 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 
 1. **世界法线矩阵的奇异保护**：`Mat3::from_mat4(world).inverse()` 在 scale 含 0 时产 NaN。可在 `update_world_transforms` 里对 scale 做 `max(1e-6)` 保护，或直接复用 `Transform::normal_matrix` 的组合式算法。
 2. **遮挡剔除 / 层级剔除**：视锥剔除已按整网格 AABB 落地；进一步可做 BVH + 遮挡查询，或先按父节点包围盒做层级剔除（当前逐实例测试，层级结构深时仍有重复开销）。
-3. **半透明排序**：把 alpha < 1 的物件单独成组、按视深度排序后最后绘制。
-4. **MSAA**：Pipeline 的 `multisample.count = 4` + resolve target，改动局限在渲染器内部。
+3. **半透明排序细化**：实例级由远及近已在扩展十九落地；进一步可做逐三角形排序或 OIT（权重无关透明），解决同网格内相交半透明。
+4. **MSAA 可配置化**：4× 已落地（扩展十九）；进一步可做运行时切换 `1×/2×/4×/8×` 与 `sample_count` 自适应，或上 TAA 补时间维度抗锯齿。
 5. **脏标记**：若物件规模上万，把"每帧全量上传"改为"版本号变化才上传"。
 
 ---
@@ -2514,6 +2613,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 
 | **十七（已完成：屏幕空间遮蔽 SSAO）** | **深度反推的半球核遮蔽**：`r3e-core::ssao` 纯函数契约（`hemisphere_kernel` 确定性核 + `reconstruct_view_pos` 深度重建 + `normal_from_neighbors` 邻域法线 + `is_occluded` / `ao_from_occlusion`）+ `SsaoSettings`（enabled / radius / bias / intensity / samples，`sanitized()` 夹 0.01..8 / 0..0.5 / 0..4 / 4..16）挂进 `PostFxSettings.ssao`；`r3e-render::ssao` 两个全屏 pass（深度→`R8Unorm` 遮蔽图、4×4 盒式散焦，`AO_PASSES_PER_FRAME = 2`）+ `ssao.wgsl`，composite 在曝光前 `color *= ao`；`RenderStats.ssao`；12 个脚本 API（写 6：`set_ssao` / `set_ssao_enabled` / `set_ssao_radius` / `set_ssao_intensity` / `set_ssao_samples` / `clear_ssao`；读 6：`has_ssao` / `ssao_enabled` / `ssao_radius` / `ssao_bias` / `ssao_intensity` / `ssao_samples`，其中 `bias` **只读**——写入走场景 `postfx.ssao.bias` 与 RPC `scene.set_ssao`）；编辑器 `scene.set_ssao`（`SsaoPatch`）；演示 `assets/scene_ssao.json` + `scripts/ssao_demo.rhai` | `core/ssao.rs` 新增、`postfx.rs` 挂段、`lib.rs` 导出；`render/ssao.rs` + `ssao.wgsl` 新增，`renderer.rs` 主通道深度加 `TEXTURE_BINDING` 用法并在 composite 前插入两个 pass；`script/api.rs` 注册；`r3e-editor` 加 `SsaoPatch`；`app.rs` 遮蔽探针；`tests/ssao_contract.rs` / `ssao_scene.rs` / `ssao_shader.rs` / `ssao_api.rs` / `ssao_rpc.rs` 锁契约 | 无（场景 JSON 向后兼容：`postfx.ssao` 缺省 `enabled = false`，整段跳过、画面与扩展十三逐像素一致）。**边界**：AO 乘整幅画面（非只乘环境项）、无非双边滤波、无多尺度、屏幕外信息缺失处保守取 1 |
 | **十八（A、B、C 已完成；D 候选）** | **A 动画混合树**（已落地：分层 mask / additive，补 11.1 的动画边界，见 §4.11 / §7.4 / §8.15）；**B 场景切换 + 存档**（已落地：场景栈 + 运行时快照 + 命令信封 + 5 条 RPC / 9 个脚本绑定，补「一个进程一个场景」的边界，见 §4.12 / §7.4 / §8.16）；**C 局部光源阴影**（已落地：点光立方 6 面 / 聚光单面，24 层深度数组，每帧最多 4 盏投影，见 §5.12 / §8.17）；**D 时间性抗锯齿 / 运动模糊**（需要历史缓冲与重投影，与当前无历史累积的架构冲突最大） | `core` 契约先行（A 落 `anim_blend.rs` + `scene.rs`，B 落 `scene_stack.rs`，C 落 `light.rs` 的 `plan_local_shadows` / `shadow_face_view_projection`）；C 动了 render 的多目标与 pass 预算（新增 24 层深度数组 + 每层一次 pass），D 尚未开始 | 无（A、B、C 均为纯增量：场景 JSON 与既有 RPC 一字不改——`cast_shadow` 缺省 `false`，没灯投影时整段 pass 跳过，画面与扩展十七逐像素一致） |
+| **十九（已完成：半透明排序 + MSAA）** | **半透明按深度由远及近**：新增 `r3e-render::transparency`（`is_transparent` / `view_depth` / `back_to_front` 三个纯函数），`prepare_instances` 把批次拆成「不透明段 + 半透明段」（`transparent_start`），组间按最远深度降序、组内稳定排序后搬进实例缓冲，半透明批次用**不写深度**的 `transparent_pipeline` 最后绘制；**MSAA 4×**：`MSAA_SAMPLE_COUNT = 4` + `create_msaa_targets`（4× `Rgba16Float` 颜色 + 4× 深度），主通道 resolve 进 `postfx.hdr_view()`，新增单采样**深度预通道**保证遮蔽通道仍有可采样深度；`RenderStats` 增 `transparent_draws` / `transparent_instances` / `depth_prepass_draws`，`--run-seconds` 探针与编辑器 `engine_stats.render` 同频输出（见 §5.13） | `render/transparency.rs` 新增 + `lib.rs` 导出 `MSAA_SAMPLE_COUNT`；`render/renderer.rs` 加两条管线与两组附件、`prepare_instances` 拆段排序、新增深度预通道；`app.rs` 与 `editor.rs` 各加探针字段；新增 `tests/transparency_contract.rs` 6 项 | 无（场景 JSON、脚本 API、RPC 一字不改：全不透明场景 `transparent_*` 恒 0，画面只多出 MSAA 边缘平滑；显存多一组 4× 颜色 + 4× 深度附件） |
 
 两条与顺序相关的说明：
 
