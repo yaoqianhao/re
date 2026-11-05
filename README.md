@@ -1,4 +1,4 @@
----
+﻿---
 AIGC:
     Label: "1"
     ContentProducer: 001191440300708461136T1XGW3
@@ -62,7 +62,7 @@ D:\rust3d-engine
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
-│   ├─ r3e-audio/             # 非空间化音频（rodio 后端 + 静默降级 + 混音门面）
+│   ├─ r3e-audio/             # 音频（rodio 后端 + 静默降级 + 混音门面 + 3D 空间化）
 │   └─ r3e-app/               # 主循环、窗口事件、终端指令
 └─ docs/
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
@@ -688,10 +688,11 @@ fn on_update(dt) {
 **已知边界**：不做键盘焦点 / Tab 遍历、不派发滚轮与拖拽、无长按与双击、控件自身的状态机（按钮按下变色、
 列表滚动）仍需脚本自己写——引擎只负责「谁被点到」，不假设控件类型。
 
-### 音频：音效 / 音乐（M1，非空间化）
+### 音频：音效 / 音乐 / 3D 空间化
 
 音频走独立 crate `r3e-audio`，**不碰场景图**：`core` 里没有任何声音对象，脚本用「自己起的 key」管理实例。
-范围严格限定在非空间化播放——没有 3D 声源衰减、没有多普勒、没有听者朝向。
+默认是**平面声**；把某个 key 注册成 3D 声源后，它才会按「到听者的距离」衰减、按「相对速度」做多普勒。
+不做 HRTF / 左右声像 / 遮挡（听者朝向只记录、不参与增益），细节见 [§14](#14-音频播放非空间化--3d-空间化)。
 
 **同名 key 的语义（写死在这里，避免踩坑）**：再次 `play` 同一个 key = **停掉旧实例、从头重播**，
 既不是拒绝，也不是叠加第二份。想要同一文件同时响两份，就起两个不同的 key（`hit_a` / `hit_b`）。
@@ -715,6 +716,32 @@ fn on_update(dt) {
 | `audio_backend() -> string` | `rodio` / `silent` |
 | `audio_last_error() -> string` / `audio_error_count() -> int` | 最近一次失败原因 / 累计失败次数 |
 | `audio_status() -> string` | 一行状态串（后端、设备、总音量、在播明细） |
+
+**3D 空间化（路线表第十项，24 个 API，纯叠加在平面声之上）**
+
+没调过 `audio_spatial_attach*` 的 key 音量与历史版本逐位一致；注册之后才乘距离增益、下发多普勒倍速。
+
+| 函数 | 说明 |
+| --- | --- |
+| `audio_spatial_attach(key, min, max)` | 注册为 3D 声源（`inverse` 模型 + 多普勒强度 1.0）；已注册则只更新设置、保留位置 |
+| `audio_spatial_attach_ex(key, min, max, model, doppler)` | 指定距离模型（`inverse` / `linear` / `exponential`，别名 `inv` / `lin` / `exp`）与多普勒强度（`0` = 关） |
+| `audio_spatial_attach_node(key, node, min, max)` | 注册并**绑到场景节点**：位置 / 速度每帧由引擎从节点世界变换灌入 |
+| `audio_spatial_detach(key)` / `audio_spatial_clear()` | 解除注册 / 全清；**声音继续播**，只是回到平面音量 |
+| `audio_spatial_set_position(key, x, y, z)` | 手动给坐标（绑定节点的会被引擎覆盖） |
+| `audio_spatial_set_model(key, model)` / `audio_spatial_set_doppler(key, f)` | 只改一个旋钮，其余设置保留 |
+| `audio_spatial_count()` / `audio_spatial_keys()` | 已注册数量 / 全部 key（上限 32，满员拒绝新注册，不挤掉老的） |
+| `audio_spatial_gain(key)` / `audio_spatial_rate(key)` / `audio_spatial_distance(key)` | 探针：当前距离增益（`1.0` = 没衰减）/ 播放倍速（`1.0` = 相对静止）/ 到听者距离（米） |
+| `audio_spatial_position(key)` / `audio_spatial_model(key)` / `audio_spatial_doppler(key)` / `audio_spatial_node(key)` | 回读坐标 `[x,y,z]` / 模型名 / 多普勒强度 / 绑定节点名 |
+| `audio_spatial_set_listener(x,y,z, fx,fy,fz)` / `audio_spatial_listener()` | 手动给 / 读听者位姿（引擎每帧用**活动相机**覆盖，脚本一般不用写） |
+| `audio_spatial_set_enabled(on)` / `audio_spatial_enabled()` | 空间化总开关；关闭后一切增益与倍速回 `1.0`（等价平面声） |
+| `audio_spatial_tick(dt)` | 手动推进一帧并返回声源数（引擎每帧自动调，留给无窗口测试） |
+| `audio_spatial_status()` | 一行摘要：开关 / 听者坐标 / 声源数（上限）/ 倍速可用性 / 最近声源 |
+| `audio_supports_speed()` | 后端能否实时变速（静默降级时 `false`，此时多普勒只算不下发） |
+
+听者不用脚本管：用 WASD/QE 飞、鼠标转头，远近关系就跟着画面走。完整演示见
+`assets/scene_spatial_audio.json` + `scripts/spatial_audio_demo.rhai`
+（`cargo run -- assets/scene_spatial_audio.json scripts/spatial_audio_demo.rhai --run-seconds 8`）：
+`horn` 绕圈巡游（绑节点 + `inverse` + 多普勒 1.0），`bell` 静止（手动坐标 + `linear` + 多普勒关）。
 
 降级规则：设备打不开（无声卡 / 独占被占）→ 整个引擎切到 `silent`，`play` 仍然会**解码校验**文件
 （所以坏文件照样返回 `false` 并记账），只是不出声；任何音频错误都不会 panic，也不阻断主循环。
@@ -1191,16 +1218,19 @@ cargo run                      # 看窗口
   脚本路径超限被拒且计数不增长、满载时同 key 仍可更新、空 key 被拒、非法参数收敛、
   通道开关与前后关系（`r3e-script/src/lib.rs`）
 
-## 14. 音频播放（M1：非空间化音效与音乐）
+## 14. 音频播放（非空间化 → 3D 空间化）
 
-**目标**：能放背景音乐、能敲音效、能同时响多条，并且**没声卡也绝不崩**。3D 声源衰减 / 多普勒不在本阶段范围。
+**目标**：能放背景音乐、能敲音效、能同时响多条，并且**没声卡也绝不崩**。
+路线表第十项在其上加了一层 **3D 空间化**（声源挂场景节点、距离衰减 + 多普勒、听者随活动相机），
+见本节末尾「3D 空间化」；不调用它时，行为与 M1 逐位一致。
 
 | 层 | 模块 | 职责 |
 | --- | --- | --- |
-| `r3e-audio` | `lib.rs` | `Audio` 门面：key 账本、单条音量 × 总音量、开关、错误记账、`update()` 回收 |
-| `r3e-audio` | `backend.rs` | `AudioBackend` 契约 + `RodioBackend`（cpal 设备 + symphonia 解码）+ `SilentBackend` |
-| `r3e-script` | `api.rs` | `audio_*` 绑定，全部返回 `bool` / 数值 / 字符串，不 panic |
-| `r3e-app` | `app.rs` | `EngineApp::audio` 持有唯一设备句柄，主循环每帧 `update()` 回收播完的实例 |
+| `r3e-audio` | `lib.rs` | `Audio` 门面：key 账本、单条音量 × 总音量、开关、错误记账、`update()` 回收；空间化覆盖层（注册表 / `tick_spatial` / 增益与倍速合成 / 32 上限） |
+| `r3e-audio` | `backend.rs` | `AudioBackend` 契约（含 `set_speed` / `supports_speed`）+ `RodioBackend`（cpal 设备 + symphonia 解码）+ `SilentBackend` |
+| `r3e-audio` | `spatial.rs` | 空间化纯函数层：`DistanceModel` / `attenuation` / `radial_velocity` / `doppler_ratio` / `ListenerPose` / `SpatialSource` |
+| `r3e-script` | `api.rs` | `audio_*` 与 24 个 `audio_spatial_*` 绑定，全部返回 `bool` / 数值 / 字符串，不 panic |
+| `r3e-app` | `app.rs` | `EngineApp::audio` 持唯一设备句柄，每帧 `update()` 回收；`drive_spatial_audio` 灌听者与声源坐标后结算 |
 
 **后端选型：`rodio`（内含 `cpal` + `symphonia`）**，理由：
 
@@ -1254,13 +1284,33 @@ cargo run -- --run-seconds 3   # 看控制台音频探针
 
 **测试覆盖**：
 
-- `cargo test -p r3e-audio`（9 个）：缺失文件 / 非音频内容 → `Err` 而非 panic、音量边界（0 / 1 / 超界 / NaN）、
-  静默后端不登记实例、通道关闭拒绝播放、空 key 拒绝、同名 key 重播停止旧实例不叠加、
-  `set_loop` 切换重播且幂等、播完回收。
-- `cargo test -p r3e-script`（`audio_script_tests`，5 个）：静默降级路径（`audio_available() == false` 时
+- `cargo test -p r3e-audio`（29 个 = 门面 18 + 空间化 11）：缺失文件 / 非音频内容 → `Err` 而非 panic、
+  音量边界（0 / 1 / 超界 / NaN）、静默后端不登记实例、通道关闭拒绝播放、空 key 拒绝、
+  同名 key 重播停止旧实例不叠加、`set_loop` 切换重播且幂等、播完回收；空间化侧为纯函数测试
+  （模型名往返、`sanitized` 夹取、三种模型在 `min` / 中点 / `max` 的取值与单调性、平滑窗让逆距离在 `max` 归零、
+  `NaN` / `inf` 距离保守静音、径向速度方向与重合退化、多普勒静止为 1 与超音速夹取、`dt <= 0` 不动速度仍算增益）。
+- `cargo test -p r3e-script`（`audio_script_tests`，11 个）：静默降级路径（`audio_available() == false` 时
   播放返回 `true` 但不占实例）、加载失败返回 `false` 并记账、音量上下界夹取、重复 key 不叠加且不算错误、
-  通道开关拦截播放。
-- 真实出声、mp3 / ogg 的实际听感、设备热插拔：**待人工验证**（无法自动化）。
+  通道开关拦截播放；空间化侧 6 个：注册 / 满 32 拒绝不顶人、绑定节点与 `spatial_bindings`、
+  `detach` 回平面音量、总开关归 1、`tick_spatial` 把倍速下发到后端、探针未注册时的默认值。
+- 编辑器 `audio.spatial.*` 6 条 RPC 另有 9 个测试（方法名大小写归一化、补丁合并、空 key 拒绝、只读 listener）。
+- 真实出声、mp3 / ogg 的实际听感、设备热插拔、多普勒听感是否自然：**待人工验证**（无法自动化）。
+
+### 3D 空间化（路线表第十项）
+
+**一句话**：声源能挂到场景节点上，按到听者的距离衰减、按相对速度做多普勒，听者每帧由**活动相机**推导
+（`forward` 只记录，不参与增益——**没有左右声像**，这是明确取舍）。
+
+- **纯叠加**：未注册的 key 逐位不变；`audio_spatial_set_enabled(false)` 立刻回退成平面声；`detach` 只摘覆盖层、不停声音。
+- **三种距离模型**：`inverse` = `min/d`、`exponential` = `(min/d)²`、`linear` = `1 - t`；
+  前两者额外乘 `1 - smoothstep(t)` 平滑窗，保证 `d >= max` 时**真的归零**，不在边界上"啪"一声。
+- **多普勒**落到 `set_speed`（改采样推进速率，音高与时长一起变，正是物理效果）：`c / (c - v_toward)`，
+  夹在 `1/4 ..= 4`；速度由位置差分 + 0.4 一阶平滑得来（脚本瞬移不会咔一下）；暂停 `dt = 0` 时速度不更新、倍速回 1。
+- **上限 32 条**，满员拒绝新注册并记错误，不挤掉已有声源。
+- **静默降级**：`audio_supports_speed() == false` 时多普勒只算不下发（探针里 `rate` 仍是真实值，可在无卡环境验证公式）。
+
+**人工验证**：`cargo run -- assets/scene_spatial_audio.json scripts/spatial_audio_demo.rhai --run-seconds 8`。
+脚本每 0.5 秒打印两个声源的 `gain` / `rate` / 距离；飞近 `bell` 应听到它变响，`horn` 冲近时 `rate > 1`、掉头远离时 `rate < 1`。
 
 ---
 
@@ -1762,7 +1812,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 51 个套件 / 704 passed / 0 failed。
+`cargo test --workspace` 现为 51 个套件 / 744 passed / 0 failed。
 
 ---
 
@@ -1882,7 +1932,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
-`cargo test --workspace` 现为 51 个套件 / 704 passed / 0 failed。
+`cargo test --workspace` 现为 51 个套件 / 744 passed / 0 failed。
 
 ---
 
@@ -1983,7 +2033,7 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 | `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
 | `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
 
-`cargo test --workspace` 现为 51 个套件 / 704 passed / 0 failed。
+`cargo test --workspace` 现为 51 个套件 / 744 passed / 0 failed。
 
 ---
 
