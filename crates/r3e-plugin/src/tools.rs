@@ -84,6 +84,9 @@ pub fn invoke(name: &str, args: &Value, bridge: &mut dyn HostBridge) -> Result<V
         "node_spawn" => node_spawn(args),
         "script_write" => script_write(args),
         "scene_save" => scene_save(args),
+        // —— 反馈（risk = read）：只读引擎的统计与截图，同样走引擎 RPC ——
+        "engine_stats" => engine_stats(args),
+        "capture_frame" => capture_frame(args),
         other => Err(ToolError::invalid_params(format!(
             "未知工具 `{other}`；本插件提供：{}",
             crate::spec::tool_names().join(", ")
@@ -711,6 +714,72 @@ fn scene_save(args: &Value) -> Result<Value, ToolError> {
     Ok(json!({ "ok": true, "method": "scene.save", "result": saved }))
 }
 
+/// 读引擎的「数字画像」（复用 `engine.stats`）。
+///
+/// 这一层刻意**不做字段裁剪**：契约里的每个数字都是回归/调试的依据，
+/// 少透传一个 `shadow_cascades`，调用方就会以为引擎没开级联阴影。
+/// 回包体积由宿主 64 KB 上限兜底，而这份快照只有几百字节。
+fn engine_stats(args: &Value) -> Result<Value, ToolError> {
+    let mut client = connect_engine(args)?;
+    let stats = call_engine(&mut client, "engine.stats", json!({}), |v| v)?;
+    // 引擎把「没有渲染器」表达成 renderer:false —— 这不是错误，但必须让调用方
+    // 一眼看到，否则拿到一堆场景数字会以为画面也在正常出。
+    let renderer = stats
+        .get("renderer")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(json!({
+        "ok": true,
+        "method": "engine.stats",
+        "renderer": renderer,
+        "stats": stats,
+    }))
+}
+
+/// 让引擎离屏出一张 PNG（复用 `capture.frame`）。
+///
+/// 路径校验放在插件侧，是为了把「模型常犯的错」在本地拦下：给空串、
+/// 给目录、给 `.jpg` 而引擎写的是 PNG 字节——这三种在引擎侧要么被误当成
+/// 「默认路径」，要么产出一个名不副实的文件，都不如直接报参数错清楚。
+fn capture_frame(args: &Value) -> Result<Value, ToolError> {
+    let path = opt_str(args, "path")?;
+    if let Some(path) = path {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(ToolError::invalid_params(
+                "path 不能是空白字符串；想用默认位置就整个省略 path",
+            ));
+        }
+        if trimmed.ends_with('/') || trimmed.ends_with('\\') {
+            return Err(ToolError::invalid_params(format!(
+                "path `{trimmed}` 是目录而不是文件，请给出以 .png 结尾的完整文件路径"
+            )));
+        }
+        if !trimmed.to_ascii_lowercase().ends_with(".png") {
+            return Err(ToolError::invalid_params(format!(
+                "path `{trimmed}` 必须以 .png 结尾：引擎写出的是 PNG 字节，其它后缀只会得到名不副实的文件"
+            )));
+        }
+    }
+
+    let mut params = json!({});
+    if let Some(path) = path {
+        params["path"] = json!(path.trim());
+    }
+    let mut client = connect_engine(args)?;
+    let captured = call_engine(&mut client, "capture.frame", params, |v| v)?;
+    Ok(json!({
+        "ok": true,
+        "method": "capture.frame",
+        "path": captured.get("path").cloned().unwrap_or(Value::Null),
+        "width": captured.get("width").cloned().unwrap_or(Value::Null),
+        "height": captured.get("height").cloned().unwrap_or(Value::Null),
+        "bytes": captured.get("bytes").cloned().unwrap_or(Value::Null),
+        "format": captured.get("format").cloned().unwrap_or(Value::Null),
+        "result": captured,
+    }))
+}
+
 /// 场景来源：内联对象 / 内联 JSON 文本 / 工作区文件（走 `host/fs.read`）。
 fn load_scene(args: &Value, bridge: &mut dyn HostBridge) -> Result<Scene, ToolError> {
     if let Some(path) = opt_str(args, "path")? {
@@ -1280,5 +1349,57 @@ mod tests {
         let report = invoke_command("engine_diagnostics", &mut NoHost).expect("diagnostics");
         assert_eq!(report["engine"]["engine"]["name"], json!("rust3d-engine"));
         assert_eq!(report["workspace"]["available"], json!(false));
+    }
+
+    // —— P0-4 反馈工具：参数校验必须在「连引擎之前」就拦下 ——
+
+    #[test]
+    fn capture_frame_rejects_non_png_suffix() {
+        // 引擎写的是 PNG 字节；后缀给 .jpg 只会产出一个名不副实的文件，
+        // 这种错要在插件侧直接报参数错，而不是等用户打开图片才发现。
+        for bad in ["a.jpg", "b.png.jpg", "c.jpeg", "d"] {
+            let error = invoke("capture_frame", &json!({ "path": bad }), &mut NoHost)
+                .expect_err("非 PNG 后缀应被拒绝");
+            assert_eq!(error.code, -32602, "path={bad}");
+            assert!(
+                error.message.contains(".png"),
+                "报错应点明要 .png，实际：{}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn capture_frame_rejects_blank_and_directory_paths() {
+        for bad in ["", "   ", "captures/", "captures\\"] {
+            let error = invoke("capture_frame", &json!({ "path": bad }), &mut NoHost)
+                .expect_err("空白或目录路径应被拒绝");
+            assert_eq!(error.code, -32602, "path={bad:?}");
+        }
+        // 合法路径不该被参数校验拦下：应当越过校验、死在「连不上引擎」这一步，
+        // 以此证明拒绝发生在连接之前而不是「反正连不上都报错」。
+        let error = invoke(
+            "capture_frame",
+            &json!({ "path": "D:/tmp/shot.PNG", "endpoint": { "port": 1 } }),
+            &mut NoHost,
+        )
+        .expect_err("端口 1 上不该有引擎");
+        assert_ne!(error.code, -32602, "合法路径不应报参数错：{error:?}");
+    }
+
+    #[test]
+    fn engine_stats_reports_missing_engine_as_actionable_error() {
+        let error = invoke(
+            "engine_stats",
+            &json!({ "endpoint": { "port": 1 } }),
+            &mut NoHost,
+        )
+        .expect_err("端口 1 上不该有引擎");
+        // 错误必须告诉调用方「去找引擎」，而不是含糊的 IO 失败
+        assert!(
+            error.message.contains("引擎") || error.message.contains("RPC"),
+            "报错应指出引擎连接问题，实际：{}",
+            error.message
+        );
     }
 }

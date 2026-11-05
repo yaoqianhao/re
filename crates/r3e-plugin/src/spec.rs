@@ -267,6 +267,36 @@ fn save_schema() -> Value {
     })
 }
 
+/// P0-4 只读反馈：`engine_stats` 不需要任何业务参数，只可能给连接信息。
+///
+/// 刻意不提供「取样帧数」这类旋钮：帧时间窗口由引擎主循环维护（固定容量环形
+/// 缓冲），插件再传一个帧数只会让调用方以为能改采样密度，实际上做不到。
+fn stats_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "endpoint": endpoint_schema()
+        },
+        "additionalProperties": false
+    })
+}
+
+/// P0-4 只读反馈：`capture_frame` 只多一个落盘路径。
+fn capture_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "PNG 落盘路径（绝对路径，或相对引擎进程当前目录）；省略则写到场景旁的 captures/capture_<毫秒时间戳>.png。后缀必须是 .png：引擎写的是 PNG 字节，换后缀只会得到名不副实的文件"
+            },
+            "endpoint": endpoint_schema()
+        },
+        "additionalProperties": false
+    })
+}
+
 /// 工具表：顺序即清单顺序，也即握手顺序。
 pub const TOOLS: &[ToolSpec] = &[
     ToolSpec {
@@ -323,6 +353,19 @@ pub const TOOLS: &[ToolSpec] = &[
         description: "【写】把运行中的场景存回磁盘（复用引擎 scene.save）：省略 path 时存回当前场景文件，给了 path 则另存。存盘落点由引擎进程决定，插件不直接写宿主文件。",
         risk: "write",
         parameters: save_schema,
+    },
+    // —— 反馈工具（P0-4）：risk = read，只读引擎的渲染统计与离屏截图 ——
+    ToolSpec {
+        name: "engine_stats",
+        description: "读取运行中引擎的「数字画像」：帧时间分位（samples/last/p50/p95/p99/max）、场景规模（物件数/可见数/网格种类/材质覆盖/物理刚体）、渲染统计（draw_calls、instances、culled、shadow_draws、shadow_cascades、ssao 开关与 passes、后处理、局部光源）与画布尺寸。改完场景用它核对 draw_calls / instances 是否按预期变化，比肉眼看画面更可靠。渲染器缺席时 render 为 null（renderer:false），不会拿 0 冒充正常。需要引擎以 --rpc-port 启动。",
+        risk: "read",
+        parameters: stats_schema,
+    },
+    ToolSpec {
+        name: "capture_frame",
+        description: "让运行中的引擎把当前一帧渲染到离屏纹理并落成 PNG，返回图片绝对路径、宽高与字节数，可直接拿去给人看「现在长什么样」。省略 path 时写到场景旁的 captures/capture_<时间戳>.png。路径由引擎进程写盘，插件本身不碰宿主磁盘。需要引擎以 --rpc-port 启动且窗口 / GPU 已就绪。",
+        risk: "read",
+        parameters: capture_schema,
     },
 ];
 
