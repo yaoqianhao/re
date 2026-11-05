@@ -164,6 +164,17 @@ pub struct CliOptions {
     pub rpc_token: Option<String>,
     /// `--rpc-max-per-frame <n>`：每帧最多消化的编辑器请求数（默认 8）。
     pub rpc_max_per_frame: Option<usize>,
+    /// `--window-size WxH`：**物理像素**尺寸（不乘 DPI 缩放）。
+    ///
+    /// 视觉回归的基准图是按像素比的，逻辑尺寸在不同缩放下会拍出不同分辨率，
+    /// 所以这里刻意用 `PhysicalSize`：1280x720 在任何 DPI 下都是 1280x720 像素。
+    pub window_size: Option<(u32, u32)>,
+    /// `--capture-frame <png>`：跑到第 N 帧后截一张图落盘并退出（无人值守产图）。
+    pub capture_frame: Option<PathBuf>,
+    /// `--capture-after <n>`：配合 `--capture-frame`，第几帧之后截（默认 2 帧）。
+    ///
+    /// 至少 1 帧：首帧里后处理的累积目标与字形图集还没热起来，拍下来不稳定。
+    pub capture_after: Option<u32>,
 }
 
 impl CliOptions {
@@ -271,6 +282,14 @@ pub struct EngineApp {
     rpc: Option<RpcServer>,
     /// 每帧最多消化的编辑器请求数，避免编辑器洪泛把一帧拖成几百毫秒。
     rpc_max_per_frame: usize,
+    /// `--window-size WxH`：窗口物理像素尺寸；`None` = 1280x720 逻辑尺寸。
+    window_size: Option<(u32, u32)>,
+    /// `--capture-frame <png>`：待落盘的截图路径（`None` = 本进程不产图）。
+    capture_frame: Option<PathBuf>,
+    /// `--capture-after <n>`：第几帧之后截图（已夹到 ≥1）。
+    capture_after: u64,
+    /// 本帧是否已经截过图（一次进程只截一张，截完就退出）。
+    capture_done: bool,
 }
 
 impl EngineApp {
@@ -493,6 +512,10 @@ impl EngineApp {
             exit_pending: false,
             rpc,
             rpc_max_per_frame: cli.rpc_max_per_frame.unwrap_or(8).max(1),
+            window_size: cli.window_size,
+            capture_frame: cli.capture_frame.clone(),
+            capture_after: u64::from(cli.capture_after.unwrap_or(2).max(1)),
+            capture_done: false,
         }
     }
 
@@ -568,6 +591,78 @@ impl EngineApp {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         base.join("captures")
+    }
+
+    /// 窗口尺寸：`--window-size` 给的是**物理像素**（不随 DPI 缩放变），
+    /// 未指定时沿用历史口径 1280x720 逻辑尺寸。
+    fn window_attrs_size(&self) -> winit::dpi::Size {
+        match self.window_size {
+            Some((width, height)) => {
+                winit::dpi::PhysicalSize::new(width.max(1), height.max(1)).into()
+            }
+            None => winit::dpi::LogicalSize::new(1280.0, 720.0).into(),
+        }
+    }
+
+    /// `--capture-frame`：跑到 `--capture-after` 帧后截一张图并退出。
+    ///
+    /// 刻意复用编辑器 `capture.frame` 的同一条链路（`LocalEngineApi::capture_frame`
+    /// → 离屏渲染 → `write_png_rgba` → 空文件自检），而不是另写一份落盘逻辑：
+    /// 回归用例拍到的图必须与编辑器 / RPC 拍到的是同一口径，否则「基线」就没有意义。
+    fn capture_frame_now(&mut self, path: &Path) {
+        self.capture_done = true;
+        let fps = if self.last_dt_ms > 0.0 {
+            1000.0 / self.last_dt_ms
+        } else {
+            0.0
+        };
+        let capture_dir = self.capture_dir();
+        let requested = path.display().to_string();
+        let mut api = LocalEngineApi {
+            scene: &self.scene,
+            physics: &self.physics,
+            scripts: &mut self.scripts,
+            renderer: self.renderer.as_mut(),
+            frame_ms: self.frame_times.snapshot(),
+            capture_dir,
+            scene_label: self.scene_path.display().to_string(),
+            script_label: self.script_path.display().to_string(),
+            frames: self.frame_index,
+            fps,
+            uptime_ms: (self.time * 1000.0).round() as u64,
+            paused: self.paused,
+        };
+        match r3e_editor::EngineApi::capture_frame(&mut api, Some(&requested)) {
+            Ok(value) => {
+                // 一起打出本帧的绘制统计：像素基线挂掉时，先要能区分
+                // 「画了但颜色不对」和「一个 draw 都没提交」。
+                let draws = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| r.stats())
+                    .map(|s| {
+                        format!(
+                            " | draws={} instances={} culled={} cull_unknown={}",
+                            s.draw_calls, s.instances, s.culled, s.cull_unknown
+                        )
+                    })
+                    .unwrap_or_default();
+                log::info!(
+                    "[capture] 第 {} 帧截图完成: {}{}",
+                    self.frame_index,
+                    serde_json::to_string(&value).unwrap_or_else(|_| requested.clone()),
+                    draws
+                )
+            }
+            Err(err) => {
+                // 截图失败必须是非零退出码：回归脚本靠退出码 + 文件存在性区分
+                // 「本机没有 GPU，跳过」和「拍了但坏了」。
+                log::error!("[capture] 第 {} 帧截图失败: {err:?}", self.frame_index);
+                self.exit_pending = true;
+                std::process::exit(2);
+            }
+        }
+        self.exit_pending = true;
     }
 
     fn step_and_render(&mut self) {
@@ -685,6 +780,13 @@ impl EngineApp {
                 phys_tag,
                 audio_tag
             ));
+        }
+
+        // 视觉回归产图：跑到约定帧后截一张就退，供基准图生成与像素比对使用
+        if !self.capture_done && self.frame_index >= self.capture_after {
+            if let Some(path) = self.capture_frame.clone() {
+                self.capture_frame_now(&path);
+            }
         }
 
         // 无人值守验证：跑到第 30 帧打印一次探针，到达 --run-seconds 后打印收尾探针并退出
@@ -1904,7 +2006,7 @@ impl ApplicationHandler for EngineApp {
 
         let attrs = Window::default_attributes()
             .with_title("r3e — Rust 3D Engine")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+            .with_inner_size(self.window_attrs_size());
 
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),

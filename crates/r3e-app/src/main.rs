@@ -104,6 +104,11 @@ r3e —— Rust 3D Engine
   --show-bones              把骨架节点画成小方块，肉眼确认节点动画
   --run-seconds SEC         窗口运行指定秒数后自动退出（无人值守验证）
 
+视觉回归选项（capture.frame 像素级基线）:
+  --window-size WxH         窗口物理像素尺寸（不乘 DPI 缩放），如 640x360
+  --capture-frame PATH      跑到约定帧后截图落盘为 PNG 并退出（基准图 / 实际图都由此产）
+  --capture-after N         配合 --capture-frame：第 N 帧之后截图，默认 2
+
 文本选项（M1 文字渲染）:
   --font PATH               指定文本字体（.ttf/.otf/.ttc，可重复，先给的优先）；不指定则自动找系统中文字体
 
@@ -285,6 +290,34 @@ fn main() -> anyhow::Result<()> {
                 }
                 continue;
             }
+            "--window-size" => {
+                if let Some(v) = take_value("--window-size", &mut i) {
+                    match parse_window_size(&v) {
+                        Some(size) => cli.window_size = Some(size),
+                        None => log::error!("--window-size 取值为 WxH（如 640x360），收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
+            "--capture-frame" => {
+                if let Some(v) = take_value("--capture-frame", &mut i) {
+                    if v.trim().is_empty() {
+                        log::error!("--capture-frame 需要非空的 PNG 路径");
+                    } else {
+                        cli.capture_frame = Some(PathBuf::from(v));
+                    }
+                }
+                continue;
+            }
+            "--capture-after" => {
+                if let Some(v) = take_value("--capture-after", &mut i) {
+                    match v.trim().parse::<u32>() {
+                        Ok(n) if n > 0 => cli.capture_after = Some(n),
+                        _ => log::error!("--capture-after 取值应为正整数帧，收到 `{v}`"),
+                    }
+                }
+                continue;
+            }
             other if other.starts_with("--") => {
                 log::warn!("未知选项 `{arg}`，已忽略（--help 查看用法）");
                 i += 1;
@@ -361,4 +394,39 @@ fn main() -> anyhow::Result<()> {
     let mut app = app::EngineApp::new(scene_path, script_path, cli);
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// 解析 `--window-size WxH`：分隔符接受 `x` / `X` / `*`，两边必须是正数。
+///
+/// 宽高都要求 ≥1：0 尺寸的窗口在部分后端会创建失败或拍到空图，
+/// 与其让回归用例拿到一张 0 字节的 PNG，不如在命令行就拒掉这个取值。
+fn parse_window_size(raw: &str) -> Option<(u32, u32)> {
+    let text = raw.trim();
+    let (width, height) = text
+        .split_once(['x', 'X', '*'])
+        .map(|(w, h)| (w.trim(), h.trim()))?;
+    let width = width.parse::<u32>().ok()?;
+    let height = height.parse::<u32>().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_window_size;
+
+    #[test]
+    fn window_size_accepts_common_separators() {
+        assert_eq!(parse_window_size("640x360"), Some((640, 360)));
+        assert_eq!(parse_window_size(" 640 X 360 "), Some((640, 360)));
+        assert_eq!(parse_window_size("1920*1080"), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn window_size_rejects_zero_and_garbage() {
+        assert_eq!(parse_window_size("0x360"), None);
+        assert_eq!(parse_window_size("640x"), None);
+        assert_eq!(parse_window_size("640"), None);
+        assert_eq!(parse_window_size("axb"), None);
+        assert_eq!(parse_window_size(""), None);
+    }
 }

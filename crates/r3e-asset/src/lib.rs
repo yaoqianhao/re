@@ -28,6 +28,7 @@ use thiserror::Error;
 pub mod air_import;
 pub mod gltf_import;
 pub mod importer;
+pub mod visual_regression;
 
 pub use air_import::{
     import_air, load_air_bytes, load_air_file, AirAnimation, AirDoc, AirImporter, AirLoadError,
@@ -37,6 +38,10 @@ pub use air_import::{
 };
 pub use gltf_import::{import_glb, import_gltf, GltfImporter};
 pub use importer::{audit_entry, audit_issues, AssetImporter, FbxImporter, ImporterRegistry};
+pub use visual_regression::{
+    assert_png_matches, compare, compare_png, DiffReport, PixelBox, PixelDiff, RgbaFrame,
+    Tolerance, VisualDiffError, DEFAULT_BAD_PIXEL_RATIO, DEFAULT_CHANNEL_DELTA, WORST_LIMIT,
+};
 
 /// 目标单位：1.0 = 米。
 pub const TARGET_UNIT_METERS: f64 = 1.0;
