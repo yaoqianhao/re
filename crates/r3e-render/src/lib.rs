@@ -9,6 +9,7 @@ pub mod postfx;
 pub mod renderer;
 pub mod ssao;
 pub mod text;
+pub mod transparency;
 pub mod ui;
 
 pub use mesh::{vertex_layout, InstanceRaw};
@@ -17,7 +18,7 @@ pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
 pub use renderer::{
     CapturedFrame, LayeredProvider, LightsUniform, LocalLightRaw, LocalShadowUniform, MeshCache,
     RenderStats, Renderer, LIGHTS_UNIFORM_SIZE, LOCAL_LIGHT_STRIDE, LOCAL_SHADOW_NORMAL_BIAS,
-    LOCAL_SHADOW_SLOT_STRIDE, LOCAL_SHADOW_UNIFORM_SIZE,
+    LOCAL_SHADOW_SLOT_STRIDE, LOCAL_SHADOW_UNIFORM_SIZE, MSAA_SAMPLE_COUNT,
 };
 pub use ssao::{SsaoPass, SsaoStats, AO_FORMAT, AO_PASSES_PER_FRAME};
 pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};

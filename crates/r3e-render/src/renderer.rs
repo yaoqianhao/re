@@ -20,10 +20,17 @@ use crate::pbr::{MaterialUniform, SurfaceKey};
 use crate::postfx::{PostFxPass, PostFxStats};
 use crate::ssao::{SsaoPass, SsaoStats};
 use crate::text::{TextPass, TextStats};
+use crate::transparency;
 use crate::ui::{UiImageProvider, UiPass, UiStats};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
+/// 主通道的 MSAA 采样数（扩展十九）。
+///
+/// 4× 是 wgpu 三大后端（Vulkan / Metal / DX12）对 `Rgba16Float` 的共同下限，
+/// 取它才能保证「同一份代码在哪都能跑」。主通道在多重采样附件上光栅化，
+/// pass 结束时由硬件 resolve 到单采样 HDR 目标 —— 后处理链仍然只看到单采样纹理。
+pub const MSAA_SAMPLE_COUNT: u32 = 4;
 /// 蒙皮网格做视锥剔除时的包围盒外扩比例：动画形变会超出静止姿态的 AABB。
 const SKIN_CULL_MARGIN: f32 = 0.25;
 
@@ -530,6 +537,35 @@ impl MeshCache {
         self.meshes.get(&key)
     }
 
+    /// 网格材质自带的不透明度（`base_color.a` 的最小值）。
+    ///
+    /// 一个网格可以有多段材质分区：只要其中任一段是半透明的，整网格就必须走
+    /// 半透明通道 —— 否则该分区的混合会在不透明段里被深度写入锁死。取最小值
+    /// 而非平均值，正是为了不让「一段透明一段不透明」被平均成不透明。
+    ///
+    /// 无材质分区（内置图元 / 无材质的资产段）按 1.0 计；NaN 也按 1.0 兜底，
+    /// 免得一个坏材质把整批物件拽进半透明通道。取不到任何分区时返回 `None`。
+    pub fn material_alpha(&self, key: MeshRef) -> Option<f32> {
+        let parts = self.provider.mesh_parts(key);
+        if parts.is_empty() {
+            return None;
+        }
+        let mut alpha = 1.0_f32;
+        for part in &parts {
+            let Some((asset, index)) = part.material else {
+                continue;
+            };
+            // 材质取不到时保持 1.0：宁可当成不透明，也不要凭空捏造一个透明度
+            if let Some(material) = self.provider.material(asset, index) {
+                let value = material.base_color[3];
+                if value.is_finite() {
+                    alpha = alpha.min(value.clamp(0.0, 1.0));
+                }
+            }
+        }
+        Some(alpha)
+    }
+
     /// 网格局部包围盒（几何空间）。取不到时返回 `None`，调用方必须按「不剔除」处理。
     ///
     /// 顺序：缓存 → `mesh_aabb`（零拷贝）→ 兜底 `mesh_data` 现算（仅当提供者没有实现
@@ -640,6 +676,15 @@ pub struct RenderStats {
     /// 本帧局部光源阴影提交的深度 pass 层数（点光 6 / 聚光 1）。
     /// 0 = 没有灯开 `cast_shadow`，此时渲染开销与扩展十七完全一致。
     pub local_shadow_layers: u32,
+    /// 本帧走半透明通道的 draw call 数（扩展十九）。0 = 场景没有半透明物件。
+    pub transparent_draws: u32,
+    /// 本帧走半透明通道的实例数。与 `transparent_draws` 一起区分
+    /// 「没有半透明物件」与「有但被剔除」。
+    pub transparent_instances: u32,
+    /// 本帧深度预通道的 draw call 数（扩展十九）。MSAA 之后主通道的深度是
+    /// 多重采样的、不能给遮蔽通道用，因此多跑一条单采样深度 pass。
+    /// 恒等于不透明批次的 draw call 数；0 表示本帧没有不透明物件。
+    pub depth_prepass_draws: u32,
 }
 
 pub struct Renderer {
@@ -649,9 +694,23 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
+    /// 半透明管线（扩展十九）：与 `pipeline` 同着色器、同 alpha 混合，
+    /// 唯一差别是 `depth_write_enabled = false` —— 半透明物件要参与深度测试
+    /// （近处仍能挡住远处），但不能把深度写进去，否则会挡掉后画的同类物件。
+    transparent_pipeline: wgpu::RenderPipeline,
+    /// 深度预通道（扩展十九）：单采样、无颜色目标，只给遮蔽通道供深度。
+    depth_prepass_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    /// MSAA 多重采样颜色附件（`MSAA_SAMPLE_COUNT` 样本，`HDR_FORMAT`）。
+    /// 主通道写它，pass 结束时 resolve 到 `postfx.hdr_view()` 的单采样目标。
+    _msaa_color: wgpu::Texture,
+    msaa_color_view: wgpu::TextureView,
+    /// MSAA 深度附件。**不 resolve**：深度不能跨样本解析，需要单采样深度的
+    /// 遮蔽通道改吃深度预通道写出的 `depth_view`。
+    _msaa_depth: wgpu::Texture,
+    msaa_depth_view: wgpu::TextureView,
     mesh_cache: MeshCache,
     material_cache: MaterialCache,
     instance_buffer: wgpu::Buffer,
@@ -711,16 +770,22 @@ pub struct Renderer {
     stats: RenderStats,
 }
 
-/// `prepare_instances` 的返回值：绘制分组 + 本帧剔除统计。
+/// 一个绘制批次：网格 + 实例区间 + 物件级 PBR 覆盖。
+///
+/// 不透明批次与半透明批次共用同一份实例缓冲，区别只有「落在 `InstancePlan`
+/// 的哪一段」以及绘制时用哪条管线（见 [`InstancePlan`] 的透明段说明）。
+type DrawGroup = (MeshRef, std::ops::Range<u32>, Option<SurfaceKey>);
+
+/// `prepare_instances` 的返回值：绘制分组 + 透明段起点 + 本帧剔除统计。
 ///
 /// 分组键是 `(网格, 物件级 PBR 材质)`：同一网格的物件若 metallic / roughness
 /// 不同，会被拆成多个批次，各自绑定自己的材质 uniform。
-type InstancePlan = (
-    Vec<(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)>,
-    u32,
-    u32,
-    Option<Aabb>,
-);
+///
+/// 半透明批次（扩展十九）**一律排在分组末尾**：
+/// `groups[..transparent_start]` 走不透明管线（写深度），
+/// `groups[transparent_start..]` 走半透明管线（不写深度、由远及近）。
+/// `transparent_start == groups.len()` 表示本帧没有半透明物件。
+type InstancePlan = (Vec<DrawGroup>, usize, u32, u32, Option<Aabb>);
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self, String> {
@@ -1081,7 +1146,12 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                // 扩展十九：主通道开通 MSAA。光栅化在 4× 附件上进行，
+                // pass 结束时 resolve 到单采样 HDR 目标（见 `render_to_view`）。
+                count: MSAA_SAMPLE_COUNT,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
@@ -1100,6 +1170,88 @@ impl Renderer {
         });
 
         let depth_view = create_depth_view(&device, width, height);
+        // 扩展十九：MSAA 附件。颜色附件由硬件 resolve 进 HDR 目标，
+        // 深度附件不做 resolve（深度跨样本没有物理意义），单采样深度改由预通道提供。
+        let (msaa_color, msaa_color_view, msaa_depth, msaa_depth_view) =
+            create_msaa_targets(&device, width, height);
+
+        // 扩展十九：半透明管线。除「不写深度」外与主管线逐字段一致——
+        // 同一份着色器、同一套混合、同一个 HDR 目标格式，
+        // 只是半透明物件不能把深度写下去，否则会挡掉后面同样半透明的物件。
+        let transparent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("r3e-transparent-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_layout()), Some(InstanceRaw::layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                // 半透明面片多半是单层薄面（玻璃 / 树叶 / 水面），
+                // 一旦背面被剔除，从另一侧看过去整块物件就凭空消失
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                ..Default::default()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: crate::postfx::HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // 扩展十九：深度预通道。主通道的深度挂在 4× 附件上，无法给遮蔽通道
+        // 当输入（多重采样纹理不能直接采样），所以在主通道之前先用单采样
+        // `depth_view` 铺一遍不透明批次的深度。只写深度、无颜色目标，fragment 为 None。
+        let depth_prepass_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("r3e-depth-prepass-pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(vertex_layout()), Some(InstanceRaw::layout())],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                // 单样本：目标就是 `depth_view`，与主通道的多重采样附件互不相干
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: None,
+            });
 
         // 阶段 D：阴影通道管线 —— 无颜色目标，只写深度。
         // 顶点布局与主通道完全一致（同一份实例缓冲直接复用），
@@ -1158,9 +1310,15 @@ impl Renderer {
             config,
             size: (width, height),
             pipeline,
+            transparent_pipeline,
+            depth_prepass_pipeline,
             camera_buffer,
             camera_bind_group,
             depth_view,
+            _msaa_color: msaa_color,
+            msaa_color_view,
+            _msaa_depth: msaa_depth,
+            msaa_depth_view,
             mesh_cache: MeshCache::new(),
             material_cache,
             instance_buffer,
@@ -1290,6 +1448,13 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, width, height);
+        // 扩展十九：MSAA 附件与窗口同尺寸，必须一起重建，否则 resolve 目标尺寸对不上
+        let (msaa_color, msaa_color_view, msaa_depth, msaa_depth_view) =
+            create_msaa_targets(&self.device, width, height);
+        self._msaa_color = msaa_color;
+        self.msaa_color_view = msaa_color_view;
+        self._msaa_depth = msaa_depth;
+        self.msaa_depth_view = msaa_depth_view;
         // 后处理的离屏目标必须一起重建：纹理不能原地 resize，
         // 不重建就会继续按旧尺寸采样，画面被拉成旧分辨率的内容。
         self.postfx.resize(&self.device, width, height);
@@ -1339,7 +1504,8 @@ impl Renderer {
     /// 这是**唯一**的绘制实现：窗口渲染与截图都走这里，所以截图内容与用户看到的
     /// 画面逐像素同源（阴影 / 遮蔽 / 后处理 / 文本 / UI 全部包含）。
     fn render_to_view(&mut self, scene: &Scene, view: &wgpu::TextureView) {
-        let (groups, culled, cull_unknown, bounds) = self.prepare_instances(scene);
+        let (groups, transparent_start, culled, cull_unknown, bounds) =
+            self.prepare_instances(scene);
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         let shadow_levels = self.prepare_shadow(&groups, bounds, scene.light, &scene.camera);
@@ -1386,15 +1552,24 @@ impl Renderer {
             );
         }
 
+        // 扩展十九：深度预通道。主通道的深度挂在 4× 附件上、不能给遮蔽通道采样，
+        // 所以先用单采样 `depth_view` 把不透明批次的深度铺一遍。
+        // 只画不透明段：半透明物件本来就不写深度。
+        let depth_prepass_draws =
+            self.draw_depth_prepass(&mut encoder, &groups[..transparent_start]);
+
+        let (transparent_draws, transparent_instances);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("r3e-main-pass"),
                 // 扩展十三：主通道写离屏 HDR 目标（Rgba16Float，线性），
                 // 高亮不再被 sRGB 8 位目标直接切平；贴到屏幕由 composite 完成。
+                // 扩展十九：颜色先光栅化到 4× 多重采样附件上，由硬件 resolve
+                // 进同一个 HDR 目标 —— 后处理链照旧只看到单采样纹理。
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.postfx.hdr_view(),
+                    view: &self.msaa_color_view,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: Some(self.postfx.hdr_view()),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: bg.x as f64,
@@ -1406,10 +1581,12 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    // 多重采样深度：只服务于本通道的深度测试，
+                    // 内容用完即弃（单采样深度已由预通道写好）
+                    view: &self.msaa_depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+                        store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
                 }),
@@ -1423,41 +1600,19 @@ impl Renderer {
             pass.set_bind_group(2, &self.joint_bind_group, &[]);
             // 阶段 D：主通道采样上一步渲好的阴影贴图
             pass.set_bind_group(3, &self.shadow_bind_group, &[]);
-            let mut draw_calls = 0u32;
-            let mut instances = 0u32;
+            // 不透明段：写深度、顺序无关，分组顺序即首次出现顺序
+            let (opaque_draws, opaque_instances) =
+                self.draw_group_range(&mut pass, &groups[..transparent_start]);
 
-            for (key, range, surface) in &groups {
-                let Some(gpu) = self.mesh_cache.get(*key) else {
-                    continue;
-                };
-                pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
-                pass.set_vertex_buffer(
-                    1,
-                    self.instance_buffer
-                        .slice(range.start as u64 * stride..range.end as u64 * stride),
-                );
-                pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            // 扩展十九：半透明段。绘制顺序已在 `prepare_instances` 里排成
+            // 「由远及近」，这里换成不写深度的管线按同一顺序提交，混合才正确。
+            pass.set_pipeline(&self.transparent_pipeline);
+            let transparent = self.draw_group_range(&mut pass, &groups[transparent_start..]);
+            transparent_draws = transparent.0;
+            transparent_instances = transparent.1;
 
-                // 每个材质分区一次 draw：bind group 1 换成该分区材质（含物件级 PBR 覆盖）。
-                for part in &gpu.parts {
-                    let material_key = part.material.with_surface(*surface);
-                    let Some(material) = self
-                        .material_cache
-                        .get(material_key)
-                        .or_else(|| self.material_cache.get(MaterialKey::Default))
-                    else {
-                        continue;
-                    };
-                    pass.set_bind_group(1, &material.bind_group, &[]);
-                    pass.draw_indexed(
-                        part.first_index..part.first_index + part.index_count,
-                        0,
-                        0..1,
-                    );
-                    draw_calls += 1;
-                }
-                instances += range.end - range.start;
-            }
+            let draw_calls = opaque_draws + transparent_draws;
+            let instances = opaque_instances + transparent_instances;
 
             self.stats = RenderStats {
                 draw_calls,
@@ -1477,6 +1632,9 @@ impl Renderer {
                 local_lights,
                 local_shadow_casters,
                 local_shadow_layers: local_shadow_layers.len() as u32,
+                transparent_draws,
+                transparent_instances,
+                depth_prepass_draws,
             };
         }
 
@@ -1709,9 +1867,99 @@ impl Renderer {
         count
     }
 
+    /// 把一批分组画进一个已经绑好相机 / 关节 / 阴影的通道。
+    ///
+    /// 返回 `(draw call 数, 实例数)`：`draw call` 按材质分区计数，
+    /// 实例数按区间长度累加，两者都不含被剔掉的网格（`mesh_cache` 里没有的）。
+    /// 不透明段与半透明段共用这段逻辑，区别只在调用前 `set_pipeline` 的是哪条管线。
+    fn draw_group_range(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        groups: &[DrawGroup],
+    ) -> (u32, u32) {
+        let stride = std::mem::size_of::<InstanceRaw>() as u64;
+        let mut draw_calls = 0u32;
+        let mut instances = 0u32;
+        for (key, range, surface) in groups {
+            let Some(gpu) = self.mesh_cache.get(*key) else {
+                continue;
+            };
+            pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
+            pass.set_vertex_buffer(
+                1,
+                self.instance_buffer
+                    .slice(range.start as u64 * stride..range.end as u64 * stride),
+            );
+            pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+            // 每个材质分区一次 draw：bind group 1 换成该分区材质（含物件级 PBR 覆盖）。
+            for part in &gpu.parts {
+                let material_key = part.material.with_surface(*surface);
+                let Some(material) = self
+                    .material_cache
+                    .get(material_key)
+                    .or_else(|| self.material_cache.get(MaterialKey::Default))
+                else {
+                    continue;
+                };
+                pass.set_bind_group(1, &material.bind_group, &[]);
+                pass.draw_indexed(
+                    part.first_index..part.first_index + part.index_count,
+                    0,
+                    0..1,
+                );
+                draw_calls += 1;
+            }
+            instances += range.end - range.start;
+        }
+        (draw_calls, instances)
+    }
+
+    /// 扩展十九：深度预通道。只写单采样 `depth_view`、无颜色目标。
+    ///
+    /// 存在的理由是 MSAA：主通道的深度挂在 4× 附件上，多重采样纹理不能直接
+    /// 采样，而遮蔽通道要的恰恰是一张可采样的单采样深度图。这里只画不透明段
+    /// ——半透明物件不写深度，画了也不会留下有效数据。
+    ///
+    /// 没有不透明批次时整个通道跳过（返回 0），不提交空 pass。
+    fn draw_depth_prepass(&self, encoder: &mut wgpu::CommandEncoder, groups: &[DrawGroup]) -> u32 {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("r3e-depth-prepass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        pass.set_pipeline(&self.depth_prepass_pipeline);
+        // 一帧里没有可画的不透明批次时仍保留这次 pass：它的作用是清空
+        // 单采样深度，否则遮蔽通道会拿上一帧的深度继续算
+        if groups.is_empty() {
+            return 0;
+        }
+        pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        pass.set_bind_group(2, &self.joint_bind_group, &[]);
+        // 顶点阶段不采阴影贴图，但管线布局里有这一组，必须绑上才合法
+        pass.set_bind_group(3, &self.shadow_bind_group, &[]);
+        // 无颜色目标：占位绑定默认材质，避免依赖「驱动是否容忍空 group1」
+        if let Some(default) = self.material_cache.get(MaterialKey::Default) {
+            pass.set_bind_group(1, &default.bind_group, &[]);
+        }
+
+        self.draw_group_range(&mut pass, groups).0
+    }
+
     fn prepare_shadow(
         &mut self,
-        groups: &[(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)],
+        groups: &[DrawGroup],
         bounds: Option<Aabb>,
         light: Light,
         camera: &r3e_core::Camera,
@@ -2033,20 +2281,41 @@ impl Renderer {
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        // 分组键：网格 + 物件级 PBR 材质。内置网格与资产网格统一处理，按首次出现顺序稳定排列
-        let mut keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
+        // 分组键：网格 + 物件级 PBR 材质 + 是否半透明。内置网格与资产网格统一处理。
+        //
+        // 扩展十九：半透明的判定 = 节点颜色 alpha × 网格材质 alpha（两者都可能 < 1）。
+        // 半透明键集中在 `transparent_keys`，排到所有不透明键之后 —— 于是
+        // `groups` 天然形成「不透明段 + 半透明段」，绘制时只需切换一次管线。
+        let mut opaque_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
+        let mut transparent_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
+        // 同一网格常被多次引用，材质 alpha 只查一次
+        let mut mesh_alphas: HashMap<MeshRef, f32> = HashMap::new();
         for node in scene.iter() {
             if !node.visible {
                 continue;
             }
             let group_key = (node.mesh, node.material.map(SurfaceKey::new));
-            if !keys.contains(&group_key) {
-                keys.push(group_key);
+            let mesh_alpha = *mesh_alphas
+                .entry(node.mesh)
+                .or_insert_with(|| self.mesh_material_alpha(node.mesh));
+            let bucket = if transparency::is_transparent(node.color.w * mesh_alpha) {
+                &mut transparent_keys
+            } else {
+                &mut opaque_keys
+            };
+            if !bucket.contains(&group_key) {
+                bucket.push(group_key);
             }
         }
+        let opaque_key_count = opaque_keys.len();
+        let mut keys = opaque_keys;
+        keys.extend(transparent_keys);
 
         let mut all: Vec<InstanceRaw> = Vec::new();
-        let mut groups: Vec<(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)> = Vec::new();
+        let mut groups: Vec<DrawGroup> = Vec::new();
+        // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
+        type TransparentBatch = (f32, MeshRef, Option<SurfaceKey>, Vec<(f32, InstanceRaw)>);
+        let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
         // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
         self.joint_scratch.clear();
         let mut joint_overflow = 0usize;
@@ -2059,8 +2328,12 @@ impl Renderer {
         // 所以这里统计在剔除判断之前。
         let mut scene_bounds: Option<Aabb> = None;
 
-        for (key, surface) in &keys {
+        for (index, (key, surface)) in keys.iter().enumerate() {
+            // 前 `opaque_key_count` 个键是不透明批次，其后都是半透明批次
+            let transparent = index >= opaque_key_count;
             let start = all.len() as u32;
+            // 半透明实例先攒进 `staged`：要先拿到全部世界位置才能在整批内排序
+            let mut staged: Vec<(f32, InstanceRaw)> = Vec::new();
             for node in scene.iter() {
                 if !node.visible || node.mesh != *key {
                     continue;
@@ -2107,16 +2380,60 @@ impl Renderer {
                     }
                     _ => 0,
                 };
-                all.push(InstanceRaw {
+                let instance = InstanceRaw {
                     model: node.world.to_cols_array_2d(),
                     color: color.to_array(),
                     joint_base,
                     _pad: [0; 3],
-                });
+                };
+                if transparent {
+                    // 平移列就是实例的世界位置；用它到相机的距离平方当排序键
+                    let depth =
+                        transparency::view_depth(node.world.w_axis.truncate(), camera.position);
+                    staged.push((depth, instance));
+                } else {
+                    all.push(instance);
+                }
+            }
+            if transparent {
+                if !staged.is_empty() {
+                    // 组间排序键 = 组内最远实例的深度：一次排序决定「哪个网格先画」，
+                    // 组内顺序则再按 `back_to_front` 排细
+                    let farthest = staged.iter().fold(0.0_f32, |far, (depth, _)| {
+                        far.max(if depth.is_nan() {
+                            f32::INFINITY
+                        } else {
+                            *depth
+                        })
+                    });
+                    pending_transparent.push((farthest, *key, *surface, staged));
+                }
+                continue;
             }
             if all.len() as u32 > start {
                 groups.push((*key, start..all.len() as u32, *surface));
             }
+        }
+
+        // 半透明段起点：不透明批次全部入组之后的位置
+        let mut transparent_start = groups.len();
+        // 组间：远组先画（`total_cmp` 下降序，同深度保持首次出现顺序）
+        pending_transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, key, surface, staged) in pending_transparent {
+            let start = all.len() as u32;
+            let depths: Vec<f32> = staged.iter().map(|(depth, _)| *depth).collect();
+            let order = transparency::back_to_front(&depths);
+            // 按「由远及近」的下标顺序把实例搬进实例缓冲
+            let mut slots: Vec<Option<InstanceRaw>> = staged
+                .into_iter()
+                .map(|(_, instance)| Some(instance))
+                .collect();
+            for index in order {
+                if let Some(instance) = slots[index as usize].take() {
+                    all.push(instance);
+                }
+            }
+            groups.push((key, start..all.len() as u32, surface));
         }
 
         if joint_overflow > 0 {
@@ -2140,13 +2457,30 @@ impl Renderer {
                 uploaded.push(*key);
             }
         }
-        // 上传失败的网格从绘制分组中剔除
+        // 上传失败的网格从绘制分组中剔除；
+        // 组数变化时透明段起点要跟着前移，否则会把不透明批次当成半透明来画。
         if uploaded.len() != groups.len() {
-            groups.retain(|(key, _, _)| uploaded.contains(key));
+            let mut removed_opaque = 0usize;
+            let mut index = 0usize;
+            groups.retain(|(key, _, _)| {
+                let keep = uploaded.contains(key);
+                if !keep && index < transparent_start {
+                    removed_opaque += 1;
+                }
+                index += 1;
+                keep
+            });
+            transparent_start -= removed_opaque;
         }
 
         if all.is_empty() {
-            return (groups, culled, cull_unknown, scene_bounds);
+            return (
+                groups,
+                transparent_start,
+                culled,
+                cull_unknown,
+                scene_bounds,
+            );
         }
 
         // 容量不足则扩容（按 2 倍增长，避免每帧重建）
@@ -2167,7 +2501,23 @@ impl Renderer {
         self.queue
             .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all));
 
-        (groups, culled, cull_unknown, scene_bounds)
+        (
+            groups,
+            transparent_start,
+            culled,
+            cull_unknown,
+            scene_bounds,
+        )
+    }
+
+    /// 取网格材质自身的 alpha（无材质 / 无贴图时按 1.0 处理）。
+    ///
+    /// 半透明判定要同时看两处 alpha：节点颜色带一个，网格 PBR 材质还能带一个。
+    /// 只看节点颜色会让「材质设成半透明、颜色保持不透明」的物件排错批次。
+    fn mesh_material_alpha(&self, mesh: MeshRef) -> f32 {
+        self.mesh_cache
+            .material_alpha(mesh)
+            .map_or(1.0, |alpha| alpha.clamp(0.0, 1.0))
     }
 }
 
@@ -2629,6 +2979,54 @@ fn create_shadow_bind_group(
             },
         ],
     })
+}
+
+/// 扩展十九：创建 MSAA 附件组（4× 颜色 + 4× 深度）。
+///
+/// 返回 `(颜色纹理, 颜色视图, 深度纹理, 深度视图)`。颜色纹理由硬件 resolve 到
+/// HDR 目标，因此只要 `RENDER_ATTACHMENT`；深度则完全不参与采样 —— 遮蔽通道要的
+/// 单采样深度由深度预通道写进 `create_depth_view` 那张纹理，两者互不干扰。
+///
+/// 纹理句柄必须随视图一起返回：wgpu 的视图不持有纹理所有权，提前 drop 会让
+/// 视图引用悬空，真机上表现为每帧校验失败。
+fn create_msaa_targets(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (
+    wgpu::Texture,
+    wgpu::TextureView,
+    wgpu::Texture,
+    wgpu::TextureView,
+) {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let color = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-msaa-color"),
+        size,
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
+        dimension: wgpu::TextureDimension::D2,
+        format: crate::postfx::HDR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-msaa-depth"),
+        size,
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    (color, color_view, depth, depth_view)
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

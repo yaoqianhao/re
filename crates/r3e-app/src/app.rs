@@ -772,6 +772,17 @@ impl EngineApp {
             stats.shadow_draws,
             stats.instances
         );
+        // 半透明 / MSAA 探针（扩展十九）：`透明 draw` 为 0 表示本帧没有半透明批次
+        // （场景里没有 alpha < 0.999 的物件，或被视锥剔除干净）。
+        // `深度预通道 draw` 恒等于不透明批次的 draw call 数——它是遮蔽通道的单采样
+        // 深度来源，掉成 0 就说明主通道与遮蔽通道的深度输入断了。
+        log::info!(
+            "[{tag}] 半透明与 MSAA：采样数 {}× / 透明 draw {} / 透明实例 {} / 深度预通道 draw {}",
+            r3e_render::MSAA_SAMPLE_COUNT,
+            stats.transparent_draws,
+            stats.transparent_instances,
+            stats.depth_prepass_draws
+        );
         // 遮蔽探针（扩展十七）：passes 恒为 2（生成 + 散焦），为 0 说明本帧没提交——
         // 段未开、强度为 0，或设置收敛成了中性值。`samples` 打印「场景要的 / 实际生效的」，
         // 两者不等就说明被夹进了 [4, 16]（或场景压根没写这一段）。
