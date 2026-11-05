@@ -12,7 +12,9 @@
 //! 因此生命周期与 `Job::run` 严格对齐：RPC 线程永远拿不到引擎内部引用。
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
 use r3e_audio::{Audio, DistanceModel, MAX_SPATIAL_SOURCES};
@@ -30,11 +32,131 @@ use r3e_editor::{
     SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_physics::Physics;
+use r3e_render::Renderer;
 use r3e_script::ScriptHost;
 use serde_json::{json, Value};
 
 /// 引擎信息里的引擎名（与 Cargo 包名、窗口标题保持一致）。
 const ENGINE_NAME: &str = "r3e";
+
+/// 帧时间窗口的容量：约 4 秒 @60fps。
+///
+/// 太短会让 p99 落在噪声上（一帧抖动就顶满），太长则改完场景要等好几秒才看得到
+/// 分位变化。120 帧是两者之间的折中。
+pub const FRAME_TIME_WINDOW: usize = 120;
+
+/// 最近若干帧的 CPU 帧时间分布（毫秒），`engine.stats` 的 `frame.frame_ms` 就是它。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FrameTimeStats {
+    /// 窗口里实际有多少个样本（启动初期远小于容量）。
+    pub samples: usize,
+    /// 最近一帧的耗时。
+    pub last_ms: f32,
+    pub p50_ms: f32,
+    pub p95_ms: f32,
+    pub p99_ms: f32,
+    pub max_ms: f32,
+}
+
+impl FrameTimeStats {
+    /// 从一批样本算出分布。
+    ///
+    /// 分位用 nearest-rank（`ceil(p·n)` 后取该名次），不是插值：样本量小的时候
+    /// 插值会造出「没有一帧真的这么慢」的数字，回归基线比的是实际观测值。
+    pub fn from_samples(samples: &[f32]) -> Self {
+        if samples.is_empty() {
+            return Self::default();
+        }
+        let mut sorted = samples.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let pick = |p: f32| -> f32 {
+            let n = sorted.len();
+            let rank = ((p * n as f32).ceil() as usize).clamp(1, n);
+            sorted[rank - 1]
+        };
+        Self {
+            samples: sorted.len(),
+            last_ms: samples[samples.len() - 1],
+            p50_ms: pick(0.50),
+            p95_ms: pick(0.95),
+            p99_ms: pick(0.99),
+            max_ms: sorted[sorted.len() - 1],
+        }
+    }
+}
+
+/// 固定容量的帧时间环形缓冲：满了就覆盖最旧的样本。
+#[derive(Debug, Clone)]
+pub struct FrameTimeWindow {
+    buf: Vec<f32>,
+    next: usize,
+    /// 最近一次采到的帧时间。
+    ///
+    /// 不能靠 `buf.last()` 得到它：环形缓冲写满后物理顺序是「覆盖顺序」，
+    /// 末元素不再是最后发生的那一帧。`last_ms` 在面板上表示「当前帧耗时」，
+    /// 必须与采样时刻一致，所以单独记一份。
+    last: Option<f32>,
+}
+
+impl FrameTimeWindow {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity.max(1)),
+            next: 0,
+            last: None,
+        }
+    }
+
+    pub fn push(&mut self, ms: f32) {
+        if !ms.is_finite() || ms < 0.0 {
+            return;
+        }
+        if self.buf.len() < self.buf.capacity() {
+            self.buf.push(ms);
+        } else {
+            let cap = self.buf.len();
+            self.buf[self.next % cap] = ms;
+        }
+        self.next = self.next.wrapping_add(1);
+        self.last = Some(ms);
+    }
+
+    pub fn snapshot(&self) -> FrameTimeStats {
+        let mut stats = FrameTimeStats::from_samples(&self.buf);
+        if let Some(last) = self.last {
+            stats.last_ms = last;
+        }
+        stats
+    }
+}
+
+impl Default for FrameTimeWindow {
+    fn default() -> Self {
+        Self::new(FRAME_TIME_WINDOW)
+    }
+}
+
+/// 把截图目标路径规范成绝对路径：相对路径按进程当前目录解析。
+///
+/// `capture.frame` 对外承诺「返回绝对路径」，所以进来先在宿主侧定死基准，
+/// 免得下游拿到 `captures\\a.png` 这种相对串还得再猜一次基准目录。
+fn absolute_path(path: &Path) -> Result<PathBuf, RpcFailure> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|err| RpcFailure::engine(format!("无法解析相对路径的基准目录: {err}")))
+}
+
+/// 默认截图文件名：毫秒时间戳，连续截图不会互相覆盖。
+fn default_capture_name() -> String {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    format!("capture_{stamp}.png")
+}
 
 /// 主线程上的 [`EngineApi`] 实现。
 ///
@@ -44,6 +166,13 @@ pub struct LocalEngineApi<'a> {
     pub scene: &'a Rc<RefCell<Scene>>,
     pub physics: &'a Rc<RefCell<Physics>>,
     pub scripts: &'a mut ScriptHost,
+    /// 渲染器：`engine.stats` 读它的 `RenderStats`，`capture.frame` 用它离屏出图。
+    /// 窗口 / GPU 未就绪时为 `None`，此时两个方法都明确回报「不可用」而不是编数字。
+    pub renderer: Option<&'a mut Renderer>,
+    /// 最近的帧时间分布（由主循环的 [`FrameTimeWindow`] 算好后传进来）。
+    pub frame_ms: FrameTimeStats,
+    /// 截图默认落盘目录（`capture.frame` 不传 path 时用）。
+    pub capture_dir: PathBuf,
     /// 场景文件路径（展示用；空串时退回场景自身的名字）。
     pub scene_label: String,
     /// 脚本文件路径（展示用）。
@@ -55,6 +184,148 @@ pub struct LocalEngineApi<'a> {
 }
 
 impl EngineApi for LocalEngineApi<'_> {
+    /// P0-4：一帧的「数字画像」——帧时间分位 + 渲染统计 + 场景规模。
+    ///
+    /// AI 改完场景后先看这里：`draw_calls` / `instances` / `shadow_draws` 有没有按预期
+    /// 涨跌，`ssao.passes`、`shadow_cascades` 有没有真的打开，比肉眼看画面更可靠。
+    /// 渲染器缺席时 `render` 直接给 `null`（`renderer: false`），绝不填零冒充正常。
+    fn engine_stats(&mut self) -> Result<Value, RpcFailure> {
+        let (scene_name, objects, visible, mesh_kinds, material_overrides, physics_bodies) = {
+            let scene = self.scene.borrow();
+            let mut mesh_kinds = std::collections::HashSet::new();
+            let mut visible = 0usize;
+            let mut material_overrides = 0usize;
+            let mut physics_bodies = 0usize;
+            for node in scene.iter() {
+                mesh_kinds.insert(node.mesh);
+                visible += usize::from(node.visible);
+                material_overrides += usize::from(node.material.is_some());
+                physics_bodies += usize::from(node.physics.is_some());
+            }
+            (
+                scene.name.clone(),
+                scene.len(),
+                visible,
+                mesh_kinds.len(),
+                material_overrides,
+                physics_bodies,
+            )
+        };
+
+        let frame = self.frame_ms;
+        let (size, stats) = match self.renderer.as_deref() {
+            Some(renderer) => (renderer.size(), Some(renderer.stats())),
+            None => ((0u32, 0u32), None),
+        };
+        let render = match stats {
+            Some(s) => json!({
+                "draw_calls": s.draw_calls,
+                "instances": s.instances,
+                "culled": s.culled,
+                "cull_unknown": s.cull_unknown,
+                "shadow_draws": s.shadow_draws,
+                "shadow_cascades": s.shadow_cascades,
+                "render_frame_index": s.frame_index,
+                "ssao": {
+                    "enabled": s.ssao.enabled,
+                    "passes": s.ssao.passes,
+                    "samples": s.ssao.samples,
+                    "width": s.ssao.size.0,
+                    "height": s.ssao.size.1,
+                },
+                "postfx": {
+                    "bloom_passes": s.postfx.bloom_passes,
+                    "composite_passes": s.postfx.composite_passes,
+                    "bloom_levels": s.postfx.bloom_levels,
+                },
+                "local_lights": s.local_lights,
+                "local_shadow_casters": s.local_shadow_casters,
+                "local_shadow_layers": s.local_shadow_layers,
+                "text_glyphs": s.text_glyphs,
+                "text_draws": s.text_draws,
+                "text_missing": s.text_missing,
+                "ui_quads": s.ui_quads,
+                "ui_draws": s.ui_draws,
+            }),
+            None => Value::Null,
+        };
+
+        Ok(json!({
+            "renderer": stats.is_some(),
+            "frame": {
+                "index": self.frames,
+                "fps": self.fps,
+                "uptime_ms": self.uptime_ms,
+                "paused": self.paused,
+                "frame_ms": {
+                    "samples": frame.samples,
+                    "last": frame.last_ms,
+                    "p50": frame.p50_ms,
+                    "p95": frame.p95_ms,
+                    "p99": frame.p99_ms,
+                    "max": frame.max_ms,
+                },
+            },
+            "scene": {
+                "name": scene_name,
+                "objects": objects,
+                "visible": visible,
+                "mesh_kinds": mesh_kinds,
+                "material_overrides": material_overrides,
+                "physics_bodies": physics_bodies,
+            },
+            "render": render,
+            "size": { "width": size.0, "height": size.1 },
+        }))
+    }
+
+    /// P0-4：把当前一帧渲染到离屏纹理并落成 PNG，返回绝对路径。
+    ///
+    /// 这是「看画面」的唯一入口：AI 拿到路径后可以直接看图，不必依赖窗口。
+    /// 落盘后回读文件长度做一次自检——空文件当失败上报，避免下游拿到一张坏图。
+    fn capture_frame(&mut self, path: Option<&str>) -> Result<Value, RpcFailure> {
+        let Some(renderer) = self.renderer.as_deref_mut() else {
+            return Err(RpcFailure::engine(
+                "渲染器未初始化（窗口 / GPU 未就绪），当前进程无法截图",
+            ));
+        };
+        let target = match path.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(raw) => absolute_path(Path::new(raw))?,
+            None => self.capture_dir.join(default_capture_name()),
+        };
+        if target.is_dir() {
+            return Err(RpcFailure::invalid_params(format!(
+                "截图路径是目录而不是文件: {}",
+                target.display()
+            )));
+        }
+
+        let captured = {
+            let scene = self.scene.borrow();
+            renderer.capture_frame(&scene).map_err(RpcFailure::engine)?
+        };
+        r3e_asset::write_png_rgba(&target, captured.width, captured.height, &captured.rgba8)
+            .map_err(|err| RpcFailure::engine(format!("截图落盘失败: {err}")))?;
+        let bytes = std::fs::metadata(&target)
+            .map(|meta| meta.len())
+            .map_err(|err| RpcFailure::engine(format!("截图落盘后读元数据失败: {err}")))?;
+        if bytes == 0 {
+            return Err(RpcFailure::engine(format!(
+                "截图文件为空（{}），已按失败上报",
+                target.display()
+            )));
+        }
+
+        Ok(json!({
+            "path": target.display().to_string(),
+            "width": captured.width,
+            "height": captured.height,
+            "bytes": bytes,
+            "pixels": captured.byte_len(),
+            "format": format!("{:?}", captured.format),
+        }))
+    }
+
     fn info(&mut self) -> EngineInfo {
         let (scene_name, nodes) = {
             let scene = self.scene.borrow();
@@ -1440,6 +1711,17 @@ mod tests {
             scene,
             physics,
             scripts,
+            // 单元测试没有窗口 / GPU：渲染器缺席正是「headless 也得给出可解释结果」的场景。
+            renderer: None,
+            frame_ms: FrameTimeStats {
+                samples: 4,
+                last_ms: 16.0,
+                p50_ms: 16.0,
+                p95_ms: 18.5,
+                p99_ms: 20.0,
+                max_ms: 20.0,
+            },
+            capture_dir: PathBuf::from("assets/captures"),
             scene_label: "assets/scene.json".to_string(),
             script_label: "scripts/main.rhai".to_string(),
             frames: 42,
@@ -2651,6 +2933,107 @@ mod tests {
         assert_eq!(cleared["count"], json!(0));
         // 清空后能重新注册（不会因为计数残留而卡死）
         assert!(api.audio_spatial_set(spatial_patch("fresh")).is_ok());
+    }
+
+    // ------------------------------------------------------------ P0-4 反馈工具
+
+    #[test]
+    fn engine_stats_without_renderer_reports_null_render() {
+        let (scene, physics, mut scripts) = fixture();
+        let stats = api(&scene, &physics, &mut scripts)
+            .engine_stats()
+            .expect("无渲染器时 engine_stats 仍然要给场景快照");
+
+        // 关键契约：没有渲染器就说没有，而不是把 draw_calls 填 0 冒充「渲染了但没画」。
+        assert_eq!(stats["renderer"], json!(false));
+        assert!(stats["render"].is_null(), "render 应为 null: {stats}");
+        assert_eq!(stats["size"]["width"], json!(0));
+        assert_eq!(stats["size"]["height"], json!(0));
+    }
+
+    #[test]
+    fn engine_stats_summarizes_scene_and_frame_time() {
+        let (scene, physics, mut scripts) = fixture();
+        let stats = api(&scene, &physics, &mut scripts)
+            .engine_stats()
+            .expect("engine_stats");
+
+        assert_eq!(stats["scene"]["name"], json!("editor-test"));
+        assert_eq!(stats["scene"]["objects"], json!(3));
+        assert_eq!(stats["scene"]["visible"], json!(3));
+        // 三个物件都是 cube：去重后的网格种类是 1，不是 3
+        assert_eq!(stats["scene"]["mesh_kinds"], json!(1));
+        assert_eq!(stats["scene"]["material_overrides"], json!(0));
+        assert_eq!(stats["frame"]["index"], json!(42));
+        // fixture 里预置的帧时间分布要原样透传，不能被 fps 覆盖
+        assert_eq!(stats["frame"]["frame_ms"]["samples"], json!(4));
+        assert_eq!(stats["frame"]["frame_ms"]["p95"], json!(18.5));
+    }
+
+    #[test]
+    fn capture_frame_without_renderer_reports_unavailable() {
+        let (scene, physics, mut scripts) = fixture();
+        let err = api(&scene, &physics, &mut scripts)
+            .capture_frame(Some("captures/x.png"))
+            .expect_err("没有渲染器时截图必须失败");
+        // 报错要指向「为什么不能截」，而不是让调用方以为路径写错了
+        assert!(err.message.contains("渲染器"), "{}", err.message);
+        assert_eq!(err.code, r3e_editor::ENGINE_ERROR);
+    }
+
+    #[test]
+    fn frame_time_percentiles_use_nearest_rank() {
+        // 1..=100 ms：nearest-rank 下 p50=50、p95=95、p99=99、max=100，都是真实观测值
+        let samples: Vec<f32> = (1..=100).map(|ms| ms as f32).collect();
+        let stats = FrameTimeStats::from_samples(&samples);
+        assert_eq!(stats.samples, 100);
+        assert_eq!(stats.last_ms, 100.0);
+        assert_eq!(stats.p50_ms, 50.0);
+        assert_eq!(stats.p95_ms, 95.0);
+        assert_eq!(stats.p99_ms, 99.0);
+        assert_eq!(stats.max_ms, 100.0);
+
+        // 空样本给全零，避免出现 NaN 分位
+        assert_eq!(FrameTimeStats::from_samples(&[]), FrameTimeStats::default());
+    }
+
+    #[test]
+    fn frame_time_window_wraps_and_ignores_bad_samples() {
+        let mut window = FrameTimeWindow::new(4);
+        window.push(f32::NAN);
+        window.push(-1.0);
+        assert_eq!(window.snapshot().samples, 0, "非法样本不应进入缓冲");
+
+        for ms in [10.0, 20.0, 30.0, 40.0] {
+            window.push(ms);
+        }
+        assert_eq!(window.snapshot().samples, 4);
+        assert_eq!(window.snapshot().max_ms, 40.0);
+
+        // 满载后覆盖最旧的：10.0 被 5.0 顶掉（样本变 [5,20,30,40]），
+        // 于是 p50 从 10.0 抬到 20.0 —— 这就是「旧样本真的被淘汰」的证据。
+        window.push(5.0);
+        let snapshot = window.snapshot();
+        assert_eq!(snapshot.samples, 4);
+        assert_eq!(snapshot.last_ms, 5.0, "last 必须是最后推入的样本");
+        assert_eq!(snapshot.max_ms, 40.0);
+        assert_eq!(snapshot.p50_ms, 20.0);
+        assert_eq!(snapshot.p99_ms, 40.0);
+    }
+
+    #[test]
+    fn default_capture_name_is_png_and_unique() {
+        let first = default_capture_name();
+        assert!(first.ends_with(".png"), "{first}");
+        assert!(first.starts_with("capture_"), "{first}");
+        // 同一毫秒内可能相同，这里只验证格式：名字里必须是纯数字时间戳
+        let stamp = first
+            .trim_start_matches("capture_")
+            .trim_end_matches(".png");
+        assert!(
+            stamp.chars().all(|c| c.is_ascii_digit()),
+            "时间戳应为纯数字: {first}"
+        );
     }
 }
 

@@ -27,7 +27,7 @@ use r3e_render::ui::UiImageProvider;
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
 
-use crate::editor::LocalEngineApi;
+use crate::editor::{FrameTimeWindow, LocalEngineApi, FRAME_TIME_WINDOW};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -234,6 +234,8 @@ pub struct EngineApp {
     frame_index: u64,
     paused: bool,
     last_dt_ms: f32,
+    /// P0-4：最近若干帧的帧时间环形缓冲（`engine.stats` 的分位从此而来）。
+    frame_times: FrameTimeWindow,
     console: mpsc::Receiver<String>,
     scene_mtime: Option<SystemTime>,
     /// 上次完成「场景声明刚体」绑定的物理世代号。
@@ -473,6 +475,7 @@ impl EngineApp {
             frame_index: 0,
             paused: false,
             last_dt_ms: 0.0,
+            frame_times: FrameTimeWindow::new(FRAME_TIME_WINDOW),
             console: spawn_console(),
             scene_mtime,
             physics_gen: 0,
@@ -532,10 +535,16 @@ impl EngineApp {
         };
         for _ in 0..self.rpc_max_per_frame {
             let Some(job) = server.try_recv() else { break };
+            // 先算好落盘目录：`capture_dir()` 借用整个 `self`，不能和下面
+            // `self.renderer.as_mut()` 同时出现在同一个结构体字面量里。
+            let capture_dir = self.capture_dir();
             let mut api = LocalEngineApi {
                 scene: &self.scene,
                 physics: &self.physics,
                 scripts: &mut self.scripts,
+                renderer: self.renderer.as_mut(),
+                frame_ms: self.frame_times.snapshot(),
+                capture_dir,
                 scene_label: self.scene_path.display().to_string(),
                 script_label: self.script_path.display().to_string(),
                 frames: self.frame_index,
@@ -545,6 +554,20 @@ impl EngineApp {
             };
             job.run(&mut api);
         }
+    }
+
+    /// `capture.frame` 不传 path 时的落盘目录：场景文件旁的 `captures/`。
+    ///
+    /// 放在场景目录而不是进程 cwd，是为了「打开哪个场景，截图就落在哪个工程里」，
+    /// 回归基线也能顺手找到上一轮的画面。
+    fn capture_dir(&self) -> PathBuf {
+        let base = self
+            .scene_path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("captures")
     }
 
     fn step_and_render(&mut self) {
@@ -560,6 +583,9 @@ impl EngineApp {
         self.last_frame = now;
         dt = dt.clamp(0.0, 0.1);
         self.last_dt_ms = dt * 1000.0;
+        // P0-4：帧时间样本进环形缓冲。dt 是「上一帧提交到本帧开始」的真实间隔，
+        // 天然含了上一帧的渲染与 present，所以分位数反映的是端到端节奏而不是某一段。
+        self.frame_times.push(self.last_dt_ms);
 
         // 0) UI 指针交互：命中测试 / hover / 按下捕获在本帧输入清掉之前算完，
         //    这样脚本 on_update 读到的就是本帧事件，相机也据此决定要不要吃这次拖动。
