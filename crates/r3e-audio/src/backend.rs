@@ -30,6 +30,18 @@ pub trait AudioBackend {
     fn resume(&mut self, key: &str) -> bool;
     /// 改单条有效音量。
     fn set_volume(&mut self, key: &str, volume: f32) -> bool;
+    /// 改播放倍速（多普勒变调）。
+    ///
+    /// 默认实现返回 `false` = **该后端不支持实时变速**：门面照样会把倍速算出来并记账
+    /// （`audio_spatial_rate()` 能读到），只是不下发。这条默认实现是为了让旧后端 /
+    /// 测试替身不必为本项改动而全部实现一遍。
+    fn set_speed(&mut self, _key: &str, _speed: f32) -> bool {
+        false
+    }
+    /// 是否支持实时变速（探针 / 文档用；`SilentBackend` 恒 `false`）。
+    fn supports_speed(&self) -> bool {
+        false
+    }
     /// 是否正在出声（暂停不算在播）。
     fn is_playing(&mut self, key: &str) -> bool;
     /// 是否处于暂停态。
@@ -149,6 +161,31 @@ impl AudioBackend for RodioBackend {
             Some(p) => !p.empty() && !p.is_paused(),
             None => false,
         }
+    }
+
+    /// 多普勒落点：rodio 的 `Player::set_speed` 直接改采样步进，**音高随倍速等比变化**，
+    /// 正是多普勒需要的行为（速度变快 = 音高变高），而且是实时可控、不打断播放。
+    ///
+    /// 夹紧在 `0.1 ..= 8.0`：rodio 内部按倍数推进采样，`0` 会让播放器空转，
+    /// 负数没有意义。门面已经夹过一次（0.25..=4），这里是第二道防线——
+    /// 后端不该信任任何上游传入的浮点数。
+    fn set_speed(&mut self, key: &str, speed: f32) -> bool {
+        let speed = if speed.is_finite() {
+            speed.clamp(0.1, 8.0)
+        } else {
+            1.0
+        };
+        match self.find(key) {
+            Some(p) => {
+                p.set_speed(speed);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn supports_speed(&self) -> bool {
+        true
     }
 
     fn is_paused(&mut self, key: &str) -> bool {
