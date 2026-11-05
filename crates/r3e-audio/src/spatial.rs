@@ -78,7 +78,6 @@ impl DistanceModel {
     }
 }
 
-
 /// 单个空间化声源的调参集合。
 ///
 /// 全部字段都是 `f32`，构造后应当经过 [`sanitize_settings`] 才参与计算：脚本传进来的
