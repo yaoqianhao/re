@@ -24,7 +24,9 @@
 //! 所有诊断信息一律走 stderr：stdout 被协议独占，混一行日志宿主就判协议违规。
 
 mod host;
+mod locate;
 mod protocol;
+mod rpc;
 mod smoke;
 mod spec;
 mod tools;

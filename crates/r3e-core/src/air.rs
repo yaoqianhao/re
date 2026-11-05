@@ -73,11 +73,37 @@ impl AirIssueKind {
     }
 }
 
+/// 违规在网格内的锚点：告诉调用方「去哪个顶点 / 哪个索引 / 哪个材质分区看」。
+///
+/// 三个字段互不排斥，也可以全为空——全空表示「问题在整份网格上」（空网格、
+/// AABB 退化、索引表长度），此时 `detail` 里已写明可读定位，不硬编一个假下标。
+///
+/// 之所以把锚点从 `detail` 文本里提出来：`detail` 是给人看的，模型要的是**可编程**
+/// 的定位（P0-2）。文本解析一改格式就断，结构化字段不会。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AirAnchor {
+    /// 顶点下标（`mesh.vertices` 顺序）。
+    pub vertex: Option<usize>,
+    /// 索引缓冲下标（`mesh.indices` 顺序，未除 3）。
+    pub index: Option<usize>,
+    /// 材质分区下标（`parts` 顺序）。
+    pub part: Option<usize>,
+}
+
+impl AirAnchor {
+    /// 没有任何锚点：问题落在整份网格上。
+    pub fn is_empty(&self) -> bool {
+        self.vertex.is_none() && self.index.is_none() && self.part.is_none()
+    }
+}
+
 /// 一条 AIR 违规记录：类别 + 定位信息（网格名 / 顶点号 / 三角形号）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AirIssue {
     pub kind: AirIssueKind,
     pub detail: String,
+    /// 结构化锚点；`AirAnchor::is_empty()` 表示问题在整份网格上。
+    pub anchor: AirAnchor,
 }
 
 impl AirIssue {
@@ -85,7 +111,26 @@ impl AirIssue {
         Self {
             kind,
             detail: detail.into(),
+            anchor: AirAnchor::default(),
         }
+    }
+
+    /// 把问题钉到某个顶点上（法线 / UV / 蒙皮权重类）。
+    pub fn at_vertex(mut self, vertex: usize) -> Self {
+        self.anchor.vertex = Some(vertex);
+        self
+    }
+
+    /// 把问题钉到某个索引上（`index-out-of-range` 类）。
+    pub fn at_index(mut self, index: usize) -> Self {
+        self.anchor.index = Some(index);
+        self
+    }
+
+    /// 把问题钉到某个材质分区上（`parts-coverage` 类）。
+    pub fn at_part(mut self, part: usize) -> Self {
+        self.anchor.part = Some(part);
+        self
     }
 }
 
@@ -124,10 +169,13 @@ pub fn validate_with(mesh: &MeshData, joint_count: Option<usize>) -> Vec<AirIssu
         .enumerate()
         .find(|(_, i)| **i >= vertex_count)
     {
-        issues.push(AirIssue::new(
-            AirIssueKind::IndexOutOfRange,
-            format!("索引 #{} = {}，顶点数 {}", bad.0, bad.1, vertex_count),
-        ));
+        issues.push(
+            AirIssue::new(
+                AirIssueKind::IndexOutOfRange,
+                format!("索引 #{} = {}，顶点数 {}", bad.0, bad.1, vertex_count),
+            )
+            .at_index(bad.0),
+        );
     }
 
     for (i, v) in mesh.vertices.iter().enumerate() {
@@ -153,30 +201,42 @@ pub fn validate(mesh: &MeshData) -> Vec<AirIssue> {
 
 fn validate_vertex(v: &Vertex, i: usize, joint_count: Option<usize>, issues: &mut Vec<AirIssue>) {
     if !v.position.iter().all(|c| c.is_finite()) {
-        issues.push(AirIssue::new(
-            AirIssueKind::NonFinitePosition,
-            format!("顶点 #{i} position = {:?}", v.position),
-        ));
+        issues.push(
+            AirIssue::new(
+                AirIssueKind::NonFinitePosition,
+                format!("顶点 #{i} position = {:?}", v.position),
+            )
+            .at_vertex(i),
+        );
     }
     if !v.normal.iter().all(|c| c.is_finite()) {
-        issues.push(AirIssue::new(
-            AirIssueKind::NonFiniteNormal,
-            format!("顶点 #{i} normal = {:?}", v.normal),
-        ));
+        issues.push(
+            AirIssue::new(
+                AirIssueKind::NonFiniteNormal,
+                format!("顶点 #{i} normal = {:?}", v.normal),
+            )
+            .at_vertex(i),
+        );
     } else {
         let len = Vec3::from(v.normal).length();
         if (len - 1.0).abs() > NORMAL_UNIT_EPS {
-            issues.push(AirIssue::new(
-                AirIssueKind::NormalNotUnit,
-                format!("顶点 #{i} |normal| = {len}"),
-            ));
+            issues.push(
+                AirIssue::new(
+                    AirIssueKind::NormalNotUnit,
+                    format!("顶点 #{i} |normal| = {len}"),
+                )
+                .at_vertex(i),
+            );
         }
     }
     if !v.uv.iter().all(|c| c.is_finite()) {
-        issues.push(AirIssue::new(
-            AirIssueKind::NonFiniteUv,
-            format!("顶点 #{i} uv = {:?}", v.uv),
-        ));
+        issues.push(
+            AirIssue::new(
+                AirIssueKind::NonFiniteUv,
+                format!("顶点 #{i} uv = {:?}", v.uv),
+            )
+            .at_vertex(i),
+        );
     }
 
     // 不变量 7：蒙皮
@@ -184,18 +244,24 @@ fn validate_vertex(v: &Vertex, i: usize, joint_count: Option<usize>, issues: &mu
         .iter()
         .any(|w| !w.is_finite() || *w < -WEIGHT_SUM_EPS)
     {
-        issues.push(AirIssue::new(
-            AirIssueKind::SkinWeightNegative,
-            format!("顶点 #{i} weights = {:?}", v.weights),
-        ));
+        issues.push(
+            AirIssue::new(
+                AirIssueKind::SkinWeightNegative,
+                format!("顶点 #{i} weights = {:?}", v.weights),
+            )
+            .at_vertex(i),
+        );
         return;
     }
     let sum: f32 = v.weights.iter().sum();
     if sum > WEIGHT_SUM_EPS && (sum - 1.0).abs() > WEIGHT_SUM_EPS {
-        issues.push(AirIssue::new(
-            AirIssueKind::SkinWeightSum,
-            format!("顶点 #{i} 权重和 = {sum}"),
-        ));
+        issues.push(
+            AirIssue::new(
+                AirIssueKind::SkinWeightSum,
+                format!("顶点 #{i} 权重和 = {sum}"),
+            )
+            .at_vertex(i),
+        );
     }
     if sum > WEIGHT_SUM_EPS {
         if let Some(count) = joint_count {
@@ -206,10 +272,13 @@ fn validate_vertex(v: &Vertex, i: usize, joint_count: Option<usize>, issues: &mu
                 .find(|(w, j)| **w > 0.0 && **j as usize >= count)
                 .map(|(_, j)| *j)
             {
-                issues.push(AirIssue::new(
-                    AirIssueKind::SkinJointOutOfRange,
-                    format!("顶点 #{i} joint = {bad}，关节数 {count}"),
-                ));
+                issues.push(
+                    AirIssue::new(
+                        AirIssueKind::SkinJointOutOfRange,
+                        format!("顶点 #{i} joint = {bad}，关节数 {count}"),
+                    )
+                    .at_vertex(i),
+                );
             }
         }
     }
@@ -225,26 +294,35 @@ pub fn validate_parts(mesh: &MeshData, parts: &[MeshPartData]) -> Vec<AirIssue> 
     let mut cursor = 0u32;
     for (i, part) in parts.iter().enumerate() {
         if part.index_count % 3 != 0 {
-            issues.push(AirIssue::new(
-                AirIssueKind::PartsCoverage,
-                format!("part #{i} index_count {} 不是 3 的倍数", part.index_count),
-            ));
+            issues.push(
+                AirIssue::new(
+                    AirIssueKind::PartsCoverage,
+                    format!("part #{i} index_count {} 不是 3 的倍数", part.index_count),
+                )
+                .at_part(i),
+            );
         }
         if part.first_index != cursor {
-            issues.push(AirIssue::new(
-                AirIssueKind::PartsCoverage,
-                format!(
-                    "part #{i} 起点 {} 与上一段终点 {cursor} 不接续",
-                    part.first_index
-                ),
-            ));
+            issues.push(
+                AirIssue::new(
+                    AirIssueKind::PartsCoverage,
+                    format!(
+                        "part #{i} 起点 {} 与上一段终点 {cursor} 不接续",
+                        part.first_index
+                    ),
+                )
+                .at_part(i),
+            );
         }
         cursor = part.first_index.saturating_add(part.index_count);
         if cursor > total {
-            issues.push(AirIssue::new(
-                AirIssueKind::PartsCoverage,
-                format!("part #{i} 越过索引缓冲末尾（{cursor} > {total}）"),
-            ));
+            issues.push(
+                AirIssue::new(
+                    AirIssueKind::PartsCoverage,
+                    format!("part #{i} 越过索引缓冲末尾（{cursor} > {total}）"),
+                )
+                .at_part(i),
+            );
         }
     }
     if cursor != total {
@@ -630,6 +708,69 @@ mod tests {
             material: None,
         }];
         assert_eq!(validate_parts(&mesh, &covered), Vec::new());
+    }
+
+    /// P0-2：每条问题都要能被机器定位——顶点级锚顶点号、索引级锚索引号、
+    /// 分区级锚分区号，整网格级则三个锚点全空（而不是随便塞一个 0 冒充）。
+    #[test]
+    fn issues_carry_structured_anchors() {
+        let mut mesh = quad();
+        mesh.vertices[2].normal = [0.0, 2.0, 0.0];
+        let issue = validate(&mesh)
+            .into_iter()
+            .find(|issue| issue.kind == AirIssueKind::NormalNotUnit)
+            .expect("应有 NormalNotUnit");
+        assert_eq!(issue.anchor.vertex, Some(2));
+        assert_eq!(issue.anchor.index, None);
+        assert_eq!(issue.anchor.part, None);
+
+        let mut mesh = quad();
+        mesh.indices[1] = 99;
+        let issue = validate(&mesh)
+            .into_iter()
+            .find(|issue| issue.kind == AirIssueKind::IndexOutOfRange)
+            .expect("应有 IndexOutOfRange");
+        assert_eq!(issue.anchor.index, Some(1));
+        assert_eq!(issue.anchor.vertex, None);
+
+        let mesh = quad();
+        let gap = vec![
+            MeshPartData {
+                first_index: 0,
+                index_count: 3,
+                material: None,
+            },
+            MeshPartData {
+                first_index: 4,
+                index_count: 3,
+                material: None,
+            },
+        ];
+        let issue = validate_parts(&mesh, &gap)
+            .into_iter()
+            .find(|issue| issue.anchor.part.is_some())
+            .expect("应有带分区锚点的问题");
+        assert_eq!(issue.anchor.part, Some(1));
+
+        // 尾段没铺满这类问题是整网格级的：不该有锚点
+        let short = vec![MeshPartData {
+            first_index: 0,
+            index_count: 3,
+            material: None,
+        }];
+        let issue = validate_parts(&mesh, &short)
+            .into_iter()
+            .find(|issue| issue.kind == AirIssueKind::PartsCoverage)
+            .expect("应有 PartsCoverage");
+        assert_eq!(issue.anchor.part, None);
+
+        // 整网格级问题（空网格）不该带锚点
+        let mesh = MeshData::default();
+        let issue = validate(&mesh)
+            .into_iter()
+            .find(|issue| issue.kind == AirIssueKind::EmptyMesh)
+            .expect("应有 EmptyMesh");
+        assert!(issue.anchor.is_empty(), "整网格级问题不该带锚点");
     }
 
     #[test]

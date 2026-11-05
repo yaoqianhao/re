@@ -14,6 +14,7 @@ use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use serde_json::{json, Value};
 
 use crate::host::HostError;
+use crate::rpc::{self, Endpoint, RpcClient};
 
 /// 单个工具调用内最多回多少字节的明细（宿主上限 64 KB，留出结构开销的余量）。
 const MAX_LISTED_NODES: usize = 100;
@@ -78,6 +79,11 @@ pub fn invoke(name: &str, args: &Value, bridge: &mut dyn HostBridge) -> Result<V
         "mesh_stats" => mesh_stats(args),
         "scene_validate" => scene_validate(args, bridge),
         "physics_simulate" => physics_simulate(args, bridge),
+        // —— 写侧（risk = write）：全部经引擎既有写 RPC ——
+        "scene_patch" => scene_patch(args),
+        "node_spawn" => node_spawn(args),
+        "script_write" => script_write(args),
+        "scene_save" => scene_save(args),
         other => Err(ToolError::invalid_params(format!(
             "未知工具 `{other}`；本插件提供：{}",
             crate::spec::tool_names().join(", ")
@@ -265,10 +271,15 @@ fn scene_validate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, To
     let scene = load_scene(args, bridge)?;
 
     let mut reports = Vec::new();
+    let mut unvalidated = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut total_issues = 0usize;
 
-    for node in scene.iter() {
+    // P0-2：每条问题都带 `location`（节点 id/名字、场景文件 `objects` 下标、
+    // 字段路径、资源来源、网格锚点、材质上下文），模型拿到就能直接定位要改哪一处，
+    // 不用再解析 `detail` 里那句人话。`objects` 顺序与 `scene.iter()` 一致，
+    // 因为 `to_scene_file` 就是按同一个 `order` 表导出的。
+    for (object_index, node) in scene.iter().enumerate() {
         let entry = match node.mesh.builtin() {
             Some(kind) => {
                 let mesh = builtin_mesh(kind);
@@ -280,13 +291,23 @@ fn scene_validate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, To
                     "air": {
                         "ok": issues.is_empty(),
                         "issueCount": issues.len(),
-                        "issues": issue_list(&issues),
+                        "issues": issues
+                            .iter()
+                            .take(MAX_LISTED_ISSUES)
+                            .map(|issue| crate::locate::issue_json(&scene, node, object_index, issue, Some(&mesh)))
+                            .collect::<Vec<Value>>(),
                     },
                 })
             }
             None => {
                 // 资产网格要走 r3e-asset 导入，本插件不带资产管线——如实标注 skipped，
-                // 而不是给一个「0 问题」的假绿灯。
+                // 而不是给一个「0 问题」的假绿灯；同时在 `unvalidated` 里留一条带定位
+                // 的账（不并进 `issueCount`，否则「有资产 = 必失败」会让 ok 失去意义）。
+                unvalidated.push(crate::locate::skipped_issue_json(
+                    &scene,
+                    node,
+                    object_index,
+                ));
                 json!({
                     "name": node.name,
                     "mesh": node.mesh.as_string(),
@@ -324,6 +345,9 @@ fn scene_validate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, To
         "listedCount": reports.len(),
         "truncated": scene.len() > reports.len(),
         "issueCount": total_issues,
+        // 没校验成的节点也给出定位：模型应当知道「这里没结论」，而不是以为通过。
+        "unvalidatedCount": unvalidated.len(),
+        "unvalidated": unvalidated,
         "warnings": warnings,
         "nodes": reports,
     }))
@@ -460,7 +484,232 @@ fn physics_simulate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, 
     }))
 }
 
-// ---------------------------------------------------------------- 公共小工具
+// ---------------------------------------------------------------- 写侧工具（P0-3）
+//
+// 四个写工具全部是「薄壳 + 复用引擎既有写 RPC」，不新造协议：
+// 参数校验在插件侧只做「够不够/类型对不对」，值域与语义仍由引擎裁决，
+// 这样插件永远与终端的 Ctrl+S / 脚本 API 走同一条路，不会出现两套真相。
+//
+// 与只读工具的差别只有三点：
+// 1) `risk = write`，宿主会走授权流程；
+// 2) 需要知道引擎地址（`endpoint` / `R3E_RPC_ADDR`），读工具则完全离线；
+// 3) 改完都回读一次（`snapshot` / `result`），让模型确认「改成了什么样」。
+
+/// 连引擎；连不上时给一条能照着修的提示，而不是光说失败。
+fn connect_engine(args: &Value) -> Result<RpcClient, ToolError> {
+    let endpoint = Endpoint::from_args(args);
+    let addr = endpoint.addr.clone();
+    RpcClient::connect(&endpoint).map_err(|err| ToolError {
+        // -32011 提供方自定义段：区别于「参数错」（-32602）与「数据坏」（-32010）——
+        // 这种失败的正确反应是「去启动引擎」，改参数没用。
+        code: -32011,
+        message: format!("引擎未连接（{addr}）：{}", err.advice()),
+    })
+}
+
+/// 引擎侧错误 → 工具错误。引擎的错误码承载语义（-32602 参数错、-32004 找不到
+/// 物件…），原样透传，只补上方法名，方便模型判断该改参数还是改场景。
+fn rpc_error(method: &str, err: rpc::RpcError) -> ToolError {
+    match err {
+        rpc::RpcError::Remote { code, message } => ToolError {
+            code,
+            message: format!("`{method}` 被引擎拒绝：{message}"),
+        },
+        other => ToolError {
+            code: -32011,
+            message: format!("`{method}` 调用失败：{}", other.advice()),
+        },
+    }
+}
+
+fn call_engine<T>(
+    client: &mut RpcClient,
+    method: &str,
+    params: Value,
+    f: impl FnOnce(Value) -> T,
+) -> Result<T, ToolError> {
+    client
+        .call(method, params)
+        .map(f)
+        .map_err(|err| rpc_error(method, err))
+}
+
+/// 补丁式改一个已有节点：只改给了的字段，没给的保持原样。
+///
+/// 之所以要 `scene_patch` 而不是让模型直接拼 `scene.settransform`：
+/// 模型手上拿到的是 `scene_inspect` 的扁平快照，一次「把 hero 抬高 0.5 并调亮材质」
+/// 在 RPC 层是两个方法、两套参数；这里合成一次调用，失败也不会只改一半。
+fn scene_patch(args: &Value) -> Result<Value, ToolError> {
+    let node = require_str(args, "node")?;
+    let position = opt_f32_list::<3>(args, "position")?;
+    let rotation = opt_f32_list::<4>(args, "rotation")?;
+    let scale = opt_f32_list::<3>(args, "scale")?;
+
+    let material = match args.get("material") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_object().ok_or_else(|| {
+            ToolError::invalid_params(
+                "material 必须是对象，形如 {\"metallic\":0.2,\"roughness\":0.4}",
+            )
+        })?),
+    };
+    if let Some(material) = material {
+        // 未知键直接拒绝：模型写 `emissiveColor` / `roughnessFactor` 时若不报错，
+        // 调用会「成功」但什么也没改，那是最难查的一类哑失败。
+        const KNOWN: [&str; 3] = ["metallic", "roughness", "emissive"];
+        if let Some(unknown) = material.keys().find(|key| !KNOWN.contains(&key.as_str())) {
+            return Err(ToolError::invalid_params(format!(
+                "material 不支持字段 `{unknown}`；可用：{}",
+                KNOWN.join(" / ")
+            )));
+        }
+    }
+    let metallic = material
+        .map(|m| opt_material_f32(m, "metallic"))
+        .transpose()?
+        .flatten();
+    let roughness = material
+        .map(|m| opt_material_f32(m, "roughness"))
+        .transpose()?
+        .flatten();
+    let emissive = material
+        .map(|m| opt_material_f32_list::<3>(m, "emissive"))
+        .transpose()?
+        .flatten();
+
+    let mut calls: Vec<(&'static str, Vec<String>, Value)> = Vec::new();
+    let mut transform_params = json!({ "node": node });
+    let mut transform_fields = Vec::new();
+    if let Some(position) = position {
+        transform_params["position"] = json!(position);
+        transform_fields.push("position".to_string());
+    }
+    if let Some(rotation) = rotation {
+        transform_params["rotation"] = json!(rotation);
+        transform_fields.push("rotation".to_string());
+    }
+    if let Some(scale) = scale {
+        transform_params["scale"] = json!(scale);
+        transform_fields.push("scale".to_string());
+    }
+    if !transform_fields.is_empty() {
+        calls.push(("scene.settransform", transform_fields, transform_params));
+    }
+
+    let mut material_params = json!({ "node": node });
+    let mut material_fields = Vec::new();
+    if let Some(metallic) = metallic {
+        material_params["metallic"] = json!(metallic);
+        material_fields.push("material.metallic".to_string());
+    }
+    if let Some(roughness) = roughness {
+        material_params["roughness"] = json!(roughness);
+        material_fields.push("material.roughness".to_string());
+    }
+    if let Some(emissive) = emissive {
+        material_params["emissive"] = json!(emissive);
+        material_fields.push("material.emissive".to_string());
+    }
+    if !material_fields.is_empty() {
+        calls.push(("scene.setmaterial", material_fields, material_params));
+    }
+
+    if calls.is_empty() {
+        return Err(ToolError::invalid_params(
+            "至少要改一个字段：position / rotation / scale / material.metallic / material.roughness / material.emissive",
+        ));
+    }
+
+    let mut client = connect_engine(args)?;
+    let mut applied = Vec::new();
+    for (method, fields, params) in calls {
+        let result = call_engine(&mut client, method, params, |value| value)?;
+        applied.push(json!({ "method": method, "fields": fields, "result": result }));
+    }
+    // 回读：模型拿到的是「改完之后」的真实状态，不用自己猜数值是否被夹取。
+    let snapshot = call_engine(&mut client, "scene.get", json!({ "node": node }), |value| {
+        value
+    })?;
+    Ok(json!({
+        "ok": true,
+        "node": node,
+        "applied": applied,
+        "snapshot": snapshot,
+    }))
+}
+
+/// 往运行中的场景里加一个物件（复用 `scene.spawn`）。
+fn node_spawn(args: &Value) -> Result<Value, ToolError> {
+    let object = match args.get("object") {
+        Some(value @ Value::Object(_)) => value.clone(),
+        None | Some(Value::Null) => {
+            return Err(ToolError::invalid_params(
+                "缺少 `object`（物件描述对象，至少含 name；可选 mesh / position / rotation / scale / color / material / physics）",
+            ))
+        }
+        Some(other) => {
+            return Err(ToolError::invalid_params(format!(
+                "object 必须是对象，实际是 {}",
+                type_name(other)
+            )))
+        }
+    };
+    if object.get("name").and_then(Value::as_str).is_none() {
+        return Err(ToolError::invalid_params(
+            "object.name 必填（后续 scene_patch / scene_get 都按名字找人）",
+        ));
+    }
+    let mut client = connect_engine(args)?;
+    let spawned = call_engine(
+        &mut client,
+        "scene.spawn",
+        json!({ "object": object }),
+        |v| v,
+    )?;
+    Ok(json!({ "ok": true, "method": "scene.spawn", "result": spawned }))
+}
+
+/// 把一段 rhai 脚本交给运行中的引擎立即执行（复用 `script.eval`）。
+///
+/// 这是 P0-3 清单里 `script_write` 的落地形态：写侧工具的价值是「让场景真的变了」，
+/// 引擎里让脚本生效的唯一通道就是 `script.eval`——脚本文件落盘由宿主工作区负责，
+/// 插件不越权写用户磁盘（那是 `fs.write` 之外的事）。
+fn script_write(args: &Value) -> Result<Value, ToolError> {
+    let source = require_str(args, "source")?;
+    if source.trim().is_empty() {
+        return Err(ToolError::invalid_params("source 不能是空白脚本"));
+    }
+    let mut client = connect_engine(args)?;
+    let result = call_engine(
+        &mut client,
+        "script.eval",
+        json!({ "source": source }),
+        |v| v,
+    )?;
+    Ok(json!({
+        "ok": true,
+        "method": "script.eval",
+        "sourceBytes": source.len(),
+        "result": result,
+    }))
+}
+
+/// 把运行中的场景存回磁盘（复用 `scene.save`）。
+fn scene_save(args: &Value) -> Result<Value, ToolError> {
+    let path = opt_str(args, "path")?;
+    if let Some(path) = path {
+        if path.trim().is_empty() {
+            return Err(ToolError::invalid_params("path 不能是空白字符串"));
+        }
+    }
+    let mut params = json!({});
+    if let Some(path) = path {
+        params["path"] = json!(path);
+    }
+    let mut client = connect_engine(args)?;
+    let saved = call_engine(&mut client, "scene.save", params, |v| v)?;
+    Ok(json!({ "ok": true, "method": "scene.save", "result": saved }))
+}
 
 /// 场景来源：内联对象 / 内联 JSON 文本 / 工作区文件（走 `host/fs.read`）。
 fn load_scene(args: &Value, bridge: &mut dyn HostBridge) -> Result<Scene, ToolError> {
@@ -507,6 +756,88 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError>
             "{key} 必须是字符串，实际是 {}",
             type_name(other)
         ))),
+    }
+}
+
+/// 必填字符串（写侧工具用自己的错误文案，指明缺的是哪个键）。
+fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+    match opt_str(args, key)? {
+        Some(text) if !text.trim().is_empty() => Ok(text),
+        Some(_) => Err(ToolError::invalid_params(format!("{key} 不能是空白字符串"))),
+        None => Err(ToolError::invalid_params(format!("缺少 {key}"))),
+    }
+}
+
+/// 定长浮点数组参数，如 `position: [x, y, z]`。
+fn opt_f32_list<const N: usize>(args: &Value, key: &str) -> Result<Option<[f32; N]>, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => f32_list::<N>(value, key).map(Some),
+    }
+}
+
+/// 定长浮点数组的核心解析；`label` 只用于错误文案（可能是 `material.emissive`）。
+fn f32_list<const N: usize>(value: &Value, label: &str) -> Result<[f32; N], ToolError> {
+    let items = value.as_array().ok_or_else(|| {
+        ToolError::invalid_params(format!(
+            "{label} 必须是长度为 {N} 的数值数组，实际是 {}",
+            type_name(value)
+        ))
+    })?;
+    if items.len() != N {
+        return Err(ToolError::invalid_params(format!(
+            "{label} 需要 {N} 个数，实际给了 {}",
+            items.len()
+        )));
+    }
+    let mut out = [0.0f32; N];
+    for (slot, item) in out.iter_mut().zip(items) {
+        let number = item.as_f64().ok_or_else(|| {
+            ToolError::invalid_params(format!(
+                "{label} 的元素必须是数字，实际是 {}",
+                type_name(item)
+            ))
+        })?;
+        if !number.is_finite() {
+            return Err(ToolError::invalid_params(format!("{label} 含 NaN/Inf")));
+        }
+        *slot = number as f32;
+    }
+    Ok(out)
+}
+
+/// 材质补丁里的单值字段（`metallic` / `roughness`）。
+fn opt_material_f32(
+    material: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<f32>, ToolError> {
+    match material.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let number = value.as_f64().ok_or_else(|| {
+                ToolError::invalid_params(format!(
+                    "material.{key} 必须是数字，实际是 {}",
+                    type_name(value)
+                ))
+            })?;
+            if !number.is_finite() {
+                return Err(ToolError::invalid_params(format!(
+                    "material.{key} 不能是 NaN/Inf"
+                )));
+            }
+            Ok(Some(number as f32))
+        }
+    }
+}
+
+/// 材质补丁里的数组字段（`emissive: [r, g, b]`）。
+fn opt_material_f32_list<const N: usize>(
+    material: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<[f32; N]>, ToolError> {
+    match material.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => f32_list::<N>(value, &format!("material.{key}")).map(Some),
     }
 }
 
@@ -574,7 +905,19 @@ fn issue_list(issues: &[air::AirIssue]) -> Vec<Value> {
     issues
         .iter()
         .take(MAX_LISTED_ISSUES)
-        .map(|issue| json!({ "kind": issue.kind.as_str(), "detail": issue.detail }))
+        .map(|issue| {
+            // P0-2：`mesh_stats` 没有场景节点可挂，但锚点仍然要给——
+            // 顶点号/索引号/分区号是「去网格里第几个元素看」的唯一线索。
+            json!({
+                "kind": issue.kind.as_str(),
+                "detail": issue.detail,
+                "anchors": {
+                    "vertex": issue.anchor.vertex,
+                    "index": issue.anchor.index,
+                    "part": issue.anchor.part,
+                },
+            })
+        })
         .collect()
 }
 

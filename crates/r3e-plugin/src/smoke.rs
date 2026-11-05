@@ -7,9 +7,11 @@
 //! 自检覆盖：
 //!
 //! 1. 握手：`pluginApi.major == 1`，且工具集与清单完全一致（宿主 `verify()` 的硬条件）；
-//! 2. 五个工具各跑一次，检查返回结构的关键字段；
-//! 3. 命令面板入口跑一次；
-//! 4. `plugin/shutdown` 后子进程必须以 0 退出（非 0 会被宿主记成崩溃）。
+//! 2. 只读工具各跑一次，检查返回结构的关键字段；
+//! 3. 校验定位（P0-2）：资产节点那条「未校验」的账必须带 `location`；
+//! 4. 写侧工具（P0-3）：无引擎时必须给出 -32602 / -32011 与补救提示；
+//! 5. 命令面板入口跑一次；
+//! 6. `plugin/shutdown` 后子进程必须以 0 退出（非 0 会被宿主记成崩溃）。
 //!
 //! 自检进程同时扮演**最小宿主**：插件反向发来的 `host/workspace.info`、
 //! `host/fs.read` 由 [`Harness`] 就地应答。不这样做的话，`engine_diagnostics`
@@ -38,6 +40,22 @@ const SMOKE_SCENE: &str = r#"{
         { "name": "floor", "mesh": "builtin:plane", "scale": [8, 1, 8], "physics": { "body": "static" } },
         { "name": "crate", "mesh": "builtin:cube", "position": [0, 3, 0], "physics": { "body": "dynamic", "mass": 1 } },
         { "name": "ball", "mesh": "builtin:sphere", "position": [0.8, 4, 0], "physics": { "body": "dynamic", "mass": 0.5 } }
+    ]
+}"#;
+
+/// 校验定位用的场景：一个外部资产节点（插件无资产管线，走 skipped 分支）
+/// 和一个内置节点（正常校验）。资产路径必须与 `assets[0].path` 完全一致，
+/// 否则定位层反查不出 `assetIndex`。
+const LOCATED_SCENE: &str = r#"{
+    "name": "locate-smoke",
+    "assets": [{ "path": "assets/robot.fbx" }],
+    "objects": [
+        {
+            "name": "hero",
+            "mesh": "asset:assets/robot.fbx#0",
+            "material": { "metallic": 0.2, "roughness": 0.6 }
+        },
+        { "name": "crate", "mesh": "builtin:cube" }
     ]
 }"#;
 
@@ -109,6 +127,8 @@ fn drive() -> Check {
 
     check_handshake(&mut harness)?;
     check_tools(&mut harness)?;
+    check_located_validation(&mut harness)?;
+    check_write_tools(&mut harness)?;
     check_command(&mut harness)?;
 
     // 优雅关闭：宿主发 plugin/shutdown，插件回包后自行退出
@@ -261,6 +281,119 @@ fn check_tools(harness: &mut Harness) -> Check {
     Ok(())
 }
 
+/// P0-2：校验结果必须是**可定位**的，不能只有一句人话。
+///
+/// 用「一个外部资产节点 + 一个内置节点」的场景来验：资产节点走 skipped 分支，
+/// 那条账必须带上 `location`（节点 id/名字/objects 下标、字段路径、资产路径、
+/// 材质上下文），模型才能照着 `$.objects[0].mesh` 去改文件。
+fn check_located_validation(harness: &mut Harness) -> Check {
+    let reply = harness.invoke("scene_validate", json!({ "scene": LOCATED_SCENE }))?;
+
+    if reply["unvalidatedCount"] != json!(1) {
+        return Err(format!(
+            "资产节点应当留 1 条「未校验」的账，实际 {}",
+            reply["unvalidatedCount"]
+        ));
+    }
+    let entry = &reply["unvalidated"][0];
+    let location = &entry["location"];
+
+    let path = location["path"].as_str().unwrap_or_default();
+    if path != "$.objects[0].mesh" {
+        return Err(format!(
+            "定位路径应当是 `$.objects[0].mesh`，实际 `{path}`（模型按它改文件）"
+        ));
+    }
+    if location["node"]["name"] != json!("hero") {
+        return Err(format!("定位里节点名不对：{}", location["node"]));
+    }
+    if location["node"]["objectIndex"] != json!(0) {
+        return Err(format!(
+            "objectIndex 必须与 objects 下标对齐：{}",
+            location["node"]
+        ));
+    }
+    if location["node"]["id"].is_null() {
+        return Err("定位里缺 node.id：写工具按 id 回查时无从下手".to_string());
+    }
+    if location["field"] != json!("mesh") {
+        return Err(format!("field 应当是 mesh，实际 {}", location["field"]));
+    }
+    if location["resource"]["assetPath"] != json!("assets/robot.fbx") {
+        return Err(format!(
+            "资源定位应当回填场景里写的资产路径，实际 {}",
+            location["resource"]
+        ));
+    }
+    if location["resource"]["meshIndex"] != json!(0) {
+        return Err(format!("资产内网格序号丢了：{}", location["resource"]));
+    }
+    if location["material"]["metallic"] != json!(0.2) {
+        return Err(format!(
+            "材质上下文没带出来（改材质时要用）：{}",
+            location["material"]
+        ));
+    }
+    if !location["anchors"]["vertex"].is_null() {
+        return Err(format!(
+            "未校验条目没有网格数据，不该编造顶点锚点：{}",
+            location["anchors"]
+        ));
+    }
+    eprintln!("[smoke] scene_validate 定位通过（path={path}，assetPath=assets/robot.fbx）");
+    Ok(())
+}
+
+/// P0-3：写侧工具在**没有引擎**时的行为必须可诊断，而不是含糊失败。
+///
+/// 三条断言分别覆盖三种失败姿势：参数缺字段（-32602）、字段名拼错（-32602，
+/// 不静默忽略）、引擎连不上（-32011 + 「用 --rpc-port 启动」的补救提示）。
+fn check_write_tools(harness: &mut Harness) -> Check {
+    let missing = harness.invoke_err("scene_patch", json!({ "position": [0, 1, 0] }))?;
+    if missing["code"] != json!(-32602) {
+        return Err(format!(
+            "scene_patch 缺 node 应当是 -32602 参数错，实际 {missing}"
+        ));
+    }
+
+    let typo = harness.invoke_err(
+        "scene_patch",
+        json!({ "node": "crate", "material": { "metalness": 0.5 } }),
+    )?;
+    let typo_msg = typo["message"].as_str().unwrap_or_default();
+    if typo["code"] != json!(-32602) || !typo_msg.contains("metalness") {
+        return Err(format!(
+            "材质字段拼错必须报错并指出字段名（否则模型以为改成功了）：{typo}"
+        ));
+    }
+
+    // 127.0.0.1:1 上不会有引擎；连不上时必须给「怎么起引擎」的提示
+    let offline = harness.invoke_err(
+        "scene_patch",
+        json!({
+            "node": "crate",
+            "position": [0, 2, 0],
+            "endpoint": { "addr": "127.0.0.1:1" }
+        }),
+    )?;
+    if offline["code"] != json!(-32011) {
+        return Err(format!(
+            "引擎连不上应当是 -32011（去启动引擎），实际 {offline}"
+        ));
+    }
+    let offline_msg = offline["message"].as_str().unwrap_or_default();
+    if !offline_msg.contains("--rpc-port") {
+        return Err(format!("连不上引擎时没告诉用户怎么修：{offline_msg}"));
+    }
+
+    let blank = harness.invoke_err("script_write", json!({ "source": "   " }))?;
+    if blank["code"] != json!(-32602) {
+        return Err(format!("空白脚本必须被拒，实际 {blank}"));
+    }
+    eprintln!("[smoke] 写侧工具失败路径通过（-32602 / -32011 + 补救提示）");
+    Ok(())
+}
+
 fn check_command(harness: &mut Harness) -> Check {
     let reply = harness.request(
         "plugin/command-invoke",
@@ -290,6 +423,23 @@ struct Harness {
 
 impl Harness {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.exchange(method, params)?
+            .map_err(|err| format!("`{method}` 返回错误：{err}"))
+    }
+
+    /// 走一遍完整往返，但把「协议错误帧」当成**正常结果**返回。
+    ///
+    /// 写侧工具在没有引擎时必须报错，自检要断言的是错误内容（错误码 + 补救提示），
+    /// 所以不能直接调用 [`Self::request`]——那会把错误变成 `Err` 丢掉细节。
+    fn invoke_err(&mut self, tool: &str, arguments: Value) -> Result<Value, String> {
+        let params = json!({ "tool": tool, "arguments": arguments });
+        match self.exchange("plugin/tool-invoke", params)? {
+            Ok(value) => Err(format!("`{tool}` 本应报错却成功返回：{value}")),
+            Err(err) => Ok(err),
+        }
+    }
+
+    fn exchange(&mut self, method: &str, params: Value) -> Result<Result<Value, Value>, String> {
         self.next_id += 1;
         let id = json!(self.next_id);
         protocol::write_frame(
@@ -321,9 +471,9 @@ impl Harness {
                 continue;
             }
             if let Some(error) = frame.get("error") {
-                return Err(format!("`{method}` 返回错误：{error}"));
+                return Ok(Err(error.clone()));
             }
-            return Ok(frame.get("result").cloned().unwrap_or(Value::Null));
+            return Ok(Ok(frame.get("result").cloned().unwrap_or(Value::Null)));
         }
     }
 
