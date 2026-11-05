@@ -63,6 +63,8 @@ D:\rust3d-engine
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
 │   ├─ r3e-audio/             # 音频（rodio 后端 + 静默降级 + 混音门面 + 3D 空间化）
+│   ├─ r3e-editor/            # 编辑器 RPC 协议（EngineApi / dispatch）+ TCP 桥
+│   ├─ r3e-plugin/            # IDE 插件进程（工具 schema + 读写侧工具集，JSON-RPC over stdio）
 │   └─ r3e-app/               # 主循环、窗口事件、终端指令
 └─ docs/
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
@@ -70,7 +72,7 @@ D:\rust3d-engine
     └─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
 ```
 
-各 crate 单向依赖：`app → render / script / physics → core`，核心层不认识 wgpu。
+workspace 共 9 个 crate，各 crate 单向依赖：`app → editor / render / script / physics / audio → core`，核心层不认识 wgpu。
 
 ---
 

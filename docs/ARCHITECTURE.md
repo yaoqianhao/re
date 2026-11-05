@@ -145,32 +145,33 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 14,872 | 1,639 | 297 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 6,096 | 1,483 | 108 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 5,272 | 294 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
+| r3e-core | 15,173 | 2,027 | 298 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 6,256 | 1,483 | 108 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 5,311 | 305 | 44 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
-| r3e-audio | 2,108 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| r3e-script | 5,010 | 799 | 82 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、动画层、局部阴影语义单测） |
-| r3e-editor | 2,233 | 1,448 | 79 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 5,453 | — | 46 | `app.rs`（含 `drive_spatial_audio`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs` |
-| r3e-plugin | 2,450 | — | 39 | `lib.rs`（插件宿主与 ABI） |
-| **合计** | **46,042** | **6,323** | **752** | **约 4.6 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 54 个套件 / 748 passed / 0 failed** |
+| r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
+| r3e-script | 5,238 | 1,074 | 82 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、动画层、局部阴影语义单测） |
+| r3e-editor | 2,907 | 1,448 | 88 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 6,265 | — | 52 | `app.rs`（含 `drive_spatial_audio`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs` |
+| r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
+| **合计** | **49,736** | **6,997** | **776** | **约 5.0 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 54 个套件 / 772 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随路线表第十项一次性重算
-（此前停在扩展十八 C 快照：44,916 行 / 708 单测）。单测数一列是 `#[test]` **标注数**，
+着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随 P0-4 批次收尾一次性重算
+（此前停在路线表第十项快照：46,042 行 / 752 单测）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 748。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 772。
 
-Release 二进制 32.0 MB（含 wgpu 后端静态链接与 ufbx 静态编译）。
+Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
+`strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
 
 ### 3.3 质量门（每次改动后必过）
 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 748 passed / 0 failed（54 个套件；较扩展十八 C 收尾的 704 增 44 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 752 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 772 passed / 0 failed（54 个套件；较扩展十八 C 收尾的 704 增 68 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 776 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
