@@ -145,24 +145,24 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 15,173 | 2,027 | 298 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 6,809 | 1,587 | 123 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 6,077 | 305 | 55 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
+| r3e-core | 15,624 | 2,027 | 306 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 7,130 | 1,766 | 136 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 6,219 | 582 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
 | r3e-script | 5,238 | 1,074 | 82 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、动画层、局部阴影语义单测） |
 | r3e-editor | 2,907 | 1,448 | 88 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 6,453 | 183 | 55 | `app.rs`（含 `drive_spatial_audio` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **51,243** | **7,284** | **805** | **约 5.1 万行 Rust + 1,200 行 WGSL；`cargo test --workspace` 56 个套件 / 801 passed / 0 failed** |
+| **合计** | **52,157** | **7,740** | **830** | **约 5.2 万行 Rust + 1,266 行 WGSL；`cargo test --workspace` 58 个套件 / 826 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,200 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十（capture.frame 像素级回归基线）收尾一次性重算
-（此前停在扩展十九收尾快照：50,282 行 / 791 单测）。r3e-app 的 `tests/` 只在本次出现（此前该 crate 无 tests 目录）。单测数一列是 `#[test]` **标注数**，
+着色器（1,266 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十一（材质数据贴图）收尾一次性重算
+（此前停在扩展二十收尾快照：51,243 行 / 7,284 tests 行 / 805 单测 / 56 套件 801 passed）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 801。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 826。
 
-Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
+Release 二进制 14.1 MB（14,787,072 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
 
 ### 3.3 质量门（每次改动后必过）
@@ -170,8 +170,8 @@ Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 801 passed / 0 failed（56 个套件；较扩展十八 C 收尾的 704 增 83 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）+ 扩展二十 14（`r3e-asset/src/visual_regression.rs` 纯函数契约 11 + `tests/visual_regression.rs` 像素回归入口 1（无 GPU 时跳过计 passed）+ `main.rs` `parse_window_size` 2）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 805 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 826 passed / 0 failed（58 个套件；较扩展十八 C 收尾的 704 增 122 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）+ 扩展二十 14（`r3e-asset/src/visual_regression.rs` 纯函数契约 11 + `tests/visual_regression.rs` 像素回归入口 1（无 GPU 时跳过计 passed）+ `main.rs` `parse_window_size` 2）+ 扩展二十一 25（`core/tangent.rs` 5 + `core/texture_slot.rs` 3 + `render/pbr.rs` 4 + `render/tests/pbr_maps_contract.rs` 9 + `asset/tests/pbr_map_import.rs` 4）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 830 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -198,6 +198,8 @@ Release 二进制 14.0 MB（14,725,632 字节；`[profile.release]` 已开 `lto 
 | `ui.rs` | 屏幕空间 UI 元素、锚点与单位换算、层级排序（纯数学，不碰 GPU） | `UiElement`, `UiKind`, `Anchor`, `UiUnit`, `UiValue`, `UiRect`, `resolve_rect`, `sort_by_layer` |
 | `glyph_atlas.rs` | 字形图集的货架式分配与分页 | `GlyphAtlas`, `ShelfAllocator`, `GlyphKey` |
 | `material.rs` | PBR 材质参数、收敛与 Cook-Torrance 纯函数参考实现（零 wgpu 依赖，可单测） | `SurfaceMaterial`, `GeoTerms`, `BrdfSample`, `cook_torrance_brdf`, `direct_light` |
+| `tangent.rs` | 切线空间基（TBN）构造：按三角形位置 / UV 差分累加再 Gram-Schmidt 正交化，UV 面积退化跳过、整网格退化退回任意正交基，手性来自副切线方向（扩展二十一；纯 CPU 纯函数） | `compute_tangents`, `MeshData::recompute_tangents` |
+| `texture_slot.rs` | 贴图槽位分类：把 FBX / glTF 五花八门的槽位名收敛成「这张图是干什么用的」，并给出「是否按线性数据上传」判据（扩展二十一；导入层与渲染层共用同一套判据） | `TextureSlot`, `classify_slot` |
 | `env.rs` | 三色天空 + 太阳的解析环境探针，Sh9 球谐投影与解析环境 BRDF（零 wgpu，可单测） | `EnvironmentSettings`, `Sh9`, `env_brdf_approx` |
 | `postfx.rs` | HDR 后处理的数值契约：曝光、软膝亮部提取、Reinhard / ACES 曲线、FXAA 边缘判定、composite 参考实现 | `PostFxSettings`, `BloomSettings`, `TonemapMode`, `expose`, `bright_pass`, `tonemap`, `resolve` |
 
@@ -704,25 +706,69 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 静默忽略**，所以字段名拼错不会报错——判断"这个字段存不存在"要以 schema 的 `properties` 为准，而不是以
 "加载没报错"为准。
 
----
+### 4.14 材质数据贴图在 core 侧的契约（扩展二十一）
+
+扩展二十一让材质支持**法线 / 粗糙度 / 遮蔽**三张数据图，但 core 只负责两件不碰 GPU 的事：给顶点补切线基，
+把导入层的槽位名收敛成语义。渲染侧怎么采样见 §5.14。
+
+**① 切线（`tangent.rs`）**：`Vertex.tangent` 是 `[f32; 4]`——xyz 是切线，**w 是手性**（±1），
+法线贴图的副切线按 `bitangent = cross(normal, tangent.xyz) * tangent.w` 现算，不单独存。之所以不存副切线：
+
+- 顶点从 56 涨到 72 字节换一个可以直接叉乘出来的向量，不划算；w 用 ±1 承载手性，精度足够且正好塞满 `Float32x4`。
+- `compute_tangents` 按三角形遍历：位置边 `e1/e2` 与 UV 边 `duv1/duv2` 求每三角形的切线与副切线后累加到三个顶点，
+  再对每个顶点做 Gram-Schmidt（`t -= n * dot(n, t)`）并归一化。累加而不是取"第一个用到该顶点的三角形"，
+  是为了让共享顶点处的切线是周边三角形的平均——单三角形取法在球面 / 圆柱侧面这种高密度网格上会出现切线跳变，
+  法线贴图表现为一条条细缝。
+- **退化必须显式处理**：UV 面积为 0（所有三角形挤在同一条 UV 线上，胶带面 / 程序化平面常见）时该三角形跳过；
+  顶点累加结果为 0（整网格无有效 UV 面积）时退回"与法线垂直的任意正交基"（挑法线绝对值最小的轴叉乘），
+  而不是归一化一个 0 向量得到 NaN。NaN 切线会在着色器里传染成整片黑，比"切线不准"严重得多。
+- 内置程序化网格**不跑**这段重算：`Vertex::new` 给的缺省切线是 `DEFAULT_TANGENT = (1, 0, 0, 1)`，
+  与几何法线未必正交。着色器对此有兜底（Gram-Schmidt 后再判长度，取与法线最不平行的轴重建，见 §5.14），
+  因此内置网格挂法线贴图不会 NaN，只是切向随缺省值走。真正需要正确切线的路径是导入资产——
+  `MeshAsset::build` 装配网格后立刻 `recompute_tangents()`，也正因为重算发生在**装配时而不是首次绘制时**，
+  切线才进得了顶点缓冲、不需要额外 GPU pass。
+
+**② 槽位分类（`texture_slot.rs`）**：FBX 的 `DiffuseColor` / `NormalMap` / `Bump` / `ReflectionFactor`、
+glTF 的 `baseColorTexture` / `metallicRoughnessTexture` / `occlusionTexture` / `normalTexture` 说的是同一件事
+却不同名。`classify_slot(name)` 把槽位名（含路径分隔符与常见前缀后缀）**归一成 `TextureSlot` 枚举**
+（`BaseColor` / `Normal` / `MetallicRoughness` / `Occlusion` / `Emissive` / `Unknown`），
+导入层据此决定"这张图能不能当法线图用"，渲染层据此决定"用 sRGB 还是线性格式上传"。
+两条硬口径：
+
+- **数据图一律线性，颜色图一律 sRGB**。法线 / 粗糙度 / AO 存的是物理量，按 sRGB 上传会被 gamma 曲线掰弯，
+  表现为法线贴图的平整面也泛蓝、AO 暗部整体偏亮。判定只写在 `TextureSlot::is_linear_data()` 一处，
+  asset（挑图）与 render（选 GPU 格式：`Rgba8Unorm` vs `Rgba8UnormSrgb`）共用，避免两边各写一份 `matches!` 后漂移。
+- **分类失败不猜**，也**不因为认不出就丢图**：`Unknown`（含 FBX 的 `bump` 高度图——按法线采样会得到错误方向）
+  不参与法线 / 粗糙度 / AO 槽位，只保留 base color 兜底匹配能力。错把漫反射图当法线图的画面比"没有法线贴图"更糟且更难排查。
+- **同一用途只取第一张**：`pick_pbr_textures` 按扁平表顺序取首个命中，不做"多张同名图混合"这种没人能预测的行为。
 
 ## 5. 渲染层：r3e-render
 
 ### 5.1 GPU 数据布局
 
-**顶点格式 `Vertex`（stride 24 字节）**
+**顶点格式 `Vertex`（stride 72 字节，`step_mode = Vertex`）**
+
+| 字段 | 类型 | location | 偏移 | 说明 |
+| --- | --- | --- | --- | --- |
+| `position` | `[f32; 3]` | 0 | 0 | 模型空间位置 |
+| `normal` | `[f32; 3]` | 1 | 12 | 模型空间法线（已归一化） |
+| `uv` | `[f32; 2]` | 2 | 24 | 纹理坐标（v 已在资产层翻转，原点左上） |
+| `joints` | `[u16; 4]` | 3 | 32 | 蒙皮关节槽位（`Uint16x4`，非蒙皮全 0） |
+| `weights` | `[f32; 4]` | 4 | 40 | 蒙皮权重（非蒙皮全 0，动态分支由此跳过 storage 读） |
+| `tangent` | `[f32; 4]` | **11** | 56 | xyz = 切线，w = 手性 ±1（扩展二十一） |
+
+切线的 location 是 **11 而不是 5**：顶点与实例属性共用同一套 shader location 命名空间，`5..=10` 已被
+`InstanceRaw` 占满，重号会让管线校验直接失败。`r3e-render/src/mesh.rs` 的两个单测断言这条链路
+（`vertex_layout_carries_skinning` 查 stride 72 与 location 序列 `[0,1,2,3,4,11]`，
+`vertex_layout_carries_tangent` 查偏移 56 且 `offset + 16 == stride`），改布局时先看它们。
+
+**实例格式 `InstanceRaw`（stride 96 字节，`step_mode = Instance`）**
 
 | 字段 | 类型 | location | 说明 |
 | --- | --- | --- | --- |
-| `position` | `[f32; 3]` | 0 | 模型空间位置 |
-| `normal` | `[f32; 3]` | 1 | 模型空间法线（已归一化） |
-
-**实例格式 `InstanceRaw`（stride 80 字节，`step_mode = Instance`）**
-
-| 字段 | 类型 | location | 说明 |
-| --- | --- | --- | --- |
-| `model` | `[[f32; 4]; 4]` | 2,3,4,5 | 世界矩阵，按 4 个 vec4 列传入 |
-| `color` | `[f32; 4]` | 6 | 线性空间 RGBA |
+| `model` | `[[f32; 4]; 4]` | 5,6,7,8 | 世界矩阵，按 4 个 vec4 列传入 |
+| `color` | `[f32; 4]` | 9 | 线性空间 RGBA |
+| `joint_base` | `u32` | 10 | 蒙皮关节矩阵表在本帧 storage buffer 中的起点；非蒙皮填 0 |
 
 之所以把模型矩阵放进实例缓冲而不是 uniform：这样**整个场景一次上传、按网格分组一次绘制**，不随物件数量增加 draw call。`step_mode = Instance` 让每个实例读同一份顶点但不同矩阵。
 
@@ -1024,17 +1070,22 @@ quad 预算丢弃、图片只请求一次、失败只记一次、`HudScene` 整�
 | `light_color` | `vec4<f32>` | xyz = 光色，**w = 强度** |
 | `ambient` | `vec4<f32>` | xyz = 环境光色 |
 
-`@group(1)`：材质（`pbr::MaterialUniform`，48 字节）
+`@group(1)`：材质（`pbr::MaterialUniform`，64 字节）
 
 | 字段 | 类型 | 内容 |
 | --- | --- | --- |
 | `base_color` | `vec4<f32>` | rgb = 材质染色因子（乘到物件颜色上），a 参与最终 alpha |
 | `params` | `vec4<f32>` | **x = metallic，y = roughness，z = 是否有 base color 贴图**，w 保留 |
 | `emissive` | `vec4<f32>` | rgb = 自发光（线性 HDR，只加不减），a 保留 |
-| `t_base_color` / `s_base_color` | 纹理 + 采样器 | `params.z > 0.5` 时才采样 |
+| `params2` | `vec4<f32>` | **x/y/z = 法线 / 粗糙度 / AO 贴图开关**（0/1），w 保留（扩展二十一） |
+
+绑定项：`0` = uniform buffer，`1` = base color 贴图，`2` = 采样器，`3/4/5` = 法线 / 粗糙度 / AO 贴图。
+三张数据贴图**永远绑定**（没图时垫 `white` / `flat_normal` 占位），由 `params2` 决定是否采样 ——
+动态 uniform 分支而不是切换 bind group，材质缓存键与绘制路径都不用为"有无贴图"分叉。占位图存在的作用
+只是把 bind group 填满：开关为 0 时着色器根本不读它，所以"没图"不等于"画面变了"。
 
 `@group(2)` = 关节矩阵（P4 蒙皮，storage buffer）；`@group(3)` = 阴影贴图 + 阴影 uniform（阶段 D） + 局部光源表（扩展十五，binding 4，与阴影同组见 5.10 的 `max_bind_groups` 说明）。
-材质按 `MaterialKey`（`to_bits` 比较）分桶：同材质的物件共用一份 48 字节 buffer，不逐物件复制。
+材质按 `MaterialKey`（`to_bits` 比较）分桶：同材质的物件共用一份 64 字节 buffer，不逐物件复制。
 
 **顶点阶段**
 
@@ -1373,6 +1424,54 @@ WebGPU core 规范 `max_bind_groups = 4`（group 索引 0..3），第五组 `@gr
 `[起始] 半透明与 MSAA：采样数 4× / 透明 draw N / 透明实例 M / 深度预通道 draw K`；
 编辑器 `engine_stats` 的 `render` 段同步新增 `msaa_samples` / `transparent_draws` / `transparent_instances` /
 `depth_prepass_draws` 四个字段。
+
+### 5.14 PBR 数据贴图在渲染侧的契约（扩展二十一）
+
+core 侧只管"哪张图是什么用途"（§4.14），渲染侧负责"怎么绑、怎么采、怎么不出事"。
+
+**绑定布局**：`@group(1)` 的 `binding 3/4/5` 依次是法线 / 粗糙度 / AO，采样器与 base color **共用**
+`binding 2`（同一材质的贴图寻址与滤波需求一致，多绑三个采样器只是浪费 bind 额度）。
+三张图**始终绑定**，缺图时垫 1×1 占位：法线用 `(128,128,255)` 的 `flat_normal`（线性格式，
+避免 0.5 被 sRGB 解码成 0.21 把法线整体压弯），粗糙度与 AO 用 `white`。开关是否采样完全由
+`params2.xyz` 决定，因此"没图"不改变任何像素 —— 这是 `R3E_VISUAL_REGRESSION=1` 基线能原样通过的前提。
+
+**开关只认真绑上的图**：`resolve_pbr_map` 只有在 `texture_view` 真正返回视图时才把开关置 1。
+超 `max_texture_dim`、像素不完整、`MeshProvider::texture` 返 `None` 时视图退回占位、开关置 0，
+着色器走标量分支 —— 否则会出现"明明没贴图却去采样一张白色图把粗糙度乘成 1.0"的静默行为变化。
+
+**色彩空间**：`TextureColorSpace` 参与纹理缓存键 `(asset, index, space)`，所以同一张图被一个材质当颜色、
+被另一个材质当数据时会上传成两份而不是串用。上传格式：颜色 → `Rgba8UnormSrgb`（采样自动线性化），
+数据 → `Rgba8Unorm`（原值直读）。
+
+**采样通道**（与 glTF 约定一致，改这里会让所有 glTF 资产的观感漂移）：
+
+| 贴图 | 通道 | 解码 |
+| --- | --- | --- |
+| 法线 | `xyz` | `sample * 2 - 1` 还原到 `[-1, 1]`，`z` 夹到 `≥ 0.05` 防贴图误差把法线翻到背面 |
+| 粗糙度 | `G` | 作为**乘数**乘到 `params.y`；独立灰度图与 glTF 的 metallicRoughness 合并图都读 G |
+| AO | `R` | 夹到 `[0, 1]`，**只乘环境光**（含 IBL 的漫反射 + 镜面项），不动直接光 |
+
+**AO 只压环境光**是刻意的：直接光暗部已由阴影（阶段 D / 扩展十六 / 扩展十八 C）负责，两边都压等于
+在接触处叠两层黑，出现"脏黑边"。自发光不吃 AO。**法线参与全部受光项**（方向光、局部光源、阴影查询、
+IBL），即着色法线 `n` 与几何法线 `geometric_n` 分开保存：TBN 的切向基用几何法线构造（避免贴图自身的
+倾向被二次投影），BRDF 与阴影查询用着色法线 —— 凹凸表面的阴影偏移跟着贴图走才不会有锯齿状的自遮挡线。
+
+**切线兜底**：`Gram-Schmidt` 之后切线长度 `< 1e-5`（UV 退化、或内置网格只用缺省切线）时，
+取与法线最不平行的轴（`|n.x| > 0.9` 用 +Y 否则 +X）重建，再投影一次。宁可切线方向不精确，
+也不能让 `normalize(0)` 产出 NaN —— NaN 会在光照里传染成整片黑，比"切线不准"难排查得多。
+
+**测试口径**（`crates/r3e-render/tests/pbr_maps_contract.rs`，9 条）：锁 uniform 64 字节 / `params2` 偏移 48；
+锁"没图 → `params2` 全 0"；锁三张贴图的 binding 不重复、`params2.xyz` 三个分支都在；
+锁 TBN 构造（`cross(geometric_n, t) * handedness`）与 `*2-1` 解码；锁粗糙度取 G、AO 取 R；
+锁 `bump` 不算法线。这些写错都不会编译失败，只会在实机上表现为"贴图没效果"，所以用源码级断言钉住。
+
+**已知边界**
+
+- **不读金属度贴图**：glTF 的 metallicRoughness 合并图只用了 G（粗糙度），B（金属度）仍是标量；
+- **只有一套 UV**（`uv0`），不支持 `KHR_texture_transform`、不做 UV 集选择；
+- **切线在装配期一次算定**，不随形变更新：蒙皮网格的切线跟着关节矩阵近似变换（与法线同用伴随矩阵），极端形变下会有偏差；
+- **数据贴图不生成 mipmap**，远距离采样会有闪烁，未做各向异性过滤；
+- 法线贴图的 `z` 下限 `0.05` 会削弱强凹凸贴图的陡峭度，属于防翻面优先的取舍。
 
 ---
 
@@ -2660,6 +2759,8 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | **十九（已完成：半透明排序 + MSAA）** | **半透明按深度由远及近**：新增 `r3e-render::transparency`（`is_transparent` / `view_depth` / `back_to_front` 三个纯函数），`prepare_instances` 把批次拆成「不透明段 + 半透明段」（`transparent_start`），组间按最远深度降序、组内稳定排序后搬进实例缓冲，半透明批次用**不写深度**的 `transparent_pipeline` 最后绘制；**MSAA 4×**：`MSAA_SAMPLE_COUNT = 4` + `create_msaa_targets`（4× `Rgba16Float` 颜色 + 4× 深度），主通道 resolve 进 `postfx.hdr_view()`，新增单采样**深度预通道**保证遮蔽通道仍有可采样深度；`RenderStats` 增 `transparent_draws` / `transparent_instances` / `depth_prepass_draws`，`--run-seconds` 探针与编辑器 `engine_stats.render` 同频输出（见 §5.13） | `render/transparency.rs` 新增 + `lib.rs` 导出 `MSAA_SAMPLE_COUNT`；`render/renderer.rs` 加两条管线与两组附件、`prepare_instances` 拆段排序、新增深度预通道；`app.rs` 与 `editor.rs` 各加探针字段；新增 `tests/transparency_contract.rs` 6 项 | 无（场景 JSON、脚本 API、RPC 一字不改：全不透明场景 `transparent_*` 恒 0，画面只多出 MSAA 边缘平滑；显存多一组 4× 颜色 + 4× 深度附件） |
 | **二十（已完成：capture.frame 像素级回归 + AO 占位修复）** | **像素级回归基线**：`r3e-asset::visual_regression` 纯 CPU 比对库（逐像素通道差 / 坏点比例 / 最坏 8 点 / 差异图，`Tolerance::sanitized()` 收敛容差，默认 `DEFAULT_CHANNEL_DELTA = 2` 与 `DEFAULT_BAD_PIXEL_RATIO = 0.001`）；`r3e-app/tests/visual_regression.rs` 起子进程产图后比对基准图 `tests/baselines/capture_frame_640x360.png`，三道闸门（开关 / 退出码 2 / 基准缺失）保证无 GPU 机器不假失败；**AO 占位图修复**：`create_ao_placeholder` 建完 1×1 `R8Unorm` 后补一笔 `queue.write_texture([255])`，此前不写初值导致 AO 关闭时 `color *= ao` 把整帧乘成纯黑（见 §4.10 / §8.20） | `r3e-asset/src/visual_regression.rs` 新增 + `lib.rs` 导出；`r3e-app/tests/`（用例 + 基准图 + 夹具）新增；`r3e-app/src/main.rs` 加 `--window-size` / `--capture-frame` / `--capture-after` 与 `parse_window_size`，`app.rs` 加 `window_attrs_size` / `capture_frame_now` / 第 N 帧截图退出的钩子；`r3e-render/postfx.rs` 的 `PostFxPass::new` 多收 `&wgpu::Queue`（`renderer.rs` 同步传参） | 无（命令行新增三项均为可选：不传时窗口仍 1280x720 逻辑尺寸、本进程不产图；`PostFxPass::new` 是 crate 内 API，签名变化不涉及场景 JSON、脚本与 RPC） |
 
+| **二十一（已完成：材质数据贴图）** | **法线 / 粗糙度 / AO 三张贴图**：`r3e-core::tangent` 按三角形位置与 UV 差分累加算切线基（UV 面积退化跳过、整网格退化兜底正交基、手性来自副切线方向），`Vertex` 补 `tangent: [f32; 4]`（location 11）；`r3e-core::texture_slot` 把 FBX / glTF 五花八门的槽位名收敛成 `TextureSlot`（Normal / Roughness / Occlusion / Unclassified）并给出线性数据判据 `is_linear_data()`，`bump` 是高度图、**不算**法线；`r3e-asset` 在 FBX 与 glTF 两条导入路径上按槽位挑图（同用途只取第一张，`Unknown` 不猜也不丢 base color），`MeshAsset::build` 对外部网格重算切线；`r3e-render::pbr` 加 `PbrMapFlags` 与 `MaterialUniform::build_with_maps`（`params2.xyz` 三个开关，w 保留），`renderer.rs` 把三张图绑到 `@group(1) binding 3/4/5`、复用 base color 采样器、缺图垫 1×1 占位（法线用线性 `flat_normal`、其余 `white`）、`resolve_pbr_map` 只在真拿到视图时置位；`shader.wgsl` 用几何法线 + 切线构造 TBN 采样法线（`*2-1` 解码、`z` 下限 `0.05`），粗糙度取 G 作乘数，AO 取 R **只压环境光**（直接光交给阴影）。详见 §4.14 / §5.14 | `core/tangent.rs` / `core/texture_slot.rs` 新增，`core/mesh.rs` 加切线字段与 `DEFAULT_TANGENT`、`lib.rs` 导出；`asset/air_import.rs` / `gltf_import.rs` / `lib.rs` 接槽位筛选与切线重算；`render/pbr.rs` / `renderer.rs` / `shader.wgsl` 接绑定与采样；新增 `asset/tests/pbr_map_import.rs`（4）/ `render/tests/pbr_maps_contract.rs`（9） | 无（场景 JSON、脚本 API、RPC 一字不改；**没挂图时 `params2` 全 0，画面与扩展二十逐像素一致**，`R3E_VISUAL_REGRESSION=1` 基线无需重建）。顶点 stride 56 → 72，内置网格不重算、用 `DEFAULT_TANGENT` 由着色器兜底。**边界**：不读金属度贴图、只有一套 UV、切线装配期一次算定、数据贴图无 mipmap |
+
 两条与顺序相关的说明：
 
 - **阶段五吸收阶段二的纹理与 UV**：引入外部模型必然同时带 UV 与贴图，单独先做「程序化网格加 UV」等于写两遍顶点布局。
@@ -2719,6 +2820,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 物理 | 默认关：`attach_body` 返回 false、`body_count()` 为 0；`--physics on` 后 5 个刚体落地反弹并进入休眠 |
 | 编译 | `cargo build --release` 零 warning |
 | 像素回归（扩展二十） | RTX 5060 Laptop / Vulkan 实跑 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression`：`captured_frame_matches_baseline ... ok`（5.20s），子进程日志 `渲染器就绪: 640x360` + `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，与基准图逐像素比对通过 |
+| 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
@@ -2757,6 +2859,11 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 26. 音频音量两层相乘：`audio_set_volume` 是单条，`audio_set_master_volume` 是总音量，最终有效音量 = 两者乘积，别指望其中一个能"盖住"另一个。
 27. `audio_set_loop` 改循环会**从头重播**（rodio 的循环在解码源构造时确定），不要用它做"无缝切换当前播放位置"。
 28. 没有声卡时引擎**不报错也不崩**：`audio_available()` 返回 `false`、`audio_backend()` 返回 `"silent"`，`audio_play` 仍返回 `true`（文件解码通过）但不会出声——排查"为什么没声音"先看这两个值。
+29. 数据贴图导出必须**线性**：法线 / 粗糙度 / AO 若按 sRGB 导出，采样时被自动线性化，法线整体偏软、AO 偏亮；引擎按槽位名自动选格式，但槽位名不认识时（`Unclassified`）按颜色处理。
+30. FBX 的 `bump` 槽位是**高度图不是法线图**，引擎不当法线用；要做凹凸请导 `NormalMap`（或 `Maya|normalCamera`），否则表现为"贴了图但没有凹凸感"。
+31. 法线贴图依赖切线基：网格 UV 退化（整片 UV 相同）时切线是兜底基，凹凸方向会与预期不符——这是 UV 的问题，不是贴图的问题。
+32. AO **只压环境光**，不会让直接光变暗；想看到明显差别需要有环境光/IBL 或阴影之外的暗部，光秃秃一个方向光下几乎看不出 AO。
+33. 三张贴图**没有对应脚本 API 与 RPC**，只能由导入的模型自带；手动换图要改资产或走 base color 通道。
 
 ---
 

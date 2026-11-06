@@ -1826,7 +1826,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed。
+`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed。
 
 ---
 
@@ -1946,7 +1946,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
-`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed。
+`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed。
 
 ---
 
@@ -2047,7 +2047,7 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 | `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
 | `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
 
-`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed。
+`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed。
 
 ---
 
@@ -2148,7 +2148,133 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 | `crates/r3e-app/src/main.rs` | 2 | `parse_window_size` 的三种分隔符与非法输入（缺 `x`、0、非数字） |
 | `crates/r3e-app/tests/visual_regression.rs` | 1 | 端到端像素回归（无 GPU 时经三道闸门跳过） |
 
-`cargo test --workspace` 现为 56 个套件 / 801 passed / 0 failed（`--features rapier` 为 805 passed）。
+`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed（`--features rapier` 为 830 passed）。
+
+---
+
+## 25. 材质数据贴图：法线 / 粗糙度 / AO（扩展二十一）
+
+§15 的 PBR 只有 `metallic` / `roughness` 两个**标量**，§16 的 IBL 也只有天空，
+所以导入一个正经游戏资产后，模型表面永远是"光滑塑料"——砖缝、螺丝孔、皮革纹路一个都看不出来。
+本节把三张**逐像素**数据图接进材质：法线（凹凸光照）、粗糙度（高光形状）、AO（缝隙变暗）。
+
+### 25.1 一句话结论与三条不变量
+
+三张图都是**可选**的：没挂图时着色器走原来的标量分支，画面与扩展二十**逐像素一致**
+（实测 `R3E_VISUAL_REGRESSION=1` 基线原样通过，基准图不需要重建）。三条不变量：
+
+1. **开关只认真的绑上的图**：`resolve_pbr_map` 只有真拿到纹理视图才把 `params2` 对应位写 1，
+   否则垫占位图 + 写 0。否则会出现"没贴图却去采一张白图把粗糙度乘成 1.0"这种静默行为变化。
+2. **数据贴图按线性上传**：法线被 sRGB 解码会把 0.5 变成 0.21，整个模型光照发灰。
+3. **AO 只压环境光**：直接光的暗部已由阴影负责，两边都压等于接触处叠两层黑。
+
+### 25.2 core 侧：切线基（`r3e-core/src/tangent.rs`）
+
+法线贴图存的是**切线空间**方向，必须有 TBN 才能转到世界空间。切线按经典做法算：
+逐三角形用位置差与 UV 差解出 `dP/du`、`dP/dv`，按三角面积加权累加到三个顶点，再对每个顶点做 Gram-Schmidt 正交化。
+
+| 退化情形 | 处理 | 理由 |
+| --- | --- | --- |
+| 三角形 UV 面积为 0（三点 UV 相同） | 跳过该三角形，不参与累加 | 除零会产 NaN，NaN 会顺着插值污染整片画面 |
+| 整网格都累加不到（无 UV / 全退化） | 用与法线最不平行的轴重建 | 切线方向不精确好过 `normalize(0)` 产 NaN |
+| 正交化后长度 `< 1e-5` | 同上兜底 | 同上 |
+
+手性（`w = ±1`）来自 `cross(normal, tangent)` 与副切线累加方向是否同向，镜像 UV 的模型靠它翻正。
+`Vertex` 因此多了 `tangent: [f32; 4]`（location 11），stride 从 56 涨到 72。
+**内置的 4 种网格不跑重算**，直接用 `DEFAULT_TANGENT = [1,0,0,1]`，由着色器兜底——省掉每次建网格的扫描。
+
+### 25.3 core 侧：槽位分类（`r3e-core/src/texture_slot.rs`）
+
+不同 DCC 导出的槽位名五花八门（`NormalMap` / `Maya|normalCamera` / `Bump` / `Roughness` / `Maya|aiRoughness`…），
+`classify_slot` 把它们收敛成 `TextureSlot::{Normal, Roughness, Occlusion, Unclassified}`，
+`is_linear_data()` 给出"是否按数据（线性）上传"的判据。**导入层与渲染层共用同一套判据**，
+避免"asset 认为是法线、render 认为是颜色"的错配。
+
+这里有一个坑值得单列：**`bump` 是高度图，不是法线图**。当成法线用会把灰度图当方向，
+表现是整片画面偏色且光照方向诡异，且不会报错。因此 `classify_slot("Maya|bump")` **不**返回 `Normal`。
+
+### 25.4 导入侧：两条路径都按槽位挑图
+
+| 路径 | 位置 | 行为 |
+| --- | --- | --- |
+| FBX（AIR） | `crates/r3e-asset/src/air_import.rs` | 遍历材质 `TextureInfo` 扁平表，按 `classify_slot` 挑出三张；同用途出现多张时**只取第一张**（不猜、不混） |
+| glTF | `crates/r3e-asset/src/gltf_import.rs` | 从 `normalTexture` / `metallicRoughnessTexture` / `occlusionTexture` 取，`bump` 忽略 |
+
+槽位判不出来（`Unclassified`）时**不猜**：它仍然按颜色上传、仍然可以当 base color 用，
+只是不会进三个数据槽位——宁可少认，不可认错。
+
+外部网格在 `MeshAsset::build` 里调一次 `recompute_tangents`；内置网格与已带切线的资产不重复计算。
+
+### 25.5 渲染侧：绑定、占位与采样
+
+`@group(1)` 的布局：
+
+| binding | 内容 | 缺省时 |
+| --- | --- | --- |
+| 0 | `MaterialUniform`（64 B，`params2.xyz` = 三个开关） | — |
+| 1 | base color `texture_2d` | `white` |
+| 2 | `sampler`（三张数据图**共用**） | — |
+| 3 | 法线图 | 1×1 `flat_normal` = `(128,128,255)`，**线性格式** |
+| 4 | 粗糙度图 | 1×1 `white` |
+| 5 | AO 图 | 1×1 `white` |
+
+`flat_normal` 必须是线性格式（`Rgba8Unorm`）：若按 sRGB 上传，0.5 会被解码成 0.21，
+乘以 2 减 1 得到 0.58 而不是 1.0，等于给所有没贴法线的物体加了一层斜的假凹凸。
+
+纹理缓存键是 `(asset, index, space)`，`space` 参与其中，所以同一张图被一个材质当颜色、
+被另一个材质当数据时会上传成两份而不是串用。
+
+采样约定（与 glTF 一致）：
+
+| 贴图 | 通道 | 解码 |
+| --- | --- | --- |
+| 法线 | `xyz` | `* 2 - 1` 到 `[-1,1]`，`z` 夹到 `≥ 0.05` 防翻面 |
+| 粗糙度 | `G` | 乘到标量 `roughness` 上（不是替换） |
+| AO | `R` | 夹到 `[0,1]`，只乘环境光（含 IBL） |
+
+着色器里同时保留 `geometric_n`（几何法线）与 `n`（着色法线）：TBN 的切向基用几何法线构造，
+BRDF 与阴影查询用着色法线。这样凹凸表面的阴影偏移跟着贴图走，不会出现锯齿状的自遮挡线。
+
+### 25.6 怎么验证
+
+```powershell
+# CPU 侧契约（不需要显卡）
+cargo test -p r3e-core -p r3e-asset -p r3e-render
+
+# 画面没漂：没挂图的场景必须与扩展二十基线逐像素一致
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+
+# 肉眼确认贴图真的生效：拖入带 NormalMap / Roughness / AO 槽位的模型，逐张开关对比
+cargo run -- assets\scene.json
+```
+
+**视觉观感待人工确认**：法线强度是否合适、AO 是否过重属于审美判断，自动化只能证明"没图时没变化"。
+
+### 25.7 测试覆盖
+
+新增 25 条，全部 CPU 侧、无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/tangent.rs` | 5 | 平面网格切线正交且手性正确、UV 镜像翻手性、UV 退化三角形被跳过、全退化网格兜底基、切线单位化 |
+| `crates/r3e-core/src/texture_slot.rs` | 3 | 常见槽位名归一、`bump` 不算法线、数据 / 颜色判据 |
+| `crates/r3e-render/src/pbr.rs` | 4 | `PbrMapFlags` 打包顺序、`build_with_maps` 开关位、标量仍收敛、默认全关 |
+| `crates/r3e-render/tests/pbr_maps_contract.rs` | 9 | uniform 64 B 与 `params2` 偏移 48、无图全 0、binding 不重复、着色器 `params2.xyz` 三分支齐全、TBN 构造与 `*2-1`、粗糙度取 G、AO 取 R、`bump` 非 Normal |
+| `crates/r3e-asset/tests/pbr_map_import.rs` | 4 | 三槽位识别、同用途只取首张、`bump` 忽略、无图时三者皆空 |
+
+这些写错都**不会编译失败**，只会在实机上表现为"贴图没效果"或"画面诡异"，
+所以 `pbr_maps_contract.rs` 用源码级断言（`include_str!` 着色器 + 文本匹配 + naga 解析）把它们钉住。
+
+`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed（`--features rapier` 为 830 passed）。
+
+### 25.8 已知边界
+
+- **不读金属度贴图**：glTF 的 metallicRoughness 合并图只用了 G，B（金属度）仍是标量；
+- **只有一套 UV**（`uv0`），不支持 `KHR_texture_transform`，不做 UV 集选择；
+- **切线装配期一次算定**：蒙皮网格的切线跟法线同用伴随矩阵近似变换，极端形变下会有偏差；
+- **数据贴图不生成 mipmap**：远距离采样会闪，未做各向异性过滤；
+- **没有脚本 API 与 RPC**：三张图只能由导入的模型自带，运行时换图需要改资产；
+- 法线贴图 `z` 下限 `0.05` 会削弱强凹凸的陡峭度，属于"防翻面优先"的取舍。
 
 ---
 
