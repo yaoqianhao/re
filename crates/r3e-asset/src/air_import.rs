@@ -223,6 +223,15 @@ pub struct AirMaterial {
     pub roughness: f32,
     #[serde(default)]
     pub base_color_texture: Option<u32>,
+    /// 法线贴图（扩展二十一；线性数据）。
+    #[serde(default)]
+    pub normal_texture: Option<u32>,
+    /// 粗糙度贴图（扩展二十一；线性数据，取 G 通道）。
+    #[serde(default)]
+    pub roughness_texture: Option<u32>,
+    /// AO 贴图（扩展二十一；线性数据，取 R 通道）。
+    #[serde(default)]
+    pub occlusion_texture: Option<u32>,
     #[serde(default)]
     pub double_sided: bool,
 }
@@ -964,8 +973,19 @@ fn convert_materials(doc: &AirDoc, textures: &[TextureInfo]) -> Vec<MaterialInfo
             roughness: material.roughness,
             textures: Vec::new(),
             base_color_texture: material.base_color_texture,
+            normal_texture: material.normal_texture,
+            roughness_texture: material.roughness_texture,
+            occlusion_texture: material.occlusion_texture,
         };
-        if let Some(slot) = material.base_color_texture {
+        for slot in [
+            material.base_color_texture,
+            material.normal_texture,
+            material.roughness_texture,
+            material.occlusion_texture,
+        ]
+        .into_iter()
+        .flatten()
+        {
             if let Some(texture) = textures.get(slot as usize) {
                 info.textures.push(texture.clone());
             }

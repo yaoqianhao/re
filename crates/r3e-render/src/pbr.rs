@@ -13,7 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use r3e_core::mesh::MaterialData;
 use r3e_core::SurfaceMaterial;
 
-/// 材质 uniform：base color + PBR 标量 + 自发光。48 字节，16 字节对齐。
+/// 材质 uniform：base color + PBR 标量 + 自发光 + 贴图开关。64 字节，16 字节对齐。
 ///
 /// 布局必须与 `shader.wgsl` 的 `Material` 结构逐字段一致：
 ///
@@ -22,6 +22,7 @@ use r3e_core::SurfaceMaterial;
 ///     base_color: vec4<f32>,   // offset 0
 ///     params:     vec4<f32>,   // offset 16  x = metallic, y = roughness, z = has_tex
 ///     emissive:   vec4<f32>,   // offset 32  rgb = 自发光（线性 HDR），a 保留
+///     params2:    vec4<f32>,   // offset 48  x/y/z = 法线/粗糙度/AO 贴图开关
 /// };
 /// ```
 #[repr(C)]
@@ -32,6 +33,46 @@ pub struct MaterialUniform {
     pub params: [f32; 4],
     /// rgb = 自发光，a 保留（固定 0）。
     pub emissive: [f32; 4],
+    /// x/y/z = 法线 / 粗糙度 / AO 贴图开关（0/1），w 保留（扩展二十一）。
+    pub params2: [f32; 4],
+}
+
+/// 一张材质挂了哪些 PBR 数据贴图（扩展二十一）。
+///
+/// 与 `params2` 的三个分量一一对应；渲染层用它决定要绑定哪些 GPU 纹理，
+/// 也用它算出与 `has_*` 位一致的 uniform 值，避免两处各算一遍走样。
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PbrMapFlags {
+    pub normal: bool,
+    pub roughness: bool,
+    pub occlusion: bool,
+}
+
+impl PbrMapFlags {
+    /// 由资产材质读出一张材质挂了哪些数据贴图。
+    pub fn from_material(material: &MaterialData) -> Self {
+        Self {
+            normal: material.normal_texture.is_some(),
+            roughness: material.roughness_texture.is_some(),
+            occlusion: material.occlusion_texture.is_some(),
+        }
+    }
+
+    /// 挂了任意一张数据贴图。
+    pub fn any(self) -> bool {
+        self.normal || self.roughness || self.occlusion
+    }
+
+    /// 打包成 `params2`（缺省位补 0，保持与着色器 vec4 对位）。
+    pub fn pack(self) -> [f32; 4] {
+        let bit = |on: bool| if on { 1.0 } else { 0.0 };
+        [
+            bit(self.normal),
+            bit(self.roughness),
+            bit(self.occlusion),
+            0.0,
+        ]
+    }
 }
 
 impl Default for MaterialUniform {
@@ -53,6 +94,27 @@ impl MaterialUniform {
         emissive: [f32; 3],
         has_texture: bool,
     ) -> Self {
+        Self::build_with_maps(
+            base_color,
+            metallic,
+            roughness,
+            emissive,
+            has_texture,
+            PbrMapFlags::default(),
+        )
+    }
+
+    /// 同上，额外声明挂了哪些 PBR 数据贴图（扩展二十一）。
+    ///
+    /// 不带贴图时 `params2` 全 0，着色器走纯标量分支，行为与扩展十一完全一致。
+    pub fn build_with_maps(
+        base_color: [f32; 4],
+        metallic: f32,
+        roughness: f32,
+        emissive: [f32; 3],
+        has_texture: bool,
+        maps: PbrMapFlags,
+    ) -> Self {
         let surface = SurfaceMaterial {
             metallic,
             roughness,
@@ -73,6 +135,7 @@ impl MaterialUniform {
                 surface.emissive[2],
                 0.0,
             ],
+            params2: maps.pack(),
         }
     }
 }
@@ -145,14 +208,75 @@ mod tests {
             metallic: 0.1,
             roughness: 0.9,
             base_color_texture: Some((r3e_core::AssetId(7), 3)),
+            ..MaterialData::default()
         }
     }
 
-    /// uniform 布局：三个 vec4 紧邻，48 字节，无隐藏填充。
+    /// 挂了法线 / 粗糙度 / AO 三张数据贴图的资产材质。
+    fn mapped_asset() -> MaterialData {
+        MaterialData {
+            name: "mapped".to_string(),
+            normal_texture: Some((r3e_core::AssetId(7), 4)),
+            roughness_texture: Some((r3e_core::AssetId(7), 5)),
+            occlusion_texture: Some((r3e_core::AssetId(7), 6)),
+            ..MaterialData::default()
+        }
+    }
+
+    /// uniform 布局：四个 vec4 紧邻，64 字节，无隐藏填充。
     #[test]
     fn uniform_layout_matches_shader() {
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 48);
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 64);
         assert_eq!(std::mem::align_of::<MaterialUniform>(), 4);
+    }
+
+    /// 扩展二十一：贴图开关落在 `params2`，不带贴图时全 0（老行为不变）。
+    #[test]
+    fn uniform_packs_pbr_map_flags() {
+        let plain = MaterialUniform::build([1.0; 4], 0.0, 0.5, [0.0; 3], true);
+        assert_eq!(plain.params2, [0.0, 0.0, 0.0, 0.0], "无数据贴图时开关全 0");
+
+        let flags = PbrMapFlags::from_material(&mapped_asset());
+        assert!(flags.any());
+        let mapped = MaterialUniform::build_with_maps([1.0; 4], 0.0, 0.5, [0.0; 3], true, flags);
+        assert_eq!(mapped.params2, [1.0, 1.0, 1.0, 0.0]);
+        // 三个开关不得影响既有的 metallic / roughness / has_tex 语义
+        assert_eq!(mapped.params, plain.params);
+        assert_eq!(mapped.emissive, plain.emissive);
+    }
+
+    /// 只挂一部分贴图时，其余开关必须保持 0，不能整体置 1。
+    #[test]
+    fn uniform_packs_partial_pbr_map_flags() {
+        let only_normal = MaterialData {
+            normal_texture: Some((r3e_core::AssetId(1), 0)),
+            ..MaterialData::default()
+        };
+        assert_eq!(
+            PbrMapFlags::from_material(&only_normal).pack(),
+            [1.0, 0.0, 0.0, 0.0]
+        );
+
+        let only_ao = MaterialData {
+            occlusion_texture: Some((r3e_core::AssetId(1), 1)),
+            ..MaterialData::default()
+        };
+        assert_eq!(
+            PbrMapFlags::from_material(&only_ao).pack(),
+            [0.0, 0.0, 1.0, 0.0]
+        );
+    }
+
+    /// 物件级材质覆盖不得丢掉资产上的三张数据贴图（否则一改粗糙度就没法线）。
+    #[test]
+    fn overlay_keeps_pbr_maps() {
+        let asset = mapped_asset();
+        let merged = SurfaceKey::new(SurfaceMaterial::new(0.9, 0.2)).overlay(&asset);
+        assert_eq!(merged.metallic, 0.9);
+        assert_eq!(merged.roughness, 0.2);
+        assert_eq!(merged.normal_texture, asset.normal_texture);
+        assert_eq!(merged.roughness_texture, asset.roughness_texture);
+        assert_eq!(merged.occlusion_texture, asset.occlusion_texture);
     }
 
     /// 非法参数在打包前就收敛，GPU 侧不会收到 NaN / inf。

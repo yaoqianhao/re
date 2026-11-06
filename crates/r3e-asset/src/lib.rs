@@ -19,6 +19,7 @@ use std::sync::Arc;
 use r3e_core::anim::{AnimClip, AnimTrack};
 use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, TextureImage, Vertex};
 use r3e_core::skin::{SkinData, SkinJoint};
+use r3e_core::texture_slot::{classify_slot, TextureSlot};
 use r3e_core::{Mat4, MeshRef, Vec3, Vec4};
 // 对外重新导出 `AssetId`：插件生成的加载器只依赖 `r3e-asset` 一个 crate，
 // 不应该为了一个 id 类型再去 `use r3e_core`。纯新增导出，不改变既有 API。
@@ -147,6 +148,13 @@ pub struct MaterialInfo {
     pub textures: Vec<TextureInfo>,
     /// 当作 base color 使用的贴图在 `AssetEntry::textures` 中的下标。
     pub base_color_texture: Option<u32>,
+    /// 切线空间法线贴图下标（扩展二十一；线性数据，渲染层按非 sRGB 上传）。
+    pub normal_texture: Option<u32>,
+    /// 粗糙度贴图下标（扩展二十一）：独立粗糙度图取 G 通道；
+    /// glTF 的 `metallicRoughness` 合并图也落到这里（粗糙度在 G、金属度在 B）。
+    pub roughness_texture: Option<u32>,
+    /// 环境光遮蔽贴图下标（扩展二十一；线性数据，取 R 通道）。
+    pub occlusion_texture: Option<u32>,
 }
 
 /// 网格内的一个材质分区（连续三角形段）。
@@ -232,8 +240,12 @@ impl MeshAsset {
     }
 
     /// 转成渲染层可直接上传的 CPU 网格（蒙皮网格会自动带上 joint/weight）。
+    ///
+    /// 切线在这里统一补算（扩展二十一）：FBX 没有切线通道、glTF 的 `TANGENT`
+    /// 是可选属性，法线贴图必须有 TBN 才能把切线空间法线映射回世界空间，
+    /// 所以不管源文件来自哪个格式，出口都保证切线已按 UV 算好。
     pub fn to_mesh_data(&self) -> MeshData {
-        if self.joints.len() == self.positions.len() && !self.joints.is_empty() {
+        let mut mesh = if self.joints.len() == self.positions.len() && !self.joints.is_empty() {
             MeshData::from_arrays_skinned(
                 &self.positions,
                 &self.normals,
@@ -249,7 +261,9 @@ impl MeshAsset {
                 Some(&self.uvs),
                 self.indices.clone(),
             )
-        }
+        };
+        mesh.recompute_tangents();
+        mesh
     }
 
     /// 是否为蒙皮网格。
@@ -487,6 +501,9 @@ impl r3e_core::mesh::MeshProvider for AssetLibrary {
             metallic: info.metallic,
             roughness: info.roughness,
             base_color_texture: info.base_color_texture.map(|t| (asset, t)),
+            normal_texture: info.normal_texture.map(|t| (asset, t)),
+            roughness_texture: info.roughness_texture.map(|t| (asset, t)),
+            occlusion_texture: info.occlusion_texture.map(|t| (asset, t)),
         })
     }
 
@@ -569,6 +586,10 @@ pub fn import_fbx(path: &Path) -> Result<AssetEntry, AssetError> {
             tex.index = index;
         }
         mat.base_color_texture = pick_base_color_texture(&mat.textures);
+        let pbr_maps = pick_pbr_textures(&mat.textures);
+        mat.normal_texture = pbr_maps.normal;
+        mat.roughness_texture = pbr_maps.roughness;
+        mat.occlusion_texture = pbr_maps.occlusion;
         // FBX SDK 把 0.588 当「未设置」的缺省 diffuse 因子；带贴图时若仍是该值，
         // 归一成白色，避免 0.588²·² 的二次压暗（真实外观由贴图决定）。
         if mat.base_color_texture.is_some() && is_default_fbx_factor(mat.base_color) {
@@ -985,6 +1006,9 @@ fn extract_material(mat: &ufbx::Material, index: u32, base_dir: &Path) -> Materi
         roughness: map_scalar(&pbr.roughness).clamp(0.0, 1.0),
         textures: extract_textures(mat, base_dir),
         base_color_texture: None,
+        normal_texture: None,
+        roughness_texture: None,
+        occlusion_texture: None,
     }
 }
 
@@ -1150,7 +1174,45 @@ fn pick_base_color_texture(textures: &[TextureInfo]) -> Option<u32> {
             return Some(tex.index);
         }
     }
-    None
+    // 兜底：命名里没有上面的常见词时，交给 core 的槽位分类统一判定
+    // （扩展二十一加入，不改变上面几个命中优先级）。
+    textures
+        .iter()
+        .find(|t| classify_slot(&t.slot) == TextureSlot::BaseColor)
+        .map(|t| t.index)
+}
+
+/// 材质里挑出的 PBR 数据贴图（下标指向 `AssetEntry::textures`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PbrTextureSlots {
+    pub normal: Option<u32>,
+    pub roughness: Option<u32>,
+    pub occlusion: Option<u32>,
+}
+
+/// 按槽位名挑出法线 / 粗糙度 / AO 贴图（扩展二十一）。
+///
+/// 槽位名五花八门（`NormalMap` / `Maya|normalCamera` / `Ambient_Occlusion` …
+/// 也有只写 `AO`、`tex_roughness` 的），统一交给 [`classify_slot`] 判定，
+/// 同一个用途只取扁平表里第一个命中的贴图。`bump`（高度图）**不**当法线用。
+pub fn pick_pbr_textures(textures: &[TextureInfo]) -> PbrTextureSlots {
+    let mut slots = PbrTextureSlots::default();
+    for tex in textures {
+        match classify_slot(&tex.slot) {
+            TextureSlot::Normal if slots.normal.is_none() => slots.normal = Some(tex.index),
+            // 独立粗糙度图与 glTF 风格的 metallicRoughness 合并图都落到粗糙度槽位
+            TextureSlot::Roughness | TextureSlot::MetallicRoughness
+                if slots.roughness.is_none() =>
+            {
+                slots.roughness = Some(tex.index)
+            }
+            TextureSlot::Occlusion if slots.occlusion.is_none() => {
+                slots.occlusion = Some(tex.index)
+            }
+            _ => {}
+        }
+    }
+    slots
 }
 
 #[allow(clippy::too_many_arguments)]

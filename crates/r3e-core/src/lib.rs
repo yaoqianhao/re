@@ -22,7 +22,9 @@ pub mod scene_schema;
 pub mod scene_stack;
 pub mod skin;
 pub mod ssao;
+pub mod tangent;
 pub mod text;
+pub mod texture_slot;
 pub mod transform;
 pub mod ui;
 
@@ -63,7 +65,9 @@ pub use material::{
     fresnel_f0, fresnel_schlick, geometry_smith, ggx_alpha, BrdfSample, GeoTerms, SurfaceMaterial,
     DEFAULT_ROUGHNESS, DIELECTRIC_F0, MAX_EMISSIVE, MIN_ROUGHNESS,
 };
-pub use mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
+pub use mesh::{
+    MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex, DEFAULT_TANGENT,
+};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use postfx::{
     bright_pass, expose, exposure_scale, fxaa_edge_visible, luminance, resolve, tonemap,
@@ -95,6 +99,7 @@ pub use text::{
     GlyphBitmap, GlyphMetric, GlyphSource, LaidOutLine, LineMetrics, MetricsSource, PlacedGlyph,
     ScreenText, TextAlign, TextLayout, TextMeasure,
 };
+pub use texture_slot::{classify_slot, TextureSlot};
 pub use transform::Transform;
 pub use ui::{
     find, find_mut, hit_test, hit_test_key, merge_same_key, remove, resolve_rect, sorted_for_draw,

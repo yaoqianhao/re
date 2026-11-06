@@ -343,51 +343,111 @@ fn import_materials(
             roughness: pbr.roughness_factor(),
             textures: Vec::new(),
             base_color_texture: None,
+            normal_texture: None,
+            roughness_texture: None,
+            occlusion_texture: None,
         };
 
-        if let Some(tex_info) = pbr.base_color_texture() {
-            let texture = tex_info.texture();
-            let image_index = texture.source().index();
-            let slot = match decoded.get(&image_index) {
-                Some(index) => Some(*index),
-                None => match decode_image(&texture.source(), buffers) {
-                    Some(image) => {
-                        let index = textures.len() as u32;
-                        textures.push(TextureInfo {
-                            index,
-                            element_id: image_index as u32,
-                            slot: "BaseColor".to_string(),
-                            filename: match texture.source().source() {
-                                gltf::image::Source::Uri { uri, .. } => uri.to_string(),
-                                gltf::image::Source::View { .. } => {
-                                    format!("embedded#{image_index}")
-                                }
-                            },
-                            relative_filename: String::new(),
-                            absolute_filename: String::new(),
-                            embedded: matches!(
-                                texture.source().source(),
-                                gltf::image::Source::View { .. }
-                            ),
-                            content_bytes: 0,
-                            has_file: true,
-                            uv_set: "UV0".to_string(),
-                            image: Some(image),
-                        });
-                        decoded.insert(image_index, index);
-                        Some(index)
-                    }
-                    None => None,
-                },
-            };
-            if let Some(index) = slot {
-                info.base_color_texture = Some(index);
-                info.textures.push(textures[index as usize].clone());
+        // glTF 的贴图槽位是显式字段（不像 FBX 靠槽名猜），逐个登记即可。
+        // 注意：同一张 image 被多个槽位引用时只解码一次，靠 `decoded` 去重。
+        // 法线与 AO 挂在 `material` 上（不在 pbr 子结构里），槽位名按 glTF 规范取。
+        let slots: [(&str, Option<u32>); 4] = [
+            (
+                "BaseColor",
+                register_texture(
+                    &mut textures,
+                    &mut decoded,
+                    pbr.base_color_texture().map(|info| info.texture()),
+                    buffers,
+                ),
+            ),
+            (
+                "Normal",
+                register_texture(
+                    &mut textures,
+                    &mut decoded,
+                    material.normal_texture().map(|info| info.texture()),
+                    buffers,
+                ),
+            ),
+            (
+                "MetallicRoughness",
+                register_texture(
+                    &mut textures,
+                    &mut decoded,
+                    pbr.metallic_roughness_texture().map(|info| info.texture()),
+                    buffers,
+                ),
+            ),
+            (
+                "Occlusion",
+                register_texture(
+                    &mut textures,
+                    &mut decoded,
+                    material.occlusion_texture().map(|info| info.texture()),
+                    buffers,
+                ),
+            ),
+        ];
+        for (slot_name, slot) in slots {
+            let Some(index) = slot else { continue };
+            match slot_name {
+                "BaseColor" => info.base_color_texture = Some(index),
+                "Normal" => info.normal_texture = Some(index),
+                // metallicRoughness 合并图落到粗糙度槽位：粗糙度在 G、金属度在 B
+                "MetallicRoughness" => info.roughness_texture = Some(index),
+                _ => info.occlusion_texture = Some(index),
+            }
+            if let Some(tex) = textures.get(index as usize) {
+                info.textures.push(tex.clone());
             }
         }
         materials.push(info);
     }
     (materials, textures)
+}
+
+/// 把一张 glTF 贴图登记进扁平表（已登记过则复用下标），解码失败返回 `None`。
+fn register_texture(
+    textures: &mut Vec<TextureInfo>,
+    decoded: &mut HashMap<usize, u32>,
+    texture: Option<gltf::texture::Texture<'_>>,
+    buffers: &[Vec<u8>],
+) -> Option<u32> {
+    let texture = texture?;
+    let image_index = texture.source().index();
+    if let Some(index) = decoded.get(&image_index) {
+        return Some(*index);
+    }
+    let image = decode_image(&texture.source(), buffers)?;
+    let index = textures.len() as u32;
+    let source_name = match texture.source().source() {
+        gltf::image::Source::Uri { uri, .. } => uri.to_string(),
+        gltf::image::Source::View { .. } => format!("embedded#{image_index}"),
+    };
+    textures.push(TextureInfo {
+        index,
+        element_id: image_index as u32,
+        slot: slot_name_of(&texture.source().source()),
+        filename: source_name,
+        relative_filename: String::new(),
+        absolute_filename: String::new(),
+        embedded: matches!(texture.source().source(), gltf::image::Source::View { .. }),
+        content_bytes: 0,
+        has_file: true,
+        uv_set: "UV0".to_string(),
+        image: Some(image),
+    });
+    decoded.insert(image_index, index);
+    Some(index)
+}
+
+/// 只用于日志/元数据的贴图名（真正的用途由 `MaterialInfo` 的槽位字段表达）。
+fn slot_name_of(source: &gltf::image::Source<'_>) -> String {
+    match source {
+        gltf::image::Source::Uri { uri, .. } => uri.to_string(),
+        gltf::image::Source::View { .. } => "embedded".to_string(),
+    }
 }
 
 /// 解码一张 glTF 贴图（bufferView 内嵌或外部文件）。

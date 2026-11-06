@@ -9,16 +9,20 @@ use r3e_core::mesh::Vertex;
 pub use r3e_core::mesh::{MeshData as CoreMeshData, Vertex as CoreVertex};
 
 /// 顶点属性：0 = position(f32x3)、1 = normal(f32x3)、2 = uv(f32x2)、
-/// 3 = joints(u16x4)、4 = weights(f32x4)（P4 蒙皮）。
-pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+/// 3 = joints(u16x4)、4 = weights(f32x4)（P4 蒙皮）、11 = tangent(f32x4)（扩展二十一）。
+///
+/// 切线占用 location 11 而不是 5：5..=10 已被 `InstanceRaw` 的实例属性占用，
+/// 顶点与实例共用同一套 shader location 命名空间，重号会直接让管线校验失败。
+pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
     0 => Float32x3,
     1 => Float32x3,
     2 => Float32x2,
     3 => Uint16x4,
-    4 => Float32x4
+    4 => Float32x4,
+    11 => Float32x4
 ];
 
-/// 顶点缓冲布局（stride = 56 字节：pos12 + normal12 + uv8 + joints8 + weights16）。
+/// 顶点缓冲布局（stride = 72 字节：pos12 + normal12 + uv8 + joints8 + weights16 + tangent16）。
 pub fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
@@ -70,8 +74,8 @@ mod tests {
         let layout = vertex_layout();
         assert_eq!(layout.array_stride as usize, std::mem::size_of::<Vertex>());
         assert_eq!(
-            layout.array_stride, 56,
-            "pos12+normal12+uv8+joints8+weights16"
+            layout.array_stride, 72,
+            "pos12+normal12+uv8+joints8+weights16+tangent16"
         );
 
         let locs: Vec<u32> = layout
@@ -79,12 +83,37 @@ mod tests {
             .iter()
             .map(|a| a.shader_location)
             .collect();
-        assert_eq!(locs, vec![0, 1, 2, 3, 4], "顶点属性位置不得与实例属性冲突");
+        assert_eq!(
+            locs,
+            vec![0, 1, 2, 3, 4, 11],
+            "顶点属性位置不得与实例属性冲突"
+        );
 
         assert_eq!(layout.attributes[3].format, wgpu::VertexFormat::Uint16x4);
         assert_eq!(layout.attributes[4].format, wgpu::VertexFormat::Float32x4);
         assert_eq!(layout.attributes[3].offset, 32);
         assert_eq!(layout.attributes[4].offset, 40);
+    }
+
+    /// 扩展二十一：切线在顶点布局末尾（offset 56），供法线贴图构造 TBN。
+    #[test]
+    fn vertex_layout_carries_tangent() {
+        let layout = vertex_layout();
+        let tangent = layout
+            .attributes
+            .iter()
+            .find(|a| a.shader_location == 11)
+            .expect("切线属性缺失");
+        assert_eq!(tangent.format, wgpu::VertexFormat::Float32x4);
+        assert_eq!(
+            tangent.offset, 56,
+            "切线紧跟 weights（40 + 16）之后，正好是结构体最后一个字段"
+        );
+        assert_eq!(
+            tangent.offset + 16,
+            layout.array_stride,
+            "切线必须填满 stride 末尾，不留悬空字节"
+        );
     }
 
     /// 实例布局新增 `joint_base`（关节槽位起点），位置不能与顶点属性重号。

@@ -16,7 +16,7 @@ use r3e_core::{
 use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
-use crate::pbr::{MaterialUniform, SurfaceKey};
+use crate::pbr::{MaterialUniform, PbrMapFlags, SurfaceKey};
 use crate::postfx::{PostFxPass, PostFxStats};
 use crate::ssao::{SsaoPass, SsaoStats};
 use crate::text::{TextPass, TextStats};
@@ -867,7 +867,7 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let material_cache = MaterialCache::new(&device);
+        let material_cache = MaterialCache::new(&device, &queue);
 
         // P4：group(2) —— 关节矩阵 storage buffer，所有蒙皮实例共用一段连续槽位
         let joint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2598,13 +2598,16 @@ struct MaterialCache {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     white: wgpu::TextureView,
+    /// 未挂法线贴图时绑定的中性法线（0.5, 0.5, 1.0）。着色器按开关跳过采样，
+    /// 这里只是让 bind group 永远填满 —— 万一开关与绑定不同步，中性法线也不会改外观。
+    flat_normal: wgpu::TextureView,
     materials: HashMap<MaterialKey, GpuMaterial>,
-    textures: HashMap<(AssetId, u32), wgpu::TextureView>,
+    textures: HashMap<(AssetId, u32, TextureColorSpace), wgpu::TextureView>,
     max_texture_dim: u32,
 }
 
 impl MaterialCache {
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("r3e-material-bgl"),
             entries: &[
@@ -2634,6 +2637,37 @@ impl MaterialCache {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // 扩展二十一：法线 / 粗糙度 / AO 三张数据贴图，复用 binding(2) 的采样器
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -2649,11 +2683,13 @@ impl MaterialCache {
         });
 
         let white = create_white_texture(device);
+        let flat_normal = create_flat_normal_texture(device, queue);
 
         let mut cache = Self {
             layout,
             sampler,
             white,
+            flat_normal,
             materials: HashMap::new(),
             textures: HashMap::new(),
             max_texture_dim: 8192,
@@ -2696,7 +2732,14 @@ impl MaterialCache {
 
         let (view, has_texture) = match (data.base_color_texture, library) {
             (Some((asset, index)), Some(library)) => {
-                match self.texture_view(device, queue, asset, index, library) {
+                match self.texture_view(
+                    device,
+                    queue,
+                    asset,
+                    index,
+                    library,
+                    TextureColorSpace::Srgb,
+                ) {
                     Some(view) => (view, true),
                     None => (self.white.clone(), false),
                 }
@@ -2704,12 +2747,46 @@ impl MaterialCache {
             _ => (self.white.clone(), false),
         };
 
-        let uniform = MaterialUniform::build(
+        // 扩展二十一：三张数据贴图各自解析。开关只认「真的绑上了图」的那张 ——
+        // 贴图超限/像素不全会让 texture_view 返回 None，此时开关必须是 0，
+        // 否则着色器会去采样我们垫的中性图，材质行为就悄悄变了。
+        let (normal_view, normal_map) = self.resolve_pbr_map(
+            device,
+            queue,
+            data.normal_texture,
+            library,
+            TextureColorSpace::Linear,
+            self.flat_normal.clone(),
+        );
+        let (roughness_view, roughness_map) = self.resolve_pbr_map(
+            device,
+            queue,
+            data.roughness_texture,
+            library,
+            TextureColorSpace::Linear,
+            self.white.clone(),
+        );
+        let (occlusion_view, occlusion_map) = self.resolve_pbr_map(
+            device,
+            queue,
+            data.occlusion_texture,
+            library,
+            TextureColorSpace::Linear,
+            self.white.clone(),
+        );
+        let maps = PbrMapFlags {
+            normal: normal_map,
+            roughness: roughness_map,
+            occlusion: occlusion_map,
+        };
+
+        let uniform = MaterialUniform::build_with_maps(
             data.base_color,
             data.metallic,
             data.roughness,
             surface.map(|s| s.emissive()).unwrap_or([0.0; 3]),
             has_texture,
+            maps,
         );
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("r3e-material-ubo"),
@@ -2735,6 +2812,18 @@ impl MaterialCache {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&normal_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&roughness_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&occlusion_view),
+                },
             ],
         });
 
@@ -2754,22 +2843,85 @@ impl MaterialCache {
         asset: AssetId,
         index: u32,
         library: &Arc<dyn MeshProvider>,
+        space: TextureColorSpace,
     ) -> Option<wgpu::TextureView> {
-        if let Some(view) = self.textures.get(&(asset, index)) {
+        if let Some(view) = self.textures.get(&(asset, index, space)) {
             return Some(view.clone());
         }
         let image = library.texture(asset, index)?;
-        let view = upload_texture(device, queue, &image, self.max_texture_dim)?;
+        let view = upload_texture(device, queue, &image, self.max_texture_dim, space)?;
         log::info!(
-            "贴图已上传 GPU: asset {} tex {} — {}x{}",
+            "贴图已上传 GPU: asset {} tex {} — {}x{} ({:?})",
             asset,
             index,
             image.width,
-            image.height
+            image.height,
+            space
         );
-        self.textures.insert((asset, index), view.clone());
+        self.textures.insert((asset, index, space), view.clone());
         Some(view)
     }
+
+    /// 解析一张 PBR 数据贴图：成功返回 (视图, true)，否则返回 (兜底视图, false)。
+    ///
+    /// 兜底视图的作用只是把 bind group 填满 —— 开关为 false 时着色器根本不采样，
+    /// 所以「没图」不等于「画面变了」。
+    fn resolve_pbr_map(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        slot: Option<(AssetId, u32)>,
+        library: Option<&Arc<dyn MeshProvider>>,
+        space: TextureColorSpace,
+        placeholder: wgpu::TextureView,
+    ) -> (wgpu::TextureView, bool) {
+        let (Some((asset, index)), Some(library)) = (slot, library) else {
+            return (placeholder, false);
+        };
+        match self.texture_view(device, queue, asset, index, library, space) {
+            Some(view) => (view, true),
+            None => (placeholder, false),
+        }
+    }
+}
+
+/// 创建 1x1 中性法线贴图：(0.5, 0.5, 1.0) 对应切线空间里的「正上方」。
+/// 用线性格式上传，避免 0.5 被 sRGB 解码成 0.21 而把法线整体压弯。
+fn create_flat_normal_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-flat-normal-1x1"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[128u8, 128, 255, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 fn create_white_texture(device: &wgpu::Device) -> wgpu::TextureView {
@@ -2790,12 +2942,24 @@ fn create_white_texture(device: &wgpu::Device) -> wgpu::TextureView {
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// 把 RGBA8 像素上传成 sRGB 贴图（源色即 sRGB，采样后自动线性化）。
+/// 贴图的色彩空间（扩展二十一）。
+///
+/// 决定上传成哪种 GPU 格式：颜色类贴图走 `Rgba8UnormSrgb`（采样时自动线性化），
+/// 数据类贴图（法线 / 粗糙度 / AO）走 `Rgba8Unorm`（原值直读）。
+/// 缓存键带上它，同一张图被当颜色和当数据各用一次时不会串。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum TextureColorSpace {
+    Srgb,
+    Linear,
+}
+
+/// 把 RGBA8 像素上传成贴图。`space` 决定是否做 sRGB 自动线性化。
 fn upload_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: &TextureImage,
     max_dim: u32,
+    space: TextureColorSpace,
 ) -> Option<wgpu::TextureView> {
     if !image.is_valid() {
         log::warn!(
@@ -2818,13 +2982,17 @@ fn upload_texture(
         height: image.height,
         depth_or_array_layers: 1,
     };
+    let format = match space {
+        TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
+    };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("r3e-asset-texture"),
         size,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });

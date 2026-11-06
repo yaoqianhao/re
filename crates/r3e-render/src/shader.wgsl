@@ -22,13 +22,16 @@ struct Camera {
 var<uniform> u_camera: Camera;
 
 // P2：每材质一组 —— base color 染色 + PBR 标量 + 可选贴图。
-// 布局必须与 `r3e-render::pbr::MaterialUniform` 逐字段一致（48 字节）。
+// 布局必须与 `r3e-render::pbr::MaterialUniform` 逐字段一致（64 字节）。
 struct Material {
     base_color: vec4<f32>,
-    // x = metallic，y = roughness，z = 是否有贴图，w 保留
+    // x = metallic，y = roughness，z = 是否有 base color 贴图，w 保留
     params: vec4<f32>,
     // rgb = 自发光（线性 HDR，只加不减、不参与光照），a 保留
     emissive: vec4<f32>,
+    // 扩展二十一：x/y/z = 法线 / 粗糙度 / AO 贴图是否挂载（0/1），w 保留。
+    // 三位全 0 时着色器完全不采样这三张图，材质行为与扩展十一的纯标量一致。
+    params2: vec4<f32>,
 };
 
 @group(1) @binding(0)
@@ -39,6 +42,19 @@ var t_base_color: texture_2d<f32>;
 
 @group(1) @binding(2)
 var s_base_color: sampler;
+
+// 扩展二十一：三张 PBR 数据贴图。它们都是**线性**纹理（`Rgba8Unorm`，
+// 不是 sRGB）—— 法线、粗糙度、AO 存的是几何/材质数据而不是颜色，
+// 按 sRGB 解码会把 0.5 的中性法线拉成 0.21，法线方向整体偏折。
+// 三张图共用 binding(2) 的采样器：过滤方式相同，没必要重复绑定。
+@group(1) @binding(3)
+var t_normal_map: texture_2d<f32>;
+
+@group(1) @binding(4)
+var t_roughness_map: texture_2d<f32>;
+
+@group(1) @binding(5)
+var t_occlusion_map: texture_2d<f32>;
 
 // P4：关节矩阵表。所有蒙皮实例共用一块 storage buffer，实例用 `joint_base`
 // 指出自己那段起点；非蒙皮实例权重全 0，不会读到这些槽位。
@@ -83,6 +99,9 @@ struct VsIn {
     @location(8) m3: vec4<f32>,
     @location(9) color: vec4<f32>,
     @location(10) joint_base: u32,
+    // 扩展二十一：切线 xyz + 手性 w（bitangent = cross(N, T) * w）。
+    // 用 location 11 而不是 5：5..=10 属于实例属性，两者共用同一命名空间。
+    @location(11) tangent: vec4<f32>,
 };
 
 struct VsOut {
@@ -91,6 +110,9 @@ struct VsOut {
     @location(1) world_normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) uv: vec2<f32>,
+    // 世界空间切线（已去掉法线分量）+ 手性，供片元着色器构造 TBN
+    @location(4) world_tangent: vec3<f32>,
+    @location(5) tangent_handedness: f32,
 };
 
 // 线性混合蒙皮：顶点先在「关节空间」里被矩阵累加，再走实例矩阵。
@@ -123,15 +145,18 @@ fn vs_main(in: VsIn) -> VsOut {
     // 非蒙皮顶点权重全 0：直接跳过 storage 读取，保持内置网格路径零开销
     var local_position = in.position;
     var local_normal = in.normal;
+    var local_tangent = in.tangent.xyz;
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
         let skinned = skin_matrix(in.joint_base, in.joints, in.weights);
         local_position = (skinned * vec4<f32>(in.position, 1.0)).xyz;
         // 蒙皮矩阵含非均匀缩放时法线要逆转置；这里用伴随矩阵近似，与下方模型矩阵一致
-        local_normal = mat3x3<f32>(
+        let skin_adjugate = mat3x3<f32>(
             cross(skinned[1].xyz, skinned[2].xyz),
             cross(skinned[2].xyz, skinned[0].xyz),
             cross(skinned[0].xyz, skinned[1].xyz),
-        ) * in.normal;
+        );
+        local_normal = skin_adjugate * in.normal;
+        local_tangent = skin_adjugate * in.tangent.xyz;
     }
 
     let world = model * vec4<f32>(local_position, 1.0);
@@ -149,6 +174,9 @@ fn vs_main(in: VsIn) -> VsOut {
     out.world_normal = normalize(normal_matrix * local_normal);
     out.color = in.color;
     out.uv = in.uv;
+    // 切线按与法线相同的伴随矩阵变换；未挂法线贴图时这些值不参与着色
+    out.world_tangent = normal_matrix * local_tangent;
+    out.tangent_handedness = select(-1.0, 1.0, in.tangent.w >= 0.0);
     return out;
 }
 
@@ -614,12 +642,12 @@ fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let n = normalize(in.world_normal);
+    let geometric_n = normalize(in.world_normal);
     let l = normalize(-u_camera.light_dir.xyz);
     let v = normalize(u_camera.camera_pos.xyz - in.world_position);
     // 光方向与视线正相反时 l+v 退化，直接取法线作半程向量，避免 normalize(0) 出 NaN
     let half_sum = l + v;
-    let h = select(normalize(half_sum), n, length(half_sum) < 1e-4);
+    let h = select(normalize(half_sum), geometric_n, length(half_sum) < 1e-4);
 
     // base color：贴图（若存在）乘以材质染色因子，再乘物件颜色。
     // 贴图是 sRGB 纹理，采样后已是线性值；材质因子按线性因子直接相乘。
@@ -631,8 +659,44 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 反照率为负会把光"减掉"，与 CPU 侧一样按 0 处理
     albedo = max(albedo, vec3<f32>(0.0));
 
+    // 扩展二十一：切线空间法线贴图 → 世界空间法线。
+    // 未挂贴图（params2.x = 0）时直接沿用几何法线，与扩展十一完全一致。
+    var n = geometric_n;
+    if u_material.params2.x > 0.5 {
+        // 用 Gram-Schmidt 把切线投影到法线的正交补上，抵消插值/缩放引入的偏差
+        var tangent = in.world_tangent - geometric_n * dot(geometric_n, in.world_tangent);
+        if length(tangent) < 1e-5 {
+            // UV 退化或资产没算切线：任取一条与法线不平行的轴兜底，避免 normalize(0)
+            tangent = select(
+                vec3<f32>(1.0, 0.0, 0.0),
+                vec3<f32>(0.0, 1.0, 0.0),
+                abs(geometric_n.x) > 0.9,
+            );
+            tangent = tangent - geometric_n * dot(geometric_n, tangent);
+        }
+        let t = normalize(tangent);
+        let b = cross(geometric_n, t) * in.tangent_handedness;
+        // 线性纹理：采样值直接是 [-1,1] 的法线分量，正好用 *2-1 还原
+        let sampled = textureSample(t_normal_map, s_base_color, in.uv).xyz * 2.0 - 1.0;
+        // Z 分量至少留一点正值，防止贴图误差把法线翻到表面背面
+        let tangent_normal = vec3<f32>(sampled.xy, max(sampled.z, 0.05));
+        n = normalize(t * tangent_normal.x + b * tangent_normal.y + geometric_n * tangent_normal.z);
+    }
+
     let metallic = clamp(u_material.params.x, 0.0, 1.0);
-    let roughness = clamp(u_material.params.y, MIN_ROUGHNESS, 1.0);
+    // 粗糙度贴图（线性，取 G 通道：独立灰度图与 glTF 的 metallicRoughness 合并图
+    // 都把粗糙度放在 G）。标量因子是乘数，缺贴图时退化为 params.y 本身。
+    var roughness_scalar = u_material.params.y;
+    if u_material.params2.y > 0.5 {
+        roughness_scalar = roughness_scalar * textureSample(t_roughness_map, s_base_color, in.uv).g;
+    }
+    let roughness = clamp(roughness_scalar, MIN_ROUGHNESS, 1.0);
+    // AO 贴图（线性，取 R 通道）：只衰减环境光，直接光由阴影负责，
+    // 否则 AO 与阴影会重复压暗、接触处出现脏黑边。
+    var ao = 1.0;
+    if u_material.params2.z > 0.5 {
+        ao = clamp(textureSample(t_occlusion_map, s_base_color, in.uv).r, 0.0, 1.0);
+    }
 
     let ndl = clamp(dot(n, l), 0.0, 1.0);
     // n·v 掠射时留极小正数防除零；G 项在掠射本来就趋于 0，不会因此爆亮
@@ -675,6 +739,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let specular_ibl = env_radiance(dominant, roughness) * (f0 * ab.x + ab.y);
         ambient_term = (diffuse_ibl + specular_ibl) * u_camera.env_zenith.w;
     }
+    // 扩展二十一：AO 只压环境光（直接光已由阴影负责），emissive 不受影响
+    ambient_term = ambient_term * ao;
 
     // 扩展十五：局部光源（点光 / 聚光）累加。与方向光同套 BRDF，只是逐灯重算光向量，
     // 并额外乘「平滑窗衰减 × 聚光锥因子」。扩展十八 C 起，标了 `cast_shadow` 的灯

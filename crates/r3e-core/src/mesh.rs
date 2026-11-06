@@ -8,7 +8,10 @@ use glam::{Vec2, Vec3};
 
 use crate::{aabb::Aabb, AssetId, MeshRef};
 
-/// 统一顶点格式：位置 + 法线 + 第一套 UV + 蒙皮（P4）。
+/// 缺省切线：`+X` 方向、手性 +1（表示「尚未按 UV 计算过切线」）。
+pub const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+
+/// 统一顶点格式：位置 + 法线 + 第一套 UV + 蒙皮（P4）+ 切线（扩展二十一）。
 ///
 /// 使用 `#[repr(C)]` + `Pod` 是为了让渲染层能直接把切片当作字节上传，
 /// 但类型本身不依赖任何 wgpu API。
@@ -16,8 +19,12 @@ use crate::{aabb::Aabb, AssetId, MeshRef};
 /// 蒙皮字段在 P4 加入：`joints` 是关节槽位下标（对应 `SkinInstance::joint_matrices`），
 /// `weights` 是对应权重。**非蒙皮顶点两者全为 0**，着色器据此走「不做蒙皮」分支，
 /// 因此同一份顶点布局能同时服务内置网格与蒙皮资产网格。
+///
+/// `tangent` 在扩展二十一加入（`xyz` = 切线，`w` = 手性 ±1），供法线贴图构造 TBN。
+/// 缺省值是 `(1, 0, 0, 1)`，即「未计算切线」；真正需要的网格由
+/// [`MeshData::recompute_tangents`] 从位置与 UV 现算（见 `crate::tangent`）。
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Pod, Zeroable)]
+#[derive(Copy, Clone, Debug, PartialEq, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
@@ -26,9 +33,18 @@ pub struct Vertex {
     pub joints: [u16; 4],
     /// 每顶点最多 4 个权重，和为 1；非蒙皮顶点为 0（P4）。
     pub weights: [f32; 4],
+    /// 切线空间基：`xyz` = 切线方向，`w` = 手性（`bitangent = cross(N, T) * w`）。
+    pub tangent: [f32; 4],
+}
+
+impl Default for Vertex {
+    fn default() -> Self {
+        Self::new([0.0; 3], [0.0; 3], [0.0; 2])
+    }
 }
 
 impl Vertex {
+    /// 默认切线的顶点（切线待 [`MeshData::recompute_tangents`] 补齐）。
     pub const fn new(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
         Self {
             position,
@@ -36,6 +52,7 @@ impl Vertex {
             uv,
             joints: [0; 4],
             weights: [0.0; 4],
+            tangent: DEFAULT_TANGENT,
         }
     }
 
@@ -53,6 +70,27 @@ impl Vertex {
             uv,
             joints,
             weights,
+            tangent: DEFAULT_TANGENT,
+        }
+    }
+
+    /// 显式给出切线的顶点。
+    pub const fn with_tangent(mut self, tangent: [f32; 4]) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// 切线（`Vec3`）；手性见 [`Vertex::tangent_handedness`]。
+    pub fn tangent(&self) -> Vec3 {
+        Vec3::new(self.tangent[0], self.tangent[1], self.tangent[2])
+    }
+
+    /// 切线手性 ±1；非有限值按 +1 处理。
+    pub fn tangent_handedness(&self) -> f32 {
+        if self.tangent[3] < 0.0 {
+            -1.0
+        } else {
+            1.0
         }
     }
 
@@ -134,6 +172,15 @@ impl MeshData {
 
     pub fn vertex_count(&self) -> usize {
         self.vertices.len()
+    }
+
+    /// 从位置与 UV 现算每顶点切线并写回（扩展二十一）。
+    ///
+    /// 法线贴图需要 TBN，而 FBX 没有切线、glTF 的 `TANGENT` 也是可选属性，
+    /// 因此统一在此补算，算法见 [`crate::tangent::compute_tangents`]。
+    /// 空网格或索引为空时不动顶点（切线保持 [`DEFAULT_TANGENT`]）。
+    pub fn recompute_tangents(&mut self) {
+        crate::tangent::recompute_tangents(self);
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -222,6 +269,10 @@ impl TextureImage {
 }
 
 /// 材质数据：渲染层只认这份描述。
+///
+/// 贴图字段都是 `(资产, 该资产贴图表下标)`，渲染层通过 `MeshProvider::texture`
+/// 取到已解码的 [`TextureImage`] 再上传 —— 这一层与渲染层都不做文件 IO。
+/// **全部缺省为 `None`**，此时渲染走纯标量参数（与扩展十一的行为完全一致）。
 #[derive(Debug, Clone)]
 pub struct MaterialData {
     pub name: String,
@@ -231,6 +282,12 @@ pub struct MaterialData {
     pub roughness: f32,
     /// base color 贴图：`(资产, 该资产贴图表下标)`。
     pub base_color_texture: Option<(AssetId, u32)>,
+    /// 切线空间法线贴图（线性数据，需 TBN 采样，见 `crate::tangent`）。
+    pub normal_texture: Option<(AssetId, u32)>,
+    /// 粗糙度贴图（线性数据，取 G 通道；也承接 glTF 的 `metallicRoughness` 图）。
+    pub roughness_texture: Option<(AssetId, u32)>,
+    /// 环境光遮蔽贴图（线性数据，取 R 通道）。
+    pub occlusion_texture: Option<(AssetId, u32)>,
 }
 
 impl Default for MaterialData {
@@ -241,7 +298,31 @@ impl Default for MaterialData {
             metallic: 0.0,
             roughness: 0.6,
             base_color_texture: None,
+            normal_texture: None,
+            roughness_texture: None,
+            occlusion_texture: None,
         }
+    }
+}
+
+impl MaterialData {
+    /// 是否带任何一张 PBR 数据贴图（法线 / 粗糙度 / AO）。
+    pub fn has_pbr_maps(&self) -> bool {
+        self.normal_texture.is_some()
+            || self.roughness_texture.is_some()
+            || self.occlusion_texture.is_some()
+    }
+
+    /// 数据贴图张数，用于导入统计与文档口径。
+    pub fn pbr_map_count(&self) -> usize {
+        [
+            self.normal_texture,
+            self.roughness_texture,
+            self.occlusion_texture,
+        ]
+        .iter()
+        .filter(|slot| slot.is_some())
+        .count()
     }
 }
 
