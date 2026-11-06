@@ -15,6 +15,7 @@ pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod node;
+pub mod occlusion;
 pub mod postfx;
 pub mod procedural;
 pub mod scene;
@@ -69,6 +70,11 @@ pub use mesh::{
     MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex, DEFAULT_TANGENT,
 };
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
+pub use occlusion::{
+    project_aabb, test_aabb, DepthPyramid, OcclusionSettings, OcclusionVerdict, ScreenBounds,
+    DEFAULT_DEPTH_BIAS, DEFAULT_MARGIN_PX, DEFAULT_MAX_TILES, DEFAULT_TILE_SIZE, MAX_DEPTH_BIAS,
+    MAX_MARGIN_PX, MAX_MAX_TILES, MAX_PYRAMID_LEVELS, MAX_TILE_SIZE, MIN_MAX_TILES, MIN_TILE_SIZE,
+};
 pub use postfx::{
     bright_pass, expose, exposure_scale, fxaa_edge_visible, luminance, resolve, tonemap,
     tonemap_aces, tonemap_reinhard, BloomSettings, PostFxSettings, TonemapMode, ACES_A, ACES_B,
