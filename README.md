@@ -401,6 +401,20 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 
 细节（深度重建、半球核、散焦、代价与边界）见 [§20 屏幕空间遮蔽](#20-屏幕空间遮蔽ssao扩展十七)。
 
+### 遮挡剔除（扩展二十二）
+
+`occlusion` 段缺省 `enabled: false`，整段跳过，画面与扩展二十一逐像素一致。
+开启后用**上一帧深度金字塔**在 CPU 侧判「物件整块被挡住」，只影响不透明批次的绘制。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_occlusion_enabled(on)` | 总开关（打开后先有几帧在等深度读回，探针会显示「开关 true / 生效 false」） |
+| `occlusion_enabled() -> bool` | 当前开关 |
+| `set_occlusion_bias(v) -> f64` | 深度偏置，夹 `0..0.5`（默认 0.05；**越大约保守**，返回夹取后的实际值） |
+| `occlusion_bias() -> f64` | 当前偏置 |
+
+细节（金字塔、两阶段判定、读回布局、代价与边界）见 [§26 遮挡剔除](#26-遮挡剔除扩展二十二)。
+
 ### 时间 / 随机 / 输出
 
 | 函数 | 说明 |
@@ -1826,7 +1840,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed。
+`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed。
 
 ---
 
@@ -1946,7 +1960,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
-`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed。
+`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed。
 
 ---
 
@@ -2047,7 +2061,7 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 | `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
 | `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
 
-`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed。
+`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed。
 
 ---
 
@@ -2148,7 +2162,7 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 | `crates/r3e-app/src/main.rs` | 2 | `parse_window_size` 的三种分隔符与非法输入（缺 `x`、0、非数字） |
 | `crates/r3e-app/tests/visual_regression.rs` | 1 | 端到端像素回归（无 GPU 时经三道闸门跳过） |
 
-`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed（`--features rapier` 为 830 passed）。
+`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
 
 ---
 
@@ -2265,7 +2279,7 @@ cargo run -- assets\scene.json
 这些写错都**不会编译失败**，只会在实机上表现为"贴图没效果"或"画面诡异"，
 所以 `pbr_maps_contract.rs` 用源码级断言（`include_str!` 着色器 + 文本匹配 + naga 解析）把它们钉住。
 
-`cargo test --workspace` 现为 58 个套件 / 826 passed / 0 failed（`--features rapier` 为 830 passed）。
+`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
 
 ### 25.8 已知边界
 
@@ -2275,6 +2289,90 @@ cargo run -- assets\scene.json
 - **数据贴图不生成 mipmap**：远距离采样会闪，未做各向异性过滤；
 - **没有脚本 API 与 RPC**：三张图只能由导入的模型自带，运行时换图需要改资产；
 - 法线贴图 `z` 下限 `0.05` 会削弱强凹凸的陡峭度，属于"防翻面优先"的取舍。
+
+---
+
+## 26. 遮挡剔除（扩展二十二）
+
+一句话：**把上一帧的深度压成 tile 金字塔，用纯 CPU 判「这个物件的屏幕矩形是不是整块都比墙远」，是就本帧不画。**
+缺省关闭，打开后开关关闭路径与扩展二十一逐像素一致。
+
+### 26.1 三条不变量
+
+1. **宁可多画，不可让物件凭空消失**：金字塔缺失 / 尺寸对不上 / 物件跨近平面 / 屏外 / 取不到 AABB，一律判可见；
+2. **开关即零成本**：`enabled = false` 时 GPU 命令与实例数与加这个功能之前逐字节一致，视觉基线无需重建；
+3. **判定是纯算术**：core 侧 `Vec<f32>` + 比较，零 wgpu，44 条用例全在无显卡机器上跑。
+
+### 26.2 core 侧（`crates/r3e-core/src/occlusion.rs`）
+
+- `DepthPyramid::build(width, height, tile, depths)`：把 NDC 深度按 `tile × tile` 分块，**每块只留最远值**
+  （判「这块区域里有没有比物件更近的表面」，最远值就是界限），并逐层翻倍建到 1 个 tile（最多 8 层）；
+- `OcclusionSettings { enabled, depth_bias, tile_size, margin_px, max_tiles }`：`sanitized()` 把越界值夹回去；
+- `is_occluded(bounds, settings)`：**两阶段**——粗筛（矩形外扩 `margin_px`）与复核（`review()`：margin 归零、偏置 ×4），
+  两次都判遮挡才返回 `Occluded`；`Rejected`（粗筛过、复核没过）**照画但计入统计**，调参时不是黑盒；
+- 深度偏置是**相对比例**：`threshold = nearest - depth_bias × (1 - nearest)`。透视深度在远处被压得极扁，
+  固定绝对值会让远处物件一个都剔不掉（`is_occluded_works_far_from_camera` 钉这件事）。
+
+### 26.3 渲染侧（`crates/r3e-render/src/occlusion.rs`）
+
+- `OcclusionCuller` 低频、**非阻塞**读回深度预通道：`encode_readback` 编 copy → `after_submit` 发 `map_async` →
+  之后某帧 `device.poll(PollType::Poll)` 取回，取不到就沿用上一份，**绝不等 GPU**；
+- `DEFAULT_READBACK_INTERVAL = 4`（60fps 下约 15Hz，可设 `1..=60`），`ReadbackLayout` 按 256 字节行对齐
+  （1080p ≈ 8.3 MiB/次），`inflight` 只允许一份在读；
+- 接入点在 `prepare_instances` 阶段三 A（视锥剔除之后）：**只剔不透明批次**——半透明不写深度，
+  拿不透明深度去剔玻璃 / 水面会让它们整层消失；蒙皮先按 `SKIN_CULL_MARGIN` 放大 AABB 再判；
+- 统计进 `RenderStats::occlusion`：`enabled / tested / occluded / readback / levels`，
+  同时出现在运行日志的「遮挡剔除」行与编辑器 `engine_stats` 的 `render.occlusion`。
+
+### 26.4 场景与脚本
+
+```json
+{ "occlusion": { "enabled": true, "depth_bias": 0.05, "tile_size": 8 } }
+```
+
+| 脚本 API | 语义 |
+| --- | --- |
+| `set_occlusion_enabled(bool)` / `occlusion_enabled()` | 开关（写入即 `sanitized()`） |
+| `set_occlusion_bias(f64) -> f64` / `occlusion_bias()` | 深度偏置，返回夹取后的实际值 |
+
+调参经验：`depth_bias` **越大约保守**（越难剔），调 0 最容易剔也最容易误剔；`tile_size` 越大金字塔越粗、
+判定越快也越容易糊掉遮挡关系。
+
+### 26.5 怎么验证
+
+```powershell
+# CPU 契约（core 28 + 场景 8 + render 6 + script 2）
+cargo test -p r3e-core -p r3e-render -p r3e-script occlusion
+
+# 画面没漂（缺省关闭，必须与扩展二十一基线一致）
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+```
+
+打开后看日志那行：`段内开关 true / 生效 true / 金字塔 N 层 / 判定 M / 遮挡剔除 K`。
+刚打开时会有几帧「开关 true / 生效 false」——金字塔还在读回路上，属正常。
+「该剔的有没有剔干净」「有没有物件闪进来又闪出去」需要人眼判断，自动化只能证明关闭时无变化。
+
+### 26.6 测试覆盖
+
+新增 44 条，全部 CPU 侧、无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/occlusion.rs` | 28 | 金字塔取 tile 最远值、非有限值当最远、逐层收缩且保持保守、退化输入被拒；物体在墙前判可见 / 在墙后判遮挡、偏置生效、固定偏置在远处失效（回归）、任一 tile 空即可见、屏外可见、超 `max_tiles` 换更粗一层；投影居中 / 退化输入 / 相机后方 / 跨近平面；设置夹取、`review()` 更严格、JSON 往返 |
+| `crates/r3e-core/tests/occlusion_scene.rs` | 8 | 缺段 / 只写 `{}` 都保持关闭、部分字段保留、非法值加载时夹取、`set_occlusion` 吃掉 NaN 偏置、默认值不落盘、JSON 往返、开关不改其余参数 |
+| `crates/r3e-render/src/occlusion.rs` | 6 | 读回布局拒退化尺寸、行按 256 对齐、整数倍不多补一行、`readback_interval` 夹到 `1..=60`、新建 culler fail-open、`reset()` 同时清金字塔与统计 |
+| `crates/r3e-script/src/lib.rs` | 2 | `set_occlusion_enabled` 双向生效、偏置经脚本写入被夹取 |
+
+`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
+
+### 26.7 已知边界
+
+- **不是 GPU 遮挡查询**：没有 query 池，判定在 CPU，成本随「通过视锥的实例数」线性上升；
+- **滞后**：用上一帧深度（默认 4 帧一次），快速转相机时可能看到物件闪进闪出；无「连续 N 帧才剔」的迟滞；
+- **不筛遮挡体**：上一帧画了什么就全当潜在遮挡体，没有「大遮挡物优先」的挑选；
+- **只按 AABB 矩形判**：细长遮挡体（栅栏、树枝）和「从门缝露一条」判不出来；
+- **只覆盖不透明批次**：半透明永不参与；也没有层级剔除，逐实例测试；
+- **读回带宽不随场景缩放**：分辨率决定每帧 copy 的字节数（1080p ≈ 8.3 MiB/4 帧）。
 
 ---
 

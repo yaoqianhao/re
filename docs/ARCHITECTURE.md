@@ -145,24 +145,24 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 15,624 | 2,027 | 306 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 7,130 | 1,766 | 136 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-core | 16,562 | 2,183 | 342 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 7,603 | 1,766 | 142 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,219 | 582 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| r3e-script | 5,238 | 1,074 | 82 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、动画层、局部阴影语义单测） |
+| r3e-script | 5,311 | 1,074 | 84 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、遮挡剔除、动画层、局部阴影语义单测） |
 | r3e-editor | 2,907 | 1,448 | 88 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 6,453 | 183 | 55 | `app.rs`（含 `drive_spatial_audio` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
+| r3e-app | 6,476 | 183 | 55 | `app.rs`（含 `drive_spatial_audio` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **52,157** | **7,740** | **830** | **约 5.2 万行 Rust + 1,266 行 WGSL；`cargo test --workspace` 58 个套件 / 826 passed / 0 failed** |
+| **合计** | **53,664** | **7,896** | **874** | **约 5.4 万行 Rust + 1,266 行 WGSL；`cargo test --workspace` 59 个套件 / 870 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,266 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十一（材质数据贴图）收尾一次性重算
-（此前停在扩展二十收尾快照：51,243 行 / 7,284 tests 行 / 805 单测 / 56 套件 801 passed）。单测数一列是 `#[test]` **标注数**，
+着色器（1,266 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十二（遮挡剔除）收尾一次性重算
+（此前停在扩展二十一收尾快照：52,157 行 / 7,740 tests 行 / 830 单测 / 58 套件 826 passed）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 826。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 870。
 
-Release 二进制 14.1 MB（14,787,072 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
+Release 二进制 14.1 MB（14,817,280 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
 
 ### 3.3 质量门（每次改动后必过）
@@ -170,8 +170,8 @@ Release 二进制 14.1 MB（14,787,072 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 826 passed / 0 failed（58 个套件；较扩展十八 C 收尾的 704 增 122 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）+ 扩展二十 14（`r3e-asset/src/visual_regression.rs` 纯函数契约 11 + `tests/visual_regression.rs` 像素回归入口 1（无 GPU 时跳过计 passed）+ `main.rs` `parse_window_size` 2）+ 扩展二十一 25（`core/tangent.rs` 5 + `core/texture_slot.rs` 3 + `render/pbr.rs` 4 + `render/tests/pbr_maps_contract.rs` 9 + `asset/tests/pbr_map_import.rs` 4）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 830 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 870 passed / 0 failed（59 个套件；较扩展十八 C 收尾的 704 增 166 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）+ 扩展二十 14（`r3e-asset/src/visual_regression.rs` 纯函数契约 11 + `tests/visual_regression.rs` 像素回归入口 1（无 GPU 时跳过计 passed）+ `main.rs` `parse_window_size` 2）+ 扩展二十一 25（`core/tangent.rs` 5 + `core/texture_slot.rs` 3 + `render/pbr.rs` 4 + `render/tests/pbr_maps_contract.rs` 9 + `asset/tests/pbr_map_import.rs` 4）+ 扩展二十二 44（`core/occlusion.rs` 28 + `core/tests/occlusion_scene.rs` 8 + `render/occlusion.rs` 6 + `script/lib.rs` 2）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 874 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -200,6 +200,7 @@ Release 二进制 14.1 MB（14,787,072 字节；`[profile.release]` 已开 `lto 
 | `material.rs` | PBR 材质参数、收敛与 Cook-Torrance 纯函数参考实现（零 wgpu 依赖，可单测） | `SurfaceMaterial`, `GeoTerms`, `BrdfSample`, `cook_torrance_brdf`, `direct_light` |
 | `tangent.rs` | 切线空间基（TBN）构造：按三角形位置 / UV 差分累加再 Gram-Schmidt 正交化，UV 面积退化跳过、整网格退化退回任意正交基，手性来自副切线方向（扩展二十一；纯 CPU 纯函数） | `compute_tangents`, `MeshData::recompute_tangents` |
 | `texture_slot.rs` | 贴图槽位分类：把 FBX / glTF 五花八门的槽位名收敛成「这张图是干什么用的」，并给出「是否按线性数据上传」判据（扩展二十一；导入层与渲染层共用同一套判据） | `TextureSlot`, `classify_slot` |
+| `occlusion.rs` | 遮挡剔除的 CPU 判定：把上一帧深度压成 tile 最远深度金字塔（HZB 的保守替代），对世界 AABB 做屏幕空间两阶段遮挡测试（扩展二十二；金字塔是纯 `Vec<f32>`，判定是纯算术，零 wgpu 依赖） | `OcclusionSettings`, `DepthPyramid`, `ScreenBounds`, `OcclusionVerdict`, `project_aabb`, `test_aabb` |
 | `env.rs` | 三色天空 + 太阳的解析环境探针，Sh9 球谐投影与解析环境 BRDF（零 wgpu，可单测） | `EnvironmentSettings`, `Sh9`, `env_brdf_approx` |
 | `postfx.rs` | HDR 后处理的数值契约：曝光、软膝亮部提取、Reinhard / ACES 曲线、FXAA 边缘判定、composite 参考实现 | `PostFxSettings`, `BloomSettings`, `TonemapMode`, `expose`, `bright_pass`, `tonemap`, `resolve` |
 
@@ -741,6 +742,73 @@ glTF 的 `baseColorTexture` / `metallicRoughnessTexture` / `occlusionTexture` / 
 - **分类失败不猜**，也**不因为认不出就丢图**：`Unknown`（含 FBX 的 `bump` 高度图——按法线采样会得到错误方向）
   不参与法线 / 粗糙度 / AO 槽位，只保留 base color 兜底匹配能力。错把漫反射图当法线图的画面比"没有法线贴图"更糟且更难排查。
 - **同一用途只取第一张**：`pick_pbr_textures` 按扁平表顺序取首个命中，不做"多张同名图混合"这种没人能预测的行为。
+
+### 4.15 遮挡剔除在 core 侧的契约（扩展二十二）
+
+视锥剔除（`frustum.rs`）只能扔掉「镜头外」的物件；镜头里被前面的墙完全挡住的物件照样进实例缓冲、
+跑完整条顶点 + 片元流水线，最后一个像素不剩地被深度测试丢掉。扩展二十二把这类「画了也看不见」的物件提前摘掉，
+core 侧只负责**判定**（金字塔是纯 `Vec<f32>`、判定是纯算术、零 wgpu），金字塔从哪来见 §5.15。
+
+**为什么是 CPU 参照版而不是 GPU 遮挡查询**：`wgpu` 的 occlusion query 要建 query set、要等 resolve 读回，
+而且结果只能用于下一帧——收益在物件量不大时被查询自身的开销吃掉。这里改成「读上一帧深度 → 压金字塔 → 纯 CPU 判」：
+每条判定的成本是几十次 `f32` 比较，可以被单测逐条钉住（28 条），也不用为 query 池做资源配额。
+
+**① 金字塔（`DepthPyramid::build`）**：把上一帧 `width × height` 的 NDC 深度按 `tile × tile` 分块，
+每块只留**最远**深度。判定要回答的问题是「这块屏幕区域里有没有比物件更近的表面」，
+最远值就是这个界限；存完整层级反而不是这个问题的答案。
+
+| 常量 | 值 | 口径 |
+| --- | --- | --- |
+| `DEFAULT_TILE_SIZE` / `MIN_TILE_SIZE` / `MAX_TILE_SIZE` | 8 / 2 / 32 | 8 让 640×360 压成 80×45；1 像素 tile 等于不压缩，32 像素在 1080p 下只剩 60×34、遮挡关系被糊掉 |
+| `DEFAULT_DEPTH_BIAS` / `MAX_DEPTH_BIAS` | 0.05 / 0.5 | **相对剩余深度余量**的比例，见下 |
+| `DEFAULT_MARGIN_PX` / `MAX_MARGIN_PX` | 2 / 64 | 粗筛往外长一圈抵消投影取整误差；外扩越大越保守（越不剔除） |
+| `DEFAULT_MAX_TILES` / `MIN` / `MAX` | 256 / 16 / 4096 | 单次判定最多遍历的 tile 数，超了就换更粗的一层 |
+| `MAX_PYRAMID_LEVELS` | 8 | 每层边长翻倍，8 层足以从 2 像素 tile 收敛到 1 个 tile |
+
+**② 深度偏置是相对比例，不是绝对差值**。透视投影的 NDC 深度在远处被压得极扁：相机在 12 米处时，
+物件与墙面只差 `1e-4` 量级，而近处两个相邻表面能差 `0.1`。所以偏置按 `(1 - nearest)` 缩放——
+`threshold = nearest - bias × (1 - nearest)`，等价于「视空间深度的相对误差」。
+**这条不是可调口味而是正确性前提**：实测固定 `0.01` 的绝对偏置会让远处所有候选全部判可见（一个都剔不掉），
+`is_occluded_works_far_from_camera` 就是钉这件事的回归测试。
+
+**③ 两阶段判定**（`test_aabb` 包一层 `project_aabb` + `is_occluded`）：
+
+| 阶段 | 参数 | 语义 |
+| --- | --- | --- |
+| 粗筛 | 用户设置（含 `margin_px` 外扩、`depth_bias`） | 8 个角点投影出包围矩形与最近深度；矩形覆盖的 tile **全部**满足「最远 ≤ 阈值」才判遮挡 |
+| 复核 | `OcclusionSettings::review()`：`margin_px = 0`、`depth_bias × 4` | 对粗筛判遮挡的候选收紧再测一次；两次都过才返回 `Occluded` |
+
+`OcclusionVerdict` 三态是刻意的：`Visible`（金字塔不可用 / 可能露出来）、`Occluded`（真剔除）、
+`Rejected`（粗筛过、复核没过 → **疑罪从无**回退绘制，但计入统计）。`is_culled()` 只认 `Occluded`，
+所以「复核挡住的那部分」永远还有统计口径可查，调参时不会变成黑盒。
+
+**④ 保守性约定（宁可多画，不可让物件凭空消失）**：
+
+- 金字塔为空 / `is_valid()` 为假 / 尺寸与当前画面对不上（首帧、刚 resize）→ 一律 `visible`；
+- AABB 8 角点里只要有 `w <= 0`（跨近平面 / 在相机背后）→ `project_aabb` 返 `None`，调用方按可见处理；
+- 矩形退化成一条线 / 一个点，或完全落在屏幕外 → 交给视锥判定，这里不剔；
+- 深度图里的非有限值（NaN / inf，多半是没写过深度的像素）在 `build` 时按 `1.0`（最远）处理——
+  把它们当遮挡物才会出事；
+- `enabled = false` 时 `is_neutral()` 为真、`test_aabb` 直接返回 `Visible`，与「只做视锥剔除」逐像素一致。
+
+**⑤ 场景契约**：`SceneFile` / `Scene` 的 `occlusion: Option<OcclusionSettings>` 段可省略；
+缺省 `OcclusionSettings::default()` 是 `enabled = false` + 上述四个缺省参数，且 `default_occlusion_is_not_serialized`
+保证默认值不会被写回场景文件。载入与脚本改参都过 `sanitized()`：`NaN` 偏置回落缺省，其余夹进各自区间。
+
+**测试口径**（`crates/r3e-core/src/occlusion.rs` 28 条 + `crates/r3e-core/tests/occlusion_scene.rs` 8 条）：
+设置缺省 / 收敛 / `review()` 严格性 / JSON 往返；金字塔拒短输入与退化尺寸、tile 夹取、取最远值、非有限值当最远、
+逐层收敛到 1 tile；遮挡判定的「墙在物件前为真、物件在墙前为假」、偏置生效、**远处仍然有效**、任一 tile 空即可见、
+屏外可见、超 `max_tiles` 换粗层；投影的居中 / 跨近平面 / 退化输入；场景段的缺省关闭、局部覆盖、非法值收敛、
+默认不序列化、脚本开关与偏置。
+
+**已知边界**
+
+- **滞后一帧以上**：判定用的是上一份金字塔（读回本身也低频，见 §5.15），快速甩镜时会出现「刚转过来还没剔 / 已画完才剔」；
+- **金字塔替不了逐像素解析**：tile 里只有一个最远值，细长物、栅栏、树叶这类「几乎透空」的遮挡体效果好不了；
+- **只按 AABB 判定**：不做背面 / 包围球收缩，长条 AABB 的物件容易被保守放过；
+- **不做遮挡体筛选**：没有「用上一帧已绘制的物件当遮挡体」这套逻辑（那是 GPU 侧 query 的强项）；
+- **半透明物件不参与**：`renderer` 只剔除不透明批次（半透明不写深度，判了也不准），见 §5.15；
+- **无跨帧稳定性机制**：被剔的物件下一帧可能又回来，未做「连续 N 帧遮挡才剔」的迟滞。
 
 ## 5. 渲染层：r3e-render
 
@@ -1472,6 +1540,60 @@ IBL），即着色法线 `n` 与几何法线 `geometric_n` 分开保存：TBN �
 - **切线在装配期一次算定**，不随形变更新：蒙皮网格的切线跟着关节矩阵近似变换（与法线同用伴随矩阵），极端形变下会有偏差；
 - **数据贴图不生成 mipmap**，远距离采样会有闪烁，未做各向异性过滤；
 - 法线贴图的 `z` 下限 `0.05` 会削弱强凹凸贴图的陡峭度，属于防翻面优先的取舍。
+
+### 5.15 遮挡剔除在渲染侧的契约（扩展二十二）
+
+core 侧只管「怎么判」（§4.15），渲染侧只解决一件事：**金字塔从哪来**。答案是把深度预通道写出的
+单采样 `Depth32Float` 低频读回 CPU，压成 tile 金字塔，供**后续帧**判定。`occlusion.rs` 里只有
+`OcclusionCuller` 一个结构，常驻在 `Renderer` 上。
+
+**三条设计约束**：
+
+1. **可开关即零成本**：`enabled = false` 时 `begin_frame` 返回 `false`，本帧不 poll、不编码 copy、不读回，
+   `prepare_instances` 也整段跳过判定——GPU 命令与实例数与加这个功能之前逐字节一致。
+   `reset()` 会连已有金字塔一起丢弃，避免下次打开时拿过期画面剔东西。
+2. **低频 + 非阻塞**：读回是「发起 → 若干帧后取回」的两段式。`encode_readback` 只把 copy 编进本帧命令缓冲，
+   `after_submit` 发起 `map_async`；结果在之后某帧开头用 `device.poll(PollType::Poll)` **非阻塞**地取，
+   没取到就沿用上一份金字塔，绝不原地等 GPU（会卡帧）。间隔由 `readback_interval` 控制：
+   `DEFAULT_READBACK_INTERVAL = 4`（60fps 下约 15Hz），可设 `1..=60`。
+3. **保守 fail-open**：金字塔未就绪（首帧、刚 resize、读回失败）、尺寸与当前画面对不上时一律判可见。
+
+**读回布局**（`ReadbackLayout`）：`width × height × 4` 字节按 `COPY_BYTES_PER_ROW_ALIGNMENT`（256 字节）
+行对齐，1080p ≈ 8.3 MiB/次；`width/height` 为 0 或乘积溢出时返回 `None`，本轮不发起读回。
+
+**接入点**（`renderer.rs::prepare_instances` 阶段三 A）：视锥剔除之后、分配实例槽位之前。
+
+| 位置 | 行为 | 理由 |
+| --- | --- | --- |
+| `scene_bounds` 统计 | 在视锥 / 遮挡剔除**之前** | 阴影拟合要考虑镜头外的遮挡物，被视锥或遮挡剔掉的物件仍应撑大阴影相机 |
+| 蒙皮网格 | 先 `inflate_relative(SKIN_CULL_MARGIN)` 再判 | 形变会跑出静止姿态 AABB |
+| 半透明批次 | **不参与**遮挡剔除 | 半透明不写深度，金字塔里没有它们的贡献，拿不透明深度去剔会让玻璃 / 水面整层凭空消失 |
+| 拿不到局部 AABB | 不剔除，计入 `cull_unknown` | 与视锥同口径的 fail-open |
+
+**统计契约**（`RenderStats::occlusion`，`OcclusionStats`）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `enabled` | 本帧是否**真的在判**（开关打开且金字塔就绪） |
+| `tested` | 本帧做过遮挡判定的实例数（已通过视锥的那部分） |
+| `occluded` | 本帧因遮挡被剔除的实例数；0 表示没剔到或开关关闭 |
+| `readback` | 本帧是否取到了新金字塔（低频读回，多数帧为 `false`） |
+| `levels` | 当前金字塔层数；0 = 还没有可用金字塔 |
+
+`engine_stats` 的 `render` 键里透出这五个字段，脚本侧 `occlusion_enabled()` / `occlusion_bias()`
+读同一份设置（写侧 `set_occlusion_enabled` / `set_occlusion_bias`，写入即过 `sanitized()`）。
+
+**测试口径**（`crates/r3e-render/src/occlusion.rs`，6 条，纯 CPU）：`ReadbackLayout` 拒退化尺寸、
+行按 256 对齐、恰好整数倍时不多补一行；`readback_interval` 夹到 `1..=60`；
+新建的 `OcclusionCuller` 是 fail-open（无金字塔、`levels = 0`）；`reset()` 同时清金字塔与统计。
+
+**已知边界**
+
+- **只读单采样深度**：MSAA 下的深度是多采样目标，这里读的是深度预通道的单采样视图；
+- **一次只允许一份在读回中**（`inflight`）：上一次没取回就不发起新的 copy，所以读回间隔的最坏延迟是「间隔 + 一次往返」；
+- **不做遮挡体筛选 / 迟滞**：上一帧画过什么就全部作为潜在遮挡体，被剔物件下一帧可能又回来（见 §4.15）；
+- **CPU 判定按实例串行**：实例量大时判定成本线性上升，`max_tiles` 只压单次判定的上界；
+- **窗口 resize 后有一帧空窗**：尺寸对不上时整帧 fail-open，等下一次读回建好金字塔才恢复剔除。
 
 ---
 
@@ -2616,6 +2738,52 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 把绘制统计和路径一起打出来，像素基线挂掉时才能先分清"画了但颜色不对"和"一个 draw 都没提交"。
 截图失败走 `std::process::exit(2)`，回归脚本靠"退出码 + 文件存在性"区分"没 GPU 跳过"和"拍了但坏了"。
 
+### 8.21 遮挡剔除的探针（扩展二十二）
+
+遮挡剔除的失败模式是「物件凭空消失」，这类问题只在实机上看得见，所以探针要把**四层信息**一起打出来：
+场景段里的开关、本帧真的生效没生效、金字塔几层、本帧判了多少 / 剔了多少。
+
+**① 运行日志**（`app.rs`，与遮蔽 / 半透明探针同一处）：
+
+```
+[run] 遮挡剔除：段内开关 true / 生效 true / 金字塔 4 层 / 本帧读回 false / 判定 42 / 遮挡剔除 17（视锥剔除 3）
+```
+
+| 字段 | 判读 |
+| --- | --- |
+| 段内开关 | `scene.occlusion.enabled` 经 `sanitized()` 后的值（脚本改的也是它） |
+| 生效 | 渲染侧 `stats.occlusion.enabled`：开关**且**金字塔就绪。刚打开时会先有一段 `段内开关 true / 生效 false` 的过渡期，正常 |
+| 金字塔 N 层 | 0 = 还没读到深度。长时间为 0 说明读回链路没跑起来（无深度预通道 / 尺寸对不上） |
+| 本帧读回 | 只在取到新深度的那帧为 `true`（默认 4 帧一次），偶发 `true` 才是对的 |
+| 判定 / 遮挡剔除 | `tested` / `occluded`。`occluded = 0` 且 `tested > 0` 有两种可能：场景确实没遮挡关系，或 `depth_bias` 给得太大（**越大越保守**，调小它，见 §4.15 的相对偏置口径） |
+| 视锥剔除 | `stats.culled`，与遮挡剔除分开计数——两者混在一起就没法判断是「镜头外」还是「被挡住」 |
+
+**② `engine_stats` 的 `render.occlusion`**（`editor.rs`）：`{ enabled, tested, occluded, readback, levels }` 五个字段，
+RPC 与日志同源，便于脚本 / 外部工具直接断言。
+
+**③ 脚本 API**（`r3e-script/src/api.rs`，4 个函数）：
+
+| 函数 | 语义 |
+| --- | --- |
+| `set_occlusion_enabled(bool)` | 开 / 关；写入即 `sanitized()`，关掉时渲染侧连金字塔一起丢 |
+| `occlusion_enabled() -> bool` | 读当前开关 |
+| `set_occlusion_bias(f64) -> f64` | 改深度偏置（相对比例），返回夹取后的实际值 |
+| `occlusion_bias() -> f64` | 读当前偏置 |
+
+**④ 怎么验证**：
+
+```powershell
+# CPU 侧契约（28 + 8 + 6 条，不需要显卡）
+cargo test -p r3e-core -p r3e-render -p r3e-script occlusion
+
+# 画面没漂：默认关闭，必须与扩展二十一基线逐像素一致
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+```
+
+**视觉观感待人工确认**：「该剔的有没有剔干净」「有没有物件闪进来又闪出去」属于取舍判断，
+自动化只能证明「开关关闭时没变化」。本次收尾实测基线原样通过（`culled=0`，与扩展二十一一致），
+即缺省关闭的路径没有引入任何像素变化。
+
 ---
 
 ## 9. 端到端数据流
@@ -2693,7 +2861,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）+ 可选屏幕空间遮蔽两个全屏 pass（扩展十七）；缺省直通 | **无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮；遮蔽无历史累积，快速转动相机时高频噪声靠 4×4 散焦压制而非时间累积 |
 | 抗锯齿 | **MSAA 4×**（扩展十九，固定采样数，主通道 4× 附件 resolve 进 HDR 目标）；后处理末端另有 FXAA（扩展十三） | 采样数写死为 `MSAA_SAMPLE_COUNT = 4`，不可运行时切换；MSAA 只作用于几何边缘，后处理之后画的文本 / UI 走自己的通道、边际改善有限；无 TAA（需要历史缓冲） |
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
-| 剔除 | 视锥剔除（AABB × 6 平面）；无遮挡剔除、无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试；蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒，避免形变越界被误剔；取不到包围盒时保守绘制 |
+| 剔除 | 视锥剔除（AABB × 6 平面）+ **遮挡剔除**（扩展二十二：上一帧深度金字塔 + 两阶段 AABB 判定，缺省关闭）；无层级剔除 | 逐实例用网格局部 AABB 变换到世界后与视锥测试，蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒避免形变越界被误剔；取不到包围盒时保守绘制。遮挡剔除只剔**不透明**批次（半透明不写深度，判了也不准），金字塔低频读回（默认 4 帧）因而滞后几帧，且只按 AABB 粗判——细长物 / 栅栏类遮挡体效果有限；无 GPU 遮挡查询、无「连续 N 帧才剔」的迟滞 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**仍无 morph target / 表情、无混合空间（blend space）、无 IK、无根运动提取**
 | 拾取 | 无 | 无射线检测、无鼠标点选物件 |
@@ -2712,6 +2880,10 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
   60 FPS 下约 5.6 MB/s；单个 37 关节的角色每帧仅 2.4 KB，可忽略。
 - **世界矩阵求解**：`update_world_transforms` 带记忆化缓存 + 深度上限，深层次结构下仍是 O(n)。
 - **实测规模**：数千物件的群体动画（`example_swarm.rhai`）在 RTX 5060 Laptop / Vulkan 下运行正常，帧时间 1 ms 量级。
+- **遮挡剔除成本**（扩展二十二，缺省关闭，开启后）：CPU 侧每条判定是投影 + 至多 `max_tiles`（默认 256）次 `f32` 比较，
+  在通过视锥的实例上线性叠加；GPU 侧每 `readback_interval` 帧多一次 `copy_texture_to_buffer`（1080p ≈ 8.3 MiB），
+  读回是异步的、不在帧内阻塞。收益取决于遮挡密度：物件大多互相遮挡的场景（走廊、室内）才能抵掉这部分开销，
+  开阔场景基本无收益——这也是它默认关闭的原因。
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配。
 - **阴影通道成本**：单级时顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
   开启 N 级级联则为 N 倍（每级一次全场景深度 pass）。主通道每片元多 9 次 `textureSampleCompare`
@@ -2722,7 +2894,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 ### 11.3 可加固点（按收益排序）
 
 1. **世界法线矩阵的奇异保护**：`Mat3::from_mat4(world).inverse()` 在 scale 含 0 时产 NaN。可在 `update_world_transforms` 里对 scale 做 `max(1e-6)` 保护，或直接复用 `Transform::normal_matrix` 的组合式算法。
-2. **遮挡剔除 / 层级剔除**：视锥剔除已按整网格 AABB 落地；进一步可做 BVH + 遮挡查询，或先按父节点包围盒做层级剔除（当前逐实例测试，层级结构深时仍有重复开销）。
+2. **遮挡剔除的增量改进 / 层级剔除**：遮挡剔除（扩展二十二）已按「上一帧深度金字塔 + 两阶段 AABB」落地；进一步可换成 GPU 遮挡查询（省掉 CPU 判定与读回）、给金字塔加 mip 级渐进复核、或先按父节点包围盒做层级剔除（当前逐实例测试，层级结构深时仍有重复开销）。
 3. **半透明排序细化**：实例级由远及近已在扩展十九落地；进一步可做逐三角形排序或 OIT（权重无关透明），解决同网格内相交半透明。
 4. **MSAA 可配置化**：4× 已落地（扩展十九）；进一步可做运行时切换 `1×/2×/4×/8×` 与 `sample_count` 自适应，或上 TAA 补时间维度抗锯齿。
 5. **脏标记**：若物件规模上万，把"每帧全量上传"改为"版本号变化才上传"。
@@ -2760,6 +2932,8 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 | **二十（已完成：capture.frame 像素级回归 + AO 占位修复）** | **像素级回归基线**：`r3e-asset::visual_regression` 纯 CPU 比对库（逐像素通道差 / 坏点比例 / 最坏 8 点 / 差异图，`Tolerance::sanitized()` 收敛容差，默认 `DEFAULT_CHANNEL_DELTA = 2` 与 `DEFAULT_BAD_PIXEL_RATIO = 0.001`）；`r3e-app/tests/visual_regression.rs` 起子进程产图后比对基准图 `tests/baselines/capture_frame_640x360.png`，三道闸门（开关 / 退出码 2 / 基准缺失）保证无 GPU 机器不假失败；**AO 占位图修复**：`create_ao_placeholder` 建完 1×1 `R8Unorm` 后补一笔 `queue.write_texture([255])`，此前不写初值导致 AO 关闭时 `color *= ao` 把整帧乘成纯黑（见 §4.10 / §8.20） | `r3e-asset/src/visual_regression.rs` 新增 + `lib.rs` 导出；`r3e-app/tests/`（用例 + 基准图 + 夹具）新增；`r3e-app/src/main.rs` 加 `--window-size` / `--capture-frame` / `--capture-after` 与 `parse_window_size`，`app.rs` 加 `window_attrs_size` / `capture_frame_now` / 第 N 帧截图退出的钩子；`r3e-render/postfx.rs` 的 `PostFxPass::new` 多收 `&wgpu::Queue`（`renderer.rs` 同步传参） | 无（命令行新增三项均为可选：不传时窗口仍 1280x720 逻辑尺寸、本进程不产图；`PostFxPass::new` 是 crate 内 API，签名变化不涉及场景 JSON、脚本与 RPC） |
 
 | **二十一（已完成：材质数据贴图）** | **法线 / 粗糙度 / AO 三张贴图**：`r3e-core::tangent` 按三角形位置与 UV 差分累加算切线基（UV 面积退化跳过、整网格退化兜底正交基、手性来自副切线方向），`Vertex` 补 `tangent: [f32; 4]`（location 11）；`r3e-core::texture_slot` 把 FBX / glTF 五花八门的槽位名收敛成 `TextureSlot`（Normal / Roughness / Occlusion / Unclassified）并给出线性数据判据 `is_linear_data()`，`bump` 是高度图、**不算**法线；`r3e-asset` 在 FBX 与 glTF 两条导入路径上按槽位挑图（同用途只取第一张，`Unknown` 不猜也不丢 base color），`MeshAsset::build` 对外部网格重算切线；`r3e-render::pbr` 加 `PbrMapFlags` 与 `MaterialUniform::build_with_maps`（`params2.xyz` 三个开关，w 保留），`renderer.rs` 把三张图绑到 `@group(1) binding 3/4/5`、复用 base color 采样器、缺图垫 1×1 占位（法线用线性 `flat_normal`、其余 `white`）、`resolve_pbr_map` 只在真拿到视图时置位；`shader.wgsl` 用几何法线 + 切线构造 TBN 采样法线（`*2-1` 解码、`z` 下限 `0.05`），粗糙度取 G 作乘数，AO 取 R **只压环境光**（直接光交给阴影）。详见 §4.14 / §5.14 | `core/tangent.rs` / `core/texture_slot.rs` 新增，`core/mesh.rs` 加切线字段与 `DEFAULT_TANGENT`、`lib.rs` 导出；`asset/air_import.rs` / `gltf_import.rs` / `lib.rs` 接槽位筛选与切线重算；`render/pbr.rs` / `renderer.rs` / `shader.wgsl` 接绑定与采样；新增 `asset/tests/pbr_map_import.rs`（4）/ `render/tests/pbr_maps_contract.rs`（9） | 无（场景 JSON、脚本 API、RPC 一字不改；**没挂图时 `params2` 全 0，画面与扩展二十逐像素一致**，`R3E_VISUAL_REGRESSION=1` 基线无需重建）。顶点 stride 56 → 72，内置网格不重算、用 `DEFAULT_TANGENT` 由着色器兜底。**边界**：不读金属度贴图、只有一套 UV、切线装配期一次算定、数据贴图无 mipmap |
+
+| **二十二（已完成：遮挡剔除）** | **上一帧深度金字塔 + 两阶段 AABB 判定**：`r3e-core::occlusion` 纯 CPU 契约（`DepthPyramid::build` 把深度图按 `DEFAULT_TILE_SIZE = 8` 压成 tile 最远深度金字塔、`is_occluded` 用 AABB 投影矩形做「粗筛 → 复核」两阶段保守判定，`OcclusionVerdict::{Visible, Occluded, Rejected}` 只让 `Occluded` 触发剔除）；深度偏置是**相对余量比例**（`DEFAULT_DEPTH_BIAS = 0.05`，按 `(1 - nearest)` 缩放以抵消透视深度的非线性压缩，固定绝对值会让远处物件一个都剔不掉）；空金字塔 / 跨近平面 / 屏外一律 fail-open；`OcclusionSettings`（enabled / depth_bias / tile_size / max_tiles）挂场景 `occlusion` 段，缺省关闭；`r3e-render::occlusion` 的 `OcclusionCuller` 低频**非阻塞**读回深度预通道（`DEFAULT_READBACK_INTERVAL = 4` 帧、`device.poll(PollType::Poll)` 取回、`inflight` 只允许一份在读），`ReadbackLayout` 按 256 字节行对齐（1080p ≈ 8.3 MiB/次），尺寸不符即整帧 fail-open；`prepare_instances` 阶段三 A 在视锥剔除之后接入，**只剔不透明批次**（半透明不写深度），蒙皮先 `inflate_relative(SKIN_CULL_MARGIN)` 再判；`RenderStats::occlusion` 五个字段（enabled / tested / occluded / readback / levels）进日志与 `engine_stats`；脚本 4 个 API（`set_occlusion_enabled` / `occlusion_enabled` / `set_occlusion_bias` / `occlusion_bias`）。详见 §4.15 / §5.15 / §8.21 | `core/occlusion.rs` 新增，`core/scene.rs` 加 `occlusion` 段、`core/lib.rs` 导出；`render/occlusion.rs` 新增，`render/renderer.rs` 接入判定与统计；`script/api.rs` 注册 4 个绑定；`app.rs` 加探针、`app/editor.rs` 透出 `render.occlusion`；新增 `core/tests/occlusion_scene.rs`（8）/ `render/tests/*` 内 6 条 | 无（场景只多一个**可选**段，不写即关闭；**开关关闭时 GPU 命令与实例数与扩展二十一逐字节一致**，`R3E_VISUAL_REGRESSION=1` 基线原样通过、无需重建）。**边界**：无 GPU 遮挡查询、无迟滞（被剔物件下一帧可能回来）、不筛遮挡体、读回滞后 4 帧、只覆盖不透明批次 |
 
 两条与顺序相关的说明：
 
@@ -2821,6 +2995,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 编译 | `cargo build --release` 零 warning |
 | 像素回归（扩展二十） | RTX 5060 Laptop / Vulkan 实跑 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression`：`captured_frame_matches_baseline ... ok`（5.20s），子进程日志 `渲染器就绪: 640x360` + `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，与基准图逐像素比对通过 |
 | 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |
+| 遮挡剔除（扩展二十二） | CPU 侧 `cargo test -p r3e-core -p r3e-render -p r3e-script occlusion`：`occlusion`（core）28 / `occlusion_scene` 8 / `occlusion`（render）6 / script 2 全绿；`cargo test --workspace` 59 套件 **870 passed / 0 failed**，`--features rapier` **874 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）均零告警。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `captured_frame_matches_baseline ... ok`，缺省关闭路径与扩展二十一基线逐像素一致（遮挡剔除计数 `culled=0`），基线无需重建。**观感待人工验证**：打开 `occlusion.enabled` 后「该剔的有没有剔干净」「有没有物件闪进来又闪出去」属于取舍判断，自动化只证明开关关闭时无变化 |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
@@ -2864,6 +3039,11 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 31. 法线贴图依赖切线基：网格 UV 退化（整片 UV 相同）时切线是兜底基，凹凸方向会与预期不符——这是 UV 的问题，不是贴图的问题。
 32. AO **只压环境光**，不会让直接光变暗；想看到明显差别需要有环境光/IBL 或阴影之外的暗部，光秃秃一个方向光下几乎看不出 AO。
 33. 三张贴图**没有对应脚本 API 与 RPC**，只能由导入的模型自带；手动换图要改资产或走 base color 通道。
+34. 遮挡剔除**默认关闭**：场景写 `"occlusion": { "enabled": true }` 或脚本 `set_occlusion_enabled(true)`；打开后前几帧仍不生效（金字塔要在读回路上跑一圈），日志里表现为「段内开关 true / 生效 false」，不是开关坏了。
+35. 遮挡剔除**只剔不透明批次**：玻璃、水面等半透明永远不参与（半透明不写深度，判了也是错的），想让它们省下 draw 得另做方案。
+36. 遮挡剔除用的是**上一帧**深度（默认滞后 4 帧），镜头快速平移 / 旋转时可能看到物件先消失又出现；这是「低频读回 + 无迟滞」的取舍，不是渲染 bug。
+37. `depth_bias` **越大约保守**（越难剔）：默认 `0.05`，调到 `0` 最容易剔也最容易误剔；它是相对余量比例而非世界单位，换相机近远平面不必重调。
+38. 遮挡判定只看**实例 AABB 在屏幕上的矩形**：细长遮挡体（栅栏、树枝）与「从门缝里露一条」这类遮挡关系判不出来，别期待它等价于真实可见性，它只负责扔掉「整块被墙挡住」的那批。
 
 ---
 
