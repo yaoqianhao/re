@@ -14,8 +14,14 @@ struct Camera {
     env_ground: vec4<f32>,   // rgb = 地面色
     env_sun: vec4<f32>,      // rgb = 太阳色 × 太阳强度
     env_sun_dir: vec4<f32>,  // xyz = 指向太阳的单位向量
-    // 9 项球谐辐亮度系数（rgb），CPU 侧由 env::Sh9::project 投影后上传
+    // 9 项球谐辐亮度系数（rgb），CPU 侧由 env::Sh9::project 投影后上传。
+    // 扩展二十三：配了 HDR 探针时这里换成探针自身投影出的辐照度（仍是 9 项），
+    // 因此漫反射分支一字未改 —— 未配探针时系数与扩展十二完全一致。
     env_sh: array<vec4<f32>, 9>,
+    // 扩展二十三：HDR 立方体反射探针。
+    //   x = 是否启用（0/1），y = 镜面 mip 层数，z = 探针强度，w = 面边长（诊断用）
+    // x 为 0 时着色器一次都不采样 `t_env_cube`，镜面 IBL 走 `env_radiance`。
+    env_probe: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -55,6 +61,12 @@ var t_roughness_map: texture_2d<f32>;
 
 @group(1) @binding(5)
 var t_occlusion_map: texture_2d<f32>;
+
+// 扩展二十三：HDR 反射探针 —— 预滤波 mip 链立方体贴图（`Rgba16Float`，线性 HDR）。
+// 第 0 层是清晰原图，第 n 层对应粗糙度 n/(层数-1)；没有探针时绑的是 1×1 全黑兜底图，
+// 配合 `u_camera.env_probe.x = 0` 保证着色器不会走到采样分支。
+@group(1) @binding(6)
+var t_env_cube: texture_cube<f32>;
 
 // P4：关节矩阵表。所有蒙皮实例共用一块 storage buffer，实例用 `joint_base`
 // 指出自己那段起点；非蒙皮实例权重全 0，不会读到这些槽位。
@@ -602,6 +614,19 @@ fn env_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
     return vec2<f32>(scale, bias);
 }
 
+/// 扩展二十三：HDR 探针的镜面采样。
+///
+/// `lod` 与 CPU 侧 `r3e_render::envprobe::mip_lod` 是同一条映射
+/// （`roughness × (层数-1)`），粗糙度越大取越糊的层；`Rgba16Float` 立方体贴图
+/// 走 `textureSampleLevel` 显式给层号，GPU 在相邻两层之间做三线性插值。
+/// 强度只乘在镜面项上（与 `EnvironmentMapSettings::intensity` 的语义一致）。
+fn probe_specular(dir: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let levels = max(u_camera.env_probe.y, 1.0);
+    let lod = clamp(roughness, 0.0, 1.0) * (levels - 1.0);
+    let sampled = textureSampleLevel(t_env_cube, s_base_color, dir, lod);
+    return max(sampled.rgb, vec3<f32>(0.0)) * u_camera.env_probe.z;
+}
+
 // ---------------- Cook-Torrance 直接光照 ----------------
 // 与 `r3e-core::material` 的 CPU 参考实现逐项对应（那边有单测兜底）：
 //   * D：GGX / Trowbridge-Reitz 法线分布
@@ -736,7 +761,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         var dominant = mix(reflect_dir, n, roughness * roughness);
         dominant = select(normalize(dominant), n, length(dominant) < 1e-4);
         let ab = env_brdf(roughness, ndv);
-        let specular_ibl = env_radiance(dominant, roughness) * (f0 * ab.x + ab.y);
+        // 扩展二十三：配了 HDR 探针就按粗糙度取预滤波 mip 层，否则维持解析天空。
+        // 分支条件是 uniform 常量，同一次 draw 内所有像素走同一条路径，没有散度代价。
+        var env_specular = env_radiance(dominant, roughness);
+        if u_camera.env_probe.x > 0.5 {
+            env_specular = probe_specular(reflect_dir, roughness);
+        }
+        let specular_ibl = env_specular * (f0 * ab.x + ab.y);
         ambient_term = (diffuse_ibl + specular_ibl) * u_camera.env_zenith.w;
     }
     // 扩展二十一：AO 只压环境光（直接光已由阴影负责），emissive 不受影响

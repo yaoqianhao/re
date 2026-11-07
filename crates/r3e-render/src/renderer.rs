@@ -15,6 +15,7 @@ use r3e_core::{
 };
 use winit::window::Window;
 
+use crate::envprobe::{self, EnvProbeSource, EnvProbeStats};
 use crate::mesh::{vertex_layout, InstanceRaw};
 use crate::occlusion::{OcclusionCuller, OcclusionStats};
 use crate::pbr::{MaterialUniform, PbrMapFlags, SurfaceKey};
@@ -115,7 +116,12 @@ struct CameraUniform {
     /// xyz = 指向太阳的单位向量，a 保留
     env_sun_dir: [f32; 4],
     /// 9 项球谐：rgb = 系数（已是辐亮度量纲），a 保留。由 `env::Sh9::project` 在 CPU 侧投影。
+    /// 扩展二十三：配了 HDR 探针时，这里换成探针自身投影出的辐照度系数（仍是 9 项），
+    /// 漫反射分支因此无需改动；未配探针时与扩展十二逐字节相同。
     env_sh: [[f32; 4]; r3e_core::env::SH_COEFFICIENTS],
+    /// 扩展二十三：HDR 立方体反射探针。
+    /// x = 是否启用（0/1），y = 镜面 mip 层数，z = 探针强度，w = 面边长（诊断用）。
+    env_probe: [f32; 4],
 }
 
 impl Default for CameraUniform {
@@ -148,6 +154,8 @@ impl Default for CameraUniform {
             ],
             env_sun_dir: [env.sun_dir[0], env.sun_dir[1], env.sun_dir[2], 0.0],
             env_sh: [[0.0; 4]; r3e_core::env::SH_COEFFICIENTS],
+            // 缺省 = 没有探针：着色器不采样立方体，镜面走解析天空
+            env_probe: [0.0; 4],
         }
     }
 }
@@ -689,6 +697,9 @@ pub struct RenderStats {
     /// 本帧遮挡剔除的统计（扩展二十二）。`enabled = false` 表示开关关闭或
     /// 深度金字塔还没就绪，此时 `occluded` 恒为 0、画面与关闭前完全一致。
     pub occlusion: OcclusionStats,
+    /// 本帧 HDR 反射探针的状态（扩展二十三）。`active = false` 表示没配探针，
+    /// 镜面 IBL 走解析天空、画面与扩展十二逐像素一致。
+    pub env_probe: EnvProbeStats,
 }
 
 pub struct Renderer {
@@ -777,7 +788,24 @@ pub struct Renderer {
     /// 累计做过几次球谐投影（只增不减）。正常连续帧里应保持不变——
     /// 若它逐帧增长，说明缓存键比较失效、正在每帧重算。
     env_builds: u64,
+    /// 扩展二十三：当前生效的 HDR 反射探针。
+    ///
+    /// `None` = 没有探针，着色器 `env_probe.x = 0`，镜面走解析天空（画面与扩展十二一致）。
+    /// `Some` 里握着 GPU 立方体的所有权（view 已交给材质缓存）与本帧统计。
+    env_probe: Option<EnvProbeGpu>,
     stats: RenderStats,
+}
+
+/// 已上传到 GPU 的反射探针（扩展二十三）。纹理本体必须由渲染器持有：
+/// 材质缓存只存 `TextureView`，若纹理被提前释放，视图就会悬空。
+struct EnvProbeGpu {
+    /// 立方体纹理本体（`Rgba16Float`，`mip_level_count` 层）。
+    _texture: wgpu::Texture,
+    /// 本帧进 `RenderStats` 的统计。
+    stats: EnvProbeStats,
+    /// 漫反射辐照度：由基准层（最清晰那层）投影出的 9 项球谐。
+    /// 上传到 `Camera::env_sh`，于是着色器的漫反射分支一行都不用改。
+    irradiance: Sh9,
 }
 
 /// 一个绘制批次：网格 + 实例区间 + 物件级 PBR 覆盖。
@@ -1364,8 +1392,102 @@ impl Renderer {
             env_cache: None,
             env_sh: Sh9::default(),
             env_builds: 0,
+            env_probe: None,
             stats: RenderStats::default(),
         })
+    }
+
+    /// 扩展二十三：装载 HDR 反射探针。
+    ///
+    /// 传 `None` 等价于 [`Self::clear_env_probe`]（退回解析 IBL）。上传整条 mip 链是
+    /// 一次性开销：每层每面一块 `write_texture`，因此只在场景加载 / 换探针时调用，
+    /// 不要放进每帧循环。
+    pub fn set_env_probe(&mut self, source: Option<&EnvProbeSource>) {
+        let Some(source) = source else {
+            self.clear_env_probe();
+            return;
+        };
+        let prefiltered = source.prefiltered();
+        let face_size = prefiltered.base().face_size() as u32;
+        let mip_levels = prefiltered.mip_levels().max(1);
+        if face_size == 0 {
+            log::warn!("反射探针面边长为 0，忽略并退回解析 IBL");
+            self.clear_env_probe();
+            return;
+        }
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("r3e-env-probe-cube"),
+            size: wgpu::Extent3d {
+                width: face_size,
+                height: face_size,
+                depth_or_array_layers: envprobe::CUBE_FACES as u32,
+            },
+            mip_level_count: mip_levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // 线性 HDR：辐亮度可以远大于 1，8 位会被截断成白斑
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for upload in envprobe::encode_faces(prefiltered) {
+            // 预滤波层数可能多于纹理层数（配置被收敛过），多出来的层直接丢弃
+            if upload.mip >= mip_levels {
+                continue;
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: upload.mip,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: upload.face,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &upload.bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(upload.bytes_per_row()),
+                    rows_per_image: Some(upload.size),
+                },
+                wgpu::Extent3d {
+                    width: upload.size,
+                    height: upload.size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("r3e-env-probe-cube-view"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            mip_level_count: Some(mip_levels),
+            ..Default::default()
+        });
+
+        // 换图必须重建全部材质 bind group（视图写在组里）
+        self.material_cache.set_env_cube(view);
+        self.env_probe = Some(EnvProbeGpu {
+            _texture: texture,
+            stats: source.stats(),
+            // 漫反射用最清晰那层的辐照度投影：模糊层已经被粗糙度卷积过，再积分会双重衰减
+            irradiance: prefiltered.base().project_irradiance(),
+        });
+    }
+
+    /// 扩展二十三：卸载探针，退回扩展十二的解析 IBL（画面逐像素不变）。
+    pub fn clear_env_probe(&mut self) {
+        if self.env_probe.take().is_none() {
+            return;
+        }
+        self.material_cache.reset_env_cube();
+    }
+
+    /// 当前生效的探针统计；没配探针时 `active = false`。
+    pub fn env_probe_stats(&self) -> EnvProbeStats {
+        self.env_probe.as_ref().map(|p| p.stats).unwrap_or_default()
     }
 
     /// HDR 后处理链（扩展十三）：离屏目标尺寸、泛光层级、最近一帧生效的设置。
@@ -1670,6 +1792,8 @@ impl Renderer {
                 transparent_instances,
                 depth_prepass_draws,
                 occlusion: self.occlusion.stats(),
+                // 扩展二十三：探针状态在装载时就定了，逐帧原样带出
+                env_probe: self.env_probe_stats(),
             };
         }
 
@@ -2285,10 +2409,24 @@ impl Renderer {
             self.env_builds += 1;
         }
         let env = environment.unwrap_or_default();
+        // 扩展二十三：配了 HDR 探针时，漫反射系数换成探针投影出的辐照度；
+        // 否则维持 `environment` 段（或全零）—— 未配探针时这条路径与扩展十二逐字节相同。
+        let sh_source = match self.env_probe.as_ref() {
+            Some(probe) => probe.irradiance,
+            None => self.env_sh,
+        };
         let mut sh = [[0.0_f32; 4]; r3e_core::env::SH_COEFFICIENTS];
-        for (dst, src) in sh.iter_mut().zip(self.env_sh.coeffs.iter()) {
+        for (dst, src) in sh.iter_mut().zip(sh_source.coeffs.iter()) {
             *dst = [src.x, src.y, src.z, 0.0];
         }
+        // 扩展二十三：探针开关 + mip 层数 + 强度 + 面边长，着色器据此决定镜面路径
+        let probe = self.env_probe.as_ref().map(|p| p.stats).unwrap_or_default();
+        let probe_uniform = [
+            if probe.active { 1.0 } else { 0.0 },
+            probe.mip_levels as f32,
+            probe.intensity,
+            probe.face_size as f32,
+        ];
         let uniform = CameraUniform {
             view_proj: camera.view_projection().to_cols_array_2d(),
             camera_pos: [camera.position.x, camera.position.y, camera.position.z, 1.0],
@@ -2317,6 +2455,7 @@ impl Renderer {
             ],
             env_sun_dir: [env.sun_dir[0], env.sun_dir[1], env.sun_dir[2], 0.0],
             env_sh: sh,
+            env_probe: probe_uniform,
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -2663,6 +2802,11 @@ struct MaterialCache {
     /// 未挂法线贴图时绑定的中性法线（0.5, 0.5, 1.0）。着色器按开关跳过采样，
     /// 这里只是让 bind group 永远填满 —— 万一开关与绑定不同步，中性法线也不会改外观。
     flat_normal: wgpu::TextureView,
+    /// 扩展二十三：HDR 反射探针的立方体视图。没有探针时是 1×1 全黑兜底图；
+    /// 换探针时整个材质缓存被清空重建，因此这里存的是「当前这一份」。
+    env_cube: wgpu::TextureView,
+    /// 兜底黑立方体（卸载探针时用它填回 binding 6）。
+    fallback_env_cube: wgpu::TextureView,
     materials: HashMap<MaterialKey, GpuMaterial>,
     textures: HashMap<(AssetId, u32, TextureColorSpace), wgpu::TextureView>,
     max_texture_dim: u32,
@@ -2730,6 +2874,19 @@ impl MaterialCache {
                     },
                     count: None,
                 },
+                // 扩展二十三：HDR 反射探针立方体贴图。`Rgba16Float` + 线性过滤，
+                // 因此必须是 `Float { filterable: true }`；没有探针时绑 1×1 全黑兜底图，
+                // 绑定组永远填满，着色器靠 `env_probe.x` 决定要不要采样。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -2746,12 +2903,16 @@ impl MaterialCache {
 
         let white = create_white_texture(device);
         let flat_normal = create_flat_normal_texture(device, queue);
+        let env_cube = create_black_cube_texture(device, queue);
+        let fallback_env_cube = env_cube.clone();
 
         let mut cache = Self {
             layout,
             sampler,
             white,
             flat_normal,
+            env_cube,
+            fallback_env_cube,
             materials: HashMap::new(),
             textures: HashMap::new(),
             max_texture_dim: 8192,
@@ -2762,6 +2923,19 @@ impl MaterialCache {
 
     fn get(&self, key: MaterialKey) -> Option<&GpuMaterial> {
         self.materials.get(&key)
+    }
+
+    /// 扩展二十三：换探针立方体。bind group 里的视图是写死的，所以换图必须
+    /// 让所有材质重新建组 —— 探针只在场景加载时换一次，这个代价可以接受。
+    fn set_env_cube(&mut self, view: wgpu::TextureView) {
+        self.env_cube = view;
+        self.materials.clear();
+    }
+
+    /// 扩展二十三：卸探针，回到兜底黑立方体。同样清空材质缓存。
+    fn reset_env_cube(&mut self) {
+        self.env_cube = self.fallback_env_cube.clone();
+        self.materials.clear();
     }
 
     /// 确保材质已就绪；失败时退回默认材质（调用方永远能拿到一组 bind group）。
@@ -2886,6 +3060,11 @@ impl MaterialCache {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(&occlusion_view),
                 },
+                // 扩展二十三：探针立方体。没有探针时是兜底黑图，不影响画面。
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.env_cube),
+                },
             ],
         });
 
@@ -3002,6 +3181,58 @@ fn create_white_texture(device: &wgpu::Device) -> wgpu::TextureView {
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// 扩展二十三：1×1 全黑立方体贴图，没有探针时占住 binding 6。
+///
+/// 用 `Rgba16Float` 与真探针同格式，避免切场景时 bind group 的采样类型变化；
+/// 六个面都填 0，配合 `env_probe.x = 0` 双保险 —— 即使开关误开也只会得到黑色镜面。
+fn create_black_cube_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let size = wgpu::Extent3d {
+        width: 1,
+        height: 1,
+        depth_or_array_layers: 6,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("r3e-env-cube-fallback"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for face in 0..6u32 {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0u8; 8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("r3e-env-cube-fallback-view"),
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
 }
 
 /// 贴图的色彩空间（扩展二十一）。

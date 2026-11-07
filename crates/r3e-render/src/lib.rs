@@ -3,6 +3,7 @@
 //! S1 起内置图元的几何生成不再属于本 crate：请用 `r3e_core::procedural::builtin_mesh`
 //! 或 `r3e_core::ProceduralProvider`。这里只导出 wgpu 布局与渲染器本体。
 
+pub mod envprobe;
 pub mod mesh;
 pub mod occlusion;
 pub mod pbr;
@@ -13,6 +14,10 @@ pub mod text;
 pub mod transparency;
 pub mod ui;
 
+pub use envprobe::{
+    encode_faces, f16_to_f32, f32_to_f16, mip_lod, EnvProbeFaceUpload, EnvProbeSource,
+    EnvProbeStats, CUBE_FACES, DUMMY_CUBE_FACE_SIZE, ENV_CUBE_BINDING,
+};
 pub use mesh::{vertex_layout, InstanceRaw};
 pub use occlusion::{
     OcclusionCuller, OcclusionStats, DEFAULT_READBACK_INTERVAL, MAX_READBACK_INTERVAL,
