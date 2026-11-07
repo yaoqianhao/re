@@ -16,6 +16,7 @@ use r3e_core::{
 use winit::window::Window;
 
 use crate::mesh::{vertex_layout, InstanceRaw};
+use crate::occlusion::{OcclusionCuller, OcclusionStats};
 use crate::pbr::{MaterialUniform, PbrMapFlags, SurfaceKey};
 use crate::postfx::{PostFxPass, PostFxStats};
 use crate::ssao::{SsaoPass, SsaoStats};
@@ -685,6 +686,9 @@ pub struct RenderStats {
     /// 多重采样的、不能给遮蔽通道用，因此多跑一条单采样深度 pass。
     /// 恒等于不透明批次的 draw call 数；0 表示本帧没有不透明物件。
     pub depth_prepass_draws: u32,
+    /// 本帧遮挡剔除的统计（扩展二十二）。`enabled = false` 表示开关关闭或
+    /// 深度金字塔还没就绪，此时 `occluded` 恒为 0、画面与关闭前完全一致。
+    pub occlusion: OcclusionStats,
 }
 
 pub struct Renderer {
@@ -703,6 +707,12 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    /// 单采样深度纹理本体（`depth_view` 的来源）。扩展二十二要把它整张 copy
+    /// 到回读缓冲，所以除了 view 还得握着 texture。
+    depth_texture: wgpu::Texture,
+    /// 遮挡剔除的深度读回与金字塔缓存（扩展二十二）。开关关闭时它一个 GPU
+    /// 命令都不产生。
+    occlusion: OcclusionCuller,
     /// MSAA 多重采样颜色附件（`MSAA_SAMPLE_COUNT` 样本，`HDR_FORMAT`）。
     /// 主通道写它，pass 结束时 resolve 到 `postfx.hdr_view()` 的单采样目标。
     _msaa_color: wgpu::Texture,
@@ -1169,7 +1179,7 @@ impl Renderer {
             cache: None,
         });
 
-        let depth_view = create_depth_view(&device, width, height);
+        let (depth_texture, depth_view) = create_depth_target(&device, width, height);
         // 扩展十九：MSAA 附件。颜色附件由硬件 resolve 进 HDR 目标，
         // 深度附件不做 resolve（深度跨样本没有物理意义），单采样深度改由预通道提供。
         let (msaa_color, msaa_color_view, msaa_depth, msaa_depth_view) =
@@ -1315,6 +1325,8 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             depth_view,
+            depth_texture,
+            occlusion: OcclusionCuller::new(),
             _msaa_color: msaa_color,
             msaa_color_view,
             _msaa_depth: msaa_depth,
@@ -1447,7 +1459,12 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        self.depth_view = create_depth_view(&self.device, width, height);
+        let (depth_texture, depth_view) = create_depth_target(&self.device, width, height);
+        self.depth_texture = depth_texture;
+        self.depth_view = depth_view;
+        // 扩展二十二：金字塔绑的是旧尺寸的深度，换尺寸后必须作废，
+        // 否则会拿旧画面的 tile 去剔新画面的物件（误剔）
+        self.occlusion.reset();
         // 扩展十九：MSAA 附件与窗口同尺寸，必须一起重建，否则 resolve 目标尺寸对不上
         let (msaa_color, msaa_color_view, msaa_depth, msaa_depth_view) =
             create_msaa_targets(&self.device, width, height);
@@ -1504,6 +1521,10 @@ impl Renderer {
     /// 这是**唯一**的绘制实现：窗口渲染与截图都走这里，所以截图内容与用户看到的
     /// 画面逐像素同源（阴影 / 遮蔽 / 后处理 / 文本 / UI 全部包含）。
     fn render_to_view(&mut self, scene: &Scene, view: &wgpu::TextureView) {
+        // 扩展二十二：先把上一轮读回的深度取回来（非阻塞），再看本帧有没有金字塔可用。
+        // 关闭时这里只做一次 `enabled` 判断，不 poll、不动 buffer。
+        let occlusion_settings = scene.occlusion.sanitized();
+        self.occlusion.begin_frame(&self.device, occlusion_settings);
         let (groups, transparent_start, culled, cull_unknown, bounds) =
             self.prepare_instances(scene);
         self.prepare_materials(&groups);
@@ -1557,6 +1578,19 @@ impl Renderer {
         // 只画不透明段：半透明物件本来就不写深度。
         let depth_prepass_draws =
             self.draw_depth_prepass(&mut encoder, &groups[..transparent_start]);
+
+        // 扩展二十二：把这张单采样深度整张 copy 到回读缓冲，供**后续帧**做遮挡判定。
+        // 读回是低频的（默认每 4 帧一次），且在飞期间不再发起新的 copy；
+        // 关闭时 `encode_readback` 根本不会被调用，命令缓冲与之前逐字节一致。
+        let depth_readback = occlusion_settings.enabled
+            && self.occlusion.encode_readback(
+                &self.device,
+                &mut encoder,
+                &self.depth_texture,
+                self.size.0,
+                self.size.1,
+                scene.frame,
+            );
 
         let (transparent_draws, transparent_instances);
         {
@@ -1635,6 +1669,7 @@ impl Renderer {
                 transparent_draws,
                 transparent_instances,
                 depth_prepass_draws,
+                occlusion: self.occlusion.stats(),
             };
         }
 
@@ -1729,6 +1764,11 @@ impl Renderer {
         self.stats.ui_draws = ui_stats.draw_calls;
 
         self.queue.submit(Some(encoder.finish()));
+        // 扩展二十二：命令提交后才挂 map_async —— 此时 copy 已入队，
+        // 回调在下一次 `poll` 里被触发，本帧绝不等待 GPU。
+        if depth_readback {
+            self.occlusion.after_submit();
+        }
     }
 
     /// 离屏渲染一帧并把像素读回 CPU（P0-4 截图）。
@@ -2323,6 +2363,13 @@ impl Renderer {
         let frustum = Frustum::from_view_projection(&camera.view_projection());
         let mut culled = 0u32;
         let mut cull_unknown = 0u32;
+        // 扩展二十二：遮挡剔除。判定用的是**上一轮**读回的金字塔（比画面滞后几帧），
+        // 开关关闭或金字塔未就绪时 `occlusion_ready == false`，下面这段整体跳过，
+        // 实例数与关闭前逐个一致。
+        let occlusion_settings = scene.occlusion.sanitized();
+        let occlusion_ready = occlusion_settings.enabled && self.occlusion.pyramid().is_some();
+        let view_projection = camera.view_projection();
+        let (screen_width, screen_height) = self.size;
         // 阶段 D：把「所有可见（含被视锥剔除）物件」的包围盒并起来，
         // 交给阴影通道拟合正交相机 —— 阴影要考虑镜头外的遮挡物，
         // 所以这里统计在剔除判断之前。
@@ -2357,6 +2404,21 @@ impl Renderer {
                         });
                         if !frustum.intersects_aabb(&world) {
                             culled += 1;
+                            continue;
+                        }
+                        // 扩展二十二：视锥内还要再问一句「是不是被前面的东西挡满了」。
+                        // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的
+                        // 贡献，用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
+                        if occlusion_ready
+                            && !transparent
+                            && self.occlusion.test(
+                                &occlusion_settings,
+                                &world,
+                                &view_projection,
+                                screen_width,
+                                screen_height,
+                            )
+                        {
                             continue;
                         }
                     }
@@ -3197,7 +3259,15 @@ fn create_msaa_targets(
     (color, color_view, depth, depth_view)
 }
 
-fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+/// 建单采样深度目标，返回「纹理 + 视图」。
+///
+/// 两个都要：pass 用视图，遮挡剔除（扩展二十二）的整帧 readback 用纹理本体
+/// （`copy_texture_to_buffer` 只能针对纹理，不能针对视图）。
+fn create_depth_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("r3e-depth"),
         size: wgpu::Extent3d {
@@ -3211,8 +3281,12 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         format: DEPTH_FORMAT,
         // 主通道写这个深度附件，SSAO（扩展十七）还要把它当纹理采样：
         // 少了 TEXTURE_BINDING，遮蔽通道的绑定组会在真机上直接校验失败。
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        // 扩展二十二再加 COPY_SRC：整张深度要能被 copy 进回读缓冲。
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }

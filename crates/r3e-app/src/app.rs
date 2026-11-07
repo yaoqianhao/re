@@ -885,6 +885,20 @@ impl EngineApp {
             stats.transparent_instances,
             stats.depth_prepass_draws
         );
+        // 遮挡剔除探针（扩展二十二）：`启用` 是「真的在判」（场景开关 + 金字塔就绪），
+        // 刚开的第一帧金字塔还在读回路上，所以会先有一段 `启用 false` 的过渡期。
+        // `读回` 只在取到新深度的那一帧为 true（默认每 4 帧一次）。
+        let occlusion_setting = self.scene.borrow().occlusion.sanitized();
+        log::info!(
+            "[{tag}] 遮挡剔除：段内开关 {} / 生效 {} / 金字塔 {} 层 / 本帧读回 {} / 判定 {} / 遮挡剔除 {}（视锥剔除 {}）",
+            occlusion_setting.enabled,
+            stats.occlusion.enabled,
+            stats.occlusion.levels,
+            stats.occlusion.readback,
+            stats.occlusion.tested,
+            stats.occlusion.occluded,
+            stats.culled
+        );
         // 遮蔽探针（扩展十七）：passes 恒为 2（生成 + 散焦），为 0 说明本帧没提交——
         // 段未开、强度为 0，或设置收敛成了中性值。`samples` 打印「场景要的 / 实际生效的」，
         // 两者不等就说明被夹进了 [4, 16]（或场景压根没写这一段）。

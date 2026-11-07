@@ -231,6 +231,15 @@ impl EngineApi for LocalEngineApi<'_> {
                 "transparent_draws": s.transparent_draws,
                 "transparent_instances": s.transparent_instances,
                 "depth_prepass_draws": s.depth_prepass_draws,
+                // 扩展二十二：遮挡剔除。`enabled` 是「真的在判」（开关开 + 金字塔就绪），
+                // `occluded` 是本帧因此少画的实例数，`readback` 表示本帧刚取回一份新深度。
+                "occlusion": {
+                    "enabled": s.occlusion.enabled,
+                    "tested": s.occlusion.tested,
+                    "occluded": s.occlusion.occluded,
+                    "readback": s.occlusion.readback,
+                    "levels": s.occlusion.levels,
+                },
                 "msaa_samples": r3e_render::MSAA_SAMPLE_COUNT,
                 "render_frame_index": s.frame_index,
                 "ssao": {

@@ -4,6 +4,7 @@
 //! 或 `r3e_core::ProceduralProvider`。这里只导出 wgpu 布局与渲染器本体。
 
 pub mod mesh;
+pub mod occlusion;
 pub mod pbr;
 pub mod postfx;
 pub mod renderer;
@@ -13,6 +14,10 @@ pub mod transparency;
 pub mod ui;
 
 pub use mesh::{vertex_layout, InstanceRaw};
+pub use occlusion::{
+    OcclusionCuller, OcclusionStats, DEFAULT_READBACK_INTERVAL, MAX_READBACK_INTERVAL,
+    MIN_READBACK_INTERVAL,
+};
 pub use pbr::{MaterialUniform, SurfaceKey};
 pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
 pub use renderer::{
