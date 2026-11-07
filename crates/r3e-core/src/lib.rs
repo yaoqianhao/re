@@ -44,6 +44,12 @@ pub use env::{
     EnvironmentSettings, Sh9, DEFAULT_SH_SAMPLES, MAX_ENV_RADIANCE, MAX_IBL_INTENSITY,
     SH_COEFFICIENTS, SUN_SHAPE_EXPONENT,
 };
+pub use envmap::{
+    build_probe, cube_dir_face, cube_face_dir, decode_radiance, equirect_to_cubemap, equirect_uv,
+    linear_to_rgbe, prefilter_specular, Cubemap, EnvironmentMapSettings, HdrImage, PrefilteredEnv,
+    CUBE_FACES, CUBE_FACE_NAMES, DEFAULT_CUBE_FACE_SIZE, DEFAULT_SPECULAR_MIPS, MAX_CUBE_FACE_SIZE,
+    MAX_EQUIRECT_PIXELS, MAX_SPECULAR_MIPS, PREFILTER_SAMPLES,
+};
 pub use frustum::Frustum;
 pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use glyph_atlas::{

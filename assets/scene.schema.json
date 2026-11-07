@@ -227,6 +227,54 @@
       },
       "type": "object"
     },
+    "EnvironmentMapSettings": {
+      "description": "场景 `environment_map` 段（扩展二十三）：HDR 立方体反射探针的资产声明与旋钮。\n\n未配置（`Scene::environment_map == None`）、`enabled = false`、或者两种来源都没写\n路径时，[`EnvironmentMapSettings::is_active`] 为 false，渲染层完全沿用扩展十二的\n解析 IBL（三色天空 + SH 9 系数），画面逐像素不变。",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "是否启用。缺省 true——只要写了 `equirect` / `faces` 就生效；\n想临时关掉探针不必删路径，翻这个开关即可（也方便 A/B 对比）。",
+          "type": "boolean"
+        },
+        "equirect": {
+          "description": "等距柱状 HDR 图路径（`.hdr`，Radiance RGBE）。相对路径以场景文件所在目录为基准，\n由应用层负责解析成绝对路径。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "face_size": {
+          "default": 128,
+          "description": "预滤波基准面边长（像素，收敛到 `[4, MAX_CUBE_FACE_SIZE]` 的 2 的幂）。\n减小它只降低显存与预滤波耗时，不影响画面「有没有反射」。",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "faces": {
+          "description": "立方体六面路径，顺序固定为 [+X, -X, +Y, -Y, +Z, -Z]（见 [`CUBE_FACE_NAMES`]）。\n与 `equirect` 二选一；两者都写时 `faces` 优先——省掉一次重采样，保真度更高。",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "intensity": {
+          "default": 1.0,
+          "description": "探针总强度：只乘在环境反射项上，`1.0` 为物理值（与 `EnvironmentSettings::intensity`\n同语义，但两者互不影响，可分别调解析天空与 HDR 探针）。",
+          "format": "float",
+          "type": "number"
+        },
+        "mip_levels": {
+          "default": 6,
+          "description": "镜面 mip 链层数（`1..=MAX_SPECULAR_MIPS`）。层数越多，粗糙度过渡越细腻。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "EnvironmentSettings": {
       "description": "程序化天空参数。\n\n刻意不用 HDR 图片：场景是纯文本可编程的，环境也应该能被脚本一行改掉，\n而且省掉一次外部资产依赖。三色球面插值足以给出「天、地、太阳」三要素。",
       "properties": {
@@ -1250,6 +1298,17 @@
         }
       ],
       "description": "环境探针（IBL）。缺省表示沿用 `light.ambient` 常数环境光，与旧场景完全兼容。"
+    },
+    "environment_map": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EnvironmentMapSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "HDR 立方体反射探针（扩展二十三）。缺省表示没有环境图，镜面 / 漫反射环境项\n仍由 `environment` 的解析天空 + SH 系数给出，画面与旧场景逐像素一致。"
     },
     "light": {
       "anyOf": [

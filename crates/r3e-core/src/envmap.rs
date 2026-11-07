@@ -17,6 +17,7 @@
 //! 方向一律世界空间单位向量，+Y 朝上；面内 `u` 向右、`v` 向下（图像行方向）。
 
 use glam::Vec3;
+use serde::{Deserialize, Serialize};
 
 use crate::env::{sh_basis, Sh9, SH_COEFFICIENTS};
 use crate::material::DEFAULT_ROUGHNESS;
@@ -349,6 +350,143 @@ impl Cubemap {
             out.extend_from_slice(&[px[0], px[1], px[2], 1.0]);
         }
         out
+    }
+}
+
+/// 立方体六面的名字（WebGPU / DirectX 顺序）。日志与错误信息直接用它。
+pub const CUBE_FACE_NAMES: [&str; CUBE_FACES] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
+
+/// 场景 `environment_map` 段（扩展二十三）：HDR 立方体反射探针的资产声明与旋钮。
+///
+/// 未配置（`Scene::environment_map == None`）、`enabled = false`、或者两种来源都没写
+/// 路径时，[`EnvironmentMapSettings::is_active`] 为 false，渲染层完全沿用扩展十二的
+/// 解析 IBL（三色天空 + SH 9 系数），画面逐像素不变。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct EnvironmentMapSettings {
+    /// 是否启用。缺省 true——只要写了 `equirect` / `faces` 就生效；
+    /// 想临时关掉探针不必删路径，翻这个开关即可（也方便 A/B 对比）。
+    #[serde(default = "default_probe_enabled")]
+    pub enabled: bool,
+    /// 等距柱状 HDR 图路径（`.hdr`，Radiance RGBE）。相对路径以场景文件所在目录为基准，
+    /// 由应用层负责解析成绝对路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equirect: Option<String>,
+    /// 立方体六面路径，顺序固定为 [+X, -X, +Y, -Y, +Z, -Z]（见 [`CUBE_FACE_NAMES`]）。
+    /// 与 `equirect` 二选一；两者都写时 `faces` 优先——省掉一次重采样，保真度更高。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faces: Option<Vec<String>>,
+    /// 预滤波基准面边长（像素，收敛到 `[4, MAX_CUBE_FACE_SIZE]` 的 2 的幂）。
+    /// 减小它只降低显存与预滤波耗时，不影响画面「有没有反射」。
+    #[serde(default = "default_probe_face_size")]
+    pub face_size: usize,
+    /// 镜面 mip 链层数（`1..=MAX_SPECULAR_MIPS`）。层数越多，粗糙度过渡越细腻。
+    #[serde(default = "default_specular_mips")]
+    pub mip_levels: u32,
+    /// 探针总强度：只乘在环境反射项上，`1.0` 为物理值（与 `EnvironmentSettings::intensity`
+    /// 同语义，但两者互不影响，可分别调解析天空与 HDR 探针）。
+    #[serde(default = "default_probe_intensity")]
+    pub intensity: f32,
+}
+
+fn default_probe_enabled() -> bool {
+    true
+}
+
+fn default_probe_face_size() -> usize {
+    DEFAULT_CUBE_FACE_SIZE
+}
+
+fn default_specular_mips() -> u32 {
+    DEFAULT_SPECULAR_MIPS
+}
+
+fn default_probe_intensity() -> f32 {
+    1.0
+}
+
+impl Default for EnvironmentMapSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            equirect: None,
+            faces: None,
+            face_size: DEFAULT_CUBE_FACE_SIZE,
+            mip_levels: DEFAULT_SPECULAR_MIPS,
+            intensity: 1.0,
+        }
+    }
+}
+
+impl EnvironmentMapSettings {
+    /// 以等距柱状图构造（脚本 `set_env_map` 的落点）。
+    pub fn with_equirect(path: impl Into<String>) -> Self {
+        Self {
+            equirect: Some(path.into()),
+            ..Self::default()
+        }
+    }
+
+    /// 以立方体六面构造。长度不是 6 时同样受理，交给 [`Self::sanitized`] 判为无效来源。
+    pub fn with_faces(paths: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            faces: Some(paths.into_iter().collect()),
+            ..Self::default()
+        }
+    }
+
+    /// 路径收敛：去首尾空白，空串视为「没写」。
+    ///
+    /// 六面路径必须恰好 6 条且条条非空，否则整段 `faces` 作废——半套面拼不出 cubemap，
+    /// 与其猜缺哪一面，不如让它明确失效并退回解析 IBL。
+    pub fn sanitized(mut self) -> Self {
+        self.equirect = self.equirect.as_deref().and_then(sanitize_probe_path);
+        self.faces = self.faces.and_then(|faces| {
+            if faces.len() != CUBE_FACES {
+                return None;
+            }
+            let mut out = Vec::with_capacity(CUBE_FACES);
+            for path in faces.iter() {
+                out.push(sanitize_probe_path(path)?);
+            }
+            Some(out)
+        });
+        self.face_size = sanitize_face_size(self.face_size);
+        self.mip_levels = self.mip_levels.clamp(1, MAX_SPECULAR_MIPS);
+        self.intensity = if self.intensity.is_nan() {
+            default_probe_intensity()
+        } else {
+            self.intensity.clamp(0.0, crate::env::MAX_IBL_INTENSITY)
+        };
+        self
+    }
+
+    /// 本帧是否真的启用 HDR 探针：开关打开且至少有一个可用来源。
+    pub fn is_active(&self) -> bool {
+        self.enabled && (self.faces.is_some() || self.equirect.is_some())
+    }
+
+    /// 与缺省完全一致（场景保存时决定是否省略该段）。
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// 实际生效的来源名，供探针日志使用。
+    pub fn source_label(&self) -> &'static str {
+        match (self.enabled, self.faces.is_some(), self.equirect.is_some()) {
+            (false, _, _) => "disabled",
+            (true, true, _) => "faces",
+            (true, false, true) => "equirect",
+            (true, false, false) => "none",
+        }
+    }
+}
+
+fn sanitize_probe_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -1041,5 +1179,110 @@ mod tests {
         assert_eq!(&data[0..4], &[0.5, 0.5, 0.5, 1.0]);
         assert_eq!(data[3], 1.0);
         assert!(data.chunks(4).all(|px| px[3] == 1.0));
+    }
+
+    #[test]
+    fn settings_default_is_inactive() {
+        let s = EnvironmentMapSettings::default();
+        // 缺省即「没写路径」：开关是开的，但没有来源 → 不激活，画面保持解析 IBL
+        assert!(s.enabled);
+        assert!(!s.is_active());
+        assert!(s.is_default());
+        assert_eq!(s.source_label(), "none");
+        assert_eq!(s.face_size, DEFAULT_CUBE_FACE_SIZE);
+        assert_eq!(s.mip_levels, DEFAULT_SPECULAR_MIPS);
+    }
+
+    #[test]
+    fn settings_sanitize_paths_and_ranges() {
+        let s = EnvironmentMapSettings {
+            enabled: true,
+            equirect: Some("  assets/sky.hdr  ".to_string()),
+            faces: Some(vec![" a.hdr".to_string(), "  ".to_string()]),
+            face_size: 3,
+            mip_levels: 99,
+            intensity: f32::NAN,
+        }
+        .sanitized();
+        // 路径去空白；只有两条面的 faces 整段作废（半套面拼不出 cubemap）
+        assert_eq!(s.equirect.as_deref(), Some("assets/sky.hdr"));
+        assert!(s.faces.is_none());
+        // 3 → 收敛到合法区间的 2 的幂；层数夹到上限；NaN 强度回落 1.0
+        assert_eq!(s.face_size, 4);
+        assert_eq!(s.mip_levels, MAX_SPECULAR_MIPS);
+        assert_eq!(s.intensity, 1.0);
+        assert!(s.is_active());
+        assert_eq!(s.source_label(), "equirect");
+
+        // 全空白的路径等于没写
+        let empty = EnvironmentMapSettings {
+            equirect: Some("   ".to_string()),
+            ..EnvironmentMapSettings::default()
+        }
+        .sanitized();
+        assert!(empty.equirect.is_none());
+        assert!(!empty.is_active());
+        assert!(empty.is_default());
+
+        // 强度夹到 IBL 上限，负值归零
+        assert_eq!(
+            EnvironmentMapSettings {
+                intensity: -5.0,
+                ..EnvironmentMapSettings::default()
+            }
+            .sanitized()
+            .intensity,
+            0.0
+        );
+        assert_eq!(
+            EnvironmentMapSettings {
+                intensity: 1e9,
+                ..EnvironmentMapSettings::default()
+            }
+            .sanitized()
+            .intensity,
+            crate::env::MAX_IBL_INTENSITY
+        );
+    }
+
+    #[test]
+    fn settings_faces_take_priority_and_need_six() {
+        let faces = (0..CUBE_FACES)
+            .map(|i| format!("face{i}.hdr"))
+            .collect::<Vec<_>>();
+        let s = EnvironmentMapSettings {
+            equirect: Some("sky.hdr".to_string()),
+            ..EnvironmentMapSettings::with_faces(faces.clone())
+        }
+        .sanitized();
+        assert_eq!(s.faces.as_ref().unwrap(), &faces);
+        assert_eq!(s.source_label(), "faces");
+        assert!(s.is_active());
+
+        // 关掉开关后即使有路径也不激活，但配置原样保留
+        let off = EnvironmentMapSettings {
+            enabled: false,
+            ..s.clone()
+        };
+        assert!(!off.is_active());
+        assert_eq!(off.source_label(), "disabled");
+        assert_eq!(off.faces.as_ref().unwrap(), &faces);
+    }
+
+    #[test]
+    fn settings_json_roundtrip_omits_empty_sources() {
+        let text =
+            serde_json::to_string(&EnvironmentMapSettings::with_equirect("sky.hdr")).unwrap();
+        assert!(text.contains("\"equirect\":\"sky.hdr\""));
+        assert!(!text.contains("faces"));
+        let back: EnvironmentMapSettings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.equirect.as_deref(), Some("sky.hdr"));
+        assert_eq!(back.face_size, DEFAULT_CUBE_FACE_SIZE);
+
+        // 只写一个 path 字段，其余旋钮全部走缺省
+        let sparse: EnvironmentMapSettings =
+            serde_json::from_str("{\"faces\":[\"a\",\"b\"]}").unwrap();
+        assert!(sparse.enabled);
+        assert_eq!(sparse.faces.unwrap().len(), 2);
     }
 }

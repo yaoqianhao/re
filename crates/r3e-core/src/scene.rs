@@ -16,8 +16,8 @@ use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;
 use crate::{
-    AnimClip, AnimInstance, Camera, EnvironmentSettings, Light, MeshRef, Node, NodeId,
-    OcclusionSettings, PostFxSettings, SurfaceMaterial, Transform,
+    AnimClip, AnimInstance, Camera, EnvironmentMapSettings, EnvironmentSettings, Light, MeshRef,
+    Node, NodeId, OcclusionSettings, PostFxSettings, SurfaceMaterial, Transform,
 };
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
@@ -253,6 +253,10 @@ pub struct SceneFile {
     /// 金字塔、不发深度读回，GPU 提交量与旧场景完全一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion: Option<OcclusionSettings>,
+    /// HDR 立方体反射探针（扩展二十三）。缺省表示没有环境图，镜面 / 漫反射环境项
+    /// 仍由 `environment` 的解析天空 + SH 系数给出，画面与旧场景逐像素一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_map: Option<EnvironmentMapSettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
@@ -325,6 +329,10 @@ pub struct Scene {
     /// 遮挡剔除参数（扩展二十二）。`enabled = false`（缺省）时渲染层整帧跳过遮挡判定，
     /// 不建金字塔、不读回深度，画面与「只有视锥剔除」逐像素一致。
     pub occlusion: OcclusionSettings,
+    /// HDR 立方体反射探针（扩展二十三）。`None` 或未激活时，镜面 / 漫反射环境项完全由
+    /// `environment` 的解析天空 + SH 9 系数给出，画面与扩展二十三之前逐像素一致。
+    /// 激活后金属 / 光滑材质改从预滤波 cubemap 按粗糙度选 mip 采样。
+    pub environment_map: Option<EnvironmentMapSettings>,
 }
 
 impl Default for Scene {
@@ -361,6 +369,7 @@ impl Scene {
             lights: Vec::new(),
             lights_enabled: true,
             occlusion: OcclusionSettings::default(),
+            environment_map: None,
         }
     }
 
@@ -425,6 +434,51 @@ impl Scene {
     pub fn set_occlusion(&mut self, settings: OcclusionSettings) -> OcclusionSettings {
         self.occlusion = settings.sanitized();
         self.occlusion
+    }
+
+    // ---------- HDR 立方体反射探针（扩展二十三） ----------
+
+    /// 覆盖式写入整段探针配置，写入前统一收敛（脚本 / RPC / 场景 JSON 共用入口）。
+    ///
+    /// 返回写入后的配置；传入的路径全是空白时配置仍在，只是
+    /// [`EnvironmentMapSettings::is_active`] 为 false，渲染层退回解析 IBL。
+    pub fn set_environment_map(
+        &mut self,
+        settings: EnvironmentMapSettings,
+    ) -> EnvironmentMapSettings {
+        let settings = settings.sanitized();
+        self.environment_map = Some(settings.clone());
+        settings
+    }
+
+    /// 探针总开关（脚本 `set_env_map_enabled`）。关掉后路径保留，渲染层退回解析 IBL。
+    pub fn set_environment_map_enabled(&mut self, on: bool) -> bool {
+        let mut settings = self.environment_map.clone().unwrap_or_default();
+        settings.enabled = on;
+        self.environment_map = Some(settings.sanitized());
+        on
+    }
+
+    /// 当前是否有**生效中**的 HDR 探针（开关打开且来源有效）。
+    pub fn environment_map_active(&self) -> bool {
+        self.environment_map
+            .as_ref()
+            .map(EnvironmentMapSettings::is_active)
+            .unwrap_or(false)
+    }
+
+    /// 移除探针配置，彻底退回解析 IBL（脚本 `clear_env_map`）。
+    pub fn clear_environment_map(&mut self) -> bool {
+        self.environment_map.take().is_some()
+    }
+
+    /// 来源标签（`none` / `disabled` / `equirect` / `faces`），供日志与编辑器面板显示。
+    pub fn env_map_source(&self) -> String {
+        self.environment_map
+            .as_ref()
+            .map(EnvironmentMapSettings::source_label)
+            .unwrap_or("none")
+            .to_string()
     }
 
     // ---------- 生命周期 ----------
@@ -1320,6 +1374,8 @@ impl Scene {
         scene.postfx = file.postfx.map(|p| p.sanitized());
         // 遮挡剔除：缺段 = 缺省（关闭），有段则收敛到合法区间
         scene.occlusion = file.occlusion.unwrap_or_default().sanitized();
+        // HDR 反射探针：缺段 = None（沿用解析 IBL），有段则收敛路径与旋钮
+        scene.environment_map = file.environment_map.map(|m| m.sanitized());
         // 局部光源：逐盏收敛 + 按 key 去重（后者覆盖前者），超上限的截断。
         // 空 key 是无效光源（脚本 / RPC 拿不到它），直接跳过而不是静默塞个默认名。
         for light in file.lights {
@@ -1370,6 +1426,12 @@ impl Scene {
             } else {
                 Some(self.occlusion.sanitized())
             },
+            // 同理：没配探针时不该凭空长出 environment_map 段
+            environment_map: self
+                .environment_map
+                .as_ref()
+                .filter(|m| !m.is_default())
+                .map(|m| m.clone().sanitized()),
             objects: self
                 .order
                 .iter()
