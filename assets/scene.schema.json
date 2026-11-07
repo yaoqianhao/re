@@ -593,8 +593,8 @@
       "description": "场景 `occlusion` 段（扩展二十二）。\n\n缺省 [`OcclusionSettings::default`]（`enabled = false`）与场景里完全不写这一段等价：\n渲染层不建金字塔、不发深度读回，剔除结果与「只做视锥剔除」逐像素一致。",
       "properties": {
         "depth_bias": {
-          "default": 0.0020000000949949026,
-          "description": "深度偏置（NDC 单位）：tile 里的表面要领先物件最近点这么多才算「更近」。",
+          "default": 0.05000000074505806,
+          "description": "深度偏置（相对比例，夹进 `[0, 0.5]`）：tile 里的表面要领先物件最近点\n`depth_bias × (1 - nearest)` 才算「更近」，避免同表面浮点抖动被当遮挡间隙。",
           "format": "float",
           "type": "number"
         },

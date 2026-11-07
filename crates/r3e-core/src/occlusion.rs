@@ -39,11 +39,16 @@ pub const MIN_TILE_SIZE: u32 = 2;
 /// tile 边长上限：32 像素的 tile 在 1080p 下只剩 60×34，遮挡关系会被糊掉。
 pub const MAX_TILE_SIZE: u32 = 32;
 
-/// 缺省深度偏置（NDC 单位）：容忍同一表面上的浮点抖动被当成遮挡间隙。
-pub const DEFAULT_DEPTH_BIAS: f32 = 0.002;
+/// 缺省深度偏置：相对**剩余深度余量**（`1 - nearest`）的比例。
+///
+/// 不用 NDC 绝对差值的原因：透视投影的 NDC 深度在远处被压得极扁——相机在 12 米
+/// 处时物件与墙面只差 1e-4 量级，而近处的两个相邻表面能差 0.1。固定绝对偏置在
+/// 远处会一口吃掉全部可剔机会（实测 0.01 的绝对偏置让所有候选全部判可见）。
+/// 按 `(1 - nearest)` 缩放后，偏置等价于「视空间深度的相对误差」，远近一致。
+pub const DEFAULT_DEPTH_BIAS: f32 = 0.05;
 
-/// 深度偏置上限：再大就等于把整幅画面前后压扁，遮挡判定失去意义。
-pub const MAX_DEPTH_BIAS: f32 = 0.05;
+/// 深度偏置上限：0.5 已经等于要求遮挡面领先物件半个深度余量，再大就剔不动。
+pub const MAX_DEPTH_BIAS: f32 = 0.5;
 
 /// 缺省屏幕外扩（像素）：矩形向外长这么多再测，抵消投影取整误差。
 pub const DEFAULT_MARGIN_PX: u32 = 2;
@@ -75,7 +80,8 @@ pub struct OcclusionSettings {
     /// 是否启用。缺省关闭——遮挡剔除会改变 GPU 侧提交量，不该在老场景上默认生效。
     #[serde(default)]
     pub enabled: bool,
-    /// 深度偏置（NDC 单位）：tile 里的表面要领先物件最近点这么多才算「更近」。
+    /// 深度偏置（相对比例，夹进 `[0, 0.5]`）：tile 里的表面要领先物件最近点
+    /// `depth_bias × (1 - nearest)` 才算「更近」，避免同表面浮点抖动被当遮挡间隙。
     #[serde(default = "default_depth_bias")]
     pub depth_bias: f32,
     /// 金字塔 tile 边长（像素，夹进 `[2, 32]`）。
@@ -343,7 +349,10 @@ impl DepthPyramid {
         let Some(level) = self.levels.get(level_index) else {
             return false;
         };
-        let threshold = bounds.nearest - settings.depth_bias;
+        // 偏置按剩余深度余量缩放：NDC 深度在透视投影下非线性，用绝对差值会让远处
+        // 的候选全部落回「可见」。near 处余量大、偏置也大，far 处同步收窄。
+        let bias = settings.depth_bias * (1.0 - bounds.nearest);
+        let threshold = bounds.nearest - bias;
         if !threshold.is_finite() {
             return false;
         }
@@ -698,7 +707,7 @@ mod tests {
 
     #[test]
     fn is_occluded_respects_bias() {
-        // 深度差 0.001，比缺省偏置 0.002 还小 → 不算遮挡
+        // 深度差 0.001，比缺省偏置（0.05 × 余量 0.5 = 0.025）还小 → 不算遮挡
         let p = flat_pyramid(64, 64, 0.5);
         let bounds = ScreenBounds::new(0.0, 0.0, 64.0, 64.0, 0.501);
         assert!(!p.is_occluded(&bounds, &enabled()), "差距小于偏置要判可见");
@@ -707,6 +716,28 @@ mod tests {
             ..enabled()
         };
         assert!(p.is_occluded(&bounds, &no_bias), "零偏置时同一表面也算遮挡");
+    }
+
+    #[test]
+    fn is_occluded_works_far_from_camera() {
+        // 回归：NDC 深度在远处被压扁（0.9955 vs 0.9957 只差 2e-4），
+        // 绝对偏置时代这里一律判可见、真机上永远剔不掉任何东西。
+        let p = flat_pyramid(64, 64, 0.995_54);
+        let bounds = ScreenBounds::new(0.0, 0.0, 64.0, 64.0, 0.995_66);
+        let settings = OcclusionSettings {
+            depth_bias: 0.01,
+            ..enabled()
+        };
+        assert!(
+            p.is_occluded(&bounds, &settings),
+            "远处 1e-4 量级的深度差也该能判出遮挡"
+        );
+        // 偏置按余量缩放：0.5 的绝对值在这里会吃掉整个差距
+        let too_big = OcclusionSettings {
+            depth_bias: 0.5,
+            ..enabled()
+        };
+        assert!(!p.is_occluded(&bounds, &too_big), "偏置过大要回退到可见");
     }
 
     #[test]
@@ -835,11 +866,13 @@ mod tests {
         let bounds = project_aabb(&unit_aabb(), &vp, 800, 800).expect("投影");
         let settings = OcclusionSettings {
             enabled: true,
-            depth_bias: 0.002,
+            depth_bias: 0.05,
             margin_px: 0,
             ..OcclusionSettings::default()
         };
-        let p = flat_pyramid(800, 800, bounds.nearest - 0.004);
+        // 偏置是相对余量的比例，构造深度差也得跟着余量走
+        let margin = 1.0 - bounds.nearest;
+        let p = flat_pyramid(800, 800, bounds.nearest - margin * 0.1);
         assert!(p.is_occluded(&bounds, &settings), "粗筛应判遮挡");
         assert!(
             !p.is_occluded(&bounds, &settings.review()),
