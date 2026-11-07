@@ -8,6 +8,7 @@ pub mod anim;
 pub mod anim_blend;
 pub mod camera;
 pub mod env;
+pub mod envmap;
 pub mod frustum;
 pub mod glyph_atlas;
 pub mod input;
