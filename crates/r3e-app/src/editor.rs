@@ -3118,6 +3118,152 @@ mod tests {
             "时间戳应为纯数字: {first}"
         );
     }
+    fn env_map_patch(equirect: Option<&str>, faces: Option<Vec<String>>) -> EnvironmentMapPatch {
+        EnvironmentMapPatch {
+            equirect: equirect.map(str::to_string),
+            faces,
+            ..Default::default()
+        }
+    }
+
+    /// 宿主合并语义：段缺失时从缺省起步，未给的字段保留原值，回包给的是**收敛后**的值。
+    #[test]
+    fn environment_map_patch_merges_and_reports_source() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let first = api
+            .scene_set_environment_map(EnvironmentMapPatch {
+                equirect: Some("env/studio.hdr".into()),
+                face_size: Some(100),
+                ..Default::default()
+            })
+            .expect("首次设置应成功");
+        assert_eq!(first["enabled"], true, "有来源即生效: {first}");
+        assert_eq!(first["source"], "equirect");
+        // 100 不是 2 的幂，收敛后应向上取到 128（默认值恰好也是 128，这里验证的是「被写成收敛值」）
+        assert_eq!(first["environment_map"]["face_size"], 128);
+
+        // 第二次只调强度：路径 / 面边长必须原样保留，不能被默认值覆盖
+        let second = api
+            .scene_set_environment_map(EnvironmentMapPatch {
+                intensity: Some(2.5),
+                ..Default::default()
+            })
+            .expect("局部补丁应成功");
+        assert_eq!(second["environment_map"]["equirect"], "env/studio.hdr");
+        assert_eq!(second["environment_map"]["intensity"], 2.5);
+        assert_eq!(second["environment_map"]["face_size"], 128);
+
+        let map = scene.borrow().environment_map.clone().expect("段应落地");
+        assert_eq!(map.face_size, 128);
+        assert!(map.is_active());
+    }
+
+    /// 越界参数由宿主先夹到区间、再交给 `sanitized`：负数面边长不得变成 0 或 panic。
+    #[test]
+    fn environment_map_patch_clamps_sizes() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let resp = api
+            .scene_set_environment_map(EnvironmentMapPatch {
+                equirect: Some("env/a.hdr".into()),
+                face_size: Some(-8),
+                mip_levels: Some(999),
+                ..Default::default()
+            })
+            .expect("越界值应被夹取而不是报错");
+        assert_eq!(
+            resp["environment_map"]["face_size"], 4,
+            "负数落到 4 像素下限"
+        );
+        assert_eq!(
+            resp["environment_map"]["mip_levels"],
+            r3e_core::envmap::MAX_SPECULAR_MIPS,
+            "层数上限必须夹到 MAX_SPECULAR_MIPS"
+        );
+
+        let low = api
+            .scene_set_environment_map(EnvironmentMapPatch {
+                mip_levels: Some(0),
+                ..Default::default()
+            })
+            .expect("层数 0 应被夹到 1");
+        assert_eq!(low["environment_map"]["mip_levels"], 1);
+    }
+
+    /// 六面来源：长度不是 6 时 `sanitized` 判为无效 → 来源清空 → 整段丢弃，
+    /// 渲染层立刻退回解析 IBL（这是「配错了不会静默用半套图」的关键路径）。
+    #[test]
+    fn environment_map_bad_faces_drop_section() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        let resp = api
+            .scene_set_environment_map(env_map_patch(
+                None,
+                Some(vec!["px.hdr".into(), "nx.hdr".into()]),
+            ))
+            .expect("无效来源应给出可解释回包");
+        assert_eq!(resp["enabled"], false, "只有 2 面拼不出立方体: {resp}");
+        assert_eq!(resp["source"], "none");
+        assert_eq!(resp["environment_map"], Value::Null);
+        assert!(
+            scene.borrow().environment_map.is_none(),
+            "来源被判无效时应整段丢弃，而不是留个半残配置"
+        );
+    }
+
+    /// 关开关只翻 `enabled`，路径必须留着——这正是「A/B 切换不丢配置」的用法。
+    #[test]
+    fn environment_map_disable_keeps_paths() {
+        let (scene, physics, mut scripts) = fixture();
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        api.scene_set_environment_map(env_map_patch(Some("env/studio.hdr"), None))
+            .expect("先设置");
+        let off = api
+            .scene_set_environment_map(EnvironmentMapPatch {
+                enabled: Some(false),
+                ..Default::default()
+            })
+            .expect("关开关应成功");
+        assert_eq!(off["enabled"], false);
+        assert_eq!(off["source"], "disabled");
+        assert_eq!(off["environment_map"]["equirect"], "env/studio.hdr");
+
+        let map = scene
+            .borrow()
+            .environment_map
+            .clone()
+            .expect("段仍在，只是没启用");
+        assert!(!map.is_active());
+    }
+
+    /// 快照字段名必须与场景 JSON 的 `environment_map` 段逐字一致，前端才能直接回写。
+    #[test]
+    fn environment_map_snapshot_matches_scene_schema() {
+        let settings = r3e_core::envmap::EnvironmentMapSettings::with_equirect("env/x.hdr");
+        let value = environment_map_value(settings.sanitized());
+        let keys: Vec<&str> = value
+            .as_object()
+            .expect("快照应为对象")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for key in [
+            "enabled",
+            "equirect",
+            "faces",
+            "face_size",
+            "mip_levels",
+            "intensity",
+        ] {
+            assert!(keys.contains(&key), "快照缺少字段 `{key}`");
+        }
+        assert_eq!(keys.len(), 6, "不多不少六个字段，避免回写时多出未知键");
+    }
 }
 
 #[cfg(test)]
