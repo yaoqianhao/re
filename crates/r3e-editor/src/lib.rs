@@ -300,6 +300,37 @@ impl EnvironmentPatch {
     }
 }
 
+/// `scene.set_environment_map` 的局部改动（扩展二十三）：HDR 立方体反射探针。
+///
+/// 与 [`EnvironmentPatch`] 是**两条独立的线**：`environment` 是三色解析天空 + SH 系数，
+/// 本补丁是「预滤波 cubemap」这条 HDR 支线；两者可以同时存在，互不覆盖。
+///
+/// 来源只有两种，`equirect`（一张等距柱状 `.hdr`）与 `faces`（六面 `.hdr`，顺序固定
+/// +X/-X/+Y/-Y/+Z/-Z）；两者同时给时宿主按 `faces` 优先。要给「清空来源」时传空串 /
+/// 空数组，收敛后等价于没写——这条路径比 `enabled = false` 更彻底（连配置一起丢掉）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EnvironmentMapPatch {
+    pub enabled: Option<bool>,
+    pub equirect: Option<String>,
+    pub faces: Option<Vec<String>>,
+    /// 预滤波基准面边长（像素）。有符号整数：负数留给宿主夹到区间下限。
+    pub face_size: Option<i32>,
+    /// 镜面 mip 链层数。同样有符号，理由同上。
+    pub mip_levels: Option<i32>,
+    pub intensity: Option<f32>,
+}
+
+impl EnvironmentMapPatch {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.equirect.is_none()
+            && self.faces.is_none()
+            && self.face_size.is_none()
+            && self.mip_levels.is_none()
+            && self.intensity.is_none()
+    }
+}
+
 /// `scene.set_postfx` 的局部改动（扩展十三）：只给要改的字段，其余保持原值。
 ///
 /// `enabled = Some(false)` 表示关掉整个后处理段，回到「离屏 HDR 目标 + composite
@@ -614,6 +645,22 @@ pub trait EngineApi {
         Err(RpcFailure::unsupported("scene.set_environment"))
     }
 
+    /// 改写场景级 HDR 立方体反射探针（扩展二十三：`equirect` 一张图 / `faces` 六面图）。
+    ///
+    /// 宿主应把补丁合并进现有 `environment_map` 段后立即收敛，并把合并结果回给调用方；
+    /// 返回值契约：`{ "enabled": bool, "source": "equirect"|"faces"|"disabled"|"none",
+    /// "environment_map": {...}|null }`。`source` 是**收敛后实际生效**的来源标签，
+    /// 前端据此判断面板该显示「已加载」还是「配置无效退回解析 IBL」。
+    ///
+    /// 与 `scene_set_environment` 的区别：那条改三色天空 / SH 解析 IBL，这条改预滤波
+    /// cubemap；关掉这条（`enabled = false`）不会影响解析 IBL，反之亦然。
+    fn scene_set_environment_map(
+        &mut self,
+        _patch: EnvironmentMapPatch,
+    ) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.set_environment_map"))
+    }
+
     /// 改写场景级 HDR 后处理段（曝光 / 色调映射 / 泛光 / FXAA）。
     /// 宿主应把补丁合并进现有设置后立即收敛，并把合并结果回给调用方；
     /// `enabled = false` 时清空该段（直通），返回值里 `postfx` 为 `null`。
@@ -892,6 +939,34 @@ fn opt_i32(params: &Value, key: &str) -> Result<Option<i32>, RpcFailure> {
         .map_err(|_| RpcFailure::invalid_params(format!("参数 `{key}` 超出 i32 范围")))
 }
 
+/// 取出可选字符串数组参数；缺省（含显式 `null`）得到 `None`，给了但不是字符串数组则报错。
+///
+/// 元素个数**不在这里校验**：`faces` 必须恰好 6 条这件事由宿主的
+/// `EnvironmentMapSettings::sanitized` 判（长度不对时整段作废、退回解析 IBL），
+/// 本层多拦一道只会让「想用空数组清空来源」这种合法写法被提前拒掉。
+fn opt_str_list(params: &Value, key: &str) -> Result<Option<Vec<String>>, RpcFailure> {
+    match param(params, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(s) => out.push(s.to_string()),
+                    None => {
+                        return Err(RpcFailure::invalid_params(format!(
+                            "参数 `{key}` 应为字符串数组，其中含非字符串元素"
+                        )))
+                    }
+                }
+            }
+            Ok(Some(out))
+        }
+        Some(_) => Err(RpcFailure::invalid_params(format!(
+            "参数 `{key}` 应为字符串数组"
+        ))),
+    }
+}
+
 fn opt_bool(params: &Value, key: &str) -> Result<Option<bool>, RpcFailure> {
     let Some(value) = param(params, key) else {
         return Ok(None);
@@ -1087,6 +1162,49 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 );
             }
             match api.scene_set_environment(patch) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
+        // 反射探针契约（扩展二十三）：字段可分别给，一个都不给视为无意义调用。
+        // 与 set_environment 的区别是「两条独立的线」：这里只动 environment_map 段，
+        // 解析天空 / SH 系数一律不碰；`enabled = false` 只翻开关、保留路径。
+        // 路径解析（相对场景目录 → 绝对路径）与文件读取都在宿主侧完成，本层只搬字符串。
+        "scene.setenvironmentmap" => {
+            let patch = match (
+                opt_bool(&req.params, "enabled"),
+                opt_str(&req.params, "equirect"),
+                opt_str_list(&req.params, "faces"),
+                opt_i32(&req.params, "face_size"),
+                opt_i32(&req.params, "mip_levels"),
+                opt_f32(&req.params, "intensity"),
+            ) {
+                (Ok(enabled), Ok(equirect), Ok(faces), Ok(face_size), Ok(mips), Ok(intensity)) => {
+                    EnvironmentMapPatch {
+                        enabled,
+                        equirect: equirect.map(str::to_string),
+                        faces,
+                        face_size,
+                        mip_levels: mips,
+                        intensity,
+                    }
+                }
+                (Err(f), ..)
+                | (_, Err(f), ..)
+                | (_, _, Err(f), ..)
+                | (_, _, _, Err(f), ..)
+                | (_, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, Err(f)) => return Response::fail(id, f),
+            };
+            if patch.is_empty() {
+                return Response::fail(
+                    id,
+                    RpcFailure::invalid_params(
+                        "environment_map 补丁至少要给一个字段（或 enabled=false 临时关闭）",
+                    ),
+                );
+            }
+            match api.scene_set_environment_map(patch) {
                 Ok(r) => Response::ok(id, r),
                 Err(f) => Response::fail(id, f),
             }

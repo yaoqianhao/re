@@ -11,6 +11,7 @@ use glam::{Mat4, Vec3};
 use r3e_asset::AssetLibrary;
 use r3e_audio::{Audio, ListenerPose};
 use r3e_core::anim::{AnimBinding, AnimInstance};
+use r3e_core::envmap::{self, EnvironmentMapSettings, HdrImage};
 use r3e_core::input::{
     key_from_char, InputState, KeyCode, MOUSE_BACK, MOUSE_FORWARD, MOUSE_LEFT, MOUSE_MIDDLE,
     MOUSE_RIGHT, PAD_AXIS_COUNT, PAD_BACK, PAD_BUTTON_COUNT, PAD_LEFT_X, PAD_LEFT_Y, PAD_LT,
@@ -290,6 +291,12 @@ pub struct EngineApp {
     capture_after: u64,
     /// 本帧是否已经截过图（一次进程只截一张，截完就退出）。
     capture_done: bool,
+    /// 已上传到渲染器的反射探针配置（扩展二十三）。相等就不重传：
+    /// HDR 解码 + 六面预滤波是几百毫秒级的一次性开销，逐帧重算等于自杀。
+    applied_env_map: Option<r3e_core::envmap::EnvironmentMapSettings>,
+    /// 上次**加载失败**的探针配置。用同一份配置再试只会再失败一次，
+    /// 记在这里就能保证坏图只在切换时刷一条日志，而不是每帧一条。
+    env_map_error: Option<r3e_core::envmap::EnvironmentMapSettings>,
 }
 
 impl EngineApp {
@@ -516,6 +523,8 @@ impl EngineApp {
             capture_frame: cli.capture_frame.clone(),
             capture_after: u64::from(cli.capture_after.unwrap_or(2).max(1)),
             capture_done: false,
+            applied_env_map: None,
+            env_map_error: None,
         }
     }
 
@@ -739,6 +748,10 @@ impl EngineApp {
             }
         }
 
+        // 反射探针（扩展二十三）：必须在 render 之前同步。配置没变就什么都不做，
+        // 因此未配置探针的场景这一步恒为空转，画面与扩展十二逐像素一致。
+        self.sync_env_probe();
+
         if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
             renderer.render(&self.scene.borrow());
             let stats = renderer.stats();
@@ -813,6 +826,70 @@ impl EngineApp {
         self.input.borrow_mut().end_frame();
     }
 
+    /// 反射探针（扩展二十三）：把场景的 `environment_map` 段同步到渲染器。
+    ///
+    /// 三条判定，顺序即优先级：
+    /// 1. 段缺失 / 未启用 → `clear_env_probe()`，镜面退回解析 IBL（与扩展十二一致）；
+    /// 2. 与已上传配置相等 → 直接返回，不碰 GPU（也就不用重建材质 bind group）；
+    /// 3. 与上次失败的配置相等 → 也返回，坏图只在切换那一次刷日志。
+    ///
+    /// 真正的解码 + 预滤波是 CPU 上的一次性重活（默认 128 面 × 6 × 6 层），
+    /// 所以这里唯一的性能红线就是「别在没变化时重算」。
+    fn sync_env_probe(&mut self) {
+        let settings = self
+            .scene
+            .borrow()
+            .environment_map
+            .as_ref()
+            .map(|m| m.clone().sanitized())
+            .filter(|m| m.is_active());
+        let Some(settings) = settings else {
+            if self.applied_env_map.take().is_some() {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.clear_env_probe();
+                }
+                log::info!("反射探针已卸载：镜面反射退回解析 IBL");
+            }
+            return;
+        };
+        if self.applied_env_map.as_ref() == Some(&settings)
+            || self.env_map_error.as_ref() == Some(&settings)
+        {
+            return;
+        }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let base_dir = self
+            .assets_root
+            .clone()
+            .or_else(|| self.scene_path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("."));
+        match load_env_probe(&settings, &base_dir) {
+            Ok(prefiltered) => {
+                let source = r3e_render::EnvProbeSource::from_settings(prefiltered, &settings);
+                let stats = source.stats();
+                renderer.set_env_probe(Some(&source));
+                log::info!(
+                    "反射探针已加载：来源 {} / 面边长 {}² / mip {} 层 / 强度 {:.2}",
+                    stats.source,
+                    stats.face_size,
+                    stats.mip_levels,
+                    stats.intensity
+                );
+                self.applied_env_map = Some(settings);
+                self.env_map_error = None;
+            }
+            Err(e) => {
+                // 加载失败不装死：明确退回解析 IBL，并记下这份配置别再来一遍
+                log::warn!("反射探针加载失败（{e}）：镜面反射退回解析 IBL");
+                renderer.clear_env_probe();
+                self.applied_env_map = None;
+                self.env_map_error = Some(settings);
+            }
+        }
+    }
+
     /// 剔除探针：一帧里有多少物件参与渲染、多少被视锥剔掉。
     ///
     /// `缺包围盒` 持续非零说明资产层没喂 AABB（剔除会 fail-open 全画），是排查剔除失效的第一入口。
@@ -838,6 +915,29 @@ impl EngineApp {
             "[{tag}] 环境探针：启用 {env_enabled} / 总强度 {env_intensity:.2} / 太阳强度 {env_sun:.2} / 球谐重投影 {} 次",
             renderer.environment_builds()
         );
+        // HDR 立方体探针（扩展二十三）：与上面那条是**两条独立的线**。
+        // `在生效 false` 且段内已配置 → 加载失败（控制台会有 warn 说明原因）；
+        // `面边长` / `mip` 为 0 表示渲染器里根本没有探针，镜面走解析 IBL。
+        {
+            let probe = stats.env_probe;
+            let (want_map, want_enabled, want_source) =
+                match self.scene.borrow().environment_map.as_ref() {
+                    Some(map) => {
+                        let map = map.clone().sanitized();
+                        (true, map.enabled, map.source_label())
+                    }
+                    None => (false, false, "none"),
+                };
+            log::info!(
+                "[{tag}] HDR 反射探针：段内 {} / 开关 {} / 来源 {want_source} / 生效 {} / 面边长 {}² / mip {} / 强度 {:.2}",
+                want_map,
+                want_enabled,
+                probe.active,
+                probe.face_size,
+                probe.mip_levels,
+                probe.intensity
+            );
+        }
         // 后处理探针（扩展十三）：泛光 pass 数 > 0 说明整条链真的提交了；
         // 层级分辨率应随窗口尺寸变化；重建次数只该在 resize 时增长——
         // 若它逐帧增长，说明尺寸判定失效、每帧都在重建离屏目标。
@@ -2166,6 +2266,78 @@ struct AssetSpec {
     spawn: bool,
     /// 场景 JSON `assets[].anim` 段（P3）：声明要播放的片段与参数。
     anim: Option<AnimDecl>,
+}
+
+/// 读一张 Radiance `.hdr`（RGBE）并解码成线性辐亮度图。相对路径按 `base_dir` 解析。
+fn read_hdr_image(raw: &str, base_dir: &Path) -> Result<HdrImage, String> {
+    let mut path = PathBuf::from(raw.trim());
+    if path.is_relative() {
+        path = base_dir.join(path);
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    envmap::decode_radiance(&bytes)
+        .ok_or_else(|| format!("{} 不是有效的 Radiance HDR（RGBE）", path.display()))
+}
+
+/// 把任意边长的面双线性重采样到 `size²`。
+///
+/// 六面 `.hdr` 各自尺寸不一致是很常见的手工制作产物（甚至同一套图在不同工具里
+/// 导出尺寸不同），而 [`Cubemap::new`] 要求六面严格等边——这里主动统一，
+/// 比让用户自己改图友好得多。
+fn fit_face(image: &HdrImage, size: usize) -> HdrImage {
+    if image.width() == size && image.height() == size {
+        return image.clone();
+    }
+    let mut pixels = Vec::with_capacity(size * size);
+    let inv = 1.0 / size as f32;
+    for y in 0..size {
+        let v = (y as f32 + 0.5) * inv;
+        for x in 0..size {
+            let u = (x as f32 + 0.5) * inv;
+            let c = image.sample_uv(u, v);
+            pixels.push([c.x, c.y, c.z]);
+        }
+    }
+    HdrImage::new(size, size, pixels).unwrap_or_else(|| image.clone())
+}
+
+/// 按场景段加载并预滤波反射探针（扩展二十三）。
+///
+/// 纯 CPU：读文件 → 解码 RGBE → 统一面边长 → 预滤波 mip 链。GPU 上传在
+/// [`r3e_render::Renderer::set_env_probe`] 里，本函数不认识 wgpu。
+///
+/// 失败一律返回可读的中文原因（哪一面、哪个路径、为什么），调用方据此退回解析 IBL；
+/// 这里不做任何重试或兜底图替换——「静默用一张灰图顶替」会让用户以为探针生效了。
+fn load_env_probe(
+    settings: &EnvironmentMapSettings,
+    base_dir: &Path,
+) -> Result<envmap::PrefilteredEnv, String> {
+    let face_size = settings.face_size;
+    let base = if let Some(faces) = settings.faces.as_ref() {
+        // `sanitized()` 已保证长度恰为 6；这里再断言一次只是为了把「绕过收敛直接调」
+        // 的错误早点暴露出来
+        if faces.len() != envmap::CUBE_FACES {
+            return Err(format!(
+                "六面图需要 {} 条路径，收到 {} 条",
+                envmap::CUBE_FACES,
+                faces.len()
+            ));
+        }
+        let mut images = Vec::with_capacity(envmap::CUBE_FACES);
+        for (index, raw) in faces.iter().enumerate() {
+            let image = read_hdr_image(raw, base_dir)
+                .map_err(|e| format!("面 {}（{raw}）: {e}", envmap::CUBE_FACE_NAMES[index]))?;
+            images.push(fit_face(&image, face_size));
+        }
+        envmap::Cubemap::new(face_size, images)
+            .ok_or_else(|| format!("六面图无法组成 {face_size}² 立方体"))?
+    } else if let Some(raw) = settings.equirect.as_deref() {
+        let image = read_hdr_image(raw, base_dir)?;
+        envmap::equirect_to_cubemap(&image, face_size)
+    } else {
+        return Err("既没有 equirect 也没有 faces".to_string());
+    };
+    Ok(envmap::prefilter_specular(&base, settings.mip_levels))
 }
 
 /// 合并命令行 `--asset` 与场景文件 `assets` 段。
