@@ -589,6 +589,44 @@
       ],
       "type": "object"
     },
+    "OcclusionSettings": {
+      "description": "场景 `occlusion` 段（扩展二十二）。\n\n缺省 [`OcclusionSettings::default`]（`enabled = false`）与场景里完全不写这一段等价：\n渲染层不建金字塔、不发深度读回，剔除结果与「只做视锥剔除」逐像素一致。",
+      "properties": {
+        "depth_bias": {
+          "default": 0.0020000000949949026,
+          "description": "深度偏置（NDC 单位）：tile 里的表面要领先物件最近点这么多才算「更近」。",
+          "format": "float",
+          "type": "number"
+        },
+        "enabled": {
+          "default": false,
+          "description": "是否启用。缺省关闭——遮挡剔除会改变 GPU 侧提交量，不该在老场景上默认生效。",
+          "type": "boolean"
+        },
+        "margin_px": {
+          "default": 2,
+          "description": "屏幕外扩（像素，夹进 `[0, 64]`）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_tiles": {
+          "default": 256,
+          "description": "单次判定最多遍历的 tile 数（夹进 `[16, 4096]`）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tile_size": {
+          "default": 8,
+          "description": "金字塔 tile 边长（像素，夹进 `[2, 32]`）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "PhysicsDesc": {
       "description": "物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。",
       "properties": {
@@ -1241,6 +1279,17 @@
         "$ref": "#/$defs/ObjectDesc"
       },
       "type": "array"
+    },
+    "occlusion": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OcclusionSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "遮挡剔除（扩展二十二）。缺省 / `enabled = false` 表示不剔除：渲染层不建深度\n金字塔、不发深度读回，GPU 提交量与旧场景完全一致。"
     },
     "physics": {
       "anyOf": [

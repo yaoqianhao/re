@@ -17,7 +17,7 @@ use crate::ui::UiElement;
 use crate::skin::SkinInstance;
 use crate::{
     AnimClip, AnimInstance, Camera, EnvironmentSettings, Light, MeshRef, Node, NodeId,
-    PostFxSettings, SurfaceMaterial, Transform,
+    OcclusionSettings, PostFxSettings, SurfaceMaterial, Transform,
 };
 
 /// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
@@ -249,6 +249,10 @@ pub struct SceneFile {
     /// 局部光源表（扩展十五：点光 / 聚光）。空表示场景只有方向光，画面与旧场景一致。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lights: Vec<LocalLight>,
+    /// 遮挡剔除（扩展二十二）。缺省 / `enabled = false` 表示不剔除：渲染层不建深度
+    /// 金字塔、不发深度读回，GPU 提交量与旧场景完全一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion: Option<OcclusionSettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
@@ -318,6 +322,9 @@ pub struct Scene {
     /// 局部光源总开关（脚本 `set_lights_enabled`）。false 时渲染层整帧跳过局部光循环，
     /// 数据保留，再打开即原样恢复——用于对比「有灯 / 无灯」或临时省 GPU。
     pub lights_enabled: bool,
+    /// 遮挡剔除参数（扩展二十二）。`enabled = false`（缺省）时渲染层整帧跳过遮挡判定，
+    /// 不建金字塔、不读回深度，画面与「只有视锥剔除」逐像素一致。
+    pub occlusion: OcclusionSettings,
 }
 
 impl Default for Scene {
@@ -353,6 +360,7 @@ impl Scene {
             ui_above_text: false,
             lights: Vec::new(),
             lights_enabled: true,
+            occlusion: OcclusionSettings::default(),
         }
     }
 
@@ -394,6 +402,29 @@ impl Scene {
         let n = self.lights.len();
         self.lights.clear();
         n
+    }
+
+    // ---------- 遮挡剔除（扩展二十二） ----------
+
+    /// 遮挡剔除总开关（脚本 `set_occlusion_enabled`）。
+    ///
+    /// 关掉后渲染层整帧跳过遮挡判定：不读回深度、不建金字塔，提交序列退化成
+    /// 「只有视锥剔除」——也就是加这个功能之前的样子。参数（偏置 / tile 等）保留，
+    /// 再打开即按原参数恢复。返回切换后的状态。
+    pub fn set_occlusion_enabled(&mut self, on: bool) -> bool {
+        self.occlusion.enabled = on;
+        self.occlusion.enabled
+    }
+
+    /// 当前是否启用遮挡剔除。
+    pub fn occlusion_enabled(&self) -> bool {
+        self.occlusion.enabled
+    }
+
+    /// 覆盖式写入整段遮挡剔除参数（脚本 / RPC 用），写入前统一收敛。
+    pub fn set_occlusion(&mut self, settings: OcclusionSettings) -> OcclusionSettings {
+        self.occlusion = settings.sanitized();
+        self.occlusion
     }
 
     // ---------- 生命周期 ----------
@@ -1287,6 +1318,8 @@ impl Scene {
         scene.environment = file.environment.map(|e| e.sanitized());
         // 后处理同样整段覆盖：缺段 = None（直通），有段则按 PostFxSettings 收敛
         scene.postfx = file.postfx.map(|p| p.sanitized());
+        // 遮挡剔除：缺段 = 缺省（关闭），有段则收敛到合法区间
+        scene.occlusion = file.occlusion.unwrap_or_default().sanitized();
         // 局部光源：逐盏收敛 + 按 key 去重（后者覆盖前者），超上限的截断。
         // 空 key 是无效光源（脚本 / RPC 拿不到它），直接跳过而不是静默塞个默认名。
         for light in file.lights {
@@ -1331,6 +1364,12 @@ impl Scene {
             environment: self.environment.map(|e| e.sanitized()),
             postfx: self.postfx.map(|p| p.sanitized()),
             lights: self.lights.clone(),
+            // 全是缺省值时不写这一段：旧场景 roundtrip 不该凭空长出 occlusion 字段
+            occlusion: if self.occlusion == OcclusionSettings::default() {
+                None
+            } else {
+                Some(self.occlusion.sanitized())
+            },
             objects: self
                 .order
                 .iter()

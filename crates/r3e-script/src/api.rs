@@ -2498,6 +2498,33 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow().lights_enabled
     });
 
+    // ---- 遮挡剔除（扩展二十二） ----
+    // 总开关只决定「这一帧要不要做遮挡判定」：关掉后渲染层不读回深度、不建金字塔，
+    // 提交序列退化成只有视锥剔除；参数与场景数据都保留，再打开即按原参数恢复。
+    let c = ctx.clone();
+    engine.register_fn("set_occlusion_enabled", move |on: bool| {
+        c.scene.borrow_mut().set_occlusion_enabled(on);
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("occlusion_enabled", move || -> bool {
+        c.scene.borrow().occlusion_enabled()
+    });
+
+    // 深度偏置（NDC 单位）：偏置越大越保守（越不剔），写入前统一收敛到合法区间。
+    let c = ctx.clone();
+    engine.register_fn("set_occlusion_bias", move |v: f64| -> f64 {
+        let mut scene = c.scene.borrow_mut();
+        let mut s = scene.occlusion;
+        s.depth_bias = f32_of(v);
+        scene.set_occlusion(s).depth_bias as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("occlusion_bias", move || -> f64 {
+        c.scene.borrow().occlusion.depth_bias as f64
+    });
+
     // ---- 只读查询 ----
 
     let c = ctx.clone();

@@ -1711,6 +1711,52 @@ mod local_light_script_tests {
         assert_eq!(scene.borrow().lights.len(), 1, "关闭不应删数据");
     }
 
+    /// 遮挡剔除开关（扩展二十二）：缺省关；打开后置位，关闭即复位，参数不受影响。
+    #[test]
+    fn script_occlusion_switch() {
+        let (mut host, scene) = host();
+        assert!(
+            !eval_bool(&mut host, "occlusion_enabled()"),
+            "缺省必须关闭，老场景行为不能被改掉"
+        );
+
+        let _ = host
+            .eval("set_occlusion_enabled(true)")
+            .expect("应可开启遮挡剔除");
+        assert!(eval_bool(&mut host, "occlusion_enabled()"));
+        assert!(scene.borrow().occlusion_enabled());
+
+        let _ = host
+            .eval("set_occlusion_enabled(false)")
+            .expect("应可关闭遮挡剔除");
+        assert!(!eval_bool(&mut host, "occlusion_enabled()"));
+        assert!(!scene.borrow().occlusion_enabled());
+    }
+
+    /// 深度偏置调参：写入即收敛，越界值被夹到上限而不是原样存着。
+    #[test]
+    fn script_occlusion_bias_is_sanitized() {
+        let (mut host, scene) = host();
+        let applied = host
+            .eval("set_occlusion_bias(0.01)")
+            .expect("应可设偏置")
+            .as_float()
+            .expect("应返回浮点");
+        assert!((applied - 0.01).abs() < 1e-6);
+        assert!((scene.borrow().occlusion.depth_bias - 0.01).abs() < 1e-6);
+
+        let clamped = host
+            .eval("set_occlusion_bias(99.0)")
+            .expect("越界值应被收敛")
+            .as_float()
+            .expect("应返回浮点");
+        assert_eq!(clamped, r3e_core::occlusion::MAX_DEPTH_BIAS as f64);
+        assert_eq!(
+            scene.borrow().occlusion.depth_bias,
+            r3e_core::occlusion::MAX_DEPTH_BIAS
+        );
+    }
+
     /// 快照 map：字段齐全；查不到时返回空 map（脚本用 is_empty 判空）。
     #[test]
     fn script_light_snapshot_map() {
