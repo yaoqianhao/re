@@ -17,8 +17,9 @@ use r3e_core::ui::{
     UiUpsert, UiValue, MAX_UI_ELEMENTS,
 };
 use r3e_core::{
-    plan_local_shadows, BoneMask, InputState, KeyCode, LayerMode, LocalLight, MeshRef, NodeId,
-    ObjectDesc, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
+    plan_local_shadows, BoneMask, EnvironmentMapSettings, InputState, KeyCode, LayerMode,
+    LocalLight, MeshRef, NodeId, ObjectDesc, Scene, SceneCommand, SceneStack, ScreenText,
+    TextAlign,
 };
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -950,6 +951,73 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("has_environment", move || -> bool {
         c.scene.borrow().environment.is_some()
+    });
+
+    // ---------------- HDR 立方体反射探针（扩展二十三） ----------------
+    // 语义：`scene.environment_map` 为 `None` / 未激活时，镜面 IBL 仍走上面那套解析球谐，
+    // 画面逐像素不变；一旦写入来源（等距柱状单图或立方体六面），金属 / 光滑材质改用
+    // 预滤波 mip 链采样。与 set_sky 一族同规矩：每次写入都过 `sanitized()`。
+
+    // 等距柱状单图（.hdr）。空字符串视为「没写」，整段探针被清掉。
+    let c = ctx.clone();
+    engine.register_fn("set_env_map", move |path: &str| -> bool {
+        let settings = EnvironmentMapSettings::with_equirect(path);
+        c.scene
+            .borrow_mut()
+            .set_environment_map(settings)
+            .is_active()
+    });
+
+    // 立方体六面：按 +X -X +Y -Y +Z -Z 顺序给 6 条路径，少于 6 条整段作废（返回 false）。
+    let c = ctx.clone();
+    engine.register_fn("set_env_map_faces", move |paths: Array| -> bool {
+        let faces: Vec<String> = paths
+            .iter()
+            .map(|d| d.clone().into_string().unwrap_or_default())
+            .collect();
+        let settings = EnvironmentMapSettings::with_faces(faces);
+        c.scene
+            .borrow_mut()
+            .set_environment_map(settings)
+            .is_active()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("set_env_map_intensity", move |v: f64| -> f64 {
+        let mut s = c.scene.borrow_mut();
+        let mut settings = s.environment_map.clone().unwrap_or_default();
+        settings.intensity = f32_of(v);
+        s.set_environment_map(settings).intensity as f64
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("set_env_map_enabled", move |on: bool| -> bool {
+        c.scene.borrow_mut().set_environment_map_enabled(on)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("clear_env_map", move || -> bool {
+        c.scene.borrow_mut().clear_environment_map()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("has_env_map", move || -> bool {
+        c.scene.borrow().environment_map_active()
+    });
+
+    // 诊断出口：来源标签（none / disabled / equirect / faces），编辑器面板可直接显示。
+    let c = ctx.clone();
+    engine.register_fn("env_map_source", move || -> String {
+        c.scene.borrow().env_map_source()
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("env_map_intensity", move || -> f64 {
+        c.scene
+            .borrow()
+            .environment_map
+            .as_ref()
+            .map_or(1.0, |s| s.intensity as f64)
     });
 
     // ---------------- HDR 后处理链（扩展十三） ----------------
