@@ -171,7 +171,7 @@ Release 二进制 14.1 MB（14,817,280 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 953 passed / 0 failed（65 个套件；较扩展二十三收尾的 929 增 24，全部来自扩展二十四：`shadow_cull` 10 / `light` 3 / `cascade_scene` 3 / `shadow_cull_cascade` 4 / `caster_cull_contract` 4） |
+| 单测（默认特性） | `cargo test --workspace` | 966 passed / 0 failed（66 个套件；较扩展二十四收尾的 953 增 13，全部来自扩展二十五的 `shadow_cull_hierarchy`）；扩展二十四收尾为 953 passed / 0 failed（65 个套件；较扩展二十三收尾的 929 增 24，全部来自扩展二十四：`shadow_cull` 10 / `light` 3 / `cascade_scene` 3 / `shadow_cull_cascade` 4 / `caster_cull_contract` 4） |
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 933 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
@@ -932,10 +932,74 @@ RGBE 往返与坏文件拒收、像素上限、方向映射三函数互逆与边
 
 **已知边界**
 
-- **AABB 粒度**：不逐三角形、不做层级剔除，父节点一大片就整片保留——层级结构深的场景收益会掉；
+- **AABB 粒度**：不逐三角形，一个实例只判一个盒（层级剔除见 §4.18，扩展二十五）；
 - **保守侧漏裁**：只裁「八点全在外」，部分相交的遮挡体一律保留，级边界附近的密度不会明显变稀；
-- **判定成本 O(级 × 实例)**：物件上万时 CPU 侧判定是实打实的开销，`casterCull = false` 反而是省 CPU 的选项；
+- **判定成本 O(级 × 实例)**：扩展二十五把这条压成「O(级 × 下探节点数) + 保留实例数」，
+  但件数上万、层级又平坦时它仍逼近 O(级 × 实例)，`casterCull = false` 依然是省 CPU 的退路；
 - **外扩默认 0**：紧贴级边界的遮挡体（屋檐 / 天桥 / 二层地板）可能丢影子，要靠 `casterExtend` 手动补。
+
+### 4.18 遮挡体层级剔除在 core 侧的契约（扩展二十五）
+
+§4.17 的判定是**逐实例**的：每级对每个遮挡体各做一次八角点投影，成本 `O(级 × 实例)`。
+但同一批实例绝大多数和它们的兄弟坐在同一棵子树上——父节点的并集盒一旦整块落在该级覆盖范围外，
+整枝实例都不必再判。扩展二十五把场景树的父子关系接进判定，同一个 `r3e_core::shadow_cull` 模块内实现，
+仍然**零 wgpu 依赖、纯 CPU 可测**。
+
+**① 节点 `CasterNode { parent: Option<usize>, bounds: Aabb, casts: u32 }`**：`parent = None` 即根；
+`bounds` 是**本节点自身实例**的世界包围盒（没有实例时 `Aabb::EMPTY`）；`casts` 是本节点自身承载的遮挡体数
+（一个节点被多个实例共享时 `> 1`）。构造糖：`CasterNode::leaf(bounds)`（自带 1 个实例）、
+`CasterNode::group(parent)`（纯变换节点，`casts = 0`）、`.under(parent)` 挂父。
+
+**② 树 `CasterTree::new(nodes: Vec<CasterNode>)`**：建图 + 自底向上聚「子树并集盒 `subtree`」与
+「子树实例数 `sizes`」。父链上的**越界 / 自指 / 成环一律降级成根**——层级数据坏了宁可少裁，
+也不能让下探原地打转（有单测）。拓扑序 `order`（父一定在子前）存下来，之后反向扫一遍就能重聚合。
+
+**③ 逐帧刷新 `refresh(&[Aabb], &[u32])`**：用本帧实例盒覆写各节点自身数据并重新聚合，
+**不动拓扑**。所以 `new` 只在场景结构变化时跑一次，物件移动/增删实例走 `refresh`。
+缺项按空处理，不越界 panic。
+
+**④ 判定 `plan(levels: &[Mat4]) -> CasterHierarchyPlan`**：每级一份「按节点」掩码 `masks[level][node]`，
+外加三个计数（见 ⑤）。单级算法是自顶向下的显式栈：
+
+| 情形 | 动作 | 计入 |
+| --- | --- | --- |
+| `sizes[node] == 0`（枝内一个遮挡体都没有） | 不判、不下探 | — |
+| 子树盒整块在级外 | 掩码全 false，**整枝跳过** | `pruned += sizes`，`sizes > 1` 时再 `branch_pruned += sizes` |
+| 子树盒通过、`casts > 0`、**叶** | 保留（子树盒就是自身盒，已判过） | `instance_tests += casts` |
+| 子树盒通过、`casts > 0`、**有子** | 自身盒再判一次（子树盒比自身盒大） | `instance_tests += casts`，`box_tests += 1` |
+
+**⑤ 三个计数口径**（`CasterHierarchyPlan` / `LevelCounts`）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `box_tests` | 做过的盒判定次数（每节点每级至多一次，混合节点的自身盒再加一次） |
+| `instance_tests` | 实际逐实例判过的实例数 |
+| `pruned` | 没做实例判定就定成「不可见」的实例数（整枝跳过 + 叶子直接被裁） |
+| `branch_pruned` | 上面那笔里**来自多实例子树**的部分 = 层级剔除的净收益 |
+
+恒等式：`instance_tests + pruned == 级数 × 总实例数`（`total_casts() × levels`）。
+`pruned` 单独看会骗人——平坦场景（一实例一根）叶子被裁也全算进 `pruned`，看起来「省了 70%」，
+而旧路径里那本来就是一次 AABB；**只有 `branch_pruned` 是真省下来的**，所以探针两个都打（§8.24）。
+
+**⑥ 掩码摊平 `expand_masks(masks, instance_nodes) -> Vec<Vec<bool>>`**：把「按节点」掩码按
+`instance_nodes[i]`（第 i 个实例所在节点）摊成「按实例」，与实例缓冲严格同序。
+下标失效（`usize::MAX`）按**保留**处理：错位的代价是「多画一个遮挡体」，不是「影子凭空缺一块」。
+
+**保守性**：正交投影下 `union` 的投影范围恰好是各成员投影范围的并集，所以「子树盒整块在级外」
+等价于「枝内每个实例都整块在级外」——层级剔除**只少判、不改判**，掩码与扩展二十四逐位相同
+（差分测试 `hierarchy_matches_per_instance_plan` / `flat_tree_matches_per_instance_plan` 钉住）。
+
+**测试口径**（`tests/shadow_cull_hierarchy.rs` 13 条）：与逐实例判定逐位等价（组装树 / 平坦树 / 三帧移动差分）、
+整枝跳过与 `refresh` 的重聚合、混合节点自身盒复判、`casts = 0` 的纯分组节点与空树、
+父链破损（越界 / 自指 / 成环）降级为根、`fail_open_bounds` 挡住整枝裁剪但叶子仍精确、
+计数平衡 `instance_tests + pruned = 级 × 实例`、`branch_pruned` 只计整枝。
+
+**已知边界**
+
+- **吃拓扑质量**：收益全看场景树是否「成组」——FBX 导进来的模型通常自带层级，手搓的扁平场景
+  （每个盒子一个根）净收益为 0，还多花一层盒判定；
+- **盒判定不是免费的**：树很深且每层只有一个子节点时，盒判定次数会接近实例数，此时收益也接近 0；
+- **只做 CPU 预筛**：不做 GPU 侧代理（球/盒实例化 + 硬件裁剪），也不做跨帧缓存（每帧重判）。
 
 ## 5. 渲染层：r3e-render
 
@@ -2334,6 +2398,52 @@ core 侧给了掩码（§4.17），渲染侧要把它变成**每级只提交该�
 - **`casterCull` 缺省开**且缺省外扩 0：缺省路径的**像素**与扩展二十三一致（`extend = 0` 逐位等价），
   但 draw call 数会变小，因此拿 draw call 当回归基准的脚本需要更新预期。
 
+### 5.18 遮挡体层级剔除在渲染侧的接线（扩展二十五）
+
+core 侧给了「按节点」掩码（§4.18），渲染侧要做三件事：把实例挂回场景树、只在结构变化时建树、
+把节点掩码摊成实例掩码后接回 §5.17 的 `masks`。**没有一个字段改变渲染结果**——它只改变判定的成本。
+
+**① `InstancePlan.caster_nodes: Vec<NodeId>`**：与 `caster_bounds` 逐项同序、也与实例缓冲同序，
+每个遮挡体实例记下它来自哪个场景节点。这是实例 → 树节点的唯一线索。
+
+**② `Renderer` 的六个字段**（同寿命）：
+
+| 字段 | 作用 |
+| --- | --- |
+| `caster_tree: Option<CasterTree>` | 层级树本体 |
+| `caster_slots: HashMap<NodeId, usize>` | 节点 id → 树下标 |
+| `caster_layout: u64` | 建树时的 `scene.layout_version()`，用来判「结构变没变」 |
+| `caster_node_bounds / caster_node_casts` | 逐帧填的「节点自身」盒与实例数（`refresh` 的入参） |
+| `caster_instance_nodes: Vec<usize>` | 实例 → 树下标，`expand_masks` 的入参 |
+| `caster_tree_builds: u32` | 建树次数，进探针（§8.24） |
+
+**③ `sync_caster_layout(scene)`**：`caster_layout == scene.layout_version()` 时**直接返回**，
+否则按场景节点新建一棵树。父指针**分两趟填**：第一趟按迭代序把节点排进 `nodes` 并登记 `slots`，
+第二趟才用 `node.parent` 查表填 `parent` 下标（父可能排在兄弟后面，一趟里查不到）。
+`Scene::layout_version()` 只在增删节点/改父子关系时变，所以稳态每帧只走 `refresh`。
+
+**④ `plan_casters_hierarchical(scene, caster_nodes, caster_bounds, level_mats) -> Option<CasterHierarchyPlan>`**：
+建/刷新树 → `refresh` → `plan(level_mats)` → `expand_masks(&masks, &caster_instance_nodes)`。
+返回 `None`（场景为空、树为空）时 `prepare_shadow` 退回 §4.17 的 `plan_casters` 逐实例路径，
+掩码结果与层级路径**逐位相同**，只是判定次数回到 `级 × 实例`。
+
+**⑤ `ShadowPlan` 与 `RenderStats`**：`ShadowPlan` 多了 `pruned` / `branch_pruned` / `box_tests`；
+`RenderStats` 对应三个字段 `shadow_pruned` / `shadow_branch_pruned` / `shadow_box_tests`，
+外加 `caster_tree_builds`。`shadow_casters + shadow_pruned == 级数 × 遮挡体数` 恒成立，
+是「计数没漏」的自检式；`shadow_branch_pruned` 才是层级相对逐实例的净收益。
+
+**已知边界**
+
+- **每节点只记 1 个实例**：`caster_node_casts[slot] = 1` 是当前写死的（`Scene` 里一个节点通常只出
+  一个实例）；同一节点承载多个实例时计数会少算，掩码**不会错**（保留方向 fail-open），
+  但 `shadow_pruned` 会偏小。要修正得先让 `InstancePlan` 记「每节点实例数」；
+- **节点盒取的是「被保留实例」的盒**：被主通道视锥剔除掉的实例不进树，因此它的影子在层级判定里
+  根本不参与——这与扩展二十四一致（视锥外实例本来就不投递）；
+- **建树看 `layout_version`**：只改 transform 不触发重建（正确，`refresh` 会跟上）；但若调用方
+  **原地换了节点父子关系却没 bump 版本**，树会停在旧拓扑上——此时 `caster_tree_builds` 不涨，
+  探针能看出来；
+- **收益全在 CPU**：draw call / 像素不变，视觉基线必须逐像素一致（`R3E_VISUAL_REGRESSION=1` 跑）。
+
 ### 8.1 程序入口（main.rs）
 
 ```rust
@@ -3146,6 +3256,54 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai --run-seconds 3
 合计 92 / 全量 128（省 28%）；物件在 x/y 上铺开时近两级裁得更狠。缺省路径视觉基线原样通过
 （`draws=5 instances=10 culled=0`——夹具场景物件少且都在近级里，故 `裁掉 = 0`，符合预期）。
 
+> 扩展二十五把这条判定的**做法**换成了按场景树的层级剔除（探针多一行、掩码逐位不变），
+> 见 §4.18 / §5.18 / §8.24。
+
+### 8.24 遮挡体层级剔除的驱动与探针（扩展二十五）
+
+**① 探针**：`--run-seconds N` 的起止两行，阴影那行不变（§8.23），后面多一行：
+
+```
+[frame] 遮挡体层级剔除：盒判定 64 / 未判即裁 22 / 其中整枝 20 / 建树次数 1
+```
+
+| 字段 | 来源 | 读法 |
+| --- | --- | --- |
+| `盒判定` | `stats.shadow_box_tests` | 下探过的树节点次数（× 级数）；溢出成倍增长说明树很碎 |
+| `未判即裁` | `stats.shadow_pruned` | 没做实例判定就定成不可见的实例数；`判定 + 未判即裁` 恒等于 `级数 × 遮挡体数` |
+| `其中整枝` | `stats.shadow_branch_pruned` | **净收益**：省下的实例判定里来自多实例子树的部分 |
+| `建树次数` | `stats.caster_tree_builds` | 稳态应保持不变；逐帧增长 = 每帧都在增删节点、缓存没生效 |
+
+**② 没有新增脚本 API**：层级剔除是纯内部优化，开关仍是 §8.23 的 `set_shadow_caster_cull`。
+想量「层级剔除值不值」，就同一场景跑两次 `casterCull` 开 / 关，比 `遮挡体判定` 与 `其中整枝`。
+
+**③ 怎么验证**：
+
+```powershell
+# CPU 侧：层级掩码必须与逐实例判定逐位相同（差分测试是这层唯一的正确性保证）
+cargo test -p r3e-core --test shadow_cull_hierarchy -- --nocapture
+
+# 画面没漂：层级剔除只改判定成本，像素必须与扩展二十四基线一致
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+
+# 探针读数（带父子层级的阴影场景）
+cargo run -- <场景>.json --run-seconds 3
+```
+
+**④ 实测**（RTX 5060 Laptop / Vulkan / 4 级级联）：
+
+| 场景 | 级 × 实例 | 遮挡体判定 | 未判即裁 | 其中整枝 | 净收益 | 盒判定 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `assets/scene_shadow.json`（7 个扁平实例） | 28 | 23 | 5 | **0** | 0% | 28 |
+| 4 组 × 4 零件（18 实例） | 72 | 50 | 22 | **20** | 28% | 64 |
+| 3 组 × 8 零件（30 实例） | 120 | 82 | 38 | **36** | 30% | 96 |
+
+读法：**扁平场景净收益为 0**（整枝 0 —— 每个实例都是自己一根，被裁也只省一次 AABB，
+而扩展二十四本来就只判一次），这是「层级剔除只在有层级时划算」的直接证据；
+组装场景里 3 组零件有 2 组整枝落在近级之外，整枝跳过占总量约三成。
+`盒判定` 与 `未判即裁` 一起看才是成本账：前者是**多花**的节点级判定，后者是**省下**的实例级判定，
+枝叶比例不到 1:1 时这一层就是纯亏（此时关掉 `casterCull` 更省）。
+
 ---
 
 ## 9. 端到端数据流
@@ -3219,7 +3377,7 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai --run-seconds 3
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
-| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM / 扩展二十四按级裁剪遮挡体，缺省开且不改画面）；屏幕空间遮蔽（扩展十七）叠在 composite 前；**HDR 立方体反射探针**（扩展二十三：离线预滤波 mip 链，面边长 128 缺省 / 上限 1024、镜面最多 10 层） | 环境细节已可上金属：配了探针时镜面 IBL 按粗糙度取 mip，漫反射改用探针第 0 层的辐照度投影；**但探针是静态的**——不抓取运行中场景，没有平面反射与 SSR，物件动起来不会出现在金属上；整场景只用一张图，无区域化探针与探针混合；只认 Radiance `.hdr`（不读 EXR / PFM / DDS），六面图必须同尺寸；预滤波是 CPU 串行的一次性开销（512 面以上加载有明显停顿）；不配探针时金属只映天 / 地 / 太阳，与扩展十二逐像素一致；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、扩展十八 C 起其中最多 4 盏可投影（点光 6 面 / 聚光单面、图幅固定 512²、聚光与点光同占 6 层槽位），无 IES/面光源、不参与环境项、阴影强度只有全局标量、立方体面接缝未做跨面 PCF；遮蔽是**整幅相乘的近似**（并非只压环境项）、无多尺度、无双边滤波；无全局光照；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
+| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM / 扩展二十四按级裁剪遮挡体 + 扩展二十五按场景树层级剔除，缺省开且不改画面）；屏幕空间遮蔽（扩展十七）叠在 composite 前；**HDR 立方体反射探针**（扩展二十三：离线预滤波 mip 链，面边长 128 缺省 / 上限 1024、镜面最多 10 层） | 环境细节已可上金属：配了探针时镜面 IBL 按粗糙度取 mip，漫反射改用探针第 0 层的辐照度投影；**但探针是静态的**——不抓取运行中场景，没有平面反射与 SSR，物件动起来不会出现在金属上；整场景只用一张图，无区域化探针与探针混合；只认 Radiance `.hdr`（不读 EXR / PFM / DDS），六面图必须同尺寸；预滤波是 CPU 串行的一次性开销（512 面以上加载有明显停顿）；不配探针时金属只映天 / 地 / 太阳，与扩展十二逐像素一致；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、扩展十八 C 起其中最多 4 盏可投影（点光 6 面 / 聚光单面、图幅固定 512²、聚光与点光同占 6 层槽位），无 IES/面光源、不参与环境项、阴影强度只有全局标量、立方体面接缝未做跨面 PCF；遮蔽是**整幅相乘的近似**（并非只压环境项）、无多尺度、无双边滤波；无全局光照；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
 | 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）+ 可选屏幕空间遮蔽两个全屏 pass（扩展十七）；缺省直通 | **无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮；遮蔽无历史累积，快速转动相机时高频噪声靠 4×4 散焦压制而非时间累积 |
 | 抗锯齿 | **MSAA 4×**（扩展十九，固定采样数，主通道 4× 附件 resolve 进 HDR 目标）；后处理末端另有 FXAA（扩展十三） | 采样数写死为 `MSAA_SAMPLE_COUNT = 4`，不可运行时切换；MSAA 只作用于几何边缘，后处理之后画的文本 / UI 走自己的通道、边际改善有限；无 TAA（需要历史缓冲） |
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
@@ -3266,9 +3424,9 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai --run-seconds 3
 3. **半透明排序细化**：实例级由远及近已在扩展十九落地；进一步可做逐三角形排序或 OIT（权重无关透明），解决同网格内相交半透明。
 4. **MSAA 可配置化**：4× 已落地（扩展十九）；进一步可做运行时切换 `1×/2×/4×/8×` 与 `sample_count` 自适应，或上 TAA 补时间维度抗锯齿。
 5. **脏标记**：若物件规模上万，把"每帧全量上传"改为"版本号变化才上传"。
-6. **级联遮挡体的层级剔除**：扩展二十四已把每级的遮挡体按 AABB 裁掉（保守判定，八点全在外才裁）；
-   进一步可按场景树父节点包围盒先做层级判定（当前逐实例测，层级深时收益会掉），或把判定改成 GPU 侧的
-   球/盒代理预筛。
+6. **级联遮挡体的 GPU 代理预筛**：扩展二十四按 AABB 裁掉级外遮挡体、扩展二十五把判定改成
+   按场景树的层级剔除（§4.18 / §5.18，扁平场景净收益为 0，组装场景实测约三成）。进一步可把判定
+   搬到 GPU：级联层级包围盒做成实例化球/盒代理 + 硬件裁剪，或跨帧复用上一帧的掩码。
 
 ---
 
@@ -3308,6 +3466,7 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai --run-seconds 3
 
 | **二十三（已完成：HDR 立方体反射探针）** | **离线预滤波 cubemap + 按粗糙度取 mip**：`r3e-core::envmap` 纯 CPU 契约——`decode_radiance` 只认 Radiance RGBE（新旧两种扫描行编码、`MAX_EQUIRECT_PIXELS = 64 Mi` 防爆）、`equirect_to_cubemap` 方向驱动双线性（经度环绕、纬度夹极）、`prefilter_specular` 按 `roughness = level/(levels-1)` 做余弦幂卷积（GGX `α = r²` 反解 Phong 指数 `k = 2/α² - 2`、32 次分层黄金角采样）、第 0 层复用原图保清晰反射；`equirect_uv` / `cube_face_dir` / `cube_dir_face` 三个纯函数互逆，`CUBE_FACE_NAMES` 钉死 `+X -X +Y -Y +Z -Z`；`EnvironmentMapSettings` 挂场景 `environment_map` 段（六面必须恰好 6 条否则整段作废、`face_size` 夹 4..1024 并向上取 2 的幂、`mip_levels` 夹 1..10），缺省不序列化；`r3e-render::envprobe` 把成品编码成 `Rgba16Float` 立方体纹素（自实现 `f32_to_f16` / `f16_to_f32`、无行距 padding），绑到**材质组 `@group(1) @binding 6`**（复用 base color 采样器），`CameraUniform` 352 → 368 字节加 `env_probe: vec4`（启用位 / mip 层数 / 强度 / 面边长），着色器 `probe_specular` 用 `textureSampleLevel` 按 `roughness × (levels-1)` 取层、漫反射改用探针第 0 层的辐照度投影（不新增绑定），无探针时 1×1 占位图 + `x=0` 完全短路；换图重建材质 bind group；脚本 8 个 API（`set_env_map` / `set_env_map_faces` / `set_env_map_intensity` / `set_env_map_enabled` / `clear_env_map` / `has_env_map` / `env_map_source` / `env_map_intensity`）；编辑器 `scene.set_environment_map` 补丁式 RPC（`EnvironmentMapPatch`，与 `scene.set_environment` 是两条独立的线）；`app.rs::sync_env_probe` 三道判定（未激活→卸载 / 配置未变→不碰 GPU / 上次失败→不重试）与加载 / 失败 / 卸载三种日志。详见 §4.16 / §5.16 / §8.22 | `core/envmap.rs` 新增（1,288 行）、`core/scene.rs` 加 `environment_map` 段与 `set/clear/active/source` 入口、`core/lib.rs` 导出；`render/envprobe.rs` 新增（415 行）、`render/renderer.rs` 加 `set_env_probe` / `clear_env_probe` / `env_probe_stats`、`shader.wgsl` 加探针分支、`pbr.rs` 绑定槽位；`script/api.rs` 注册 8 个绑定；`editor/lib.rs` `EnvironmentMapPatch` + dispatch；`app.rs` 探针同步与日志、`app/editor.rs` 补丁合并与快照；新增 `core/tests/environment_map_scene.rs`（4）/ `core/tests/env_probe.rs`（6）/ `render/tests/env_probe_shader.rs`（9）/ `editor/tests/environment_map_rpc.rs`（7）/ `script/tests/env_map_api.rs`（4）+ 各自内联 22 / 7 / 7 | 无（场景只多一个**可选**段，不写即不启用；**不配探针时 GPU 命令与像素与扩展二十二逐字节一致**，`R3E_VISUAL_REGRESSION=1` 基线原样通过、无需重建）。**边界**：静态探针（不抓运行中场景）、无平面反射 / SSR、整场景单探针无混合、只认 Radiance `.hdr`、预滤波 CPU 串行（512 面以上加载可感停顿）、无多重重要性采样校正 |
 | **二十四（已完成：级联遮挡体按级裁剪）** | **让每级只提交能投进本级的遮挡体**：`r3e-core::shadow_cull` 纯函数模块（零 wgpu）——`aabb_in_cascade` 把 AABB 八角点换到该级光源裁剪空间，**只裁**「八点 `x`/`y` 全在 ±1 外」或「八点 `z > 1`」，靠近光源侧（`z < 0`）与不可信 AABB 一律 fail-open；`plan_casters` 出 `masks[level][caster]`（与 `caster_bounds` 严格同序）、`split_runs` 把掩码切成连续保留段、`fail_open_bounds` / `keep_all` 兜底；`light.rs` 加 `CascadeSettings::caster_extend` / `caster_cull`（缺省 `0.0` / `true`）与 `fit_cascade_extended`（把级近端沿光方向推 `extend`，`extend = 0` 与 `fit_cascade` **逐位相同**，`MAX_CASTER_EXTEND = 65_536`）；`scene.rs` 的 `shadow.casterExtend` / `casterCull` 可选字段（缺省省略往返）；渲染侧 `InstancePlan.caster_bounds` + `ShadowPlan { levels, masks, tested, culled }` + `shadow_runs(groups, mask)`，深度 pass 循环按级取掩码，局部光源走 `mask = None` 全量，`RenderStats.shadow_casters` / `shadow_culled` 进探针与编辑器快照；脚本 3 个 API（`set_shadow_caster_extend` / `set_shadow_caster_cull` / `shadow_caster_cull`）。详见 §4.17 / §5.17 / §8.23 | `core/shadow_cull.rs` 新增、`core/light.rs` 加两字段 + `fit_cascade_extended` + `MAX_CASTER_EXTEND`、`core/scene.rs` 两字段读写回、`core/lib.rs` 导出；`render/renderer.rs` 加 `ShadowPlan` / `ShadowRun` / `shadow_runs` / `caster_bounds` 与逐级掩码接线、stats 两字段；`script/api.rs` 注册 3 个绑定；`app.rs` 探针多打「遮挡体判定 A 裁掉 B」、`app/editor.rs` 快照两字段；新增 `core/tests/shadow_cull_cascade.rs`（4）/ `render/tests/caster_cull_contract.rs`（4）+ `core/src/shadow_cull.rs` 内联 10 / `core/src/light.rs` 内联 3 / `core/tests/cascade_scene.rs` +3；`render/tests/shadow_cascades_shader.rs` 的断言改随 `fit_cascade_extended` 与 `shadow_plan.levels`；重新生成 `assets/scene.schema.json` | 无（两个字段都是**可选**，不写即 `extend = 0` / `cull = true`；`extend = 0` 时拟合矩阵与扩展二十三逐位相同，视觉基线原样通过）。**行为变化**：`casterCull` 缺省开，`shadow_draws` 从「合批数 × 级数」变成「每级保留段数之和」，拿 draw call 当基准的脚本需更新预期。**边界**：AABB 粒度、不做层级剔除、判定 O(级 × 实例)、只裁方向光级联、零散保留会把合批切碎 |
+| **二十五（已完成：遮挡体层级剔除）** | **把逐实例判定换成按场景树的层级剔除**：`r3e-core::shadow_cull` 扩出 `CasterNode` / `CasterTree`（`new` 建拓扑 + 自底向上聚子树并集盒与实例数、`refresh` 逐帧只重聚合不动拓扑、父链越界/自指/成环降级成根）、`plan` 自顶向下判（子树盒整块在级外就整枝跳过，混合节点自身盒复判、叶子逐实例）、`expand_masks` 把节点掩码按实例摊平（下标失效 fail-open）；计数拆成 `box_tests` / `instance_tests` / `pruned` / `branch_pruned`，只有 `branch_pruned`（来自多实例子树的部分）是净收益；渲染侧 `InstancePlan.caster_nodes` + `Renderer` 六个缓存字段 + `sync_caster_layout` 按 `scene.layout_version()` 建树，`plan_casters_hierarchical` 返回 `None` 时退回逐实例路径；探针加「盒判定 / 未判即裁 / 其中整枝 / 建树次数」 | `core/shadow_cull.rs`（+`tests/shadow_cull_hierarchy.rs` 13 条）、`render/renderer.rs`、`app/src/app.rs` 探针、`app/src/editor.rs` stats | 无（掩码与扩展二十四逐位相同，视觉基线逐像素一致；场景 JSON 不变） |
 
 两条与顺序相关的说明：
 
@@ -3371,7 +3530,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |
 | 遮挡剔除（扩展二十二） | CPU 侧 `cargo test -p r3e-core -p r3e-render -p r3e-script occlusion`：`occlusion`（core）28 / `occlusion_scene` 8 / `occlusion`（render）6 / script 2 全绿；`cargo test --workspace` 59 套件 **870 passed / 0 failed**，`--features rapier` **874 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）均零告警。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `captured_frame_matches_baseline ... ok`，缺省关闭路径与扩展二十一基线逐像素一致（遮挡剔除计数 `culled=0`），基线无需重建。**观感待人工验证**：打开 `occlusion.enabled` 后「该剔的有没有剔干净」「有没有物件闪进来又闪出去」属于取舍判断，自动化只证明开关关闭时无变化 |
 | HDR 立方体反射探针（扩展二十三） | CPU 侧：`envmap`（core 内联）22 / `environment_map_scene` 4 / `env_probe`（core）6 / `envprobe`（render 内联）7 / `env_probe_shader` 9 / `environment_map_rpc` 7 / `env_map_api` 4 全绿；`cargo test --workspace` 63 套件 **928 passed / 0 failed**，`--features rapier` **932 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `ok`（1 passed，基线无需重建），不配探针时实例数与绘制数与扩展二十二一致（`draws=5 instances=10 culled=0`）。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，自造 64×32 Radiance 等距柱状图 + IBL 演示场景，`--run-seconds 3`，退出码 0）：`反射探针已加载：来源 equirect / 面边长 64² / mip 5 层 / 强度 1.50`，收尾探针 `HDR 反射探针：段内 true / 开关 true / 来源 equirect / 生效 true / 面边长 64² / mip 5 / 强度 1.50`，同期 `视锥剔除：可见物件 8 / 绘制实例 8 / 剔除 0`。**坏图回退取证**：把 `.hdr` 换成两字节截断文件后实跑 → 仅一行 `反射探针加载失败（… 不是有效的 Radiance HDR（RGBE））：镜面反射退回解析 IBL`，收尾探针 `生效 false / 面边长 0² / mip 0 / 强度 0.00`，进程不 panic、不逐帧重试刷屏，画面退回解析 IBL。**观感待人工验证**：「金属上到底映出了什么」「粗糙度梯度是否连续」属取舍判断，自动化只证明链路与回退正确 |
-| 视觉回归进 CI（四道门） | `cargo test -p r3e-app --test visual_regression`：闸门关闭 → `2 passed`（逐像素那条打印跳过原因）；`R3E_VISUAL_REGRESSION=1` 实跑 → `2 passed`（扩展二十四收尾实测 8.03s，RTX 5060 Laptop / Vulkan / 渲染器就绪 640x360 / `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，基线原样通过、无需重建）。`cargo test --workspace` 65 套件 **953 passed / 0 failed**，`--features rapier` **957 passed / 0 failed**；`cargo fmt --all --check` 0 diff；`cargo clippy -p r3e-app --all-targets -- -D warnings` 0 warning。`ci.yml` 经 YAML 解析确认 `jobs = [fmt, clippy, test, visual, visual-gpu]`（YAML 合法、`visual-gpu` 的 `runs-on = [self-hosted, windows, gpu]` 与 `if: vars.R3E_GPU_RUNNER == 'true'` 均按预期解析）。**严格模式的三个分支实测**（同一台 RTX 5060 Laptop 上手工跑，作为它不会退化成空跑的证据）：① 只设 `R3E_VISUAL_STRICT=1`、闸门未开 → `FAILED 1 passed / 1 failed`，panic 文案点明「闸门必须开着」；② 闸门 + 严格模式下把产物目录用同名文件占住（模拟拍不到图）→ `FAILED`，panic 文案 `严格模式（R3E_VISUAL_STRICT=1）下禁止跳过：建产物目录失败`；③ 闸门 + 严格模式下正常跑 → `2 passed`（5.09s），证明严格模式不会误伤正常路径 |
+| 视觉回归进 CI（四道门） | `cargo test -p r3e-app --test visual_regression`：闸门关闭 → `2 passed`（逐像素那条打印跳过原因）；`R3E_VISUAL_REGRESSION=1` 实跑 → `2 passed`（扩展二十四收尾实测 8.03s，RTX 5060 Laptop / Vulkan / 渲染器就绪 640x360 / `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，基线原样通过、无需重建）。`cargo test --workspace` 66 套件 **966 passed / 0 failed**（扩展二十四收尾为 65 套件 953 passed），`--features rapier` 未在扩展二十五重测（扩展二十四收尾读数 957 passed）；`cargo fmt --all --check` 0 diff；`cargo clippy -p r3e-app --all-targets -- -D warnings` 0 warning。`ci.yml` 经 YAML 解析确认 `jobs = [fmt, clippy, test, visual, visual-gpu]`（YAML 合法、`visual-gpu` 的 `runs-on = [self-hosted, windows, gpu]` 与 `if: vars.R3E_GPU_RUNNER == 'true'` 均按预期解析）。**严格模式的三个分支实测**（同一台 RTX 5060 Laptop 上手工跑，作为它不会退化成空跑的证据）：① 只设 `R3E_VISUAL_STRICT=1`、闸门未开 → `FAILED 1 passed / 1 failed`，panic 文案点明「闸门必须开着」；② 闸门 + 严格模式下把产物目录用同名文件占住（模拟拍不到图）→ `FAILED`，panic 文案 `严格模式（R3E_VISUAL_STRICT=1）下禁止跳过：建产物目录失败`；③ 闸门 + 严格模式下正常跑 → `2 passed`（5.09s），证明严格模式不会误伤正常路径 |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
