@@ -203,6 +203,8 @@ pub struct CasterTree {
     roots: Vec<usize>,
     subtree: Vec<Aabb>,
     sizes: Vec<u32>,
+    /// 拓扑序（父一定排在子前面），`refresh` 逆着走一遍即可重聚合。
+    order: Vec<usize>,
 }
 
 impl CasterTree {
@@ -258,6 +260,31 @@ impl CasterTree {
             roots,
             subtree,
             sizes,
+            order,
+        }
+    }
+
+    /// 用本帧的实例包围盒覆写各节点自身数据，并重算子树的并集盒与实例数。
+    ///
+    /// 拓扑（父子关系）不变时，每帧只需要这一步 + [`Self::plan`]：`CasterTree::new`
+    /// 只在场景结构变化时重建一次，节点盒逐帧刷新。`bounds` / `casts` 按下标对应
+    /// **节点自身**（缺项按空处理，不会越界 panic）。
+    pub fn refresh(&mut self, bounds: &[Aabb], casts: &[u32]) {
+        for (index, node) in self.nodes.iter_mut().enumerate() {
+            node.bounds = bounds.get(index).copied().unwrap_or(Aabb::EMPTY);
+            node.casts = casts.get(index).copied().unwrap_or(0);
+        }
+        for index in 0..self.nodes.len() {
+            self.subtree[index] = self.nodes[index].bounds;
+            self.sizes[index] = self.nodes[index].casts;
+        }
+        for &index in self.order.iter().rev() {
+            let Some(parent) = self.nodes[index].parent else {
+                continue;
+            };
+            let (child_box, child_size) = (self.subtree[index], self.sizes[index]);
+            self.subtree[parent] = self.subtree[parent].union(&child_box);
+            self.sizes[parent] = self.sizes[parent].saturating_add(child_size);
         }
     }
 

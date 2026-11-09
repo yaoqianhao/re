@@ -231,6 +231,13 @@ impl EngineApi for LocalEngineApi<'_> {
                 // 扩展二十三的「批次数 × 级数」。
                 "shadow_casters": s.shadow_casters,
                 "shadow_culled": s.shadow_culled,
+                // 扩展二十五：层级剔除。`shadow_pruned` 是整枝跳过省下的实例判定数
+                // （与 `shadow_casters` 相加才是逐实例时代的总量），
+                // `shadow_box_tests` 是被下探的树节点数 × 级数，
+                // `caster_tree_builds` 稳态不变 = 层级树缓存生效。
+                "shadow_pruned": s.shadow_pruned,
+                "shadow_box_tests": s.shadow_box_tests,
+                "caster_tree_builds": s.caster_tree_builds,
                 // 扩展十九：半透明批次与 MSAA。`transparent_draws` 为 0 = 本帧没有
                 // 半透明物件；`depth_prepass_draws` 应恒等于不透明批次的 draw call 数，
                 // 掉成 0 说明遮蔽通道的单采样深度来源断了。

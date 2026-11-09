@@ -354,6 +354,10 @@ pub struct Scene {
     /// `environment` 的解析天空 + SH 9 系数给出，画面与扩展二十三之前逐像素一致。
     /// 激活后金属 / 光滑材质改从预滤波 cubemap 按粗糙度选 mip 采样。
     pub environment_map: Option<EnvironmentMapSettings>,
+    /// 场景**结构**的版本号（扩展二十五）：增删节点时自增，变换 / 可见性变化不碰它。
+    ///
+    /// 渲染层据此缓存遮挡体的层级树——拓扑不变时树可以跨帧复用，只需刷新节点盒。
+    layout_version: u64,
 }
 
 impl Default for Scene {
@@ -369,6 +373,7 @@ impl Scene {
             order: Vec::new(),
             name_index: HashMap::new(),
             next_id: 1,
+            layout_version: 1,
             name: "untitled".to_string(),
             time: 0.0,
             frame: 0,
@@ -553,6 +558,7 @@ impl Scene {
         self.name_index.insert(desc.name, id);
         self.order.push(id);
         self.nodes.insert(id, node);
+        self.touch_layout();
         Ok(id)
     }
 
@@ -573,6 +579,7 @@ impl Scene {
         };
         self.name_index.remove(&node.name);
         self.order.retain(|n| *n != id);
+        self.touch_layout();
 
         // 从父节点摘除
         if let Some(pid) = node.parent {
@@ -703,6 +710,16 @@ impl Scene {
     /// 按插入顺序遍历所有节点。
     pub fn iter(&self) -> impl Iterator<Item = &Node> {
         self.order.iter().filter_map(move |id| self.nodes.get(id))
+    }
+
+    /// 场景结构的版本号（扩展二十五）：只在增删节点时前进。
+    pub fn layout_version(&self) -> u64 {
+        self.layout_version
+    }
+
+    /// 结构变了：推进版本号，让渲染层缓存的层级树失效。
+    fn touch_layout(&mut self) {
+        self.layout_version = self.layout_version.wrapping_add(1);
     }
 
     // ---------- 变换 ----------

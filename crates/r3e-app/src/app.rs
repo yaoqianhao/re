@@ -978,6 +978,15 @@ impl EngineApp {
             stats.shadow_casters,
             stats.shadow_culled
         );
+        // 扩展二十五：层级剔除探针。`盒判定` 是被下探的树节点数（× 级数），
+        // `整枝跳过` 是因此省下的实例判定数 —— 判定 + 跳过 = 逐实例时代的总量。
+        // `建树次数` 稳态下应保持不变；逐帧增长说明每帧都在增删节点、缓存没生效。
+        log::info!(
+            "[{tag}] 遮挡体层级剔除：盒判定 {} / 整枝跳过 {} / 建树次数 {}",
+            stats.shadow_box_tests,
+            stats.shadow_pruned,
+            stats.caster_tree_builds
+        );
         // 半透明 / MSAA 探针（扩展十九）：`透明 draw` 为 0 表示本帧没有半透明批次
         // （场景里没有 alpha < 0.999 的物件，或被视锥剔除干净）。
         // `深度预通道 draw` 恒等于不透明批次的 draw call 数——它是遮蔽通道的单采样

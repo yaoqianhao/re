@@ -238,3 +238,93 @@ fn expand_masks_fails_open_on_unknown_node() {
     let expanded = r3e_core::expand_masks(&masks, &[0, 1, 7]);
     assert_eq!(expanded, vec![vec![true, false, true]]);
 }
+
+/// 逐帧刷新：拓扑只建一次，每帧用 `refresh` 覆写节点盒，结果必须与逐实例判定一致。
+///
+/// 这钉的是渲染层真正走的路径（`caster_tree` 缓存 + 每帧 `refresh`）。直接重建树
+/// 能通过、刷新路径却算错，正是「缓存把上一帧的盒子留下来」这类 bug 的典型表现。
+#[test]
+fn refresh_matches_per_instance_plan_across_frames() {
+    // 拓扑：根（分组）挂 3 个零件，零件再各挂 1 个更小的零件（三层）
+    let topology = vec![
+        CasterNode::group(None),
+        CasterNode::group(Some(0)),
+        CasterNode::group(Some(0)),
+        CasterNode::leaf(Aabb::EMPTY).under(1),
+        CasterNode::leaf(Aabb::EMPTY).under(2),
+        CasterNode::leaf(Aabb::EMPTY).under(2),
+    ];
+    let instance_nodes = vec![3usize, 4, 5];
+    let mut tree = CasterTree::new(topology.clone());
+
+    // 三帧：整枝在级内 → 整枝移到远处 → 只留一个零件在级内
+    let frames: Vec<[Aabb; 3]> = vec![
+        [
+            box_at(0.0, 0.0, 0.0, 0.2),
+            box_at(0.6, 0.0, 0.0, 0.2),
+            box_at(-0.6, 0.0, 0.0, 0.2),
+        ],
+        [
+            box_at(9.0, 0.0, 0.0, 0.2),
+            box_at(9.6, 0.0, 0.0, 0.2),
+            box_at(8.4, 0.0, 0.0, 0.2),
+        ],
+        [
+            box_at(0.1, 0.0, 0.0, 0.2),
+            box_at(9.6, 0.0, 0.0, 0.2),
+            box_at(8.4, 0.0, 0.0, 0.2),
+        ],
+    ];
+
+    let levels = [ortho(0.5)];
+    for (frame, boxes) in frames.iter().enumerate() {
+        // 只覆写承载实例的节点，纯分组节点保持空盒（子树盒由聚合给出）
+        let mut node_bounds = vec![Aabb::EMPTY; topology.len()];
+        let mut node_casts = vec![0u32; topology.len()];
+        for (slot, bounds) in instance_nodes.iter().zip(boxes.iter()) {
+            node_bounds[*slot] = *bounds;
+            node_casts[*slot] = 1;
+        }
+        tree.refresh(&node_bounds, &node_casts);
+
+        let plan = tree.plan(&levels);
+        let expected = plan_casters(&levels, boxes);
+        assert_eq!(
+            r3e_core::expand_masks(&plan.masks, &instance_nodes),
+            expected,
+            "第 {frame} 帧的刷新结果与逐实例判定不一致"
+        );
+        assert_eq!(
+            plan.instance_tests + plan.pruned,
+            boxes.len() as u32,
+            "第 {frame} 帧的计数不自洽"
+        );
+        // 子树盒必须跟着本帧盒子走，不能留上一帧的
+        assert_eq!(tree.subtree_casts(0), boxes.len() as u32);
+    }
+}
+
+/// `refresh` 把整枝挪到级外时应当整枝跳过：省下的判定数等于枝内实例数。
+#[test]
+fn refresh_lets_hierarchy_prune_moved_subtree() {
+    let mut tree = CasterTree::new(vec![
+        CasterNode::group(None),
+        CasterNode::leaf(Aabb::EMPTY).under(0),
+        CasterNode::leaf(Aabb::EMPTY).under(0),
+        CasterNode::leaf(Aabb::EMPTY).under(0),
+    ]);
+    let node_bounds = vec![
+        Aabb::EMPTY,
+        box_at(8.0, 0.0, 0.0, 0.2),
+        box_at(8.2, 0.0, 0.0, 0.2),
+        box_at(8.4, 0.0, 0.0, 0.2),
+    ];
+    let node_casts = vec![0u32, 1, 1, 1];
+    tree.refresh(&node_bounds, &node_casts);
+
+    let plan = tree.plan(&[ortho(0.5)]);
+    assert_eq!(plan.instance_tests, 0, "整枝都在级外，不该再判实例");
+    assert_eq!(plan.pruned, 3);
+    assert_eq!(plan.box_tests, 1, "只判根一次就够");
+    assert!(plan.masks[0].iter().all(|keep| !*keep));
+}

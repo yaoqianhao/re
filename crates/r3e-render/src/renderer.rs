@@ -10,8 +10,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex};
 use r3e_core::{
-    Aabb, AssetId, EnvironmentSettings, Frustum, Light, LocalLight, MeshRef, ProceduralProvider,
-    Scene, Sh9, MAX_CASCADES,
+    Aabb, AssetId, CasterNode, CasterTree, EnvironmentSettings, Frustum, Light, LocalLight,
+    MeshRef, ProceduralProvider, Scene, Sh9, MAX_CASCADES,
 };
 use winit::window::Window;
 
@@ -669,6 +669,16 @@ pub struct RenderStats {
     /// 其中被裁掉的 (级, 遮挡体) 对数（扩展二十四）。越接近 `shadow_casters`，
     /// 说明远景级剔得越多；恒为 0 说明 `caster_extend` 把范围铺得过大或裁剪关闭。
     pub shadow_culled: u32,
+    /// 扩展二十五：层级剔除省下的实例判定数（整枝跳过的部分）。
+    /// `shadow_casters + shadow_pruned` 就是「逐实例判定」时代要判的总对数，
+    /// 两者之比直接反映层级结构的收益；层级平坦时它趋近 0。
+    pub shadow_pruned: u32,
+    /// 扩展二十五：本帧真正做的层级盒判定数。约等于「被下探的树节点数 × 级数」，
+    /// 远小于实例数说明树的层级在起作用。
+    pub shadow_box_tests: u32,
+    /// 扩展二十五：累计重建遮挡体层级树的次数。稳态下应保持不变 —— 逐帧增长
+    /// 说明 `Scene::layout_version` 在每帧被推进（增删节点），缓存没生效。
+    pub caster_tree_builds: u64,
     pub frame_index: u64,
     /// 本帧文本通道画出的字形四边形数（M1 文字渲染）。
     pub text_glyphs: u32,
@@ -799,6 +809,24 @@ pub struct Renderer {
     /// `None` = 没有探针，着色器 `env_probe.x = 0`，镜面走解析天空（画面与扩展十二一致）。
     /// `Some` 里握着 GPU 立方体的所有权（view 已交给材质缓存）与本帧统计。
     env_probe: Option<EnvProbeGpu>,
+    /// 扩展二十五：遮挡体的层级树缓存。
+    ///
+    /// 拓扑（父子关系）随场景结构走，只在 `Scene::layout_version` 前进时重建；
+    /// 每帧只刷新各节点的实例包围盒并重聚合子树盒。零 GPU 依赖，纯 CPU 判定。
+    caster_tree: Option<CasterTree>,
+    /// 节点 id → 树节点下标（与 `caster_tree` 同寿命）。
+    caster_slots: HashMap<r3e_core::NodeId, usize>,
+    /// `caster_slots` / `caster_tree` 对应的场景结构版本。
+    caster_layout: u64,
+    /// 本帧各节点自身的实例包围盒（长度 = 树节点数，逐帧覆写）。
+    caster_node_bounds: Vec<Aabb>,
+    /// 本帧各节点自身的实例数（长度 = 树节点数，逐帧覆写）。
+    caster_node_casts: Vec<u32>,
+    /// 本帧实例 → 树节点下标的映射（与实例缓冲同序；映射不到的填 `usize::MAX`，
+    /// 由 `expand_masks` 的 fail-open 兜成全保留）。
+    caster_instance_nodes: Vec<usize>,
+    /// 累计重建层级树的次数（只增不减，观测缓存是否真的生效）。
+    caster_tree_builds: u64,
     stats: RenderStats,
 }
 
@@ -840,6 +868,9 @@ struct InstancePlan {
     /// 阴影通道按级裁剪时要用它；拿不到网格 AABB 的实例填
     /// [`r3e_core::fail_open_bounds`]，语义是「一律不裁」，宁可多画也不少画。
     caster_bounds: Vec<Aabb>,
+    /// 与实例缓冲同序的节点 id（扩展二十五）。层级剔除用它把实例挂回场景树：
+    /// 按实例顺序展开成树节点掩码时，下标一一对应。
+    caster_nodes: Vec<r3e_core::NodeId>,
 }
 
 /// 一次阴影提交的实例区间：`(groups 下标, 实例缓冲区间)`。
@@ -857,6 +888,11 @@ struct ShadowPlan {
     tested: u32,
     /// 被裁掉的 (级, 实例) 对数，进 `RenderStats::shadow_culled`。
     culled: u32,
+    /// 扩展二十五：层级盒判定省下的实例判定数（整枝跳过 + 子树盒通过），
+    /// 进 `RenderStats::shadow_pruned`。0 = 树为空 / 层级剔除关闭。
+    pruned: u32,
+    /// 扩展二十五：真正做的层级盒判定数，进 `RenderStats::shadow_box_tests`。
+    box_tests: u32,
 }
 
 /// 把掩码落成实例区间。
@@ -1465,6 +1501,13 @@ impl Renderer {
             env_sh: Sh9::default(),
             env_builds: 0,
             env_probe: None,
+            caster_tree: None,
+            caster_slots: HashMap::new(),
+            caster_layout: 0,
+            caster_node_bounds: Vec::new(),
+            caster_node_casts: Vec::new(),
+            caster_instance_nodes: Vec::new(),
+            caster_tree_builds: 0,
             stats: RenderStats::default(),
         })
     }
@@ -1727,11 +1770,13 @@ impl Renderer {
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         // 扩展二十四：多带一份「每级保留哪些实例」的掩码
         let shadow_plan = self.prepare_shadow(
+            scene,
             &groups,
             plan.scene_bounds,
             scene.light,
             &scene.camera,
             &plan.caster_bounds,
+            &plan.caster_nodes,
         );
         // 扩展十五：局部光源表每帧重传（灯可以被脚本逐帧移动，缓存反而要判等）
         let local_lights = self.prepare_local_lights(scene);
@@ -1871,6 +1916,9 @@ impl Renderer {
                 shadow_cascades: shadow_plan.levels,
                 shadow_casters: shadow_plan.tested,
                 shadow_culled: shadow_plan.culled,
+                shadow_pruned: shadow_plan.pruned,
+                shadow_box_tests: shadow_plan.box_tests,
+                caster_tree_builds: self.caster_tree_builds,
                 frame_index: scene.frame,
                 text_glyphs: 0,
                 text_draws: 0,
@@ -2215,13 +2263,17 @@ impl Renderer {
         self.draw_group_range(&mut pass, groups).0
     }
 
+    // 参数虽多，但每个都来自调用方现成的字段；包进结构体只会让调用点更绕。
+    #[allow(clippy::too_many_arguments)]
     fn prepare_shadow(
         &mut self,
+        scene: &Scene,
         groups: &[DrawGroup],
         bounds: Option<Aabb>,
         light: Light,
         camera: &r3e_core::Camera,
         caster_bounds: &[Aabb],
+        caster_nodes: &[r3e_core::NodeId],
     ) -> ShadowPlan {
         let shadow = light.shadow.sanitized();
 
@@ -2325,6 +2377,8 @@ impl Renderer {
             masks: Vec::new(),
             tested: 0,
             culled: 0,
+            pruned: 0,
+            box_tests: 0,
         };
         if shadow.enabled && !groups.is_empty() {
             plan.levels = levels as u32;
@@ -2332,8 +2386,26 @@ impl Renderer {
                 let level_mats: Vec<Mat4> = (0..levels)
                     .map(|level| Mat4::from_cols_array_2d(&matrices[level]))
                     .collect();
-                plan.masks = r3e_core::plan_casters(&level_mats, caster_bounds);
-                plan.tested = (levels as u32).saturating_mul(caster_bounds.len() as u32);
+                // 扩展二十五：先按场景树做层级判定——整枝落在级外的子树直接跳过，
+                // 只有子树盒与级相交才下探，叶子才逐实例判。树不可用时（场景结构
+                // 刚变、实例挂不上节点）退回扩展二十四的逐实例路径，掩码结果相同。
+                match self.plan_casters_hierarchical(
+                    scene,
+                    caster_nodes,
+                    caster_bounds,
+                    &level_mats,
+                ) {
+                    Some(hierarchy) => {
+                        plan.masks = hierarchy.masks;
+                        plan.tested = hierarchy.instance_tests;
+                        plan.pruned = hierarchy.pruned;
+                        plan.box_tests = hierarchy.box_tests;
+                    }
+                    None => {
+                        plan.masks = r3e_core::plan_casters(&level_mats, caster_bounds);
+                        plan.tested = (levels as u32).saturating_mul(caster_bounds.len() as u32);
+                    }
+                }
                 plan.culled = plan
                     .masks
                     .iter()
@@ -2342,6 +2414,83 @@ impl Renderer {
             }
         }
         plan
+    }
+
+    /// 扩展二十五：把本帧的遮挡体挂回场景树，做层级判定。
+    ///
+    /// 返回 `None` 表示层级树不可用（场景里一个节点都没有），调用方退回逐实例判定。
+    /// 拓扑只在 `Scene::layout_version` 前进时重建，其余帧只刷新节点盒 —— 因此
+    /// 稳态下的额外开销就是「把实例盒写回对应节点」这一遍 O(实例) 的搬运。
+    fn plan_casters_hierarchical(
+        &mut self,
+        scene: &Scene,
+        caster_nodes: &[r3e_core::NodeId],
+        caster_bounds: &[Aabb],
+        level_mats: &[Mat4],
+    ) -> Option<r3e_core::CasterHierarchyPlan> {
+        self.sync_caster_layout(scene);
+        let len = self.caster_tree.as_ref()?.len();
+        if self.caster_node_bounds.len() != len {
+            self.caster_node_bounds.resize(len, Aabb::EMPTY);
+            self.caster_node_casts.resize(len, 0);
+        }
+        for bounds in self.caster_node_bounds.iter_mut() {
+            *bounds = Aabb::EMPTY;
+        }
+        for casts in self.caster_node_casts.iter_mut() {
+            *casts = 0;
+        }
+        self.caster_instance_nodes.clear();
+        self.caster_instance_nodes.reserve(caster_nodes.len());
+        for (id, bounds) in caster_nodes.iter().zip(caster_bounds.iter()) {
+            match self.caster_slots.get(id) {
+                Some(&slot) => {
+                    self.caster_node_bounds[slot] = *bounds;
+                    self.caster_node_casts[slot] = 1;
+                    self.caster_instance_nodes.push(slot);
+                }
+                // 映射不到的实例填越界下标：`expand_masks` 会 fail-open 成全保留
+                None => self.caster_instance_nodes.push(usize::MAX),
+            }
+        }
+        let tree = self.caster_tree.as_mut()?;
+        tree.refresh(&self.caster_node_bounds, &self.caster_node_casts);
+        let hierarchy = tree.plan(level_mats);
+        let masks = r3e_core::expand_masks(&hierarchy.masks, &self.caster_instance_nodes);
+        Some(r3e_core::CasterHierarchyPlan {
+            masks,
+            box_tests: hierarchy.box_tests,
+            instance_tests: hierarchy.instance_tests,
+            pruned: hierarchy.pruned,
+        })
+    }
+
+    /// 场景结构变了才重建层级树（`caster_tree` 与 `caster_slots` 同寿命）。
+    fn sync_caster_layout(&mut self, scene: &Scene) {
+        if self.caster_tree.is_some() && self.caster_layout == scene.layout_version() {
+            return;
+        }
+        let mut nodes: Vec<CasterNode> = Vec::with_capacity(scene.len());
+        let mut slots: HashMap<r3e_core::NodeId, usize> = HashMap::with_capacity(scene.len());
+        for node in scene.iter() {
+            slots.insert(node.id, nodes.len());
+            nodes.push(CasterNode {
+                parent: None,
+                bounds: Aabb::EMPTY,
+                casts: 0,
+            });
+        }
+        // 第二趟才填父指针：`Scene` 按创建序迭代，父节点必然先于此节点的子节点入表，
+        // 但同一次迭代里也能处理（父可能排在兄弟后面），分两趟最省心。
+        for (index, node) in scene.iter().enumerate() {
+            nodes[index].parent = node.parent.and_then(|parent| slots.get(&parent).copied());
+        }
+        self.caster_node_bounds = vec![Aabb::EMPTY; nodes.len()];
+        self.caster_node_casts = vec![0; nodes.len()];
+        self.caster_tree = Some(CasterTree::new(nodes));
+        self.caster_slots = slots;
+        self.caster_layout = scene.layout_version();
+        self.caster_tree_builds = self.caster_tree_builds.saturating_add(1);
     }
 
     /// 重建阴影深度图数组与对应的 bind group（改 `shadow.size` 时触发）。
@@ -2627,12 +2776,14 @@ impl Renderer {
         let mut groups: Vec<DrawGroup> = Vec::new();
         // 扩展二十四：与实例缓冲同序的遮挡体包围盒，供阴影按级裁剪使用
         let mut caster_bounds: Vec<Aabb> = Vec::new();
+        // 扩展二十五：与实例缓冲同序的节点 id —— 层级剔除靠它把实例挂回场景树
+        let mut caster_nodes: Vec<r3e_core::NodeId> = Vec::new();
         // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
         type TransparentBatch = (
             f32,
             MeshRef,
             Option<SurfaceKey>,
-            Vec<(f32, InstanceRaw, Aabb)>,
+            Vec<(f32, InstanceRaw, Aabb, r3e_core::NodeId)>,
         );
         let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
         // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
@@ -2659,7 +2810,7 @@ impl Renderer {
             let transparent = index >= opaque_key_count;
             let start = all.len() as u32;
             // 半透明实例先攒进 `staged`：要先拿到全部世界位置才能在整批内排序
-            let mut staged: Vec<(f32, InstanceRaw, Aabb)> = Vec::new();
+            let mut staged: Vec<(f32, InstanceRaw, Aabb, r3e_core::NodeId)> = Vec::new();
             for node in scene.iter() {
                 if !node.visible || node.mesh != *key {
                     continue;
@@ -2738,17 +2889,18 @@ impl Renderer {
                     // 平移列就是实例的世界位置；用它到相机的距离平方当排序键
                     let depth =
                         transparency::view_depth(node.world.w_axis.truncate(), camera.position);
-                    staged.push((depth, instance, caster_box));
+                    staged.push((depth, instance, caster_box, node.id));
                 } else {
                     all.push(instance);
                     caster_bounds.push(caster_box);
+                    caster_nodes.push(node.id);
                 }
             }
             if transparent {
                 if !staged.is_empty() {
                     // 组间排序键 = 组内最远实例的深度：一次排序决定「哪个网格先画」，
                     // 组内顺序则再按 `back_to_front` 排细
-                    let farthest = staged.iter().fold(0.0_f32, |far, (depth, _, _)| {
+                    let farthest = staged.iter().fold(0.0_f32, |far, (depth, _, _, _)| {
                         far.max(if depth.is_nan() {
                             f32::INFINITY
                         } else {
@@ -2770,17 +2922,18 @@ impl Renderer {
         pending_transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (_, key, surface, staged) in pending_transparent {
             let start = all.len() as u32;
-            let depths: Vec<f32> = staged.iter().map(|(depth, _, _)| *depth).collect();
+            let depths: Vec<f32> = staged.iter().map(|(depth, _, _, _)| *depth).collect();
             let order = transparency::back_to_front(&depths);
             // 按「由远及近」的下标顺序把实例搬进实例缓冲
-            let mut slots: Vec<Option<(InstanceRaw, Aabb)>> = staged
+            let mut slots: Vec<Option<(InstanceRaw, Aabb, r3e_core::NodeId)>> = staged
                 .into_iter()
-                .map(|(_, instance, bounds)| Some((instance, bounds)))
+                .map(|(_, instance, bounds, node)| Some((instance, bounds, node)))
                 .collect();
             for index in order {
-                if let Some((instance, bounds)) = slots[index as usize].take() {
+                if let Some((instance, bounds, node)) = slots[index as usize].take() {
                     all.push(instance);
                     caster_bounds.push(bounds);
+                    caster_nodes.push(node);
                 }
             }
             groups.push((key, start..all.len() as u32, surface));
@@ -2831,6 +2984,7 @@ impl Renderer {
                 cull_unknown,
                 scene_bounds,
                 caster_bounds,
+                caster_nodes,
             };
         }
 
@@ -2859,6 +3013,7 @@ impl Renderer {
             cull_unknown,
             scene_bounds,
             caster_bounds,
+            caster_nodes,
         }
     }
 
