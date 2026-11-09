@@ -171,11 +171,12 @@ Release 二进制 14.1 MB（14,817,280 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 928 passed / 0 failed（63 个套件；较扩展二十二收尾的 870 增 58 项：扩展二十三（HDR 立方体反射探针）58（`core/envmap.rs` 22 + `core/tests/environment_map_scene.rs` 4 + `render/envprobe.rs` 7 + `render/tests/env_probe_shader.rs` 9 + `script/tests/env_map_api.rs` 4 + `editor/tests/environment_map_rpc.rs` 7 + 既有 `scene.rs` / `renderer.rs` / `api.rs` / `editor.rs` 内 5 项）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 932 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 929 passed / 0 failed（63 个套件；较扩展二十三收尾的 928 增 1：`baseline_png_is_present_with_capture_size`，纯 CPU 守基准图，理由见 §8.20） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 933 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
-| CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
+| 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | CI 的 `visual` job 强制把闸门打开；有显卡就真比像素，没显卡跳过，但同文件的纯 CPU 用例仍守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
+| CI | `.github/workflows/ci.yml`（fmt / clippy / test / visual 四 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
 
 静态检查仅保留三处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
 `too_many_arguments`（顶点装配入口参数天然是平行数组，`r3e-asset` 内两处）。
@@ -2866,6 +2867,24 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 `R3E_VISUAL_CHANNEL_DELTA`（单通道容差，默认 `DEFAULT_CHANNEL_DELTA = 2`）、
 `R3E_VISUAL_BAD_RATIO`（坏点比例上限，默认 `DEFAULT_BAD_PIXEL_RATIO = 0.001`）。
 
+**进 CI：闸门开着跑，但"跳过"不许等于"没人管"**。`.github/workflows/ci.yml` 的 `visual` job
+用 `R3E_VISUAL_REGRESSION: "1"` 环境变量把闸门强行打开。托管 runner 没有显卡，子进程会以退出码 2
+返回，`captured_frame_matches_baseline` 仍按跳过计 passed——如果只有这一条，那道门在 CI 里等于空跑。
+所以同一个测试文件里另有一条**纯 CPU** 用例补上另一半：
+
+| 用例 | 需要 GPU | 在 CI 上的作用 |
+| --- | --- | --- |
+| `captured_frame_matches_baseline` | 是 | 有显卡（自建 runner / 本机）时逐像素比；没显卡时按退出码 2 跳过并打印原因 |
+| `baseline_png_is_present_with_capture_size` | **否** | 校验基准图存在、可解码、尺寸恰为 `CAPTURE_WIDTH × CAPTURE_HEIGHT`、像素数与声明吻合。基准图被误删 / 被截断 / 尺寸漂移，任何 runner 都直接红 |
+
+配套两道防呆：job 里先跑一步 pwsh 检查——① `R3E_UPDATE_BASELINE` 一旦出现在 CI 环境里就 `exit 1`
+（CI 上重建基准会让"新画面覆盖旧基准"，回归被自我洗白，永远绿）；② 基准图文件缺失当场红，
+不等用例报错。失败时（`if: always()`）把 `crates/r3e-app/target/visual-regression/` 的实际图与差异图
+作为 artifact 上传，排查不用靠猜；成功时该目录通常不存在，`if-no-files-found: ignore` 兜住。
+
+这条分工的边界要说清楚：CI 上真正跑的是**基准图的自洽性**，不是**像素是否漂移**。想让像素闸门在 CI 里
+真的生效，需要一个带 GPU 的自建 runner；在那之前，像素比对仍只在本机质量门里成立（见 §3.3）。
+
 **产物布局**：基准图 `crates/r3e-app/tests/baselines/capture_frame_640x360.png` 进版本库（640x360 只有 1280x720 的四分之一体积，
 排序 / MSAA / 后处理的变化已经看得出来）；实际图与差异图落 `target/visual-regression/`，天然不进版本库。
 
@@ -3060,7 +3079,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
 | 音频 | wav / ogg / mp3 一次性解码播放、多路混音 + 总音量、暂停/循环；**3D 空间化**（路线表第十项）：声源可绑场景节点或给手动坐标，三种距离模型（inverse / linear / exponential）+ 边界平滑窗，多普勒经播放倍速落地，听者每帧由活动相机推导 | **无 HRTF、无左右声像**（增益是逐实例标量，相机 `forward` 只记录不参与计算）、无遮挡衍射、无房间混响、无 DSP 效果链（EQ / 压缩）；无流式/边下载边播；单文件整体解码进内存，长音乐占内存；空间化声源上限 32，多普勒只对有设备的后端生效（静默后端只算不下发） |
-| 视觉回归 | `capture.frame` 像素基线（扩展二十）：640x360 物理像素、单一静止夹具场景（7 物件 + 空脚本），默认容差 单通道 2 / 坏点 0.1%（见 §8.20） | 基线是**逐像素**的：跨 GPU / 驱动 / 系统字体渲染不保证一致，换机器先用 `R3E_UPDATE_BASELINE=1` 重建再比；无 GPU 时整条用例自动跳过（计 passed），等于该机器上没有这层保护；只覆盖单帧静画面，动画 / 交互 / 输入路径不在基线内 |
+| 视觉回归 | `capture.frame` 像素基线（扩展二十）：640x360 物理像素、单一静止夹具场景（7 物件 + 空脚本），默认容差 单通道 2 / 坏点 0.1%（见 §8.20） | 基线是**逐像素**的：跨 GPU / 驱动 / 系统字体渲染不保证一致，换机器先用 `R3E_UPDATE_BASELINE=1` 重建再比；无 GPU 时逐像素那条自动跳过（计 passed），CI 里改由纯 CPU 用例 `baseline_png_is_present_with_capture_size` 守基准图存在性 / 尺寸（见 §8.20），像素漂移本身仍需带 GPU 的 runner 才能拦住；只覆盖单帧静画面，动画 / 交互 / 输入路径不在基线内 |
 
 ### 11.2 性能特征
 
@@ -3197,6 +3216,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |
 | 遮挡剔除（扩展二十二） | CPU 侧 `cargo test -p r3e-core -p r3e-render -p r3e-script occlusion`：`occlusion`（core）28 / `occlusion_scene` 8 / `occlusion`（render）6 / script 2 全绿；`cargo test --workspace` 59 套件 **870 passed / 0 failed**，`--features rapier` **874 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）均零告警。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `captured_frame_matches_baseline ... ok`，缺省关闭路径与扩展二十一基线逐像素一致（遮挡剔除计数 `culled=0`），基线无需重建。**观感待人工验证**：打开 `occlusion.enabled` 后「该剔的有没有剔干净」「有没有物件闪进来又闪出去」属于取舍判断，自动化只证明开关关闭时无变化 |
 | HDR 立方体反射探针（扩展二十三） | CPU 侧：`envmap`（core 内联）22 / `environment_map_scene` 4 / `env_probe`（core）6 / `envprobe`（render 内联）7 / `env_probe_shader` 9 / `environment_map_rpc` 7 / `env_map_api` 4 全绿；`cargo test --workspace` 63 套件 **928 passed / 0 failed**，`--features rapier` **932 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `ok`（1 passed，基线无需重建），不配探针时实例数与绘制数与扩展二十二一致（`draws=5 instances=10 culled=0`）。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，自造 64×32 Radiance 等距柱状图 + IBL 演示场景，`--run-seconds 3`，退出码 0）：`反射探针已加载：来源 equirect / 面边长 64² / mip 5 层 / 强度 1.50`，收尾探针 `HDR 反射探针：段内 true / 开关 true / 来源 equirect / 生效 true / 面边长 64² / mip 5 / 强度 1.50`，同期 `视锥剔除：可见物件 8 / 绘制实例 8 / 剔除 0`。**坏图回退取证**：把 `.hdr` 换成两字节截断文件后实跑 → 仅一行 `反射探针加载失败（… 不是有效的 Radiance HDR（RGBE））：镜面反射退回解析 IBL`，收尾探针 `生效 false / 面边长 0² / mip 0 / 强度 0.00`，进程不 panic、不逐帧重试刷屏，画面退回解析 IBL。**观感待人工验证**：「金属上到底映出了什么」「粗糙度梯度是否连续」属取舍判断，自动化只证明链路与回退正确 |
+| 视觉回归进 CI（四道门） | `cargo test -p r3e-app --test visual_regression`：闸门关闭 → `2 passed`（逐像素那条打印跳过原因）；`R3E_VISUAL_REGRESSION=1` 实跑 → `2 passed`（5.45s，RTX 5060 Laptop / Vulkan / 渲染器就绪 640x360 / `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，基线原样通过、无需重建）。`cargo test --workspace` 63 套件 **929 passed / 0 failed**，`--features rapier` **933 passed / 0 failed**；`cargo fmt --all --check` 0 diff；`cargo clippy -p r3e-app --all-targets -- -D warnings` 0 warning。`ci.yml` 经 YAML 解析确认 `jobs = [fmt, clippy, test, visual]` |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |

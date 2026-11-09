@@ -13,6 +13,10 @@
 //! 2. 进程退出码 2 = 渲染器 / 截图链路不可用（无 GPU、窗口创建失败），按跳过处理；
 //! 3. 基准图缺失时不是「通过」也不是「失败」，而是明确报错提示怎么生成。
 //!
+//! 跳过只代表「这台机器没有显卡」。为了让 CI 里的跳过不等于放任，本文件另有一条
+//! **纯 CPU** 用例 `baseline_png_is_present_with_capture_size`：它校验基准图存在、
+//! 可解码、尺寸与截图口径一致，跑在任何 runner 上都不需要 GPU，红绿是真结论。
+//!
 //! 环境变量：
 //!
 //! * `R3E_VISUAL_REGRESSION=1`：打开本用例；
@@ -24,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use r3e_asset::visual_regression::{
-    assert_png_matches, Tolerance, DEFAULT_BAD_PIXEL_RATIO, DEFAULT_CHANNEL_DELTA,
+    assert_png_matches, RgbaFrame, Tolerance, DEFAULT_BAD_PIXEL_RATIO, DEFAULT_CHANNEL_DELTA,
 };
 
 /// 基准图与截图统一的**物理像素**尺寸。
@@ -179,5 +183,33 @@ fn captured_frame_matches_baseline() {
         baseline.display(),
         actual.display(),
         report.summary()
+    );
+}
+
+/// 基准图自身的体检：**纯 CPU，不建窗口、不需要显卡**。
+///
+/// 上面那条用例在没有 GPU 的机器（含 GitHub 托管的 `windows-latest`）上必然跳过，
+/// 于是 CI 里「基准图被误删 / 尺寸漂移 / 文件被截断」这类退化就没人管了。
+/// 这条用例把那一半补上：只要基准 PNG 不见了或者尺寸不是 `CAPTURE_WIDTH × CAPTURE_HEIGHT`，
+/// 任何 runner 都会直接红——它保证「跳过」只意味着没有显卡，而不是没有基线。
+#[test]
+fn baseline_png_is_present_with_capture_size() {
+    let baseline = baseline_path();
+    assert!(
+        baseline.is_file(),
+        "基准图缺失: {}\n首次建档请用 R3E_VISUAL_REGRESSION=1 R3E_UPDATE_BASELINE=1 在本机重跑。",
+        baseline.display()
+    );
+    let frame = RgbaFrame::load_png(&baseline)
+        .unwrap_or_else(|err| panic!("基准图应可解码（{}）: {err}", baseline.display()));
+    assert_eq!(
+        (frame.width, frame.height),
+        (CAPTURE_WIDTH, CAPTURE_HEIGHT),
+        "基准图尺寸必须与截图口径一致，否则真跑时必然「尺寸不一致」报错"
+    );
+    assert_eq!(
+        frame.pixel_count(),
+        (CAPTURE_WIDTH as usize) * (CAPTURE_HEIGHT as usize),
+        "基准图像素数应与声明尺寸吻合"
     );
 }

@@ -1,9 +1,9 @@
 name: CI
 
-# 三道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）。
-# 任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
+# 四道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）
+# -> 像素回归（visual）。任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
 #
-# 为什么三个 job 都跑 Windows：本工程是 Windows + MinGW 目标（见 .cargo/config.toml 的 build.target
+# 为什么四个 job 都跑 Windows：本工程是 Windows + MinGW 目标（见 .cargo/config.toml 的 build.target
 # 与 mingw 链接器），Linux runner 上无法完成这套交叉链接，硬跑只会得到误导性的红。
 # 工具链版本以 rust-toolchain.toml 为准（stable-x86_64-pc-windows-gnu），CI 不再另装版本，避免双版本漂移。
 
@@ -70,3 +70,48 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace ${{ matrix.features == 'rapier' && '--features rapier' || '' }}
+
+  visual:
+    name: visual (像素回归)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+
+      # 托管 runner 没有 GPU，渲染出来的画面不可信，所以这里绝不重建基准图：
+      # R3E_UPDATE_BASELINE 一旦漏进 CI，回归就会被「新画面覆盖旧基准」自我洗白，永远绿。
+      - name: 守住基准图（禁止在 CI 重建 / 缺失即红）
+        shell: pwsh
+        run: |
+          if ($env:R3E_UPDATE_BASELINE) {
+            Write-Error "CI 中禁止设置 R3E_UPDATE_BASELINE：那会把回归洗成永远绿。基准图只在本机重建后提交。"
+            exit 1
+          }
+          $baseline = "crates/r3e-app/tests/baselines/capture_frame_640x360.png"
+          if (-not (Test-Path $baseline)) {
+            Write-Error "基准图缺失: $baseline"
+            exit 1
+          }
+
+      # R3E_VISUAL_REGRESSION=1 打开闸门。有显卡就真比像素；没有显卡时用例内部按退出码 2
+      # 跳过（并打印原因），但同文件里的纯 CPU 用例 baseline_png_is_present_with_capture_size
+      # 不跳过——它保证「跳过」只代表没显卡，而不代表基线没了没人管。
+      - name: cargo test -p r3e-app --test visual_regression
+        env:
+          R3E_VISUAL_REGRESSION: "1"
+        run: cargo test -p r3e-app --test visual_regression -- --nocapture
+
+      # 失败时把实际图与差异图带出来，排查不用靠猜。成功时目录可能不存在，忽略即可。
+      - name: upload 实际图 / 差异图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression-artifacts
+          path: crates/r3e-app/target/visual-regression
+          if-no-files-found: ignore

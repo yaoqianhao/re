@@ -1134,7 +1134,7 @@ cargo run -- --asset D:\_probe_glb\samples\ironsword.glb
 若 rustup 默认 host 是 msvc，只写 `stable` 会切到 msvc 工具链，导致 build script / proc-macro
 这些 host 产物去找 `link.exe` 而整片编译失败。
 
-三道门每次改动后都要过，本地跑法：
+四道门每次改动后都要过，本地跑法：
 
 ```powershell
 cargo fmt --all --check                        # 格式：只检查，不改文件
@@ -1153,10 +1153,21 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 `arc_with_non_send_sync`（`MeshProvider` 刻意不 `Send`，渲染主线程独占），以及
 `r3e-asset/src/lib.rs`、`r3e-asset/src/gltf_import.rs` 各一处 `too_many_arguments`（顶点装配 / 导入入口参数天然是平行数组）。
 
-CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，三个 job 分别对应
-`rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）`，都跑在 `windows-latest` 上
+CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，四个 job 分别对应
+`rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）` / `visual（像素回归）`，都跑在 `windows-latest` 上
 （Linux runner 无法完成 MinGW 交叉链接，硬跑只会得到误导性的红），
 并用 PATH 里的 MinGW 覆盖 `.cargo/config.toml` 中的开发者本机绝对路径。
+
+`visual` job 用 `R3E_VISUAL_REGRESSION=1` 强制打开像素闸门，同时挡住两类会让这道门形同虚设的用法：
+
+- **禁止在 CI 重建基准图**：环境里出现 `R3E_UPDATE_BASELINE` 就 `exit 1`——那等于拿新画面覆盖旧基准，
+  回归会永远是绿的；
+- **跳过 ≠ 没人管**：托管 runner 没显卡，逐像素那条会按退出码 2 跳过（计 passed），所以同文件里还有一条
+  纯 CPU 用例 `baseline_png_is_present_with_capture_size`，校验基准图存在、可解码、尺寸恰为 640×360。
+  基准图被误删 / 截断 / 尺寸漂移时，任何 runner 都直接红。
+
+失败时 `crates/r3e-app/target/visual-regression/` 下的实际图与差异图会作为 artifact 上传。
+边界说明：CI 上真正生效的是**基准图自洽性**，**像素漂移**仍只能在本机（或带 GPU 的自建 runner）拦住。
 
 ---
 
@@ -2152,6 +2163,14 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 否则返回并打印跳过原因（CI 上仍计 passed）；② 子进程退出码 `2` = 渲染器 / 截图链路不可用，
 按跳过处理；③ 基准图缺失时明确报错并提示用 `R3E_UPDATE_BASELINE=1` 建档，不静默通过。
 
+但「跳过」不能等于「没人管」，所以 CI 的 `visual` job 是这么补的：
+
+- 用 `R3E_VISUAL_REGRESSION=1` 把闸门强行打开，有显卡就真比像素；
+- 另加 `baseline_png_is_present_with_capture_size`（**纯 CPU**）守基准图本身：存在、可解码、
+  尺寸恰为 640×360、像素数与声明吻合——被误删 / 截断 / 尺寸漂移，没显卡也照红；
+- CI 环境里出现 `R3E_UPDATE_BASELINE` 直接 `exit 1`，防止「新画面覆盖旧基准」把回归洗成永远绿；
+- 失败时把 `target/visual-regression/` 的实际图与差异图作为 artifact 上传。
+
 ### 24.6 判定口径
 
 - 单像素差 = 四通道 `|基准 - 实际|` 的**最大值**（alpha 也算：截图 alpha 恒 255，某条链路忘了写不透明会立刻炸出来）；
@@ -2167,7 +2186,8 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 
 - 逐像素比对**跨 GPU / 驱动不保证一致**，换机器先 `R3E_UPDATE_BASELINE=1` 重建再比；
 - 只覆盖单一夹具的**单帧静止画面**：动画、输入、交互、RPC 产图都不在基线内；
-- 无 GPU 时整条用例跳过（计 passed），等于那台机器上没有这层保护；
+- 无 GPU 时逐像素那条跳过（计 passed）；CI 里由纯 CPU 用例守基准图存在性与尺寸，但**像素漂移**
+  仍需带 GPU 的机器（本机或自建 runner）才能拦住；
 - 无「多基准 / 分平台基线」机制，也没有对基准图做压缩以外的优化。
 
 ### 24.8 测试覆盖
@@ -2178,7 +2198,7 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 | --- | --- | --- |
 | `crates/r3e-asset/src/visual_regression.rs` | 11 | 尺寸不一致报错、全等图零坏点、单通道单点差异判据、容差边界（等于 / 大于 delta）、坏点比例阈值、最差像素按差值降序且截断、差异包围盒、`Tolerance::sanitized` 夹取、alpha 差异参与判定、差异图着色、摘要文本 |
 | `crates/r3e-app/src/main.rs` | 2 | `parse_window_size` 的三种分隔符与非法输入（缺 `x`、0、非数字） |
-| `crates/r3e-app/tests/visual_regression.rs` | 1 | 端到端像素回归（无 GPU 时经三道闸门跳过） |
+| `crates/r3e-app/tests/visual_regression.rs` | 2 | 端到端像素回归（无 GPU 时经三道闸门跳过）+ 纯 CPU 的基准图自洽体检（存在 / 可解码 / 尺寸与像素数；CI 上就靠它不空跑） |
 
 `cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
 
