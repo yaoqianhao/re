@@ -236,6 +236,7 @@ impl EngineApi for LocalEngineApi<'_> {
                 // `shadow_box_tests` 是被下探的树节点数 × 级数，
                 // `caster_tree_builds` 稳态不变 = 层级树缓存生效。
                 "shadow_pruned": s.shadow_pruned,
+                "shadow_branch_pruned": s.shadow_branch_pruned,
                 "shadow_box_tests": s.shadow_box_tests,
                 "caster_tree_builds": s.caster_tree_builds,
                 // 扩展十九：半透明批次与 MSAA。`transparent_draws` 为 0 = 本帧没有
