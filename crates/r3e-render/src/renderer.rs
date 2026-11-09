@@ -663,6 +663,12 @@ pub struct RenderStats {
     pub shadow_draws: u32,
     /// 本帧生效的阴影级联数（扩展十六）。1 = 单级（等价阶段 D），0 = 关闭。
     pub shadow_cascades: u32,
+    /// 本帧阴影按级裁剪判过的 (级, 遮挡体) 对数（扩展二十四）。
+    /// 0 = 阴影关闭、没有遮挡体，或 `caster_cull` 被关掉。
+    pub shadow_casters: u32,
+    /// 其中被裁掉的 (级, 遮挡体) 对数（扩展二十四）。越接近 `shadow_casters`，
+    /// 说明远景级剔得越多；恒为 0 说明 `caster_extend` 把范围铺得过大或裁剪关闭。
+    pub shadow_culled: u32,
     pub frame_index: u64,
     /// 本帧文本通道画出的字形四边形数（M1 文字渲染）。
     pub text_glyphs: u32,
@@ -814,7 +820,7 @@ struct EnvProbeGpu {
 /// 的哪一段」以及绘制时用哪条管线（见 [`InstancePlan`] 的透明段说明）。
 type DrawGroup = (MeshRef, std::ops::Range<u32>, Option<SurfaceKey>);
 
-/// `prepare_instances` 的返回值：绘制分组 + 透明段起点 + 本帧剔除统计。
+/// `prepare_instances` 的返回值。
 ///
 /// 分组键是 `(网格, 物件级 PBR 材质)`：同一网格的物件若 metallic / roughness
 /// 不同，会被拆成多个批次，各自绑定自己的材质 uniform。
@@ -823,7 +829,73 @@ type DrawGroup = (MeshRef, std::ops::Range<u32>, Option<SurfaceKey>);
 /// `groups[..transparent_start]` 走不透明管线（写深度），
 /// `groups[transparent_start..]` 走半透明管线（不写深度、由远及近）。
 /// `transparent_start == groups.len()` 表示本帧没有半透明物件。
-type InstancePlan = (Vec<DrawGroup>, usize, u32, u32, Option<Aabb>);
+struct InstancePlan {
+    groups: Vec<DrawGroup>,
+    transparent_start: usize,
+    culled: u32,
+    cull_unknown: u32,
+    scene_bounds: Option<Aabb>,
+    /// 与实例缓冲同序的遮挡体包围盒（扩展二十四）。
+    ///
+    /// 阴影通道按级裁剪时要用它；拿不到网格 AABB 的实例填
+    /// [`r3e_core::fail_open_bounds`]，语义是「一律不裁」，宁可多画也不少画。
+    caster_bounds: Vec<Aabb>,
+}
+
+/// 一次阴影提交的实例区间：`(groups 下标, 实例缓冲区间)`。
+///
+/// 扩展二十四之前这里是「每个分组一段全量」，现在可能被级联掩码切成若干段。
+type ShadowRun = (usize, std::ops::Range<u32>);
+
+/// 本帧方向光阴影的执行计划（扩展二十四）。
+struct ShadowPlan {
+    /// 生效级数，0 = 本帧阴影关闭。
+    levels: u32,
+    /// 每级一份「保留」掩码，下标与实例缓冲一致；按级裁剪关闭时为空。
+    masks: Vec<Vec<bool>>,
+    /// 判过的 (级, 实例) 对数，进 `RenderStats::shadow_casters`。
+    tested: u32,
+    /// 被裁掉的 (级, 实例) 对数，进 `RenderStats::shadow_culled`。
+    culled: u32,
+}
+
+/// 把掩码落成实例区间。
+///
+/// `mask = None` 表示不裁剪（局部光源阴影、或按级裁剪被关掉）：每个分组一段全量，
+/// 行为与扩展二十三逐字相同。`Some` 时按组切出保留的连续段。
+fn shadow_runs(groups: &[DrawGroup], mask: Option<&[bool]>) -> Vec<ShadowRun> {
+    match mask {
+        None => groups
+            .iter()
+            .enumerate()
+            .map(|(index, (_, range, _))| (index, range.clone()))
+            .collect(),
+        Some(mask) => {
+            let mut runs = Vec::new();
+            for (index, (_, range, _)) in groups.iter().enumerate() {
+                let start = range.start as usize;
+                let end = (range.end as usize).min(mask.len());
+                if start >= end {
+                    continue;
+                }
+                for kept in r3e_core::split_runs(range.start, &mask[start..end]) {
+                    runs.push((index, kept));
+                }
+            }
+            runs
+        }
+    }
+}
+
+/// 一次阴影深度 pass 要提交的内容（扩展二十四）。
+///
+/// 参数已经到 7 个，再逐个传会过 clippy 的 `too_many_arguments`；而且这三样
+/// 在语义上是一体的：**画什么**（分组）、**画其中哪几段**（区间）、**实例间步子多大**。
+struct ShadowSubmit<'a> {
+    groups: &'a [DrawGroup],
+    runs: &'a [ShadowRun],
+    stride: u64,
+}
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self, String> {
@@ -1647,11 +1719,20 @@ impl Renderer {
         // 关闭时这里只做一次 `enabled` 判断，不 poll、不动 buffer。
         let occlusion_settings = scene.occlusion.sanitized();
         self.occlusion.begin_frame(&self.device, occlusion_settings);
-        let (groups, transparent_start, culled, cull_unknown, bounds) =
-            self.prepare_instances(scene);
+        let plan = self.prepare_instances(scene);
+        let groups = plan.groups;
+        let transparent_start = plan.transparent_start;
+        let (culled, cull_unknown) = (plan.culled, plan.cull_unknown);
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
-        let shadow_levels = self.prepare_shadow(&groups, bounds, scene.light, &scene.camera);
+        // 扩展二十四：多带一份「每级保留哪些实例」的掩码
+        let shadow_plan = self.prepare_shadow(
+            &groups,
+            plan.scene_bounds,
+            scene.light,
+            &scene.camera,
+            &plan.caster_bounds,
+        );
         // 扩展十五：局部光源表每帧重传（灯可以被脚本逐帧移动，缓存反而要判等）
         let local_lights = self.prepare_local_lights(scene);
         // 扩展十八 C：本帧要跑深度 pass 的局部阴影层（空 = 没有灯投影）
@@ -1669,20 +1750,28 @@ impl Renderer {
 
         // 阶段 D / 扩展十六：方向光阴影。每级一次 pass，只写进对应层的深度图，
         // 不触碰颜色附件；级数 = 1 时与阶段 D 的单一全场景阴影图完全等价。
-        for level in 0..shadow_levels as usize {
+        // 扩展二十四：每级只提交落在该级覆盖范围内的遮挡体（掩码为空即全量提交）。
+        for level in 0..shadow_plan.levels as usize {
+            let runs = shadow_runs(&groups, shadow_plan.masks.get(level).map(|m| m.as_slice()));
             shadow_draws += self.draw_shadow_pass(
                 &mut encoder,
                 "r3e-shadow-pass",
                 &self.shadow_layer_views[level],
                 &self.shadow_pass_bind_groups[level],
-                &groups,
-                stride,
+                ShadowSubmit {
+                    groups: &groups,
+                    runs: &runs,
+                    stride,
+                },
             );
         }
 
         // 扩展十八 C：局部光源阴影。层号由 `plan_local_shadows` 的固定槽位决定
         // （点光 6 面、聚光 1 面），每层一次 pass、一次矩阵 uniform。
         // 没有任何灯投影时 `local_shadow_layers` 为空，这一段整体跳过。
+        // 局部阴影不做按级裁剪：它们的视锥互不重叠且每盏灯覆盖范围独立，
+        // 用方向光的级联掩码套上去只会更慢（扩展二十四明确不覆盖这条路径）。
+        let local_runs = shadow_runs(&groups, None);
         for layer in &local_shadow_layers {
             let idx = *layer as usize;
             shadow_draws += self.draw_shadow_pass(
@@ -1690,8 +1779,11 @@ impl Renderer {
                 "r3e-local-shadow-pass",
                 &self.local_shadow_layer_views[idx],
                 &self.local_shadow_pass_bind_groups[idx],
-                &groups,
-                stride,
+                ShadowSubmit {
+                    groups: &groups,
+                    runs: &local_runs,
+                    stride,
+                },
             );
         }
 
@@ -1776,7 +1868,9 @@ impl Renderer {
                 culled,
                 cull_unknown,
                 shadow_draws,
-                shadow_cascades: shadow_levels,
+                shadow_cascades: shadow_plan.levels,
+                shadow_casters: shadow_plan.tested,
+                shadow_culled: shadow_plan.culled,
                 frame_index: scene.frame,
                 text_glyphs: 0,
                 text_draws: 0,
@@ -2127,7 +2221,8 @@ impl Renderer {
         bounds: Option<Aabb>,
         light: Light,
         camera: &r3e_core::Camera,
-    ) -> u32 {
+        caster_bounds: &[Aabb],
+    ) -> ShadowPlan {
         let shadow = light.shadow.sanitized();
 
         // 尺寸变化就重建纹理 + bind group（贴图句柄必须换新，不能原地 resize）
@@ -2161,7 +2256,15 @@ impl Renderer {
             let i = level.min(levels - 1);
             let (near, far) = (splits[i], splits[i + 1]);
             let corners = r3e_core::frustum_slice_corners(camera, near, far);
-            let fit = r3e_core::fit_cascade(light.direction, &corners, shadow.size);
+            // 扩展二十四：把级联的近端朝光源方向推 `caster_extend`，
+            // 让「站在级边界外侧、却把影子投进本级」的遮挡体不被裁掉。
+            // extend = 0 时与 `fit_cascade` 逐位相同（有单测钉住）。
+            let fit = r3e_core::fit_cascade_extended(
+                light.direction,
+                &corners,
+                shadow.size,
+                cascade.caster_extend,
+            );
 
             let mut view_proj = fit.view_proj;
             let mut radius = fit.radius;
@@ -2214,11 +2317,31 @@ impl Renderer {
             );
         }
 
+        // 扩展二十四：按级决定「这一级要提交哪些遮挡体」。
+        // 关闭裁剪 / 阴影关闭 / 没有遮挡体时 `masks` 为空，调用方据此走全量提交，
+        // 与扩展二十三的开销与画面逐字相同。
+        let mut plan = ShadowPlan {
+            levels: 0,
+            masks: Vec::new(),
+            tested: 0,
+            culled: 0,
+        };
         if shadow.enabled && !groups.is_empty() {
-            levels as u32
-        } else {
-            0
+            plan.levels = levels as u32;
+            if cascade.caster_cull && !caster_bounds.is_empty() {
+                let level_mats: Vec<Mat4> = (0..levels)
+                    .map(|level| Mat4::from_cols_array_2d(&matrices[level]))
+                    .collect();
+                plan.masks = r3e_core::plan_casters(&level_mats, caster_bounds);
+                plan.tested = (levels as u32).saturating_mul(caster_bounds.len() as u32);
+                plan.culled = plan
+                    .masks
+                    .iter()
+                    .map(|mask| mask.iter().filter(|keep| !**keep).count() as u32)
+                    .sum();
+            }
         }
+        plan
     }
 
     /// 重建阴影深度图数组与对应的 bind group（改 `shadow.size` 时触发）。
@@ -2252,15 +2375,22 @@ impl Renderer {
     /// 两者的顶点布局、实例缓冲、剔除结果完全一致，差别只有「写哪一层 + 用哪份矩阵」，
     /// 因此抽成一个方法：任何阴影管线调整（斜坡偏移、剔除策略）只需改一处。
     /// 返回本次提交的 draw call 数，供 `RenderStats::shadow_draws` 累计。
+    ///
+    /// `runs` 由 [`shadow_runs`] 生成：扩展二十四起，方向光的每一级可能只提交
+    /// 分组内的一段实例（其余落在本级覆盖范围外，被裁掉）。
     fn draw_shadow_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         label: &str,
         view: &wgpu::TextureView,
         pass_bind_group: &wgpu::BindGroup,
-        groups: &[(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)],
-        stride: u64,
+        submit: ShadowSubmit<'_>,
     ) -> u32 {
+        let ShadowSubmit {
+            groups,
+            runs,
+            stride,
+        } = submit;
         let mut draws = 0u32;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
@@ -2290,7 +2420,10 @@ impl Renderer {
         // group(3) 这里是「只含该层矩阵」的阴影通道专用绑定组，
         // 不是主通道那张比较采样器 —— 深度图此刻正被本 pass 写入。
         pass.set_bind_group(3, pass_bind_group, &[]);
-        for (key, range, _) in groups {
+        for (group_index, range) in runs {
+            let Some((key, _, _)) = groups.get(*group_index) else {
+                continue;
+            };
             let Some(gpu) = self.mesh_cache.get(*key) else {
                 continue;
             };
@@ -2492,8 +2625,15 @@ impl Renderer {
 
         let mut all: Vec<InstanceRaw> = Vec::new();
         let mut groups: Vec<DrawGroup> = Vec::new();
+        // 扩展二十四：与实例缓冲同序的遮挡体包围盒，供阴影按级裁剪使用
+        let mut caster_bounds: Vec<Aabb> = Vec::new();
         // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
-        type TransparentBatch = (f32, MeshRef, Option<SurfaceKey>, Vec<(f32, InstanceRaw)>);
+        type TransparentBatch = (
+            f32,
+            MeshRef,
+            Option<SurfaceKey>,
+            Vec<(f32, InstanceRaw, Aabb)>,
+        );
         let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
         // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
         self.joint_scratch.clear();
@@ -2519,7 +2659,7 @@ impl Renderer {
             let transparent = index >= opaque_key_count;
             let start = all.len() as u32;
             // 半透明实例先攒进 `staged`：要先拿到全部世界位置才能在整批内排序
-            let mut staged: Vec<(f32, InstanceRaw)> = Vec::new();
+            let mut staged: Vec<(f32, InstanceRaw, Aabb)> = Vec::new();
             for node in scene.iter() {
                 if !node.visible || node.mesh != *key {
                     continue;
@@ -2528,7 +2668,7 @@ impl Renderer {
                 if node.material.map(SurfaceKey::new) != *surface {
                     continue;
                 }
-                match self.mesh_cache.bounds(*key) {
+                let world_bounds = match self.mesh_cache.bounds(*key) {
                     Some(local) => {
                         // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
                         let world = local.transformed(&node.world);
@@ -2560,10 +2700,17 @@ impl Renderer {
                         {
                             continue;
                         }
+                        Some(world)
                     }
                     // 拿不到包围盒就不剔除（fail-open），宁可多画也不让物件凭空消失
-                    None => cull_unknown += 1,
-                }
+                    None => {
+                        cull_unknown += 1;
+                        None
+                    }
+                };
+                // 扩展二十四：阴影裁剪同样 fail-open —— 没有 AABB 的实例
+                // 一律当成「可能在任何一级里」，绝不因为缺数据把影子弄丢。
+                let caster_box = world_bounds.unwrap_or_else(r3e_core::fail_open_bounds);
                 let color: Vec4 = node.color;
                 let joint_base = match scene.skin_of(node.id) {
                     Some(skin) if skin.is_solved() => {
@@ -2591,16 +2738,17 @@ impl Renderer {
                     // 平移列就是实例的世界位置；用它到相机的距离平方当排序键
                     let depth =
                         transparency::view_depth(node.world.w_axis.truncate(), camera.position);
-                    staged.push((depth, instance));
+                    staged.push((depth, instance, caster_box));
                 } else {
                     all.push(instance);
+                    caster_bounds.push(caster_box);
                 }
             }
             if transparent {
                 if !staged.is_empty() {
                     // 组间排序键 = 组内最远实例的深度：一次排序决定「哪个网格先画」，
                     // 组内顺序则再按 `back_to_front` 排细
-                    let farthest = staged.iter().fold(0.0_f32, |far, (depth, _)| {
+                    let farthest = staged.iter().fold(0.0_f32, |far, (depth, _, _)| {
                         far.max(if depth.is_nan() {
                             f32::INFINITY
                         } else {
@@ -2622,16 +2770,17 @@ impl Renderer {
         pending_transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (_, key, surface, staged) in pending_transparent {
             let start = all.len() as u32;
-            let depths: Vec<f32> = staged.iter().map(|(depth, _)| *depth).collect();
+            let depths: Vec<f32> = staged.iter().map(|(depth, _, _)| *depth).collect();
             let order = transparency::back_to_front(&depths);
             // 按「由远及近」的下标顺序把实例搬进实例缓冲
-            let mut slots: Vec<Option<InstanceRaw>> = staged
+            let mut slots: Vec<Option<(InstanceRaw, Aabb)>> = staged
                 .into_iter()
-                .map(|(_, instance)| Some(instance))
+                .map(|(_, instance, bounds)| Some((instance, bounds)))
                 .collect();
             for index in order {
-                if let Some(instance) = slots[index as usize].take() {
+                if let Some((instance, bounds)) = slots[index as usize].take() {
                     all.push(instance);
+                    caster_bounds.push(bounds);
                 }
             }
             groups.push((key, start..all.len() as u32, surface));
@@ -2675,13 +2824,14 @@ impl Renderer {
         }
 
         if all.is_empty() {
-            return (
+            return InstancePlan {
                 groups,
                 transparent_start,
                 culled,
                 cull_unknown,
                 scene_bounds,
-            );
+                caster_bounds,
+            };
         }
 
         // 容量不足则扩容（按 2 倍增长，避免每帧重建）
@@ -2702,13 +2852,14 @@ impl Renderer {
         self.queue
             .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all));
 
-        (
+        InstancePlan {
             groups,
             transparent_start,
             culled,
             cull_unknown,
             scene_bounds,
-        )
+            caster_bounds,
+        }
     }
 
     /// 取网格材质自身的 alpha（无材质 / 无贴图时按 1.0 处理）。
