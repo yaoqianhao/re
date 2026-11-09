@@ -22,6 +22,7 @@ pub mod procedural;
 pub mod scene;
 pub mod scene_schema;
 pub mod scene_stack;
+pub mod shadow_cull;
 pub mod skin;
 pub mod ssao;
 pub mod tangent;
@@ -58,15 +59,16 @@ pub use glyph_atlas::{
 };
 pub use input::{ButtonEdge, InputState, KeyCode, KeyboardState, PadState};
 pub use light::{
-    attenuation, cascade_splits, find_local, fit_cascade, frustum_slice_corners,
-    local_shadow_plane, plan_local_shadows, point_shadow_face, remove_local, spot_factor,
-    upsert_local, with_local, CascadeFit, CascadeSettings, Light, LocalLight, LocalLightKind,
-    LocalShadowCaster, ShadowSettings, ATTENUATION_EPSILON, ATTENUATION_WINDOW_POWER,
-    DEFAULT_LOCAL_SHADOW_SIZE, LOCAL_SHADOW_NEAR_RATIO, MAX_CASCADES, MAX_CONE_ANGLE_DEG,
-    MAX_LIGHT_COLOR, MAX_LIGHT_INTENSITY, MAX_LIGHT_RANGE, MAX_LOCAL_LIGHTS, MAX_LOCAL_SHADOW_BIAS,
-    MAX_LOCAL_SHADOW_CASTERS, MAX_LOCAL_SHADOW_LAYERS, MAX_SPOT_SHADOW_FOV_DEG, MIN_CONE_GAP_DEG,
-    MIN_LIGHT_RANGE, MIN_LOCAL_SHADOW_NEAR, MIN_SPOT_SHADOW_FOV_DEG, POINT_SHADOW_FACES,
-    POINT_SHADOW_FACE_DIRS, POINT_SHADOW_FACE_UPS, POINT_SHADOW_FOV_DEG,
+    attenuation, cascade_splits, find_local, fit_cascade, fit_cascade_extended,
+    frustum_slice_corners, local_shadow_plane, plan_local_shadows, point_shadow_face, remove_local,
+    spot_factor, upsert_local, with_local, CascadeFit, CascadeSettings, Light, LocalLight,
+    LocalLightKind, LocalShadowCaster, ShadowSettings, ATTENUATION_EPSILON,
+    ATTENUATION_WINDOW_POWER, DEFAULT_LOCAL_SHADOW_SIZE, LOCAL_SHADOW_NEAR_RATIO, MAX_CASCADES,
+    MAX_CASTER_EXTEND, MAX_CONE_ANGLE_DEG, MAX_LIGHT_COLOR, MAX_LIGHT_INTENSITY, MAX_LIGHT_RANGE,
+    MAX_LOCAL_LIGHTS, MAX_LOCAL_SHADOW_BIAS, MAX_LOCAL_SHADOW_CASTERS, MAX_LOCAL_SHADOW_LAYERS,
+    MAX_SPOT_SHADOW_FOV_DEG, MIN_CONE_GAP_DEG, MIN_LIGHT_RANGE, MIN_LOCAL_SHADOW_NEAR,
+    MIN_SPOT_SHADOW_FOV_DEG, POINT_SHADOW_FACES, POINT_SHADOW_FACE_DIRS, POINT_SHADOW_FACE_UPS,
+    POINT_SHADOW_FOV_DEG,
 };
 pub use material::{
     clamp_roughness, cook_torrance_brdf, direct_light, distribution_ggx, emissive_radiance,
@@ -96,6 +98,9 @@ pub use scene::{
 pub use scene_stack::{
     AnimRuntime, RuntimeSnapshot, SceneArchive, SceneCommand, SceneStack, StackEntry,
     ARCHIVE_FORMAT, ARCHIVE_VERSION, MAX_SCENE_STACK, SNAPSHOT_VERSION,
+};
+pub use shadow_cull::{
+    aabb_in_cascade, fail_open_bounds, keep_all, plan_casters, split_runs, FAIL_OPEN_HALF_EXTENT,
 };
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,

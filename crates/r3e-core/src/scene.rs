@@ -179,6 +179,27 @@ pub struct ShadowDesc {
         skip_serializing_if = "Option::is_none"
     )]
     pub cascade_distance: Option<f32>,
+    /// 遮挡体沿光源方向的最大回退距离（扩展二十四）；省略或 0 = 不扩张。
+    ///
+    /// 写成正值才能让「接收区上方」的物件（屋檐、天桥、二层平台）把影子投进该级；
+    /// 省略时深度范围与扩展二十三完全一致，老场景画面不受影响。
+    #[serde(
+        default,
+        rename = "casterExtend",
+        alias = "caster_extend",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub caster_extend: Option<f32>,
+    /// 是否按级裁剪遮挡体（扩展二十四）；省略 = 开。
+    ///
+    /// 只有排查「某级影子似乎缺了一块」时才需要显式写 `false` 做对照。
+    #[serde(
+        default,
+        rename = "casterCull",
+        alias = "caster_cull",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub caster_cull: Option<bool>,
 }
 
 /// 资产自带的动画播放声明（P3 起）。
@@ -1363,6 +1384,12 @@ impl Scene {
                 if let Some(v) = sd.cascade_distance {
                     s.cascade.max_distance = v;
                 }
+                if let Some(v) = sd.caster_extend {
+                    s.cascade.caster_extend = v;
+                }
+                if let Some(v) = sd.caster_cull {
+                    s.cascade.caster_cull = v;
+                }
                 scene.light.shadow = s.sanitized();
             }
         }
@@ -1507,6 +1534,11 @@ impl Scene {
                     .then_some(shadow.cascade.blend),
                 cascade_distance: (shadow.cascade.max_distance > 0.0)
                     .then_some(shadow.cascade.max_distance),
+                // 0 是「不扩张」的缺省形态，省略；`caster_cull` 缺省为 true，
+                // 只有显式关掉时才写进文件（否则重开场景又会静默打开）。
+                caster_extend: (shadow.cascade.caster_extend > 0.0)
+                    .then_some(shadow.cascade.caster_extend),
+                caster_cull: (!shadow.cascade.caster_cull).then_some(false),
             }),
         }
     }

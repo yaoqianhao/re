@@ -90,6 +90,9 @@ impl ShadowSettings {
 /// 级联数上限。渲染层纹理数组的层数、shader 里定长数组的长度都等于它。
 pub const MAX_CASCADES: usize = 4;
 
+/// `caster_extend` 上限（世界单位）：再大就只是在浪费深度精度。
+pub const MAX_CASTER_EXTEND: f32 = 1.0e5;
+
 /// 级联阴影配置（扩展十六）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CascadeSettings {
@@ -101,6 +104,16 @@ pub struct CascadeSettings {
     pub blend: f32,
     /// 阴影最远距离（世界单位，沿相机前后方向）。0 = 用相机 `zfar`。
     pub max_distance: f32,
+    /// 遮挡体沿光方向的最大回退距离（世界单位，扩展二十四）。
+    ///
+    /// 0 = 不扩张，光源相机的深度范围恰好贴着该级切片的角点——此时位于
+    /// 「接收区上方、但朝光源方向超出切片」的物件会被近平面裁掉，影子直接消失
+    /// （典型现象：屋檐、天桥、二层地板在近处地面上没有影子）。
+    /// 大于 0 时把近平面朝光源方向推开这么多，这些遮挡体就能进深度图。
+    pub caster_extend: f32,
+    /// 是否按级裁剪遮挡体（扩展二十四）。缺省 `true`：只给真的能投进该级的实例
+    /// 提交深度 pass。裁剪是保守的，画面与全量提交逐像素一致。
+    pub caster_cull: bool,
 }
 
 impl Default for CascadeSettings {
@@ -111,6 +124,10 @@ impl Default for CascadeSettings {
             lambda: 0.6,
             blend: 0.1,
             max_distance: 0.0,
+            // 0 = 保持阶段 D 的深度范围（老画面一字不改）
+            caster_extend: 0.0,
+            // 裁剪不改变画面，默认开启
+            caster_cull: true,
         }
     }
 }
@@ -131,6 +148,11 @@ impl CascadeSettings {
         };
         self.max_distance = if self.max_distance.is_finite() && self.max_distance > 0.0 {
             self.max_distance.clamp(0.5, 1.0e5)
+        } else {
+            0.0
+        };
+        self.caster_extend = if self.caster_extend.is_finite() && self.caster_extend > 0.0 {
+            self.caster_extend.clamp(0.0, MAX_CASTER_EXTEND)
         } else {
             0.0
         };
@@ -251,6 +273,30 @@ pub struct CascadeFit {
 /// 中心再量化到纹素网格上。量化这一步是 CSM 的命门——相机缓慢平移时若每帧都
 /// 重新取中心，整张阴影图的采样位置会随亚纹素抖动，表现为边缘「爬行」。
 pub fn fit_cascade(light_dir: Vec3, corners: &[Vec3; 8], resolution: u32) -> CascadeFit {
+    fit_cascade_extended(light_dir, corners, resolution, 0.0)
+}
+
+/// 同 [`fit_cascade`]，但把光源相机的近平面朝**光源方向**再推开 `caster_extend`。
+///
+/// 只有深度范围变了，x/y 半宽与纹素量化完全不变——因此 `caster_extend = 0` 与
+/// 老 [`fit_cascade`] 的结果逐位相同，老场景画面不受影响。
+///
+/// 为什么必须扩张：接收区切片的角点在光空间里的最近深度是 `-max.z`，
+/// 紧贴着它的物件一旦超出这个深度（也就是比切片更靠近光源），就会落进
+/// 近平面的裁剪区——它的影子本该落进接收区，却因为自己没进深度图而丢失。
+/// 屋檐、天桥、二层平台挡住一层光时就是这个现象。经验值：取该级切片跨度的
+/// 一到两倍（`caster_extend = 2 * radius` 量级）足够覆盖常见建筑高度。
+pub fn fit_cascade_extended(
+    light_dir: Vec3,
+    corners: &[Vec3; 8],
+    resolution: u32,
+    caster_extend: f32,
+) -> CascadeFit {
+    let extend = if caster_extend.is_finite() && caster_extend > 0.0 {
+        caster_extend.min(MAX_CASTER_EXTEND)
+    } else {
+        0.0
+    };
     let dir = if light_dir.length_squared() > 1e-8 {
         light_dir.normalize()
     } else {
@@ -289,7 +335,8 @@ pub fn fit_cascade(light_dir: Vec3, corners: &[Vec3; 8], resolution: u32) -> Cas
 
     // 光相机沿 `dir` 观察，视空间的「前」是 -z，所以最近点的深度 = -max.z、最远 = -min.z。
     // 把最近点搬到 depth = 0.05 处（贴住近平面的余量），最远点自然落在 far 之前。
-    let depth_near = -max.z;
+    // `extend` 让最近点再往光源方向退一段，好把「接收区上方」的遮挡体收进深度图。
+    let depth_near = -max.z - extend;
     let depth_far = -min.z;
     let shift = depth_near - 0.05;
     let span = ((depth_far - depth_near) + 0.2).max(0.1);
@@ -1029,6 +1076,7 @@ mod tests {
                 lambda: f32::NAN,
                 blend: 9.0,
                 max_distance: -1.0,
+                ..CascadeSettings::default()
             },
         }
         .sanitized();
@@ -1063,6 +1111,7 @@ mod tests {
                 lambda: 0.6,
                 blend: 0.1,
                 max_distance: 0.0,
+                ..CascadeSettings::default()
             },
         );
         assert_eq!(splits.len(), 5);
@@ -1201,6 +1250,93 @@ mod tests {
         let corners = frustum_slice_corners(&Camera::default(), 0.1, 20.0);
         let fit = fit_cascade(Vec3::ZERO, &corners, 1024);
         assert!(fit.view_proj.to_cols_array().iter().all(|v| v.is_finite()));
+    }
+
+    // ---------------- 扩展二十四：级联遮挡体按级裁剪 ----------------
+
+    /// `caster_extend = 0` 必须与老 `fit_cascade` **逐位相同**：没有该字段的老场景
+    /// 画面不能有任何变化（扩展二十四的第一条不可回归约束）。
+    #[test]
+    fn fit_cascade_extended_zero_matches_legacy() {
+        let camera = Camera::default();
+        for w in cascade_splits(
+            &camera,
+            CascadeSettings {
+                count: 3,
+                ..CascadeSettings::default()
+            },
+        )
+        .windows(2)
+        {
+            let corners = frustum_slice_corners(&camera, w[0], w[1]);
+            let legacy = fit_cascade(Light::default().direction, &corners, 2048);
+            let same = fit_cascade_extended(Light::default().direction, &corners, 2048, 0.0);
+            assert_eq!(
+                legacy.view_proj.to_cols_array(),
+                same.view_proj.to_cols_array(),
+                "extend = 0 的矩阵必须与老拟合逐位相同"
+            );
+            assert_eq!(legacy.radius, same.radius);
+            assert_eq!(legacy.center, same.center);
+            // 负值 / NaN 与 0 等价（坏参数不该把深度范围往反方向拉）
+            for bad in [-5.0, f32::NAN, f32::INFINITY * 0.0] {
+                let f = fit_cascade_extended(Light::default().direction, &corners, 2048, bad);
+                assert_eq!(
+                    legacy.view_proj.to_cols_array(),
+                    f.view_proj.to_cols_array()
+                );
+            }
+        }
+    }
+
+    /// 外扩**只动深度范围**：xy 半宽与纹素量化完全不变，否则阴影清晰度/抖动
+    /// 会跟着开关一起变，没法 A/B 对比。
+    #[test]
+    fn fit_cascade_extended_keeps_xy_extent() {
+        let camera = Camera::default();
+        let corners = frustum_slice_corners(&camera, 1.0, 12.0);
+        let dir = Light::default().direction;
+        let base = fit_cascade(dir, &corners, 1024);
+        let ext = fit_cascade_extended(dir, &corners, 1024, base.radius * 2.0);
+        assert_eq!(base.radius, ext.radius, "外扩不能改正交半宽");
+        assert!(
+            (base.center - ext.center).length() <= 1e-3,
+            "外扩不能挪动切片中心: {:?} vs {:?}",
+            base.center,
+            ext.center
+        );
+        for c in corners {
+            let a = base.view_proj * c.extend(1.0);
+            let b = ext.view_proj * c.extend(1.0);
+            assert!(
+                (a.x - b.x).abs() < 1e-4 && (a.y - b.y).abs() < 1e-4,
+                "xy 投影被改了"
+            );
+        }
+    }
+
+    /// 切片上方的遮挡体（屋檐 / 天桥）在老的紧贴拟合里落在近平面之外——那正是
+    /// 「影子凭空缺一块」的成因；外扩之后它必须落进深度范围（NDC z ∈ [0, 1]）。
+    #[test]
+    fn fit_cascade_extended_pulls_casters_into_depth() {
+        let camera = Camera::default();
+        let corners = frustum_slice_corners(&camera, 2.0, 10.0);
+        let dir = Light::default().direction;
+        let base = fit_cascade(dir, &corners, 2048);
+        let ext = fit_cascade_extended(dir, &corners, 2048, base.radius * 2.0);
+        let centroid = corners.iter().fold(Vec3::ZERO, |acc, c| acc + *c) / 8.0;
+        let toward_light = -dir.normalize();
+        let caster = centroid + toward_light * (base.radius * 0.5);
+        let z_base = (base.view_proj * caster.extend(1.0)).z;
+        let z_ext = (ext.view_proj * caster.extend(1.0)).z;
+        assert!(
+            z_base < 0.0,
+            "老拟合应把该遮挡体裁在近平面外，实际 z = {z_base}"
+        );
+        assert!(
+            (0.0..=1.0).contains(&z_ext),
+            "外扩后应落进深度范围，实际 z = {z_ext}"
+        );
     }
 
     // ---------------- 扩展十五：局部光源 ----------------
