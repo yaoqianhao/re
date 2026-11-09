@@ -415,6 +415,24 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 
 细节（金字塔、两阶段判定、读回布局、代价与边界）见 [§26 遮挡剔除](#26-遮挡剔除扩展二十二)。
 
+### HDR 立方体反射探针（扩展二十三）
+
+`environment_map` 段缺省不写，整段跳过，镜面反射仍走解析 IBL（三色天空 + SH 9），画面与扩展二十二逐像素一致。
+写了来源（等距柱状 `.hdr` 或立方体六面）后，金属 / 光滑材质改用**离线预滤波的 mip 链**采样，粗糙度决定取哪一层。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_env_map(path) -> bool` | 等距柱状 HDR（Radiance RGBE），相对路径以场景文件所在目录为基准；空串 = 清掉探针 |
+| `set_env_map_faces(array) -> bool` | 立方体六面，顺序固定 `+X -X +Y -Y +Z -Z`，少于 6 条整段作废并返回 `false` |
+| `set_env_map_intensity(v) -> f64` | 探针总强度，只乘环境反射项（与 `set_env_intensity` 互不影响），返回夹取后的实际值 |
+| `set_env_map_enabled(on) -> bool` | 开关；`false` 只是不生效，路径仍留着，便于 A/B |
+| `clear_env_map() -> bool` | 清掉来源（等价 `set_env_map("")`） |
+| `has_env_map() -> bool` | 当前是否真的生效（有来源 + `enabled`） |
+| `env_map_source() -> string` | 来源标签：`none` / `disabled` / `equirect` / `faces` |
+| `env_map_intensity() -> f64` | 回读强度（没配探针时给缺省 1.0） |
+
+细节（预滤波、mip 取层、绑定槽位、失败回退与边界）见 [§27 HDR 立方体反射探针](#27-hdr-立方体反射探针扩展二十三)。
+
 ### 时间 / 随机 / 输出
 
 | 函数 | 说明 |
@@ -1840,7 +1858,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app`（宿主补丁） | 6 | 补丁生效、未知模式无副作用、缺实例 / 缺层拒绝、列表截断但计数为总数 |
 | `crates/r3e-editor/tests/anim_layer_rpc.rs` | 11 | `scene.animlayers` / `scene.animlayerset` 的往返、坏值与越界 |
 
-`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed。
+`cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed。
 
 ---
 
@@ -1960,7 +1978,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
-`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed。
+`cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed。
 
 ---
 
@@ -2061,7 +2079,7 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 | `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
 | `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
 
-`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed。
+`cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed。
 
 ---
 
@@ -2162,7 +2180,7 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 | `crates/r3e-app/src/main.rs` | 2 | `parse_window_size` 的三种分隔符与非法输入（缺 `x`、0、非数字） |
 | `crates/r3e-app/tests/visual_regression.rs` | 1 | 端到端像素回归（无 GPU 时经三道闸门跳过） |
 
-`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
+`cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
 
 ---
 
@@ -2279,7 +2297,7 @@ cargo run -- assets\scene.json
 这些写错都**不会编译失败**，只会在实机上表现为"贴图没效果"或"画面诡异"，
 所以 `pbr_maps_contract.rs` 用源码级断言（`include_str!` 着色器 + 文本匹配 + naga 解析）把它们钉住。
 
-`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
+`cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
 
 ### 25.8 已知边界
 
@@ -2363,7 +2381,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | `crates/r3e-render/src/occlusion.rs` | 6 | 读回布局拒退化尺寸、行按 256 对齐、整数倍不多补一行、`readback_interval` 夹到 `1..=60`、新建 culler fail-open、`reset()` 同时清金字塔与统计 |
 | `crates/r3e-script/src/lib.rs` | 2 | `set_occlusion_enabled` 双向生效、偏置经脚本写入被夹取 |
 
-`cargo test --workspace` 现为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
+`cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed（`--features rapier` 为 874 passed）。
 
 ### 26.7 已知边界
 
@@ -2373,6 +2391,105 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 - **只按 AABB 矩形判**：细长遮挡体（栅栏、树枝）和「从门缝露一条」判不出来；
 - **只覆盖不透明批次**：半透明永不参与；也没有层级剔除，逐实例测试；
 - **读回带宽不随场景缩放**：分辨率决定每帧 copy 的字节数（1080p ≈ 8.3 MiB/4 帧）。
+
+---
+
+## 27. HDR 立方体反射探针（扩展二十三）
+
+一句话：**加载一张 Radiance `.hdr`（或立方体六面），在 CPU 上离线预滤波成一条 mip 链，再按材质粗糙度取层采样；
+没配探针时镜面反射照旧走解析 IBL，画面逐像素不变。** 缺省不配，配置后是「整场景单探针」。
+
+### 27.1 三条不变量
+
+1. **不配就是零成本**：`Scene::environment_map == None` 或 `is_active() == false` 时，材质绑定的是 1×1 占位图、
+   `CameraUniform.env_probe.x = 0`，着色器完全短路，GPU 命令与像素与扩展二十二一致（视觉基线无需重建）；
+2. **写入一律收敛**：脚本与场景两条入口都过 `EnvironmentMapSettings::sanitized()`，
+   `face_size` 夹 `4..1024` 并向上取 2 的幂、`mip_levels` 夹 `1..=10`、六面必须恰好 6 条否则整段作废——脚本传 NaN 不会污染 uniform；
+3. **加载失败只退不退崩**：坏图 / 缺图 / 非 RGBE 只打一行 WARN 然后退回解析 IBL，不 panic、不逐帧重试刷屏。
+
+### 27.2 core 侧（`crates/r3e-core/src/envmap.rs`）
+
+- `decode_radiance(bytes)`：只认 Radiance RGBE——**新旧两种扫描行编码都支持**（新式 `2,2,hi,lo` 分通道 RLE + 旧式扁平），
+  头部 `FORMAT=32-bit_rle_rgbe` 校验，`MAX_EQUIRECT_PIXELS = 64 Mi` 防尺寸炸弹；
+- `equirect_to_cubemap(img, face_size)`：**方向驱动**的双线性重采样——每个立方体纹素先算方向再回查等距柱状 UV
+  （经度环绕、纬度夹极），比「把图切六块」保真；
+- `prefilter_specular(cube, levels)`：第 0 层**复用原图**保清晰反射，第 `i` 层按 `roughness = i/(levels-1)` 做余弦幂卷积
+  （GGX `α = r²` 反解 Phong 指数 `k = 2/α² - 2`，32 次分层黄金角采样）；
+- 三个纯函数互逆：`equirect_uv(dir)` / `cube_face_dir(face, u, v)` / `cube_dir_face(dir)`，
+  `CUBE_FACE_NAMES` 钉死 `+X -X +Y -Y +Z -Z`；
+- `EnvironmentMapSettings { enabled, equirect, faces, intensity, face_size, mip_levels }`，
+  `with_equirect` / `with_faces` 两个构造器，`is_active()` 是唯一判据；常量 `CUBE_FACES = 6` / `DEFAULT_CUBE_FACE_SIZE = 128` / `MAX_SPECULAR_MIPS = 10`。
+
+### 27.3 渲染侧（`crates/r3e-render/src/envprobe.rs`）
+
+- 成品编码成 **`Rgba16Float` 立方体纹理**（自实现 `f32_to_f16` / `f16_to_f32`，纹素无行距 padding），逐 mip 逐一面上传；
+- 绑到**材质组** `@group(1) @binding = 6`，采样器复用 base color 那个——不新增绑定、不改管线布局；
+- `CameraUniform` 352 → **368 字节**，新加 `env_probe: vec4`（启用位 / mip 层数 / 强度 / 面边长）；
+- 着色器里 `probe_specular` 用 `textureSampleLevel` 按 `roughness × (levels-1)` 取层；漫反射顺手改成探针第 0 层的辐照度投影，
+  不额外加绑定；`env_probe.x == 0` 时整段短路；
+- 换图 / 换面边长 / 换 mip 层数都要**重建材质 bind group**（纹理视图变了）；`EnvProbeStats` 记录来源、面边长、mip 层数、是否生效。
+
+### 27.4 场景与脚本
+
+```json
+{ "environment_map": { "equirect": "assets/env/studio.hdr", "intensity": 1.5, "face_size": 128, "mip_levels": 6 } }
+```
+
+六面写法（顺序即 `+X -X +Y -Y +Z -Z`）：
+
+```json
+{ "environment_map": { "faces": ["px.hdr", "nx.hdr", "py.hdr", "ny.hdr", "pz.hdr", "nz.hdr"] } }
+```
+
+`faces` 与 `equirect` 都写时 `faces` 优先（省一次重采样）。脚本 API 见上文「HDR 立方体反射探针（扩展二十三）」表；
+编辑器侧走 `scene.set_environment_map` 的补丁式 RPC（`EnvironmentMapPatch`），与 `scene.set_environment` 是两条独立的线。
+
+宿主 `app.rs::sync_env_probe` 三道判定：**未激活 → 卸载**（清纹理 + 统计归零）/ **配置没变 → 不碰 GPU** / **上次失败 → 不重试**。
+
+### 27.5 怎么验证
+
+```powershell
+# CPU 契约（core 22 + 场景 4 + env_probe 6 + render 7 + 着色器 9 + script 4 + editor 7）
+cargo test -p r3e-core -p r3e-render -p r3e-script -p r3e-editor env
+
+# 画面没漂（不配探针必须与扩展二十二基线一致）
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+
+# 实机取证：跑 3 秒后看日志
+cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> --window-size 480x270 --run-seconds 3
+```
+
+日志应出现 `反射探针已加载：来源 equirect / 面边长 128² / mip 6 层 / 强度 1.50`，
+以及每帧收尾探针 `HDR 反射探针：段内 true / 开关 true / 来源 equirect / 生效 true / …`。
+把 `.hdr` 换成截断文件再跑，只会看到一行 `反射探针加载失败（… 不是有效的 Radiance HDR（RGBE））：镜面反射退回解析 IBL`，
+探针行变 `生效 false`，进程照常退出。
+
+### 27.6 测试覆盖
+
+新增 58 条，全部 CPU 侧、无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/envmap.rs` | 22 | RGBE 新旧两种扫描行解码、头部校验与坏输入拒收、`MAX_EQUIRECT_PIXELS` 边界；等距柱状 ↔ 立方体方向互逆、经度环绕与极点夹取、面边长归一化；预滤波层数与粗糙度单调、第 0 层复用原图、强度夹取、`f32` 往返 |
+| `crates/r3e-core/tests/environment_map_scene.rs` | 4 | 缺段 / `{}` / 只有 `enabled` 都不激活、非法值加载时夹取、`set/clear` 不改其余字段 |
+| `crates/r3e-core/tests/env_probe.rs` | 6 | 方向映射三函数互逆、六面顺序、面边长与 mip 层数收敛 |
+| `crates/r3e-render/src/envprobe.rs` | 7 | `f32_to_f16` / `f16_to_f32` 往返与特殊值、mip 取层映射、上传纹素数量、`EnvProbeStats` 归零 |
+| `crates/r3e-render/tests/env_probe_shader.rs` | 9 | naga 无窗口校验 WGSL：入口点、`env_probe` 字段、`probe_specular` 分支与混合状态 |
+| `crates/r3e-script/tests/env_map_api.rs` | 4 | 8 个绑定写后读、六面不足 6 条返回值、非法强度被夹取、`clear` 后 `has_env_map` 为 false |
+| `crates/r3e-editor/tests/environment_map_rpc.rs` | 7 | `EnvironmentMapPatch` 补丁合并、非法字段不透传、快照回显与 `scene.set_environment` 互不干扰 |
+
+`cargo test --workspace` 现为 63 个套件 / 928 passed / 0 failed（`--features rapier` 为 932 passed）。
+
+### 27.7 已知边界
+
+- **静态探针**：只吃离线 `.hdr`，不会抓运行中场景做实时反射；也没有平面反射 / SSR；
+- **整场景单探针无混合**：所有物件共享一张环境图，没有「按区域挑探针 / 探针之间插值」；
+- **只认 Radiance RGBE**：`.exr` / `.ktx2` / 浮点 PNG 一律不认；也没有硬件压缩（Rgba16Float 直传，显存按 `面边长² × 6 × mip ≈ 4B/纹素` 估）；
+- **预滤波在 CPU 且串行**：128² × 6 面 × 6 层在实机上毫秒级，但 512 面以上加载时能感到停顿；
+- **无多重重要性采样校正**：极粗糙金属的掠射角可能偏亮，属已知的 IBL 近似代价；
+- **换图即重建材质 bind group**：频繁热切换 `.hdr` 会有一次 bind group 重建开销（不是每帧）。
+
+> 注：仓库**不带**示例 `.hdr`（避免二进制资产进库）。要试效果，自己放一张 Radiance `.hdr`，按 §27.4 写进场景即可。
 
 ---
 

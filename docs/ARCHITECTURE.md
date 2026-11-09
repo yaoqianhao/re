@@ -145,22 +145,23 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 16,562 | 2,183 | 342 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 7,603 | 1,766 | 142 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-core | 17,919 | 2,296 | 368 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `envmap.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 8,254 | 2,037 | 158 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,219 | 582 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| r3e-script | 5,311 | 1,074 | 84 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、遮蔽、遮挡剔除、动画层、局部阴影语义单测） |
-| r3e-editor | 2,907 | 1,448 | 88 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 6,476 | 183 | 55 | `app.rs`（含 `drive_spatial_audio` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
+| r3e-script | 5,379 | 1,213 | 88 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、HDR 环境探针、遮蔽、遮挡剔除、动画层、局部阴影语义单测） |
+| r3e-editor | 3,025 | 1,648 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-app | 6,861 | 183 | 60 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **53,664** | **7,896** | **874** | **约 5.4 万行 Rust + 1,266 行 WGSL；`cargo test --workspace` 59 个套件 / 870 passed / 0 failed** |
+| **合计** | **56,243** | **8,619** | **932** | **约 5.6 万行 Rust + 1,297 行 WGSL；`cargo test --workspace` 63 个套件 / 928 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,266 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十二（遮挡剔除）收尾一次性重算
-（此前停在扩展二十一收尾快照：52,157 行 / 7,740 tests 行 / 830 单测 / 58 套件 826 passed）。单测数一列是 `#[test]` **标注数**，
+着色器（1,297 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十三（HDR 立方体反射探针）收尾一次性重算
+（此前停在扩展二十二收尾快照：53,664 行 / 7,896 tests 行 / 874 单测 / 59 套件 870 passed；
+本次净增 src 2,579（新增 `core/envmap.rs` 1,288、`render/envprobe.rs` 415）+ tests 723（新增 4 个测试文件 723 行）+ WGSL 31）。单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 870。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 928。
 
 Release 二进制 14.1 MB（14,817,280 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
@@ -170,8 +171,8 @@ Release 二进制 14.1 MB（14,817,280 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 870 passed / 0 failed（59 个套件；较扩展十八 C 收尾的 704 增 166 项：路线表第十项 40（音频 20（`spatial.rs` 纯函数契约 11 + 门面空间化覆盖层 9）、脚本绑定 6、编辑器 RPC 9、宿主帧驱动 5）+ P0-1 场景 schema 4（`tests/scene_schema.rs`：防漂移 / 段覆盖 / 演示场景交叉校验 / 校验器负例自检）+ P0-2/P0-3 结构化校验定位与写侧工具集 6 + P0-4 统计与截图 18（editor RPC 9 / 宿主 6 / provider 3）+ 扩展十九 15（`transparency.rs` 单测 9 + `tests/transparency_contract.rs` 6）+ 扩展二十 14（`r3e-asset/src/visual_regression.rs` 纯函数契约 11 + `tests/visual_regression.rs` 像素回归入口 1（无 GPU 时跳过计 passed）+ `main.rs` `parse_window_size` 2）+ 扩展二十一 25（`core/tangent.rs` 5 + `core/texture_slot.rs` 3 + `render/pbr.rs` 4 + `render/tests/pbr_maps_contract.rs` 9 + `asset/tests/pbr_map_import.rs` 4）+ 扩展二十二 44（`core/occlusion.rs` 28 + `core/tests/occlusion_scene.rs` 8 + `render/occlusion.rs` 6 + `script/lib.rs` 2）） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 874 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
+| 单测（默认特性） | `cargo test --workspace` | 928 passed / 0 failed（63 个套件；较扩展二十二收尾的 870 增 58 项：扩展二十三（HDR 立方体反射探针）58（`core/envmap.rs` 22 + `core/tests/environment_map_scene.rs` 4 + `render/envprobe.rs` 7 + `render/tests/env_probe_shader.rs` 9 + `script/tests/env_map_api.rs` 4 + `editor/tests/environment_map_rpc.rs` 7 + 既有 `scene.rs` / `renderer.rs` / `api.rs` / `editor.rs` 内 5 项）） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 932 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | CI | `.github/workflows/ci.yml`（fmt / clippy / test 三 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
@@ -809,6 +810,76 @@ core 侧只负责**判定**（金字塔是纯 `Vec<f32>`、判定是纯算术、
 - **不做遮挡体筛选**：没有「用上一帧已绘制的物件当遮挡体」这套逻辑（那是 GPU 侧 query 的强项）；
 - **半透明物件不参与**：`renderer` 只剔除不透明批次（半透明不写深度，判了也不准），见 §5.15；
 - **无跨帧稳定性机制**：被剔的物件下一帧可能又回来，未做「连续 N 帧遮挡才剔」的迟滞。
+
+### 4.16 HDR 环境探针在 core 侧的契约（扩展二十三）
+
+扩展十二的解析天空只有天顶 / 地平线 / 地面三色加太阳，方向感有了但**细节没有**——金属球映不出任何物件。
+扩展二十三把「离线预滤波的 HDR 环境立方体图」做成 core 侧的纯数据契约：Radiance `.hdr` 解码 → 重采样成立方体 →
+按粗糙度预滤波成 mip 链，全程零 wgpu、零文件 IO、可单测；渲染层只接收成品（见 §5.16）。
+
+**① 常量**
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `CUBE_FACES` | 6 | 立方体面数 |
+| `DEFAULT_CUBE_FACE_SIZE` | 128 | 缺省面边长（像素） |
+| `MAX_CUBE_FACE_SIZE` | 1,024 | 面边长上限 |
+| `DEFAULT_SPECULAR_MIPS` | 6 | 缺省镜面 mip 层数 |
+| `MAX_SPECULAR_MIPS` | 10 | 镜面 mip 层数上限 |
+| `PREFILTER_SAMPLES` | 32 | 预滤波每像素采样数 |
+| `MAX_EQUIRECT_PIXELS` | 64 Mi | 等距柱状图总像素上限（防坏文件撑爆内存） |
+
+**② 解码**：`decode_radiance` 只认 Radiance RGBE（`32-bit_rle_rgbe` 的新旧两种扫描行编码），
+配合 `linear_to_rgbe` 可做往返；`width × height > MAX_EQUIRECT_PIXELS` 或任一维为 0 直接返 `None`，
+**不 panic 也不预分配巨块**——坏文件的表现被收敛为「探针加载失败，退回解析 IBL」。
+
+**③ 重采样与预滤波**
+
+- `equirect_to_cubemap(image, face_size)`：方向驱动的双线性（`HdrImage::sample_dir`，经度环绕、纬度夹到极点），
+  `face_size` 先夹 `[4, MAX_CUBE_FACE_SIZE]` 再**向上取 2 的幂**（面必须 2 的幂才能逐层减半）；
+- `prefilter_specular(base, mip_levels)`：第 0 层直接复用输入图（保清晰反射，不再卷积），第 `level` 层按
+  `roughness = level / (levels - 1)` 做**余弦幂重要采样**卷积——权重指数由 GGX 的 `α = r²` 反解成 Phong 指数
+  `k = 2/α² - 2`（`r → 1` 时 `k → 0`，退化成余弦加权半球），采样数固定 `PREFILTER_SAMPLES = 32`，
+  用「分层 `u1` + 黄金角错开 `φ`」压掉同一方位上的条纹；
+- 层数取 `mip_levels.clamp(1, MAX_SPECULAR_MIPS).min(face_size.trailing_zeros() + 1)`——保证每层至少 1 像素，
+  配置写得再大也不会建出空层；
+- `build_probe(image, face_size, mip_levels)` 把两步串起来；`PrefilteredEnv::roughness_of` / `mip_for_roughness`
+  是层号与粗糙度的互逆映射，与渲染侧 `envprobe::mip_lod` 同一条公式（GPU 在相邻两层间做三线性插值）。
+
+**④ 方向映射三个纯函数**：`equirect_uv`（方向 → 等距柱状 uv）、`cube_face_dir`（面 + uv → 方向）、
+`cube_dir_face`（方向 → 面 + uv，与前者互逆，含边角取整的夹取）。`CUBE_FACE_NAMES = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]`
+钉死面顺序，六面图输入按这个顺序对位。
+
+**⑤ 设置与收敛**（`EnvironmentMapSettings`，`sanitized()` 幂等）
+
+| 字段 | 缺省 | 收敛规则 |
+| --- | --- | --- |
+| `enabled` | `false` | — |
+| `equirect` | `None` | 去首尾空白，空串视为「没写」 |
+| `faces` | `None` | **必须恰好 6 条且条条非空**，否则整段作废（半套面拼不出 cubemap，宁可明确失效也不猜缺哪面） |
+| `face_size` | 128 | 夹 `[4, MAX_CUBE_FACE_SIZE]` 并向上取 2 的幂 |
+| `mip_levels` | 6 | 夹 `1..=MAX_SPECULAR_MIPS` |
+| `intensity` | 1.0 | `NaN` 回落缺省，其余夹 `0..=env::MAX_IBL_INTENSITY`（与扩展十二共用强度上限） |
+
+`is_active()` = 开关打开**且**至少一个来源可用；`source_label()` 给探针日志读（`disabled` / `faces` / `equirect` / `none`）；
+`is_default()` 决定场景保存时是否省略整段。
+
+**⑥ 场景段**：`Scene` / `SceneFile` 的 `environment_map: Option<EnvironmentMapSettings>` 可省略；载入、
+脚本写入、RPC 写入三条路径都过 `sanitized()`；没配探针时**不会凭空长出** `environment_map` 段
+（与扩展十二的 `environment` 同一套「缺省即省略」往返口径）。
+
+**测试口径**（`crates/r3e-core/src/envmap.rs` 22 条 + `crates/r3e-core/tests/environment_map_scene.rs` 4 条）：
+RGBE 往返与坏文件拒收、像素上限、方向映射三函数互逆与边角夹取、面顺序、等距柱状重采样的中心/极点取值、
+预滤波层数收敛、`r = 0` 层逐像素等于原图、粗糙层方差单调下降、层号↔粗糙度互逆、
+设置收敛（空串 / 半套面 / 越界面边长 / NaN 强度）、段缺省不序列化与往返。
+
+**已知边界**
+
+- **静态探针**：不做运行时抓取场景的反射捕捉，也没有平面反射 / 屏幕空间反射——物件动起来不会出现在金属上；
+- **单探针全局生效**：一张立方体图管整个场景，没有区域化 / 分房间探针，也没有探针混合；
+- **只认 Radiance RGBE**：不读 EXR / PFM / DDS；六面图必须是同尺寸等距结构，不支持逐面不同分辨率；
+- **预滤波是 CPU 串行**：每层每像素 32 次立方体采样（128² + 6 层 ≈ 千万级采样），面边长 512 以上加载会有可感停顿，属加载期一次性开销；
+- **无多重重要性采样校正**：强光小太阳这类高动态范围细节在粗糙层会被平均掉。
 
 ## 5. 渲染层：r3e-render
 
@@ -1595,6 +1666,57 @@ core 侧只管「怎么判」（§4.15），渲染侧只解决一件事：**金�
 - **CPU 判定按实例串行**：实例量大时判定成本线性上升，`max_tiles` 只压单次判定的上界；
 - **窗口 resize 后有一帧空窗**：尺寸对不上时整帧 fail-open，等下一次读回建好金字塔才恢复剔除。
 
+### 5.16 HDR 反射探针在渲染侧的接线（扩展二十三）
+
+core 侧给了成品 mip 链（§4.16），渲染侧负责三件事：**上传成一张立方体纹理**、**绑到材质组的固定槽位**、
+**在着色器里按粗糙度取层**。整条链路只在场景加载 / 换探针时执行，**不进每帧循环**。
+
+**① 绑定槽位**：`envprobe::ENV_CUBE_BINDING = 6`，落在**材质绑定组 `@group(1) @binding 6`**（`texture_cube<f32>`，
+采样器复用 base color 的 `s_base_color`）。选址理由与扩展十五同一条：WebGPU 的 `max_bind_groups = 4`
+已经被相机 / 材质 / 场景 / 光源组占满，第五组过不了校验；而按材质分桶的组本来就是「逐次绘制会换的组」，
+加一张贴图不会牵动别的组。
+
+**② 上传**：`set_env_probe(Some(&EnvProbeSource))` 建 `Rgba16Float` 立方体纹理
+（`depth_or_array_layers = CUBE_FACES`、`mip_level_count = mip_levels`、`TEXTURE_BINDING | COPY_DST`），
+然后按 `encode_faces(prefiltered)` 的条目逐 (mip, face) 做 `write_texture`——每条上传自带
+`bytes_per_row() = size * 8`（f16 RGBA 无行距 padding，正好能吃）。f32 → f16 是 crate 内自实现的位运算
+（`f32_to_f16` / `f16_to_f32`），保住 4.0 / 2.0 / 1.0 这类常用值的精确往返，溢出走 `+inf` 而不是饱和值。
+预滤波层数多于纹理层数时多出来的层直接丢弃。换图后必须 `material_cache.set_env_cube(view)`
+**重建全部材质 bind group**（视图写在组里）。
+
+**③ 卸载**：`clear_env_probe()` / `set_env_probe(None)` 把视图换回 1×1 的占位立方体
+（`DUMMY_CUBE_FACE_SIZE = 1`）、`env_probe.x` 归 0——**着色器因此一次都不采样** `t_env_cube`，
+镜面反射走回扩展十二的解析天空，画面逐像素不变。
+
+**④ uniform 与着色器**：`CameraUniform` 从 352 → **368 字节**，末位新增 `env_probe: vec4<f32>`
+（`x` = 是否启用 0/1、`y` = 镜面 mip 层数、`z` = 强度、`w` = 面边长，仅诊断用）。
+片元阶段：
+
+| 分支 | 条件 | 行为 |
+| --- | --- | --- |
+| 探针 | `env_probe.x > 0.5` | `probe_specular(dir, roughness)`：`lod = roughness × (levels - 1)`（与 CPU `envprobe::mip_lod` 同式），`textureSampleLevel` 取层后 `max(rgb, 0) × intensity` |
+| 解析 | 否则 | 原 `env_radiance`（三色天空 + 太阳高光），与扩展十二逐字节一致 |
+
+**漫反射不新增绑定**：配了探针时 `env_sh` 9 项系数换成**探针第 0 层的辐照度投影**
+（`PrefilteredEnv::base().project_irradiance()`），球谐分支一行未改；用最清晰那层而不是模糊层，
+是为了避免「已经按粗糙度卷积过再积分」的双重衰减。
+
+**⑤ 统计与日志**（`EnvProbeStats`）：`active` / `source`（`faces` \| `equirect` \| `disabled` \| `none`）/
+`face_size` / `mip_levels` / `intensity`。`--run-seconds` 探针与编辑器 `engine_stats.render.env_probe`
+输出同一份；`Renderer::env_probe_stats()` 在没配探针时给全零缺省。
+
+**测试口径**（`crates/r3e-render/src/envprobe.rs` 7 条 + `crates/r3e-render/tests/env_probe_shader.rs` 9 条 +
+`renderer.rs` 内 1 条）：f16 往返 / 溢出 / 次正规边界、`encode_faces` 的面数与层序、每行字节数、
+`mip_lod` 与层布局一致（含单层链与 NaN）、naga 无窗口校验 `shader.wgsl`（入口点、`@group(1) @binding(6)`
+绑定声明、`env_probe` 四分量语义、`probe_specular` 的 lod 表达式与 CPU 常量对齐）。
+
+**已知边界**
+
+- **探针是静态的**：没有每帧 / 每 N 帧重抓场景的反射捕捉，也没有平面反射与 SSR，物件移动不反映到金属上；
+- **整场景一张图**：没有区域化探针与探针混合，进屋不会自动换环境；
+- **一次 `write_texture` 一条**：`6 × mip_levels` 次上传在加载时完成，不支持运行时流式更新（也没有 mip 之外的额外链）；
+- **依赖材质组重建**：换探针会重建整批材质 bind group，属可预期的偶发停顿，不放在帧循环里就不会掉帧。
+
 ---
 
 ## 6. 物理层：r3e-physics
@@ -1857,6 +1979,19 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_env_intensity(v)` | 环境总强度，夹 0..8；无环境段时先建缺省再写 |
 | `has_environment()` | 场景是否带环境段（`None` 为 `false`） |
 | `clear_environment()` | 删掉环境段，退回 `light.ambient` 常数项 |
+
+**HDR 立方体反射探针**
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_env_map(path)` | 等距柱状单张 `.hdr` 作来源（缺省 `face_size 128` / `mip_levels 6` / `intensity 1.0`）；空串等于清掉探针。返回「写入后是否真的激活」 |
+| `set_env_map_faces(paths)` | 立方体六面路径，**按 `+X -X +Y -Y +Z -Z` 顺序**；少于 6 条整段作废并返回 `false` |
+| `set_env_map_intensity(v)` | 探针强度，夹 `0..=MAX_IBL_INTENSITY`（无探针时先建缺省再写），返回收敛后的值 |
+| `set_env_map_enabled(on)` | 只切开关，不丢来源（关掉再打开画面立刻回到探针） |
+| `clear_env_map()` | 删掉整段 `environment_map`，退回扩展十二的解析 IBL |
+| `has_env_map()` | 探针是否**真的生效**（开关打开且来源可用，同 `is_active()`）；不是「有没有写过」 |
+| `env_map_source()` | 来源标签 `none` / `disabled` / `equirect` / `faces`，编辑器面板直接显示 |
+| `env_map_intensity()` | 读回收敛后的强度，没配探针给缺省 `1.0` |
 
 **HDR 后处理**
 
@@ -2784,6 +2919,63 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 自动化只能证明「开关关闭时没变化」。本次收尾实测基线原样通过（`culled=0`，与扩展二十一一致），
 即缺省关闭的路径没有引入任何像素变化。
 
+### 8.22 HDR 反射探针的驱动与探针（扩展二十三）
+
+**① 宿主侧同步**（`app.rs::sync_env_probe`，每帧在渲染前调用一次）三条判定，顺序即优先级：
+
+| 顺序 | 条件 | 行为 |
+| --- | --- | --- |
+| 1 | 段缺失 / 未启用 / 来源不可用（`sanitized().is_active() == false`） | `renderer.clear_env_probe()`，镜面退回解析 IBL，只在**首次**卸载时打一行日志 |
+| 2 | 与已上传的配置**相等** | 直接返回，不碰 GPU——也就不会重建材质 bind group |
+| 3 | 与上次**加载失败**的配置相等 | 也返回，坏图只在切换那一次刷日志，不逐帧刷屏 |
+
+只有走到下面才真正干活：按 `assets_root`（缺省回落到场景文件所在目录）解析相对路径，
+`load_env_probe` 解码 + 重采样 + 预滤波（CPU 一次性重活），成功后
+`EnvProbeSource::from_settings` → `renderer.set_env_probe(Some(..))`，成功 / 失败都记日志：
+
+```
+反射探针已加载：来源 equirect / 面边长 128² / mip 6 层 / 强度 1.00
+反射探针加载失败（等距柱状 HDR 尺寸非法）：镜面反射退回解析 IBL
+反射探针已卸载：镜面反射退回解析 IBL
+```
+
+失败**不装死**：明确退回解析 IBL，并把这份配置记进 `env_map_error`，避免每帧重试。
+
+**② `engine_stats` 的 `render.env_probe`**（`editor.rs`）：`{ active, source, face_size, mip_levels, intensity }`，
+与日志同源；`active = false` 时其余字段给全零缺省。
+
+**③ 编辑器 RPC `scene.set_environment_map`**（传输层 `EnvironmentMapPatch`，字段全可选）：
+
+| 字段 | 类型 | 备注 |
+| --- | --- | --- |
+| `enabled` | bool | 只切开关，不动来源 |
+| `equirect` | string | 空串 = 清空来源（比 `enabled=false` 更彻底，连配置一起丢） |
+| `faces` | string[6] | 顺序固定 `+X -X +Y -Y +Z -Z`；长度不对整段作废 |
+| `face_size` | i32 | 有符号：负数留给宿主夹到区间下限 |
+| `mip_levels` | i32 | 同上 |
+| `intensity` | f32 | 夹 `0..=MAX_IBL_INTENSITY` |
+
+宿主把补丁**叠加在现有段上**（段缺失时从缺省起步）→ `sanitized()` → 回包
+`{ "environment_map": {...}|null }`，`null` 表示整段被丢掉；`source` 字段是**收敛后实际生效**的来源标签。
+补丁一个字段都不给时报参数错误（「environment_map 补丁至少要给一个字段（或 enabled=false 临时关闭）」）。
+它动的是 `environment_map` 段，与 `scene.set_environment`（三色天空 + SH）是**两条独立的线**，互不覆盖。
+
+**④ 脚本 API**：8 个（见 §7.4「HDR 立方体反射探针」表）。
+
+**⑤ 怎么验证**：
+
+```powershell
+# CPU 侧契约（22 + 4 + 7 + 9 + 4 + 7 条，不需要显卡）
+cargo test -p r3e-core -p r3e-render -p r3e-script -p r3e-editor env
+
+# 画面没漂：不配探针时必须与扩展二十二基线逐像素一致
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+```
+
+**视觉观感待人工确认**：「金属上到底映出了什么」「粗糙度梯度是否连续」属取舍判断，
+自动化只能证明「不配探针时没变化」。本次收尾实测基线原样通过（`draws=5 instances=10 culled=0`，
+与扩展二十二一致），即缺省路径没有引入任何像素变化。
+
 ---
 
 ## 9. 端到端数据流
@@ -2857,7 +3049,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | --- | --- | --- |
 | 几何 | 4 种内置程序化网格 + 外部 FBX 静态网格 | 可表达复杂模型（含 UV）；FBX 已支持节点级动画（P3）与骨骼蒙皮（P4），见 [`ASSETS.md`](ASSETS.md) |
 | 材质 | 每物件颜色 × 材质因子 × base_color 贴图，PBR 三旋钮（metallic / roughness / emissive） | 无金属度/粗糙度贴图、无法线贴图、无 AO 贴图；材质由脚本 / 场景 / RPC 三处写入 |
-| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM）；屏幕空间遮蔽（扩展十七）叠在 composite 前 | **无 HDR 立方体贴图、无反射探针**：金属只映天 / 地 / 太阳，映不出场景物件；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、扩展十八 C 起其中最多 4 盏可投影（点光 6 面 / 聚光单面、图幅固定 512²、聚光与点光同占 6 层槽位），无 IES/面光源、不参与环境项、阴影强度只有全局标量、立方体面接缝未做跨面 PCF；遮蔽是**整幅相乘的近似**（并非只压环境项）、无多尺度、无双边滤波；无全局光照；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
+| 光照 | 1 方向光 + 环境探针（扩展十二：三色天空 + 太阳 + 9 项球谐漫反射，等价于一次"预积分环境光"），直接光照走 **Cook-Torrance**（GGX + Smith + Schlick）；方向光带阴影贴图（阶段三 D 单级 / 扩展十六最多 4 级 CSM）；屏幕空间遮蔽（扩展十七）叠在 composite 前；**HDR 立方体反射探针**（扩展二十三：离线预滤波 mip 链，面边长 128 缺省 / 上限 1024、镜面最多 10 层） | 环境细节已可上金属：配了探针时镜面 IBL 按粗糙度取 mip，漫反射改用探针第 0 层的辐照度投影；**但探针是静态的**——不抓取运行中场景，没有平面反射与 SSR，物件动起来不会出现在金属上；整场景只用一张图，无区域化探针与探针混合；只认 Radiance `.hdr`（不读 EXR / PFM / DDS），六面图必须同尺寸；预滤波是 CPU 串行的一次性开销（512 面以上加载有明显停顿）；不配探针时金属只映天 / 地 / 太阳，与扩展十二逐像素一致；环境项不参与阴影判定（影子边缘的环境亮度不随阴影变暗）；环境退化为 `None` 时仍靠 `albedo × ambient` 常量项兜底；局部光源（扩展十五）最多 16 盏点光/聚光、扩展十八 C 起其中最多 4 盏可投影（点光 6 面 / 聚光单面、图幅固定 512²、聚光与点光同占 6 层槽位），无 IES/面光源、不参与环境项、阴影强度只有全局标量、立方体面接缝未做跨面 PCF；遮蔽是**整幅相乘的近似**（并非只压环境项）、无多尺度、无双边滤波；无全局光照；级联上限 4，每级重复渲染全场景可见物件（未按级裁剪），远景阴影质量取决于级数与图幅 |
 | 后处理 | 常开 `Rgba16Float` 离屏 HDR 目标 + composite（曝光 → 色调映射 → FXAA）+ 可选三级泛光（扩展十三）+ 可选屏幕空间遮蔽两个全屏 pass（扩展十七）；缺省直通 | **无运动模糊、无 TAA、无自动曝光**：泛光层级与核大小固定、不随分辨率自适应；FXAA 是纯后处理，救不回已丢失的几何信息；曝光为手动旋钮；遮蔽无历史累积，快速转动相机时高频噪声靠 4×4 散焦压制而非时间累积 |
 | 抗锯齿 | **MSAA 4×**（扩展十九，固定采样数，主通道 4× 附件 resolve 进 HDR 目标）；后处理末端另有 FXAA（扩展十三） | 采样数写死为 `MSAA_SAMPLE_COUNT = 4`，不可运行时切换；MSAA 只作用于几何边缘，后处理之后画的文本 / UI 走自己的通道、边际改善有限；无 TAA（需要历史缓冲） |
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
@@ -2884,6 +3076,12 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
   在通过视锥的实例上线性叠加；GPU 侧每 `readback_interval` 帧多一次 `copy_texture_to_buffer`（1080p ≈ 8.3 MiB），
   读回是异步的、不在帧内阻塞。收益取决于遮挡密度：物件大多互相遮挡的场景（走廊、室内）才能抵掉这部分开销，
   开阔场景基本无收益——这也是它默认关闭的原因。
+- **反射探针成本**（扩展二十三，只在加载 / 换探针时）：CPU 侧 `equirect_to_cubemap` 是 `6 × face_size²` 次
+  方向采样，`prefilter_specular` 是每层每像素 `PREFILTER_SAMPLES = 32` 次立方体采样——缺省
+  128 面 / 6 层约 **千万级采样**，实测量级为几十毫秒，加载期一次性；512 面以上会到百毫秒级，属可感停顿。
+  上传是一次性 `6 × mip_levels` 次 `write_texture`（缺省 36 次，约 1 MiB f16 数据）。
+  **每帧开销为零**：探针配置不变时 `sync_env_probe` 在比较后直接返回，镜头 / 物件数都不影响它；
+  唯一的偶发尖峰是「换探针」那一帧重建整批材质 bind group。
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配。
 - **阴影通道成本**：单级时顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
   开启 N 级级联则为 N 倍（每级一次全场景深度 pass）。主通道每片元多 9 次 `textureSampleCompare`
@@ -2934,6 +3132,8 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | **二十一（已完成：材质数据贴图）** | **法线 / 粗糙度 / AO 三张贴图**：`r3e-core::tangent` 按三角形位置与 UV 差分累加算切线基（UV 面积退化跳过、整网格退化兜底正交基、手性来自副切线方向），`Vertex` 补 `tangent: [f32; 4]`（location 11）；`r3e-core::texture_slot` 把 FBX / glTF 五花八门的槽位名收敛成 `TextureSlot`（Normal / Roughness / Occlusion / Unclassified）并给出线性数据判据 `is_linear_data()`，`bump` 是高度图、**不算**法线；`r3e-asset` 在 FBX 与 glTF 两条导入路径上按槽位挑图（同用途只取第一张，`Unknown` 不猜也不丢 base color），`MeshAsset::build` 对外部网格重算切线；`r3e-render::pbr` 加 `PbrMapFlags` 与 `MaterialUniform::build_with_maps`（`params2.xyz` 三个开关，w 保留），`renderer.rs` 把三张图绑到 `@group(1) binding 3/4/5`、复用 base color 采样器、缺图垫 1×1 占位（法线用线性 `flat_normal`、其余 `white`）、`resolve_pbr_map` 只在真拿到视图时置位；`shader.wgsl` 用几何法线 + 切线构造 TBN 采样法线（`*2-1` 解码、`z` 下限 `0.05`），粗糙度取 G 作乘数，AO 取 R **只压环境光**（直接光交给阴影）。详见 §4.14 / §5.14 | `core/tangent.rs` / `core/texture_slot.rs` 新增，`core/mesh.rs` 加切线字段与 `DEFAULT_TANGENT`、`lib.rs` 导出；`asset/air_import.rs` / `gltf_import.rs` / `lib.rs` 接槽位筛选与切线重算；`render/pbr.rs` / `renderer.rs` / `shader.wgsl` 接绑定与采样；新增 `asset/tests/pbr_map_import.rs`（4）/ `render/tests/pbr_maps_contract.rs`（9） | 无（场景 JSON、脚本 API、RPC 一字不改；**没挂图时 `params2` 全 0，画面与扩展二十逐像素一致**，`R3E_VISUAL_REGRESSION=1` 基线无需重建）。顶点 stride 56 → 72，内置网格不重算、用 `DEFAULT_TANGENT` 由着色器兜底。**边界**：不读金属度贴图、只有一套 UV、切线装配期一次算定、数据贴图无 mipmap |
 
 | **二十二（已完成：遮挡剔除）** | **上一帧深度金字塔 + 两阶段 AABB 判定**：`r3e-core::occlusion` 纯 CPU 契约（`DepthPyramid::build` 把深度图按 `DEFAULT_TILE_SIZE = 8` 压成 tile 最远深度金字塔、`is_occluded` 用 AABB 投影矩形做「粗筛 → 复核」两阶段保守判定，`OcclusionVerdict::{Visible, Occluded, Rejected}` 只让 `Occluded` 触发剔除）；深度偏置是**相对余量比例**（`DEFAULT_DEPTH_BIAS = 0.05`，按 `(1 - nearest)` 缩放以抵消透视深度的非线性压缩，固定绝对值会让远处物件一个都剔不掉）；空金字塔 / 跨近平面 / 屏外一律 fail-open；`OcclusionSettings`（enabled / depth_bias / tile_size / max_tiles）挂场景 `occlusion` 段，缺省关闭；`r3e-render::occlusion` 的 `OcclusionCuller` 低频**非阻塞**读回深度预通道（`DEFAULT_READBACK_INTERVAL = 4` 帧、`device.poll(PollType::Poll)` 取回、`inflight` 只允许一份在读），`ReadbackLayout` 按 256 字节行对齐（1080p ≈ 8.3 MiB/次），尺寸不符即整帧 fail-open；`prepare_instances` 阶段三 A 在视锥剔除之后接入，**只剔不透明批次**（半透明不写深度），蒙皮先 `inflate_relative(SKIN_CULL_MARGIN)` 再判；`RenderStats::occlusion` 五个字段（enabled / tested / occluded / readback / levels）进日志与 `engine_stats`；脚本 4 个 API（`set_occlusion_enabled` / `occlusion_enabled` / `set_occlusion_bias` / `occlusion_bias`）。详见 §4.15 / §5.15 / §8.21 | `core/occlusion.rs` 新增，`core/scene.rs` 加 `occlusion` 段、`core/lib.rs` 导出；`render/occlusion.rs` 新增，`render/renderer.rs` 接入判定与统计；`script/api.rs` 注册 4 个绑定；`app.rs` 加探针、`app/editor.rs` 透出 `render.occlusion`；新增 `core/tests/occlusion_scene.rs`（8）/ `render/tests/*` 内 6 条 | 无（场景只多一个**可选**段，不写即关闭；**开关关闭时 GPU 命令与实例数与扩展二十一逐字节一致**，`R3E_VISUAL_REGRESSION=1` 基线原样通过、无需重建）。**边界**：无 GPU 遮挡查询、无迟滞（被剔物件下一帧可能回来）、不筛遮挡体、读回滞后 4 帧、只覆盖不透明批次 |
+
+| **二十三（已完成：HDR 立方体反射探针）** | **离线预滤波 cubemap + 按粗糙度取 mip**：`r3e-core::envmap` 纯 CPU 契约——`decode_radiance` 只认 Radiance RGBE（新旧两种扫描行编码、`MAX_EQUIRECT_PIXELS = 64 Mi` 防爆）、`equirect_to_cubemap` 方向驱动双线性（经度环绕、纬度夹极）、`prefilter_specular` 按 `roughness = level/(levels-1)` 做余弦幂卷积（GGX `α = r²` 反解 Phong 指数 `k = 2/α² - 2`、32 次分层黄金角采样）、第 0 层复用原图保清晰反射；`equirect_uv` / `cube_face_dir` / `cube_dir_face` 三个纯函数互逆，`CUBE_FACE_NAMES` 钉死 `+X -X +Y -Y +Z -Z`；`EnvironmentMapSettings` 挂场景 `environment_map` 段（六面必须恰好 6 条否则整段作废、`face_size` 夹 4..1024 并向上取 2 的幂、`mip_levels` 夹 1..10），缺省不序列化；`r3e-render::envprobe` 把成品编码成 `Rgba16Float` 立方体纹素（自实现 `f32_to_f16` / `f16_to_f32`、无行距 padding），绑到**材质组 `@group(1) @binding 6`**（复用 base color 采样器），`CameraUniform` 352 → 368 字节加 `env_probe: vec4`（启用位 / mip 层数 / 强度 / 面边长），着色器 `probe_specular` 用 `textureSampleLevel` 按 `roughness × (levels-1)` 取层、漫反射改用探针第 0 层的辐照度投影（不新增绑定），无探针时 1×1 占位图 + `x=0` 完全短路；换图重建材质 bind group；脚本 8 个 API（`set_env_map` / `set_env_map_faces` / `set_env_map_intensity` / `set_env_map_enabled` / `clear_env_map` / `has_env_map` / `env_map_source` / `env_map_intensity`）；编辑器 `scene.set_environment_map` 补丁式 RPC（`EnvironmentMapPatch`，与 `scene.set_environment` 是两条独立的线）；`app.rs::sync_env_probe` 三道判定（未激活→卸载 / 配置未变→不碰 GPU / 上次失败→不重试）与加载 / 失败 / 卸载三种日志。详见 §4.16 / §5.16 / §8.22 | `core/envmap.rs` 新增（1,288 行）、`core/scene.rs` 加 `environment_map` 段与 `set/clear/active/source` 入口、`core/lib.rs` 导出；`render/envprobe.rs` 新增（415 行）、`render/renderer.rs` 加 `set_env_probe` / `clear_env_probe` / `env_probe_stats`、`shader.wgsl` 加探针分支、`pbr.rs` 绑定槽位；`script/api.rs` 注册 8 个绑定；`editor/lib.rs` `EnvironmentMapPatch` + dispatch；`app.rs` 探针同步与日志、`app/editor.rs` 补丁合并与快照；新增 `core/tests/environment_map_scene.rs`（4）/ `core/tests/env_probe.rs`（6）/ `render/tests/env_probe_shader.rs`（9）/ `editor/tests/environment_map_rpc.rs`（7）/ `script/tests/env_map_api.rs`（4）+ 各自内联 22 / 7 / 7 | 无（场景只多一个**可选**段，不写即不启用；**不配探针时 GPU 命令与像素与扩展二十二逐字节一致**，`R3E_VISUAL_REGRESSION=1` 基线原样通过、无需重建）。**边界**：静态探针（不抓运行中场景）、无平面反射 / SSR、整场景单探针无混合、只认 Radiance `.hdr`、预滤波 CPU 串行（512 面以上加载可感停顿）、无多重重要性采样校正 |
 
 两条与顺序相关的说明：
 
@@ -2996,6 +3196,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 像素回归（扩展二十） | RTX 5060 Laptop / Vulkan 实跑 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression`：`captured_frame_matches_baseline ... ok`（5.20s），子进程日志 `渲染器就绪: 640x360` + `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，与基准图逐像素比对通过 |
 | 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |
 | 遮挡剔除（扩展二十二） | CPU 侧 `cargo test -p r3e-core -p r3e-render -p r3e-script occlusion`：`occlusion`（core）28 / `occlusion_scene` 8 / `occlusion`（render）6 / script 2 全绿；`cargo test --workspace` 59 套件 **870 passed / 0 failed**，`--features rapier` **874 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）均零告警。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `captured_frame_matches_baseline ... ok`，缺省关闭路径与扩展二十一基线逐像素一致（遮挡剔除计数 `culled=0`），基线无需重建。**观感待人工验证**：打开 `occlusion.enabled` 后「该剔的有没有剔干净」「有没有物件闪进来又闪出去」属于取舍判断，自动化只证明开关关闭时无变化 |
+| HDR 立方体反射探针（扩展二十三） | CPU 侧：`envmap`（core 内联）22 / `environment_map_scene` 4 / `env_probe`（core）6 / `envprobe`（render 内联）7 / `env_probe_shader` 9 / `environment_map_rpc` 7 / `env_map_api` 4 全绿；`cargo test --workspace` 63 套件 **928 passed / 0 failed**，`--features rapier` **932 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `ok`（1 passed，基线无需重建），不配探针时实例数与绘制数与扩展二十二一致（`draws=5 instances=10 culled=0`）。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，自造 64×32 Radiance 等距柱状图 + IBL 演示场景，`--run-seconds 3`，退出码 0）：`反射探针已加载：来源 equirect / 面边长 64² / mip 5 层 / 强度 1.50`，收尾探针 `HDR 反射探针：段内 true / 开关 true / 来源 equirect / 生效 true / 面边长 64² / mip 5 / 强度 1.50`，同期 `视锥剔除：可见物件 8 / 绘制实例 8 / 剔除 0`。**坏图回退取证**：把 `.hdr` 换成两字节截断文件后实跑 → 仅一行 `反射探针加载失败（… 不是有效的 Radiance HDR（RGBE））：镜面反射退回解析 IBL`，收尾探针 `生效 false / 面边长 0² / mip 0 / 强度 0.00`，进程不 panic、不逐帧重试刷屏，画面退回解析 IBL。**观感待人工验证**：「金属上到底映出了什么」「粗糙度梯度是否连续」属取舍判断，自动化只证明链路与回退正确 |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
