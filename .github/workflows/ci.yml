@@ -1,7 +1,10 @@
 name: CI
 
 # 四道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）
-# -> 像素回归（visual）。任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
+# -> 像素回归（visual / visual-gpu）。任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
+#
+# 像素那道为什么拆成两个 job：托管 runner 没有显卡，只能验基准图自洽（visual）；真正拦像素漂移的是
+# 带 GPU 的自建 runner（visual-gpu，R3E_VISUAL_STRICT=1，跳过即失败）。配置方法见 docs/CI_GPU_RUNNER.md。
 #
 # 为什么四个 job 都跑 Windows：本工程是 Windows + MinGW 目标（见 .cargo/config.toml 的 build.target
 # 与 mingw 链接器），Linux runner 上无法完成这套交叉链接，硬跑只会得到误导性的红。
@@ -72,7 +75,7 @@ jobs:
         run: cargo test --workspace ${{ matrix.features == 'rapier' && '--features rapier' || '' }}
 
   visual:
-    name: visual (像素回归)
+    name: visual (基准图自洽)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,5 +116,63 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: visual-regression-artifacts
+          path: crates/r3e-app/target/visual-regression
+          if-no-files-found: ignore
+
+  # 真正拦像素漂移的那道门：跑在带 GPU 的自建 runner 上，环境变量 R3E_VISUAL_STRICT=1 把
+  # 「拍不到图就跳过」改成「拍不到图就红」。没有这台 runner 时 job 显示 skipped（不阻塞合并），
+  # 但它是可见的、不可能被误认为绿——这正是这个开关存在的意义。
+  #
+  # 开启方式：仓库 Settings -> Secrets and variables -> Actions -> Variables 加
+  # R3E_GPU_RUNNER=true。runner 标签必须是 self-hosted + windows + gpu 三个，注册步骤见
+  # docs/CI_GPU_RUNNER.md。
+  visual-gpu:
+    name: visual-gpu (像素漂移, 自建)
+    runs-on: [self-hosted, windows, gpu]
+    if: vars.R3E_GPU_RUNNER == 'true'
+    # 自建 runner 是台真机器，可能被别的事占着；给个上限，免得 PR 卡到超时（GitHub 默认 6 小时）。
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # 自建 runner 的软件栈由我们自己维护，所以这里做一次自检而不是假设：缺工具链就当场红，
+      # 并且把显卡型号打出来——像素基线跨 GPU / 驱动不保证一致，换卡后第一眼要看的就是这一行。
+      - name: 环境自检（显卡 / 工具链 / 链接器 / 基准图）
+        shell: pwsh
+        run: |
+          if ($env:R3E_UPDATE_BASELINE) {
+            Write-Error "CI 中禁止设置 R3E_UPDATE_BASELINE：基准图只在本机用 R3E_UPDATE_BASELINE=1 重建后提交。"
+            exit 1
+          }
+          Write-Host "== 显卡 =="
+          Get-CimInstance Win32_VideoController | ForEach-Object { Write-Host ("{0}  驱动 {1}" -f $_.Name, $_.DriverVersion) }
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            Write-Error "找不到 cargo：自建 runner 需装 rustup，并按 rust-toolchain.toml 装 stable-x86_64-pc-windows-gnu。"
+            exit 1
+          }
+          cargo --version
+          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue)) {
+            Write-Error "找不到 x86_64-w64-mingw32-gcc：自建 runner 需把 MinGW-w64 的 bin 加进 PATH（见 docs/CI_GPU_RUNNER.md）。"
+            exit 1
+          }
+          $baseline = "crates/r3e-app/tests/baselines/capture_frame_640x360.png"
+          if (-not (Test-Path $baseline)) {
+            Write-Error "基准图缺失: $baseline"
+            exit 1
+          }
+
+      # 严格模式：闸门必须同时打开（漏配 R3E_VISUAL_REGRESSION 会直接 panic，而不是悄悄 pass）。
+      - name: cargo test -p r3e-app --test visual_regression（严格）
+        env:
+          R3E_VISUAL_REGRESSION: "1"
+          R3E_VISUAL_STRICT: "1"
+        run: cargo test -p r3e-app --test visual_regression -- --nocapture
+
+      # 这里失败通常意味着「画面真的变了」或者「这台机器的显卡 / 驱动换了」——两种都得看差异图。
+      - name: upload 实际图 / 差异图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-gpu-artifacts
           path: crates/r3e-app/target/visual-regression
           if-no-files-found: ignore
