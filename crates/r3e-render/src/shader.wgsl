@@ -183,7 +183,15 @@ fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
     out.clip_position = u_camera.view_proj * world;
     out.world_position = world.xyz;
-    out.world_normal = normalize(normal_matrix * local_normal);
+    // 退化缩放（某轴 scale = 0 或 NaN）会让伴随矩阵整块归零，normalize(0) 直接产 NaN，
+    // 一路传到着色就是成片刷黑。只在这种退化情形换成 +Y 兜底，正常路径仍走 normalize
+    // ——逐位不变，像素基线不受影响。CPU 侧的同一保护见 `r3e_core::world_normal_matrix`。
+    let raw_normal = normal_matrix * local_normal;
+    if length(raw_normal) > 1e-20 {
+        out.world_normal = normalize(raw_normal);
+    } else {
+        out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
+    }
     out.color = in.color;
     out.uv = in.uv;
     // 切线按与法线相同的伴随矩阵变换；未挂法线贴图时这些值不参与着色
