@@ -433,6 +433,20 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 
 细节（预滤波、mip 取层、绑定槽位、失败回退与边界）见 [§27 HDR 立方体反射探针](#27-hdr-立方体反射探针扩展二十三)。
 
+### 级联遮挡体按级裁剪（扩展二十四）
+
+`casterCull` 缺省 `true`，但**缺省不改画面**：外扩量 `casterExtend` 缺省 0 时拟合矩阵与扩展二十三逐位相同，
+只是每级少提交不可能投到本级的遮挡体。写场景 `light.shadow` 段或调下面三个函数都可。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_shadow_caster_extend(m) -> f64` | 级联近端沿光方向外扩米数，夹到 `0..=65536`；`0` = 紧贴切片（缺省，屋檐 / 天桥可能丢影子） |
+| `set_shadow_caster_cull(on) -> bool` | 按级裁剪开关，返回实际值；`false` = 回到「每级全量提交」 |
+| `shadow_caster_cull() -> bool` | 回读开关 |
+
+细节（判定保守性、掩码与实例缓冲对齐、段数与 draw call、实测裁剪量）见
+[§9 方向光阴影](#9-方向光阴影阶段三-d-已完成)。
+
 ### 时间 / 随机 / 输出
 
 | 函数 | 说明 |
@@ -968,7 +982,10 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
   [§16 IBL 环境探针](#16-ibl-环境探针)。方向光带单张正交阴影贴图（3×3 PCF，默认开启）；
   扩展十六把这张图升级为**最多 4 级级联**（`light.shadow.cascades`，缺省 1 = 单级，老场景画面不变）：
   视锥按深度切段、每段独立拟合光源正交相机，近处纹素更密、远处只求覆盖，级间按 `blend` 混合消接缝。
-  阴影限制：级联上限 4、每级重复渲染全场景可见物件（未按级裁剪）、透明物件也投实心影。
+  阴影限制：级联上限 4、透明物件也投实心影；扩展二十四起每级只提交落在本级覆盖范围内的
+  遮挡体（`casterCull`，缺省开，保守裁剪不改画面），但**不做层级剔除**，且 `casterExtend`
+  缺省 0 时紧贴级边界的遮挡体（屋檐 / 天桥 / 二层地板）可能丢影子，见
+  [§9 方向光阴影](#9-方向光阴影阶段三-d-已完成)。
 - 局部光源：最多 16 盏点光 / 聚光，扩展十八 C 起其中**每帧最多 4 盏**可投影（`cast_shadow`，
   点光 6 面 / 聚光单面，共用一张固定 512² × 24 层深度数组）；无 IES / 面光源，只进直接光项、
   不参与环境项，见 [§19 局部光源](#19-局部光源扩展十五) 与 [§23 局部光源阴影](#23-局部光源阴影扩展十八-c)。
@@ -1074,23 +1091,50 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai
     "enabled": true, "size": 2048, "strength": 1.0,
     "cascades": 4,          // 扩展十六：级联数 1..=4（缺省 1 = 单级）
     "blend": 0.15,          // 级间过渡带宽（占该级跨度比例，0..0.5）
-    "cascadeDistance": 60.0 // 阴影最远距离；0 / 缺省 = 用相机 zfar 或包围球最远点
+    "cascadeDistance": 60.0, // 阴影最远距离；0 / 缺省 = 用相机 zfar 或包围球最远点
+    "casterExtend": 12.0,   // 扩展二十四：遮挡体沿光方向的外扩量；缺省 0 = 紧贴切片
+    "casterCull": true      // 扩展二十四：按级裁剪遮挡体；缺省 true（保守裁剪，不改画面）
   }
 }
 ```
 
-脚本侧八个开关：`set_shadow(on)` / `shadow_enabled()` / `set_shadow_strength(v)` /
+脚本侧十一个开关：`set_shadow(on)` / `shadow_enabled()` / `set_shadow_strength(v)` /
 `set_shadow_size(px)` / `set_shadow_extent(half)`（半宽写 0 = 自适应）/
-`set_shadow_cascades(n)` / `set_shadow_blend(v)` / `set_shadow_distance(m)`。
+`set_shadow_cascades(n)` / `set_shadow_blend(v)` / `set_shadow_distance(m)` /
+`set_shadow_caster_extend(m)` / `set_shadow_caster_cull(on)` / `shadow_caster_cull()`。
 
 **级联（扩展十六）**：`cascades > 1` 时阴影图变成 `texture_depth_2d_array`（层 = 级数），
 视锥按深度切段、每级独立拟合光源正交相机并做纹素量化（相机移动时影子不抖动），
 片元按相机深度选级、在 `blend` 带内与下一级混合。级数 1 就是阶段 D 的单级行为，
 因此老场景、老截图口径不变；代价是 `draw call × 级数` 的顶点开销。
 
+**按级裁剪遮挡体（扩展二十四）**：每级只给「真的能把影子投进本级」的实例提交深度 pass。
+判定在 core 侧的纯函数里（`aabb_in_cascade`：把遮挡体 AABB 八个角点换到该级光源裁剪空间，
+`x/y` 全在外或 `z > 1` 即裁；靠近光源那一侧 `z < 0` **一律不裁**——这是保守方向，
+级边界外站在光源一侧的物件仍会把影子投进来）。拿不到 AABB 的实例走
+`fail_open_bounds`，任何级都不裁。
+
+两个旋钮：
+
+| 字段 / API | 缺省 | 作用 |
+| --- | --- | --- |
+| `casterCull` / `set_shadow_caster_cull(on)` | `true` | 关掉即回到「每级全量提交」（扩展二十三口径） |
+| `casterExtend` / `set_shadow_caster_extend(m)` | `0` | 把级联近端朝光源推 `m` 米，让「贴着级边界、影子落进本级」的遮挡体进深度图 |
+
+`casterExtend` 缺省 0 是**兼容优先**的选择：此时矩阵与拟合结果和扩展二十三逐位相同
+（`fit_cascade_extended(.., 0.0)` == `fit_cascade(..)`，有单测钉住）。代价是屋檐、天桥、
+二层地板这类「接收区上方、朝光源方向超出切片」的遮挡体可能丢影子——真实场景建议给
+`casterExtend` 一个接近该级跨度的值（例：4 级 + `cascadeDistance` 60 时取 10~15）。
+
+实测裁剪量（4 级 / 32 个沿视线均匀分布的遮挡体，最不利于裁剪的分布）：
+逐级保留 `[9, 19, 32, 32]`，合计 92 / 全量 128，省 28%；物件铺开在 x/y 上时近级裁得更狠。
+
 验证手段：`--run-seconds N` 的起止探针会打出
-`阴影通道：级联 N / draw call X / 主通道实例 Y`，关闭阴影时三者中后两项为 0——
-`draw call = 合批数 × 级数`（每级一次全场景深度 pass），这是「阴影通道真的跑了」的数值证据。
+`阴影通道：级联 N / draw call X / 主通道实例 Y / 遮挡体判定 A 裁掉 B`，关闭阴影时 draw call
+与主通道实例为 0——`draw call` 由 `合批数 × 级数` 变成「每级保留实例切出的连续段数之和」
+（`A = 级数 × 遮挡体数`，`B` 是被裁掉的对数），这是「阴影通道真的跑了、且真的裁了」的数值证据。
+分段依据是实例缓冲里保留项的**连续段**：零散分布时切出的段数会变多，段数超过保留个数本身
+就说明该场景按级裁剪并不划算（此时关掉 `casterCull` 更快）。
 设计细节与踩坑（独立 pipeline layout、深度图不可原地 resize）见
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 5.7 与 [`docs/ASSETS.md`](docs/ASSETS.md) 17。
 
