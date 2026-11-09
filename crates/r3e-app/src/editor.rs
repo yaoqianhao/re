@@ -226,6 +226,11 @@ impl EngineApi for LocalEngineApi<'_> {
                 "cull_unknown": s.cull_unknown,
                 "shadow_draws": s.shadow_draws,
                 "shadow_cascades": s.shadow_cascades,
+                // 扩展二十四：按级裁剪遮挡体的判定量与裁掉量。`culled` 为 0 且
+                // `tested` 为 0 = 裁剪没开（或阴影关闭），此时 `shadow_draws` 会回到
+                // 扩展二十三的「批次数 × 级数」。
+                "shadow_casters": s.shadow_casters,
+                "shadow_culled": s.shadow_culled,
                 // 扩展十九：半透明批次与 MSAA。`transparent_draws` 为 0 = 本帧没有
                 // 半透明物件；`depth_prepass_draws` 应恒等于不透明批次的 draw call 数，
                 // 掉成 0 说明遮蔽通道的单采样深度来源断了。

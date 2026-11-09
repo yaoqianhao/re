@@ -968,11 +968,15 @@ impl EngineApp {
         // 阴影探针：draw call 为 0 = 本帧没跑阴影通道（场景未开启 / 无可见物件），
         // 否则是深度通道里的 draw call 数（按网格合批 × 级数）。
         // `shadow_cascades` 是实际生效的级联数：1 = 单级（等价阶段 D），0 = 关闭。
+        // 扩展二十四：`遮挡体判定` 是判过的 (级, 遮挡体) 对数，`裁掉` 是其中被剔除的量。
+        // 两者都为 0 = 按级裁剪没开（或阴影关闭）；判定数远大于实例数 = 级数在放大开销。
         log::info!(
-            "[{tag}] 阴影通道：级联 {} / draw call {} / 主通道实例 {}",
+            "[{tag}] 阴影通道：级联 {} / draw call {} / 主通道实例 {} / 遮挡体判定 {} 裁掉 {}",
             stats.shadow_cascades,
             stats.shadow_draws,
-            stats.instances
+            stats.instances,
+            stats.shadow_casters,
+            stats.shadow_culled
         );
         // 半透明 / MSAA 探针（扩展十九）：`透明 draw` 为 0 表示本帧没有半透明批次
         // （场景里没有 alpha < 0.999 的物件，或被视锥剔除干净）。

@@ -1321,6 +1321,27 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         c.scene.borrow_mut().light.shadow.cascade.max_distance = f32_of(distance).max(0.0);
     });
 
+    // 扩展二十四：级联遮挡体向光源方向的外扩距离（世界单位）。
+    // 0 = 紧贴级边界（裁剪最狠，边缘处物件可能把影子投丢）；0.5~2 通常既安全又省 draw。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_caster_extend", move |extend: f64| {
+        let max = r3e_core::MAX_CASTER_EXTEND as f64;
+        c.scene.borrow_mut().light.shadow.cascade.caster_extend =
+            f32_of(extend).clamp(0.0, max as f32);
+    });
+
+    // 扩展二十四：按级裁剪开关。关掉即回到「每级都画全场景」的老行为（调试对照用）。
+    let c = ctx.clone();
+    engine.register_fn("set_shadow_caster_cull", move |on: bool| {
+        c.scene.borrow_mut().light.shadow.cascade.caster_cull = on;
+    });
+
+    // 只读查询：当前是否按级裁剪遮挡体。
+    let c = ctx.clone();
+    engine.register_fn("shadow_caster_cull", move || -> bool {
+        c.scene.borrow().light.shadow.cascade.caster_cull
+    });
+
     let c = ctx.clone();
     engine.register_fn("set_background", move |r: f64, g: f64, b: f64| {
         c.scene.borrow_mut().background = Vec4::new(f32_of(r), f32_of(g), f32_of(b), 1.0);
