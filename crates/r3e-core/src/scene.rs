@@ -733,7 +733,7 @@ impl Scene {
             let world = self.resolve_world(id, 0, &mut cache);
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.world = world;
-                node.world_normal = glam::Mat3::from_mat4(world).inverse().transpose();
+                node.world_normal = crate::transform::world_normal_matrix(world);
             }
         }
 

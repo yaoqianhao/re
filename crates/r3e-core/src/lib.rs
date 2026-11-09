@@ -119,7 +119,9 @@ pub use text::{
     ScreenText, TextAlign, TextLayout, TextMeasure,
 };
 pub use texture_slot::{classify_slot, TextureSlot};
-pub use transform::Transform;
+pub use transform::{
+    safe_scale_component, world_normal_matrix, Transform, MIN_LINEAR_SCALE, SINGULAR_DET_EPS,
+};
 pub use ui::{
     find, find_mut, hit_test, hit_test_key, merge_same_key, remove, resolve_rect, sorted_for_draw,
     upsert, upsert_styled, Anchor, UiElement, UiEvent, UiEventKind, UiInteraction, UiKind, UiRect,
