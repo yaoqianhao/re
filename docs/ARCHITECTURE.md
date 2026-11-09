@@ -175,8 +175,9 @@ Release 二进制 14.1 MB（14,817,280 字节；`[profile.release]` 已开 `lto 
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 933 passed / 0 failed（多出的 4 条是 `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`） |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
-| 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | CI 的 `visual` job 强制把闸门打开；有显卡就真比像素，没显卡跳过，但同文件的纯 CPU 用例仍守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
-| CI | `.github/workflows/ci.yml`（fmt / clippy / test / visual 四 job，`windows-latest`） | 每次 push、PR 自动跑，红则不合 |
+| 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
+| 像素漂移（CI 闸门，自建 GPU） | 同上 + `$env:R3E_VISUAL_STRICT = "1"` | `visual-gpu` job，`runs-on: [self-hosted, windows, gpu]`，变量 `R3E_GPU_RUNNER=true` 时启用。严格模式下**跳过即失败**：显卡掉、驱动崩、窗口建不出来都算红，不再伪装成"这台机器不支持"。配置见 `docs/CI_GPU_RUNNER.md` |
+| CI | `.github/workflows/ci.yml`（fmt / clippy / test / visual / visual-gpu，五个 job，全 Windows） | 每次 push、PR 自动跑，红则不合；`visual-gpu` 未配 runner 时显示 skipped（不阻塞合并，但可见） |
 
 静态检查仅保留三处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
 `too_many_arguments`（顶点装配入口参数天然是平行数组，`r3e-asset` 内两处）。
@@ -2863,7 +2864,7 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 2. 子进程退出码 `2` = 渲染器 / 截图链路不可用（无 GPU、窗口建不出来），按跳过处理；
 3. 基准图缺失时既不"通过"也不"失败"，而是 `assert` 并且提示用 `R3E_UPDATE_BASELINE=1` 建档。
 
-**环境变量**：`R3E_VISUAL_REGRESSION`（总开关）、`R3E_UPDATE_BASELINE`（覆盖基准图）、
+**环境变量**：`R3E_VISUAL_REGRESSION`（总开关）、`R3E_VISUAL_STRICT`（严格模式：跳过即失败，见下文与 `docs/CI_GPU_RUNNER.md`）、`R3E_UPDATE_BASELINE`（覆盖基准图）、
 `R3E_VISUAL_CHANNEL_DELTA`（单通道容差，默认 `DEFAULT_CHANNEL_DELTA = 2`）、
 `R3E_VISUAL_BAD_RATIO`（坏点比例上限，默认 `DEFAULT_BAD_PIXEL_RATIO = 0.001`）。
 
@@ -2882,8 +2883,29 @@ RPC 里层不存在一律返回 `invalid_params` 报错，与 `light_set`（key 
 不等用例报错。失败时（`if: always()`）把 `crates/r3e-app/target/visual-regression/` 的实际图与差异图
 作为 artifact 上传，排查不用靠猜；成功时该目录通常不存在，`if-no-files-found: ignore` 兜住。
 
-这条分工的边界要说清楚：CI 上真正跑的是**基准图的自洽性**，不是**像素是否漂移**。想让像素闸门在 CI 里
-真的生效，需要一个带 GPU 的自建 runner；在那之前，像素比对仍只在本机质量门里成立（见 §3.3）。
+这条分工的边界要说清楚：托管 runner 上的 `visual` job 真正跑的是**基准图的自洽性**，不是**像素是否漂移**。
+
+**补齐另一半：`visual-gpu`（自建 GPU runner）**。像素漂移只在带显卡的机器上才比得出来，所以
+`.github/workflows/ci.yml` 另有一个 `runs-on: [self-hosted, windows, gpu]` 的 job，由仓库变量
+`R3E_GPU_RUNNER=true` 控制启用（没配 runner 时 job 显示 skipped——可见的"没跑"，不是伪装的绿）。
+它额外设 `R3E_VISUAL_STRICT=1`，语义是**"我保证这台机器有 GPU，请把结果当真"**：
+
+| 情形 | 非严格（本机 / 托管 runner） | 严格（`R3E_VISUAL_STRICT=1`） |
+| --- | --- | --- |
+| 闸门 `R3E_VISUAL_REGRESSION` 没开 | 打印原因，计 passed | **panic**（CI 漏配就是漏跑，不许静默通过） |
+| 子进程退出码 `2`（无 GPU / 窗口建不出来） | 按跳过计 passed | **panic**（显卡 / 驱动 / 会话坏了，是故障不是豁免） |
+| 图拍到了但像素漂了 | 红 | 红（同左） |
+
+没有这一条，自建 runner 上的门和托管 runner 上一样是摆设——"跳过即通过"是这道门唯一的致命伤。
+顺带说清一个容易被忽略的口径：退出码 `2` 不只代表"没显卡"，截图**落盘失败**（路径不可写、磁盘满）同样走 `2`，
+非严格模式下它也按跳过处理；只有严格模式才把这类真故障从"环境不支持"里摘出来变成红。
+job 的第一步是环境自检：打印显卡型号与驱动版本、检查 `cargo` 与 `x86_64-w64-mingw32-gcc` 在 `PATH` 里、
+基准图存在、并拒绝 `R3E_UPDATE_BASELINE`，缺项当场红。
+
+自建 runner 的关键坑（`docs/CI_GPU_RUNNER.md` 详述）：**不能装成 Windows 服务**——服务跑在 Session 0，
+没有窗口站，`r3e` 建窗口必然失败、看起来像"没显卡"；必须跑在已登录用户的交互式会话里（`run.cmd` 前台，
+或任务计划程序"用户登录时启动"且不勾"不管用户是否登录都运行"）。基线是逐像素的，换 GPU / 换驱动大版本后
+要在本机 `R3E_UPDATE_BASELINE=1` 重建并提交新基线，且 PR 里说清楚原因。
 
 **产物布局**：基准图 `crates/r3e-app/tests/baselines/capture_frame_640x360.png` 进版本库（640x360 只有 1280x720 的四分之一体积，
 排序 / MSAA / 后处理的变化已经看得出来）；实际图与差异图落 `target/visual-regression/`，天然不进版本库。
@@ -3216,7 +3238,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |
 | 遮挡剔除（扩展二十二） | CPU 侧 `cargo test -p r3e-core -p r3e-render -p r3e-script occlusion`：`occlusion`（core）28 / `occlusion_scene` 8 / `occlusion`（render）6 / script 2 全绿；`cargo test --workspace` 59 套件 **870 passed / 0 failed**，`--features rapier` **874 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）均零告警。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `captured_frame_matches_baseline ... ok`，缺省关闭路径与扩展二十一基线逐像素一致（遮挡剔除计数 `culled=0`），基线无需重建。**观感待人工验证**：打开 `occlusion.enabled` 后「该剔的有没有剔干净」「有没有物件闪进来又闪出去」属于取舍判断，自动化只证明开关关闭时无变化 |
 | HDR 立方体反射探针（扩展二十三） | CPU 侧：`envmap`（core 内联）22 / `environment_map_scene` 4 / `env_probe`（core）6 / `envprobe`（render 内联）7 / `env_probe_shader` 9 / `environment_map_rpc` 7 / `env_map_api` 4 全绿；`cargo test --workspace` 63 套件 **928 passed / 0 failed**，`--features rapier` **932 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression` → `ok`（1 passed，基线无需重建），不配探针时实例数与绘制数与扩展二十二一致（`draws=5 instances=10 culled=0`）。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，自造 64×32 Radiance 等距柱状图 + IBL 演示场景，`--run-seconds 3`，退出码 0）：`反射探针已加载：来源 equirect / 面边长 64² / mip 5 层 / 强度 1.50`，收尾探针 `HDR 反射探针：段内 true / 开关 true / 来源 equirect / 生效 true / 面边长 64² / mip 5 / 强度 1.50`，同期 `视锥剔除：可见物件 8 / 绘制实例 8 / 剔除 0`。**坏图回退取证**：把 `.hdr` 换成两字节截断文件后实跑 → 仅一行 `反射探针加载失败（… 不是有效的 Radiance HDR（RGBE））：镜面反射退回解析 IBL`，收尾探针 `生效 false / 面边长 0² / mip 0 / 强度 0.00`，进程不 panic、不逐帧重试刷屏，画面退回解析 IBL。**观感待人工验证**：「金属上到底映出了什么」「粗糙度梯度是否连续」属取舍判断，自动化只证明链路与回退正确 |
-| 视觉回归进 CI（四道门） | `cargo test -p r3e-app --test visual_regression`：闸门关闭 → `2 passed`（逐像素那条打印跳过原因）；`R3E_VISUAL_REGRESSION=1` 实跑 → `2 passed`（5.45s，RTX 5060 Laptop / Vulkan / 渲染器就绪 640x360 / `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，基线原样通过、无需重建）。`cargo test --workspace` 63 套件 **929 passed / 0 failed**，`--features rapier` **933 passed / 0 failed**；`cargo fmt --all --check` 0 diff；`cargo clippy -p r3e-app --all-targets -- -D warnings` 0 warning。`ci.yml` 经 YAML 解析确认 `jobs = [fmt, clippy, test, visual]` |
+| 视觉回归进 CI（四道门） | `cargo test -p r3e-app --test visual_regression`：闸门关闭 → `2 passed`（逐像素那条打印跳过原因）；`R3E_VISUAL_REGRESSION=1` 实跑 → `2 passed`（5.45s，RTX 5060 Laptop / Vulkan / 渲染器就绪 640x360 / `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，基线原样通过、无需重建）。`cargo test --workspace` 63 套件 **929 passed / 0 failed**，`--features rapier` **933 passed / 0 failed**；`cargo fmt --all --check` 0 diff；`cargo clippy -p r3e-app --all-targets -- -D warnings` 0 warning。`ci.yml` 经 YAML 解析确认 `jobs = [fmt, clippy, test, visual, visual-gpu]`（YAML 合法、`visual-gpu` 的 `runs-on = [self-hosted, windows, gpu]` 与 `if: vars.R3E_GPU_RUNNER == 'true'` 均按预期解析）。**严格模式的三个分支实测**（同一台 RTX 5060 Laptop 上手工跑，作为它不会退化成空跑的证据）：① 只设 `R3E_VISUAL_STRICT=1`、闸门未开 → `FAILED 1 passed / 1 failed`，panic 文案点明「闸门必须开着」；② 闸门 + 严格模式下把产物目录用同名文件占住（模拟拍不到图）→ `FAILED`，panic 文案 `严格模式（R3E_VISUAL_STRICT=1）下禁止跳过：建产物目录失败`；③ 闸门 + 严格模式下正常跑 → `2 passed`（5.09s），证明严格模式不会误伤正常路径 |
 | 文本上屏（M1） | **待人工验证**：`cargo run` 后左上角出现中文 HUD（标题 / 超宽自动折行副标题 / 每帧刷新的帧率状态行），右上右对齐、中上居中对齐各有样例；字形边缘无黑边、无错位。无头环境无法断言像素，此处只记录待验状态 |
 | 音频设备（M1） | 启动日志与收尾探针实测：`后端 rodio / 设备 可用 / 在播 1（实例 1） / 总音量 0.80 / 开关 开 / 错误 0 / 最近 无`；`--run-seconds 3` 全程无 panic、无 rodio 退出提示，退出码 0 |
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |

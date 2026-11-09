@@ -1153,21 +1153,25 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 `arc_with_non_send_sync`（`MeshProvider` 刻意不 `Send`，渲染主线程独占），以及
 `r3e-asset/src/lib.rs`、`r3e-asset/src/gltf_import.rs` 各一处 `too_many_arguments`（顶点装配 / 导入入口参数天然是平行数组）。
 
-CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，四个 job 分别对应
-`rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）` / `visual（像素回归）`，都跑在 `windows-latest` 上
+CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，四道门对应
+`rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）` / `visual`（像素回归，拆两个 job），
+都跑在 `windows-latest` 上
 （Linux runner 无法完成 MinGW 交叉链接，硬跑只会得到误导性的红），
 并用 PATH 里的 MinGW 覆盖 `.cargo/config.toml` 中的开发者本机绝对路径。
 
-`visual` job 用 `R3E_VISUAL_REGRESSION=1` 强制打开像素闸门，同时挡住两类会让这道门形同虚设的用法：
+像素那道门分成两半，因为托管 runner 没有显卡：
 
-- **禁止在 CI 重建基准图**：环境里出现 `R3E_UPDATE_BASELINE` 就 `exit 1`——那等于拿新画面覆盖旧基准，
-  回归会永远是绿的；
-- **跳过 ≠ 没人管**：托管 runner 没显卡，逐像素那条会按退出码 2 跳过（计 passed），所以同文件里还有一条
-  纯 CPU 用例 `baseline_png_is_present_with_capture_size`，校验基准图存在、可解码、尺寸恰为 640×360。
-  基准图被误删 / 截断 / 尺寸漂移时，任何 runner 都直接红。
+- `visual`（`windows-latest`，**必跑**）：`R3E_VISUAL_REGRESSION=1` 打开闸门，同时挡住两类会让这道门形同虚设的用法：
+  **禁止在 CI 重建基准图**（环境里出现 `R3E_UPDATE_BASELINE` 就 `exit 1`——那等于拿新画面覆盖旧基准，回归永远是绿的）；
+  **跳过 ≠ 没人管**（托管 runner 没显卡，逐像素那条按退出码 2 跳过计 passed，所以同文件里还有一条纯 CPU 用例
+  `baseline_png_is_present_with_capture_size`，校验基准图存在、可解码、尺寸恰为 640×360，退化时任何 runner 都红）。
+- `visual-gpu`（**带 GPU 的自建 runner**，`runs-on: [self-hosted, windows, gpu]`，变量 `R3E_GPU_RUNNER=true` 时启用）：
+  额外设 `R3E_VISUAL_STRICT=1`，把"拍不到图就跳过"升级成"拍不到图就红"。**这道才是真正拦像素漂移的那一道**，
+  没有它，CI 里的像素回归等于空跑。注册 runner（含"不要装成 Windows 服务"这个坑）、机器前置、变量开关、
+  以及"故意改红一次验它真的在拦"的流程见 [`docs/CI_GPU_RUNNER.md`](docs/CI_GPU_RUNNER.md)。
 
-失败时 `crates/r3e-app/target/visual-regression/` 下的实际图与差异图会作为 artifact 上传。
-边界说明：CI 上真正生效的是**基准图自洽性**，**像素漂移**仍只能在本机（或带 GPU 的自建 runner）拦住。
+失败时 `crates/r3e-app/target/visual-regression/` 下的实际图与差异图会作为 artifact 上传
+（`visual-regression-artifacts` / `visual-gpu-artifacts`）。
 
 **中间产物往哪放**：调试日志、临时截图、一次性探针工程一律落 `temp/` 或 `target/`（都已被 `.gitignore` 挡住），
 仓库根目录只留版本库跟踪的文件。历史遗留的根目录游离日志（66 个 `.log` / `.err` / `.out`）与
