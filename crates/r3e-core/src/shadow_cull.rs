@@ -178,8 +178,11 @@ pub struct LevelCounts {
     pub box_tests: u32,
     /// 实际判过的实例次数（= 级 × 实例 - `pruned`）。
     pub instance_tests: u32,
-    /// 被整枝跳过、省下的实例判定次数。
+    /// 没做实例级判定就定成「不可见」的实例数（整枝跳过 + 叶子直接被裁）。
     pub pruned: u32,
+    /// 其中来自**子树**（`sizes > 1`）的部分 —— 这才是层级剔除真正省下的判定：
+    /// 叶子被裁在逐实例判定里也是一次 AABB 判定，省不下来。
+    pub branch_pruned: u32,
 }
 
 /// 层级判定的结果：每级一份「按节点」的保留掩码 + 合计计数。
@@ -190,6 +193,8 @@ pub struct CasterHierarchyPlan {
     pub box_tests: u32,
     pub instance_tests: u32,
     pub pruned: u32,
+    /// 整枝跳过省下的实例判定数（`pruned` 里来自多实例子树的部分）。
+    pub branch_pruned: u32,
 }
 
 /// 遮挡体的层级树（扁平存储）。
@@ -331,6 +336,7 @@ impl CasterTree {
             plan.box_tests = plan.box_tests.saturating_add(counts.box_tests);
             plan.instance_tests = plan.instance_tests.saturating_add(counts.instance_tests);
             plan.pruned = plan.pruned.saturating_add(counts.pruned);
+            plan.branch_pruned = plan.branch_pruned.saturating_add(counts.branch_pruned);
             plan.masks.push(mask);
         }
         plan
@@ -349,6 +355,9 @@ impl CasterTree {
             if !aabb_in_cascade(view_proj, &self.subtree[index]) {
                 // 整枝都在级外：掩码保持 false，枝内实例一个都不再判
                 counts.pruned = counts.pruned.saturating_add(self.sizes[index]);
+                if self.sizes[index] > 1 {
+                    counts.branch_pruned = counts.branch_pruned.saturating_add(self.sizes[index]);
+                }
                 continue;
             }
             let node = &self.nodes[index];

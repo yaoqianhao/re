@@ -328,3 +328,49 @@ fn refresh_lets_hierarchy_prune_moved_subtree() {
     assert_eq!(plan.box_tests, 1, "只判根一次就够");
     assert!(plan.masks[0].iter().all(|keep| !*keep));
 }
+
+/// 净收益只算「整枝」：叶子被裁在逐实例判定里也是一次 AABB，省不下来。
+///
+/// 这条钉的是探针口径 —— 若把叶子计入 `branch_pruned`，平坦场景（每个实例一根）
+/// 会显示「层级剔除省了 70%」，而实际一点没省。
+#[test]
+fn branch_pruned_only_counts_whole_subtrees() {
+    // 平坦：4 个独立实例全在级外 → 每个都被直接裁，但都不是「整枝」
+    let flat = flat_tree(&[
+        box_at(9.0, 0.0, 0.0, 0.2),
+        box_at(9.2, 0.0, 0.0, 0.2),
+        box_at(9.4, 0.0, 0.0, 0.2),
+        box_at(9.6, 0.0, 0.0, 0.2),
+    ]);
+    let flat_plan = flat.plan(&[ortho(0.5)]);
+    assert_eq!(flat_plan.pruned, 4, "4 个实例都没做实例判定");
+    assert_eq!(flat_plan.branch_pruned, 0, "平坦树没有整枝，净收益必须是 0");
+    assert_eq!(flat_plan.box_tests, 4, "每个实例各判一次盒");
+
+    // 组装：4 个零件挂在同一个根上，整枝在级外 → 只判根一次
+    let (mut tree, instance_nodes) = assembly_tree(Vec3::new(9.0, 0.0, 0.0), 0.3);
+    let plan = tree.plan(&[ortho(0.5)]);
+    assert_eq!(plan.pruned, 4);
+    assert_eq!(plan.branch_pruned, 4, "整枝 4 个零件，全部计入净收益");
+    assert_eq!(plan.box_tests, 1, "整枝被裁，根判一次就够");
+    assert!(plan.masks[0].iter().all(|keep| !*keep));
+    assert_eq!(
+        r3e_core::expand_masks(&plan.masks, &instance_nodes),
+        vec![vec![false; 4]]
+    );
+
+    // 混合：一半在级内 → 根必须下探，净收益变 0（下探成本不能算省）
+    let mut node_bounds = vec![Aabb::EMPTY; 5];
+    let mut node_casts = vec![0u32; 5];
+    node_bounds[1] = box_at(0.2, 0.0, 0.0, 0.2);
+    node_bounds[2] = box_at(0.4, 0.0, 0.0, 0.2);
+    node_bounds[3] = box_at(0.6, 0.0, 0.0, 0.2);
+    node_bounds[4] = box_at(9.0, 0.0, 0.0, 0.2);
+    node_casts[1..5].fill(1);
+    tree.refresh(&node_bounds, &node_casts);
+    let mixed = tree.plan(&[ortho(0.5)]);
+    assert_eq!(mixed.branch_pruned, 0, "整枝没被裁，就没有整枝收益");
+    assert_eq!(mixed.pruned, 1, "只有 x=9 那个叶子被直接裁（也不是整枝）");
+    assert_eq!(mixed.instance_tests, 3, "近处 3 个零件逐实例判过并保留");
+    assert!(mixed.box_tests > 1);
+}

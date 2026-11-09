@@ -669,10 +669,12 @@ pub struct RenderStats {
     /// 其中被裁掉的 (级, 遮挡体) 对数（扩展二十四）。越接近 `shadow_casters`，
     /// 说明远景级剔得越多；恒为 0 说明 `caster_extend` 把范围铺得过大或裁剪关闭。
     pub shadow_culled: u32,
-    /// 扩展二十五：层级剔除省下的实例判定数（整枝跳过的部分）。
-    /// `shadow_casters + shadow_pruned` 就是「逐实例判定」时代要判的总对数，
-    /// 两者之比直接反映层级结构的收益；层级平坦时它趋近 0。
+    /// 扩展二十五：没做实例判定就定成不可见的实例数（整枝跳过 + 叶子直接被裁）。
+    /// `shadow_casters + shadow_pruned` 恒等于「级数 × 遮挡体数」。
     pub shadow_pruned: u32,
+    /// 扩展二十五：`shadow_pruned` 里来自多实例子树的部分 —— **层级剔除的净收益**。
+    /// 叶子被裁在逐实例判定里也是一次 AABB，省不下来，所以只有这部分算赚。
+    pub shadow_branch_pruned: u32,
     /// 扩展二十五：本帧真正做的层级盒判定数。约等于「被下探的树节点数 × 级数」，
     /// 远小于实例数说明树的层级在起作用。
     pub shadow_box_tests: u32,
@@ -888,9 +890,12 @@ struct ShadowPlan {
     tested: u32,
     /// 被裁掉的 (级, 实例) 对数，进 `RenderStats::shadow_culled`。
     culled: u32,
-    /// 扩展二十五：层级盒判定省下的实例判定数（整枝跳过 + 子树盒通过），
+    /// 扩展二十五：没做实例判定就定成不可见的实例数（整枝跳过 + 叶子直接被裁），
     /// 进 `RenderStats::shadow_pruned`。0 = 树为空 / 层级剔除关闭。
     pruned: u32,
+    /// 扩展二十五：其中来自多实例子树的部分，进 `RenderStats::shadow_branch_pruned`。
+    /// 这才是层级剔除相对「逐实例判定」的净收益。
+    branch_pruned: u32,
     /// 扩展二十五：真正做的层级盒判定数，进 `RenderStats::shadow_box_tests`。
     box_tests: u32,
 }
@@ -1917,6 +1922,7 @@ impl Renderer {
                 shadow_casters: shadow_plan.tested,
                 shadow_culled: shadow_plan.culled,
                 shadow_pruned: shadow_plan.pruned,
+                shadow_branch_pruned: shadow_plan.branch_pruned,
                 shadow_box_tests: shadow_plan.box_tests,
                 caster_tree_builds: self.caster_tree_builds,
                 frame_index: scene.frame,
@@ -2378,6 +2384,7 @@ impl Renderer {
             tested: 0,
             culled: 0,
             pruned: 0,
+            branch_pruned: 0,
             box_tests: 0,
         };
         if shadow.enabled && !groups.is_empty() {
@@ -2399,6 +2406,7 @@ impl Renderer {
                         plan.masks = hierarchy.masks;
                         plan.tested = hierarchy.instance_tests;
                         plan.pruned = hierarchy.pruned;
+                        plan.branch_pruned = hierarchy.branch_pruned;
                         plan.box_tests = hierarchy.box_tests;
                     }
                     None => {
@@ -2462,6 +2470,7 @@ impl Renderer {
             box_tests: hierarchy.box_tests,
             instance_tests: hierarchy.instance_tests,
             pruned: hierarchy.pruned,
+            branch_pruned: hierarchy.branch_pruned,
         })
     }
 
