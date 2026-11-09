@@ -2756,45 +2756,26 @@ impl Renderer {
         // 扩展十九：半透明的判定 = 节点颜色 alpha × 网格材质 alpha（两者都可能 < 1）。
         // 半透明键集中在 `transparent_keys`，排到所有不透明键之后 —— 于是
         // `groups` 天然形成「不透明段 + 半透明段」，绘制时只需切换一次管线。
+        //
+        // 扩展二十七：旧写法是「外层遍历批次键、内层遍历全场景」，同一份场景要按
+        // `键数 × 节点数` 反复过滤一遍；键数（网格 × 材质组合）几十上百时，这层过滤
+        // 的开销盖过了它省下的东西。现在改成**单次遍历 + 分桶**：每个实例只在自己的
+        // 桶里被收一次，视锥/遮挡剔除与关节槽位分配一并跟进这一遍。桶内顺序仍是场景
+        // 迭代顺序，键的登记顺序仍是「首次出现」且不透明在前，所以摊平出来的
+        // `groups` 区间与旧实现逐个相同（像素基线不动）。
         let mut opaque_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
         let mut transparent_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
-        // 同一网格常被多次引用，材质 alpha 只查一次
-        let mut mesh_alphas: HashMap<MeshRef, f32> = HashMap::new();
-        for node in scene.iter() {
-            if !node.visible {
-                continue;
-            }
-            let group_key = (node.mesh, node.material.map(SurfaceKey::new));
-            let mesh_alpha = *mesh_alphas
-                .entry(node.mesh)
-                .or_insert_with(|| self.mesh_material_alpha(node.mesh));
-            let bucket = if transparency::is_transparent(node.color.w * mesh_alpha) {
-                &mut transparent_keys
-            } else {
-                &mut opaque_keys
-            };
-            if !bucket.contains(&group_key) {
-                bucket.push(group_key);
-            }
-        }
-        let opaque_key_count = opaque_keys.len();
-        let mut keys = opaque_keys;
-        keys.extend(transparent_keys);
+        let mut buckets: HashMap<(MeshRef, Option<SurfaceKey>), Vec<StagedInstance>> =
+            HashMap::new();
 
-        let mut all: Vec<InstanceRaw> = Vec::new();
-        let mut groups: Vec<DrawGroup> = Vec::new();
-        // 扩展二十四：与实例缓冲同序的遮挡体包围盒，供阴影按级裁剪使用
-        let mut caster_bounds: Vec<Aabb> = Vec::new();
-        // 扩展二十五：与实例缓冲同序的节点 id —— 层级剔除靠它把实例挂回场景树
-        let mut caster_nodes: Vec<r3e_core::NodeId> = Vec::new();
-        // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
-        type TransparentBatch = (
-            f32,
-            MeshRef,
-            Option<SurfaceKey>,
-            Vec<(f32, InstanceRaw, Aabb, r3e_core::NodeId)>,
-        );
-        let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
+        // 一个待摊平实例：实例数据 + 阴影用包围盒 + 归属节点 + 半透明排序深度
+        struct StagedInstance {
+            instance: InstanceRaw,
+            bounds: Aabb,
+            node: r3e_core::NodeId,
+            depth: f32,
+        }
+
         // 每帧重算关节槽位：同一块 storage buffer 按实例依次排布（P4）
         self.joint_scratch.clear();
         let mut joint_overflow = 0usize;
@@ -2813,116 +2794,145 @@ impl Renderer {
         // 交给阴影通道拟合正交相机 —— 阴影要考虑镜头外的遮挡物，
         // 所以这里统计在剔除判断之前。
         let mut scene_bounds: Option<Aabb> = None;
+        // 同一网格常被多次引用，材质 alpha 只查一次
+        let mut mesh_alphas: HashMap<MeshRef, f32> = HashMap::new();
 
-        for (index, (key, surface)) in keys.iter().enumerate() {
-            // 前 `opaque_key_count` 个键是不透明批次，其后都是半透明批次
-            let transparent = index >= opaque_key_count;
-            let start = all.len() as u32;
-            // 半透明实例先攒进 `staged`：要先拿到全部世界位置才能在整批内排序
-            let mut staged: Vec<(f32, InstanceRaw, Aabb, r3e_core::NodeId)> = Vec::new();
-            for node in scene.iter() {
-                if !node.visible || node.mesh != *key {
-                    continue;
-                }
-                // 同一网格不同 PBR 材质的物件分属不同批次
-                if node.material.map(SurfaceKey::new) != *surface {
-                    continue;
-                }
-                let world_bounds = match self.mesh_cache.bounds(*key) {
-                    Some(local) => {
-                        // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
-                        let world = local.transformed(&node.world);
-                        let world = if scene.skin_of(node.id).is_some() {
-                            world.inflate_relative(SKIN_CULL_MARGIN)
-                        } else {
-                            world
-                        };
-                        scene_bounds = Some(match scene_bounds {
-                            Some(b) => b.union(&world),
-                            None => world,
-                        });
-                        if !frustum.intersects_aabb(&world) {
-                            culled += 1;
-                            continue;
-                        }
-                        // 扩展二十二：视锥内还要再问一句「是不是被前面的东西挡满了」。
-                        // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的
-                        // 贡献，用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
-                        if occlusion_ready
-                            && !transparent
-                            && self.occlusion.test(
-                                &occlusion_settings,
-                                &world,
-                                &view_projection,
-                                screen_width,
-                                screen_height,
-                            )
-                        {
-                            continue;
-                        }
-                        Some(world)
-                    }
-                    // 拿不到包围盒就不剔除（fail-open），宁可多画也不让物件凭空消失
-                    None => {
-                        cull_unknown += 1;
-                        None
-                    }
-                };
-                // 扩展二十四：阴影裁剪同样 fail-open —— 没有 AABB 的实例
-                // 一律当成「可能在任何一级里」，绝不因为缺数据把影子弄丢。
-                let caster_box = world_bounds.unwrap_or_else(r3e_core::fail_open_bounds);
-                let color: Vec4 = node.color;
-                let joint_base = match scene.skin_of(node.id) {
-                    Some(skin) if skin.is_solved() => {
-                        let need = skin.joint_matrices.len();
-                        if self.joint_scratch.len() + need > r3e_core::MAX_JOINT_MATRICES {
-                            joint_overflow += need;
-                            0
-                        } else {
-                            let base = self.joint_scratch.len() as u32;
-                            for m in &skin.joint_matrices {
-                                self.joint_scratch.push(m.to_cols_array());
-                            }
-                            base
-                        }
-                    }
-                    _ => 0,
-                };
-                let instance = InstanceRaw {
-                    model: node.world.to_cols_array_2d(),
-                    color: color.to_array(),
-                    joint_base,
-                    _pad: [0; 3],
-                };
-                if transparent {
-                    // 平移列就是实例的世界位置；用它到相机的距离平方当排序键
-                    let depth =
-                        transparency::view_depth(node.world.w_axis.truncate(), camera.position);
-                    staged.push((depth, instance, caster_box, node.id));
-                } else {
-                    all.push(instance);
-                    caster_bounds.push(caster_box);
-                    caster_nodes.push(node.id);
-                }
-            }
-            if transparent {
-                if !staged.is_empty() {
-                    // 组间排序键 = 组内最远实例的深度：一次排序决定「哪个网格先画」，
-                    // 组内顺序则再按 `back_to_front` 排细
-                    let farthest = staged.iter().fold(0.0_f32, |far, (depth, _, _, _)| {
-                        far.max(if depth.is_nan() {
-                            f32::INFINITY
-                        } else {
-                            *depth
-                        })
-                    });
-                    pending_transparent.push((farthest, *key, *surface, staged));
-                }
+        for node in scene.iter() {
+            if !node.visible {
                 continue;
             }
-            if all.len() as u32 > start {
-                groups.push((*key, start..all.len() as u32, *surface));
+            let key = (node.mesh, node.material.map(SurfaceKey::new));
+            let mesh_alpha = *mesh_alphas
+                .entry(node.mesh)
+                .or_insert_with(|| self.mesh_material_alpha(node.mesh));
+            let transparent = transparency::is_transparent(node.color.w * mesh_alpha);
+            // 键顺序与旧实现同构：不透明键一段、半透明键一段，各段内按首次出现
+            let bucket_keys = if transparent {
+                &mut transparent_keys
+            } else {
+                &mut opaque_keys
+            };
+            if !buckets.contains_key(&key) {
+                bucket_keys.push(key);
             }
+            let world_bounds = match self.mesh_cache.bounds(node.mesh) {
+                Some(local) => {
+                    // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
+                    let world = local.transformed(&node.world);
+                    let world = if scene.skin_of(node.id).is_some() {
+                        world.inflate_relative(SKIN_CULL_MARGIN)
+                    } else {
+                        world
+                    };
+                    scene_bounds = Some(match scene_bounds {
+                        Some(b) => b.union(&world),
+                        None => world,
+                    });
+                    if !frustum.intersects_aabb(&world) {
+                        culled += 1;
+                        continue;
+                    }
+                    // 扩展二十二：视锥内还要再问一句「是不是被前面的东西挡满了」。
+                    // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的
+                    // 贡献，用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
+                    if occlusion_ready
+                        && !transparent
+                        && self.occlusion.test(
+                            &occlusion_settings,
+                            &world,
+                            &view_projection,
+                            screen_width,
+                            screen_height,
+                        )
+                    {
+                        continue;
+                    }
+                    Some(world)
+                }
+                // 拿不到包围盒就不剔除（fail-open），宁可多画也不让物件凭空消失
+                None => {
+                    cull_unknown += 1;
+                    None
+                }
+            };
+            // 扩展二十四：阴影裁剪同样 fail-open —— 没有 AABB 的实例
+            // 一律当成「可能在任何一级里」，绝不因为缺数据把影子弄丢。
+            let caster_box = world_bounds.unwrap_or_else(r3e_core::fail_open_bounds);
+            let color: Vec4 = node.color;
+            let joint_base = match scene.skin_of(node.id) {
+                Some(skin) if skin.is_solved() => {
+                    let need = skin.joint_matrices.len();
+                    if self.joint_scratch.len() + need > r3e_core::MAX_JOINT_MATRICES {
+                        joint_overflow += need;
+                        0
+                    } else {
+                        let base = self.joint_scratch.len() as u32;
+                        for m in &skin.joint_matrices {
+                            self.joint_scratch.push(m.to_cols_array());
+                        }
+                        base
+                    }
+                }
+                _ => 0,
+            };
+            let instance = InstanceRaw {
+                model: node.world.to_cols_array_2d(),
+                color: color.to_array(),
+                joint_base,
+                _pad: [0; 3],
+            };
+            // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
+            let depth = transparency::view_depth(node.world.w_axis.truncate(), camera.position);
+            buckets.entry(key).or_default().push(StagedInstance {
+                instance,
+                bounds: caster_box,
+                node: node.id,
+                depth,
+            });
+        }
+
+        // 摊平：不透明批次先入组，半透明批次攒到最后统一排序
+        let opaque_key_count = opaque_keys.len();
+        let mut keys = opaque_keys;
+        keys.extend(transparent_keys);
+
+        let mut all: Vec<InstanceRaw> = Vec::new();
+        let mut groups: Vec<DrawGroup> = Vec::new();
+        // 扩展二十四：与实例缓冲同序的遮挡体包围盒，供阴影按级裁剪使用
+        let mut caster_bounds: Vec<Aabb> = Vec::new();
+        // 扩展二十五：与实例缓冲同序的节点 id —— 层级剔除靠它把实例挂回场景树
+        let mut caster_nodes: Vec<r3e_core::NodeId> = Vec::new();
+        // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
+        type TransparentBatch = (f32, MeshRef, Option<SurfaceKey>, Vec<StagedInstance>);
+        let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
+        for (index, entry) in keys.iter().enumerate() {
+            let Some(staged) = buckets.remove(entry) else {
+                continue;
+            };
+            let (key, surface) = *entry;
+            if staged.is_empty() {
+                continue;
+            }
+            if index >= opaque_key_count {
+                // 组间排序键 = 组内最远实例的深度：一次排序决定「哪个网格先画」，
+                // 组内顺序则再按 `back_to_front` 排细
+                let farthest = staged.iter().fold(0.0_f32, |far, item| {
+                    far.max(if item.depth.is_nan() {
+                        f32::INFINITY
+                    } else {
+                        item.depth
+                    })
+                });
+                pending_transparent.push((farthest, key, surface, staged));
+                continue;
+            }
+            let start = all.len() as u32;
+            for item in staged {
+                all.push(item.instance);
+                caster_bounds.push(item.bounds);
+                caster_nodes.push(item.node);
+            }
+            groups.push((key, start..all.len() as u32, surface));
         }
 
         // 半透明段起点：不透明批次全部入组之后的位置
@@ -2931,18 +2941,15 @@ impl Renderer {
         pending_transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (_, key, surface, staged) in pending_transparent {
             let start = all.len() as u32;
-            let depths: Vec<f32> = staged.iter().map(|(depth, _, _, _)| *depth).collect();
+            let depths: Vec<f32> = staged.iter().map(|item| item.depth).collect();
             let order = transparency::back_to_front(&depths);
             // 按「由远及近」的下标顺序把实例搬进实例缓冲
-            let mut slots: Vec<Option<(InstanceRaw, Aabb, r3e_core::NodeId)>> = staged
-                .into_iter()
-                .map(|(_, instance, bounds, node)| Some((instance, bounds, node)))
-                .collect();
-            for index in order {
-                if let Some((instance, bounds, node)) = slots[index as usize].take() {
-                    all.push(instance);
-                    caster_bounds.push(bounds);
-                    caster_nodes.push(node);
+            let mut slots: Vec<Option<StagedInstance>> = staged.into_iter().map(Some).collect();
+            for slot in order {
+                if let Some(item) = slots[slot as usize].take() {
+                    all.push(item.instance);
+                    caster_bounds.push(item.bounds);
+                    caster_nodes.push(item.node);
                 }
             }
             groups.push((key, start..all.len() as u32, surface));
