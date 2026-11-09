@@ -139,17 +139,32 @@ fn capture_actual_frame() -> Result<PathBuf, String> {
 
 #[test]
 fn captured_frame_matches_baseline() {
+    let strict = env_flag("R3E_VISUAL_STRICT");
+
     if !env_flag("R3E_VISUAL_REGRESSION") {
-        eprintln!(
-            "跳过 capture.frame 像素回归：设置 R3E_VISUAL_REGRESSION=1 后重跑（需要 GPU）。\
-             纯逻辑比对语义由 r3e_asset::visual_regression 的单测覆盖。"
-        );
+        let reason = "设置 R3E_VISUAL_REGRESSION=1 后重跑（需要 GPU）。\
+                      纯逻辑比对语义由 r3e_asset::visual_regression 的单测覆盖。";
+        if strict {
+            panic!(
+                "严格模式（R3E_VISUAL_STRICT=1）下闸门必须开着，但 R3E_VISUAL_REGRESSION 没设。\
+                 这条用例跑在带 GPU 的 runner 上，跳过就等于没跑：{reason}"
+            );
+        }
+        eprintln!("跳过 capture.frame 像素回归：{reason}");
         return;
     }
 
     let actual = match capture_actual_frame() {
         Ok(path) => path,
         Err(reason) => {
+            if strict {
+                // 严格模式 = 「我保证这台机器有 GPU，请把结果当真」。这时拍不到图不是环境限制，
+                // 而是显卡 / 驱动 / 窗口创建坏了，必须红——否则这道门又是"跳过即通过"。
+                panic!(
+                    "严格模式（R3E_VISUAL_STRICT=1）下禁止跳过：{reason}\n\
+                     该模式只应在带 GPU 的 runner 上开启（见 docs/CI_GPU_RUNNER.md）。"
+                );
+            }
             eprintln!("跳过 capture.frame 像素回归：{reason}");
             return;
         }
