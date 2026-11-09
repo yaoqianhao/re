@@ -1169,6 +1169,11 @@ CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，四个 job
 失败时 `crates/r3e-app/target/visual-regression/` 下的实际图与差异图会作为 artifact 上传。
 边界说明：CI 上真正生效的是**基准图自洽性**，**像素漂移**仍只能在本机（或带 GPU 的自建 runner）拦住。
 
+**中间产物往哪放**：调试日志、临时截图、一次性探针工程一律落 `temp/` 或 `target/`（都已被 `.gitignore` 挡住），
+仓库根目录只留版本库跟踪的文件。历史遗留的根目录游离日志（66 个 `.log` / `.err` / `.out`）与
+`_probe/` 探针工程已归档到 `temp/root_logs_20261109/`、`temp/_probe/`——现在
+`git status --ignored` 在根目录只剩 `target/` 与 `temp/` 两项，不再是一屏忽略项。
+
 ---
 
 ## 12. 文字渲染（M1 GPU 上屏）
