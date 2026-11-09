@@ -98,17 +98,22 @@ fn per_level_matrix_and_split_table_are_uploaded() {
         RENDERER.contains("r3e_core::cascade_splits(camera, cascade)"),
         "renderer 必须用 core 的 cascade_splits 计算切分点（不要在 GPU 侧另推一套）"
     );
+    // 扩展二十四把 fit 换成 fit_cascade_extended（把级联近端朝光源推 caster_extend）。
+    // extend = 0 时它与 fit_cascade 逐位相同，老场景矩阵不变。
     assert!(
-        RENDERER.contains("r3e_core::fit_cascade(light.direction, &corners, shadow.size)"),
-        "每级矩阵必须来自 core 的 fit_cascade"
+        RENDERER.contains("r3e_core::fit_cascade_extended(")
+            && RENDERER.contains("cascade.caster_extend,"),
+        "每级矩阵必须来自 core 的 fit_cascade_extended，且外扩量取自 cascade.caster_extend"
     );
     assert!(
         RENDERER.contains("shadow_pass_uniforms: Vec<wgpu::Buffer>"),
         "每级需要独立的光源矩阵 uniform（深度 pass 逐级重绑）"
     );
+    // 扩展二十四起，循环上界取 `ShadowPlan::levels`（0 = 本帧阴影关闭，一次 pass 都不跑），
+    // 每轮从 plan.masks 取该级的保留集合。
     assert!(
-        RENDERER.contains("for level in 0..shadow_levels as usize"),
-        "深度 pass 必须逐级各跑一遍"
+        RENDERER.contains("for level in 0..shadow_plan.levels as usize"),
+        "深度 pass 必须逐级各跑一遍，且级数为 0 时整体跳过"
     );
 }
 

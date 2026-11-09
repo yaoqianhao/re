@@ -83,3 +83,73 @@ fn singular_alias_is_accepted() {
         Scene::from_json_str(&scene_json_with_shadow(r#"{ "cascade": 2 }"#)).expect("载入场景");
     assert_eq!(scene.light.shadow.cascade.count, 2);
 }
+
+// ---------------- 扩展二十四：遮挡体按级裁剪 ----------------
+
+/// 老场景不写这两个字段时必须保持「不扩张 + 开启裁剪」，且存回文件时不产生噪声字段。
+#[test]
+fn missing_caster_fields_keep_defaults() {
+    let scene =
+        Scene::from_json_str(&scene_json_with_shadow(r#"{ "enabled": true }"#)).expect("载入场景");
+    let cascade = scene.light.shadow.cascade;
+    assert_eq!(
+        cascade.caster_extend, 0.0,
+        "缺省不扩张，画面与扩展二十三一致"
+    );
+    assert!(cascade.caster_cull, "按级裁剪是纯优化，缺省应开着");
+
+    let file = scene.to_scene_file();
+    let shadow = file
+        .light
+        .expect("应写出 light 段")
+        .shadow
+        .expect("应写出 shadow 段");
+    assert_eq!(shadow.caster_extend, None, "0 是缺省，不该写进文件");
+    assert_eq!(shadow.caster_cull, None, "开启是缺省，不该写进文件");
+}
+
+/// 外扩距离与裁剪开关逐字段生效，并能原样往返。
+#[test]
+fn caster_fields_round_trip() {
+    let scene = Scene::from_json_str(&scene_json_with_shadow(
+        r#"{ "cascades": 4, "casterExtend": 12.5, "casterCull": false }"#,
+    ))
+    .expect("载入场景");
+    assert_eq!(scene.light.shadow.cascade.caster_extend, 12.5);
+    assert!(!scene.light.shadow.cascade.caster_cull);
+
+    let json = scene.to_json_pretty().expect("序列化");
+    let again = Scene::from_json_str(&json).expect("重新载入");
+    assert_eq!(again.light.shadow.cascade, scene.light.shadow.cascade);
+    // 写回文件时：非零外扩与「显式关掉裁剪」都必须保留，否则重开场景会静默恢复
+    let shadow = again
+        .to_scene_file()
+        .light
+        .expect("应写出 light 段")
+        .shadow
+        .expect("应写出 shadow 段");
+    assert_eq!(shadow.caster_extend, Some(12.5));
+    assert_eq!(shadow.caster_cull, Some(false));
+}
+
+/// 蛇形别名也认；越界 / 负数 / 超大外扩在载入那一刻收敛到 0..=MAX_CASTER_EXTEND。
+#[test]
+fn caster_fields_accept_alias_and_sanitize() {
+    use r3e_core::light::MAX_CASTER_EXTEND;
+    let scene = Scene::from_json_str(&scene_json_with_shadow(
+        r#"{ "caster_extend": 3.0, "caster_cull": true }"#,
+    ))
+    .expect("载入场景");
+    assert_eq!(scene.light.shadow.cascade.caster_extend, 3.0);
+
+    for (raw, want) in [("-9.0", 0.0), ("0", 0.0), ("1e9", MAX_CASTER_EXTEND)] {
+        let scene = Scene::from_json_str(&scene_json_with_shadow(&format!(
+            r#"{{ "casterExtend": {raw} }}"#
+        )))
+        .expect("载入场景");
+        assert_eq!(
+            scene.light.shadow.cascade.caster_extend, want,
+            "casterExtend = {raw} 应收敛到 {want}"
+        );
+    }
+}
