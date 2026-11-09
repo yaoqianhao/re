@@ -100,7 +100,8 @@ pub use scene_stack::{
     ARCHIVE_FORMAT, ARCHIVE_VERSION, MAX_SCENE_STACK, SNAPSHOT_VERSION,
 };
 pub use shadow_cull::{
-    aabb_in_cascade, fail_open_bounds, keep_all, plan_casters, split_runs, FAIL_OPEN_HALF_EXTENT,
+    aabb_in_cascade, expand_masks, fail_open_bounds, keep_all, plan_casters, split_runs,
+    CasterHierarchyPlan, CasterNode, CasterTree, LevelCounts, FAIL_OPEN_HALF_EXTENT,
 };
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,
