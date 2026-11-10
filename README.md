@@ -1159,15 +1159,22 @@ cargo run -- assets/scene_shadow.json scripts/shadow_demo.rhai
 
 **主通道实例收集改成单遍分桶（扩展二十七）**：与阴影侧不同，主通道原来的写法是「先按（网格, 材质）
 收一遍键，再按键各扫一遍场景挑实例」——代价是 `键数 × 节点数` 次过滤，同材质格子越多越亏。
-现在改成一趟 `scene.iter()` 把实例直接塞进
-`HashMap<(MeshRef, Option<SurfaceKey>), Vec<StagedInstance>>`，视锥/遮挡剔除、关节槽位分配、
-场景包围盒并集都跟进同一遍；不透明段在前、半透明段次之、段内按首次出现登记，半透明仍按
-「组间最远深度降序 + 组内 `back_to_front`」排。
+现在改成一趟 `scene.iter()` 把实例收进共享 `staged_all`、按下标分进
+`HashMap<(MeshRef, Option<SurfaceKey>, bool), Vec<u32>>`（第三位是段标志），视锥/遮挡剔除、
+关节槽位分配、场景包围盒并集都跟进同一遍；不透明段在前、半透明段次之、段内按首次出现登记，
+半透明仍按「组间最远深度降序 + 组内 `back_to_front`」排。
 
 这是一次**纯 CPU 侧重构**：没有新开关、没有新探针行，draw call、`groups` 区间、`caster_bounds` /
 `caster_nodes` 与旧实现逐个相同，缺省场景像素逐位不变，所以像素基线不用重建。边界也没变——
 **仍是每帧从零收集**，缓冲区仍每帧重建，单线程；热的还是实例写回与上传，不是收集本身。
-契约由 `crates/r3e-render/tests/instance_buckets_contract.rs`（4 条静态用例）守。
+
+**踩坑（已修）**：首版把键判重写成 `if !buckets.contains_key(&key)`。桶键不含段标志，同一网格的
+玻璃节点在「不透明节点已登记同键」之后再登记不进 `transparent_keys`，半透明段的桶在摊平时根本轮不到、
+**整桶静默丢弃**——玻璃面板消失、实例数 10→7，640×360 上仅 558 个坏点（0.24%，阈值 0.1%），
+肉眼几乎看不出，只有 `R3E_VISUAL_STRICT=1` 的 `visual-gpu` 严格模式会红。修法：键仍按段列表判重、
+桶键补段标志。修后本机 RTX 5060 严格模式与既有基线逐位一致。
+契约由 `crates/r3e-render/tests/instance_buckets_contract.rs`（6 条静态用例）守，其中两条专门钉住
+「键按所属段登记」与「桶键带段标志」。
 
 ---
 
