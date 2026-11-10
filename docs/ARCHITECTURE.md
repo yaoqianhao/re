@@ -145,20 +145,21 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 18,734 | 3,187 | 410 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `envmap.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 8,595 | 2,346 | 172 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-core | 18,777 | 3,448 | 418 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `envmap.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
+| r3e-render | 8,771 | 2,472 | 178 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,227 | 585 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
 | r3e-script | 5,402 | 1,219 | 88 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、HDR 环境探针、遮蔽、遮挡剔除、动画层、局部阴影语义单测） |
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 6,893 | 231 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
+| r3e-app | 6,915 | 231 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **57,477** | **9,886** | **989** | **约 5.7 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 69 个套件 / 985 passed / 0 failed** |
+| **合计** | **57,718** | **10,273** | **1,003** | **约 5.8 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 71 个套件 / 999 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,310 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
-扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测
+扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测，
+扩展二十九（主通道视锥剔除层级化）再增量 +241 src / +387 tests / +14 单测 / +2 套件
 （此前停在扩展二十三收尾快照：56,243 行 / 8,619 tests 行 / 932 单测 / 63 套件 928 passed；
 本次重算并入扩展二十四~二十七的全部新增：层级剔除、着色器法线兜底、实例分桶契约等测试文件 + WGSL 13 行）。
 单测数一列是 `#[test]` **标注数**，
@@ -173,8 +174,8 @@ Release 二进制 14.3 MB（14,949,888 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 985 passed / 0 failed（69 个套件；较扩展二十七收尾的 984 增 1，来自 `instance_buckets_contract::node_enters_only_its_own_segment`：扩展二十八把「两段各收全量」钉死） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 989 passed / 0 failed（默认特性 + `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 999 passed / 0 failed（71 个套件；较扩展二十八收尾的 985 增 14：`frustum_cull_hierarchy.rs` 8 条 + `frustum_cull_wiring.rs` 6 条） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,003 passed / 0 failed（默认特性 + `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -2630,6 +2631,74 @@ if transparent {
 - **段标志是判重的一部分**：`opaque_keys` / `transparent_keys` 各自维护，桶键带第三位段标志。
   任何「把两张表合成一张」或「用桶判重」的写法都会让某一整段静默丢桶（见 §5.20 ⑤）。
 
+### 5.21 主通道视锥剔除的层级化（扩展二十九）
+
+扩展二十七把收集从「按键各扫一遍」压成单遍，扩展二十八让一份几何只进自己那一段的桶 —— 但视锥那一关
+始终是**逐实例**的：`prepare_instances` 里对每个实例各来一次 `frustum.intersects_aabb(bounds)`，成本
+`O(可见节点)`。而其中绝大多数实例和它们的兄弟坐在同一棵子树上：父节点的子树盒一旦整块落在视锥外，
+整枝实例都不必再判。这和扩展二十五在阴影通道解决的是同一个问题，`CasterTree` 那套（自底向上聚子树盒、
+自顶向下判、整枝跳过、掩码展开）原样可复用。
+
+**① 新增字段**（`Renderer`，与 `caster_*` 那一组并列、互不共用）
+
+| 字段 | 作用 |
+| --- | --- |
+| `cull_tree: Option<CasterTree>` | 主通道视锥树，节点 = 场景节点（同一份 `layout_slots`） |
+| `cull_slots: HashMap<NodeId, usize>` | 节点 id → 树节点下标，与 `cull_tree` 同寿命 |
+| `cull_layout: u64` | 建树时的 `scene.layout_version()`，变了才重建 |
+| `cull_node_bounds` / `cull_node_casts` | 每帧刷新的「节点自身盒 / 实例数」，交给 `CasterTree::refresh` |
+| `cull_tree_builds: u64` | 累计建树次数，稳态应为常数（逐帧增长说明场景每帧增删节点） |
+
+**② 单遍拆成两遍**：子树盒要等**所有**实例的盒都写进去才聚合得出来，所以 `prepare_instances` 的一遍
+循环拆成「收集」+「判筛」两遍，中间态 `PreparedNode { id, tree_slot, world, key, world_matrix, color }`
+按场景迭代序保存：
+
+1. **第一遍只收集**：算世界包围盒、并进 `scene_bounds`、把盒与 `casts = 1` 写回 `cull_node_*` 的对应
+   下标。这一遍**完全不看视锥**；
+2. `cull_tree.refresh(&cull_node_bounds, &cull_node_casts)`（只重聚合，拓扑不动）+ `plan_frustum(&frustum)`
+   → 一份按树节点下标的 `mask` 与 `counts`；
+3. **第二遍才判筛**：先看掩码（被整枝剪掉的直接 `culled += 1; continue`，一次 AABB 都不做），再看遮挡
+   （扩展二十二，仍逐实例）、再入桶。
+
+**③ 与阴影通道共用一套下探**：`CasterTree::descend` 抽成了通用形式（`keep(Aabb) -> bool`），
+`plan`（级联正交投影）与 `plan_frustum`（6 个视锥平面）的区别只在判定函数。两条前提相同：
+**子盒的可见范围一定落在子树盒的可见范围内**，于是「子树盒不可见」⇒「枝内每个实例都不可见」，
+整枝跳过不会误剔。掩码与逐实例判定逐位相同（`frustum_cull_hierarchy.rs` 的差分用例钉住）。
+
+**④ fail-open 与「没有纯分组节点」**：拿不到包围盒的实例（网格缺 AABB）在逐实例实现里从不被剔，
+所以在树里登记成 [`fail_open_bounds`] 巨盒 —— 它所在的那整枝都不能被预筛剪掉。另外 r3e **没有纯变换
+分组节点**：`ObjectDesc.mesh` 缺省就是内置 `cube`、`MeshRef` 也没有空变体，因此每个节点自身至少有一个
+实例、`casts` 恒为 1。父节点出镜时它自己也在被剪之列（这一点在探针读数里能直接看见）。
+
+**⑤ 顺序与像素**：`prepared` 保持场景迭代序，第二遍的顺序就是旧实现的顺序，所以键的首次出现顺序、
+桶内次序、`groups` 区间、`caster_bounds` / `caster_nodes` 全部逐个相同 —— 像素基线不需要重建
+（本机 RTX 5060 `R3E_VISUAL_STRICT=1` 原基线逐位通过）。
+
+**⑥ 探针读数**（`--run-seconds N` 多打一行 `视锥层级剔除：盒判定 X / 实例判定 Y / 未判即裁 Z / 其中整枝 W / 建树次数 V`，
+换算到 `RenderStats::cull`）：
+
+| 场景 | 盒判定 | 实例判定 | 未判即裁 | 其中整枝 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `visual_regression` 夹具（7 实例，全扁平） | 7 | 7 | 0 | 0 | 层级平坦，净收益 0，开销只多一次 `refresh` |
+| 自造两级场景（1 地面 + 6 父 × 4 子 = 31 实例，父子树整体在视锥外） | 9 | 3 | 30 | 30 | 旧路径 31 次实例 AABB → 现 9 盒 + 3 实例，**30 个实例一次都没判** |
+
+**⑦ 契约**：`crates/r3e-core/tests/frustum_cull_hierarchy.rs` 8 条（扁平等价、层级等价、整枝跳过确实
+省掉实例判定、扁平无收益、计数自洽、fail-open 不剔、混合节点判自身盒、空树/纯分组树安全）；
+`crates/r3e-render/tests/frustum_cull_wiring.rs` 6 条静态断言（走 `plan_frustum` 而非逐实例、
+`cull_tree` 独立于 `caster_tree`、`layout_version` 守卫、缺掩码保留、掩码过滤早于入桶、统计字段接到
+`RenderStats`）。
+
+**已知边界**
+
+- **两遍了，中间态要存一份**：`prepared` 每帧重建（与 `staged_all` 同性质），内存多一份「每节点
+  一个 `PreparedNode`」，换来的是免掉的实例判定；实例少、层级平坦时这是净亏，只是亏在噪声里；
+- **只有视锥这一关层级化**：遮挡剔除（扩展二十二）仍是逐实例 —— 金字塔查询要每个实例自己的深度，
+  整枝跳过会改变遮挡关系，不做；
+- **树按 `layout_version` 重建**：拓扑不变时每帧只 `refresh` + `plan_frustum`，但 `refresh` 是
+  O(节点) 的两次遍历，和逐实例判定同阶；真正的收益来自「被剪的枝里的实例不再判」；
+- **半透明段也吃视锥层级剔除**：视锥剔除本来就对两段都做（与遮挡剔除只作用于不透明段不同），
+  掩码在入桶前生效，所以玻璃的镜外实例同样被整枝带走，这是旧行为。
+
 ### 8.1 程序入口（main.rs）
 
 ```rust
@@ -3724,6 +3793,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 世界法线矩阵奇异保护（扩展二十六） | `cargo test -p r3e-core --test normal_matrix_safe` → 9 passed；`cargo test -p r3e-render --test normal_guard_shader` → 3 passed；`cargo test --workspace` 68 套件 **978 passed / 0 failed**（扩展二十五收尾为 966），`--features rapier` 68 套件 **982 passed / 0 failed**（原 970）；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：缺省场景不含 0 缩放，着色器正常路径算式未变（只多读一次长度），基线无需重建。**退化路径取证**：`scale` 某轴设 0 后 `--run-seconds 3` 实跑，画面由整片刷黑变为正常着色（朝上的平光），收尾探针与编辑器快照的 `world_normal` 全部分量有限、无 `NaN` / `inf`；CPU 侧同类断言见 `normal_matrix_safe` 的场景集成用例 |
 | 主通道实例收集单次遍历（扩展二十七） | `cargo test -p r3e-render --test instance_buckets_contract` → 6 passed；`cargo test --workspace` 69 套件 **984 passed / 0 failed**（扩展二十六收尾为 68 套件 978）；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：收集顺序、`groups` 区间、`caster_bounds` / `caster_nodes` 与旧实现逐个相同，缺省场景 draw call / 实例数 / 像素全不变，基线无需重建。**严格模式（本机 RTX 5060 实测）**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → `captured_frame_matches_baseline ... ok`，与既有基准图逐位一致；修复前同一命令 558 坏点（0.24%，阈值 0.1%）失败，差异区 x290-332 / y137-157 正是玻璃面板。**`--features rapier`**：69 套件 **988 passed / 0 failed**（`r3e-app` 首次链接报 `anon.*.llvm.*` 未定义符号，`cargo clean -p r3e-app -p r3e-render` 后复跑全绿）。 |
 | 段归属下沉到节点（扩展二十八） | `cargo test -p r3e-render --test instance_buckets_contract` → 7 passed（新增 `node_enters_only_its_own_segment`）；`cargo test --workspace` 69 套件 **985 passed / 0 failed**（扩展二十七收尾为 984）；`--features rapier` **989 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）0 warning；`cargo build --release` + `r3e.exe --run-seconds 2` 退出码 0（二进制 14,949,888 字节）。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → `captured_frame_matches_baseline ... ok`，与既有基准图**逐位一致、无需重建** —— 旧的「两段全收」之所以像素也对，是因为不透明段那次绘制自己做完了混合并写了深度、半透明段重画被 `depth_compare = Less` 判等丢弃，只有一次生效；去掉重复份后玻璃改由半透明段按 `back_to_front` 画，单块不重叠玻璃结果相同。**探针取证（改前 → 改后）**：`visual_regression` 夹具主通道实例 **10 → 7**、半透明段透明实例 **3 → 2**、draw call 5 不变；`--run-seconds 2` 缺省场景主通道实例 8 / 透明实例 0（缺省场景无半透明物件）。 |
+| 主通道视锥剔除层级化（扩展二十九） | `cargo test -p r3e-core --test frustum_cull_hierarchy` → 8 passed；`cargo test -p r3e-render --test frustum_cull_wiring` → 6 passed；`cargo test --workspace` 71 套件 **999 passed / 0 failed**（扩展二十八收尾为 69 套件 985）；`--features rapier` **1,003 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → 2 passed，与既有基准图**逐位一致、无需重建**（`prepared` 保持场景迭代序，桶序与 `groups` 区间逐个相同）。**探针取证**：`visual_regression` 夹具（7 实例、层级平坦）视锥层级剔除 盒判定 7 / 实例判定 7 / 未判即裁 0 / 整枝 0 —— 净收益 0 且无报错；自造两级场景（1 地面 + 6 父 × 4 子，父子树整体在视锥外）31 实例 → 盒判定 9 / 实例判定 3 / 未判即裁 30 / 其中整枝 30 / 建树 1，旧路径的 31 次实例 AABB 降到 12 次判定，且建树次数稳态为 1。踩坑：探针首版把父节点放在 z = -40 以为是「视锥外」，相机朝 -z 看时那其实在正前方锥内，读数看着像零收益；父节点要放到相机背后（z = +60）才暴露整枝收益 |
 
 ---
 
