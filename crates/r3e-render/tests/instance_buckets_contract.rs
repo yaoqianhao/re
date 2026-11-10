@@ -2,12 +2,19 @@
 //!
 //! 扩展二十七把 `prepare_instances` 从「外层遍历批次键、内层遍历全场景」改成
 //! 单次遍历后分桶摊平。这个改动对外不可见、却极其容易被后续重构改回去（改回去
-//! 不会报错，只是每帧白扫一遍 `键数 × 节点数`），所以在这里钉住四件事：
+//! 不会报错，只是每帧白扫一遍 `键数 × 节点数`），所以在这里钉住五件事：
 //!
 //! 1. `prepare_instances` 里遍历场景只允许**一次**（多出来就说明又回到逐键扫描）；
-//! 2. 实例确实经 `buckets` 收拢（分桶存在，剔除在前、入桶在后）；
-//! 3. 键顺序仍是「不透明段 + 半透明段」，半透明段仍在全部批次之后；
-//! 4. 剔除计数（视锥 / 缺包围盒）与半透明组间排序没有被顺手删掉。
+//! 2. 实例经共享的 `staged_all` 收拢、桶里只存下标，剔除在前、入桶在后；
+//! 3. 键登记按**段列表**判重，不能拿桶是否已存在当判据；
+//! 4. 桶键带「段」标志：同一 (网格, 材质) 组合可能同时落在不透明段与半透明段，
+//!    两段必须各自成桶；
+//! 5. 剔除计数（视锥 / 缺包围盒）与半透明顺序没有被顺手删掉。
+//!
+//! 第 3、4 条是拿像素回归换来的教训：把「键是否首次出现」判在 `buckets` 上时，
+//! 同一个网格的玻璃物件（alpha < 1）与不透明物件共用一键，半透明段的键登记不上，
+//! 摊平阶段整桶 `remove` 不到 —— 玻璃面板凭空消失，实例数悄悄少几个，而画面
+//! 只在面板那块区域变暗，肉眼看几乎发现不了。`visual-gpu` 严格模式就是被它弄红的。
 
 const SOURCE: &str = include_str!("../src/renderer.rs");
 
@@ -36,20 +43,57 @@ fn scene_is_iterated_once() {
     );
 }
 
-/// 实例先按批次键入桶，再摊平——分桶这一步不能丢。
+/// 实例先收进共享容器、再按批次键把下标分进桶，最后统一摊平。
 #[test]
 fn instances_are_collected_into_buckets() {
     let body = prepare_instances_body();
     assert!(
-        body.contains("buckets.entry(key).or_default().push(StagedInstance"),
-        "实例必须经 buckets 收拢（分桶后统一摊平）"
+        body.contains("staged_all.push(StagedInstance"),
+        "实例必须收进共享的 staged_all（分桶后统一摊平）"
     );
-    // 入桶必须在剔除之后：剔除分支 continue 掉的实例不该留下痕迹
+    assert!(
+        body.contains(".entry((key.0, key.1, false))"),
+        "不透明段的桶丢失"
+    );
+    // 入桶必须在剔除之后：被视锥剔除的实例不该留下痕迹
     let cull = body.find("culled += 1").expect("视锥剔除计数丢失");
-    let push = body.find("buckets.entry(key)").expect("分桶丢失");
+    let push = body
+        .find(".entry((key.0, key.1, false))")
+        .expect("分桶丢失");
     assert!(
         cull < push,
         "剔除判定必须排在入桶之前，否则被剔除的实例仍会占实例槽位"
+    );
+}
+
+/// 键登记必须按段列表判重，不能看桶里有没有这个键。
+///
+/// 同一 (网格, 材质) 键会同时出现在不透明段与半透明段（物件颜色 alpha 不同），
+/// 桶是跨段共用的，用桶判重就会把后一段的键吞掉。
+#[test]
+fn keys_are_registered_per_segment() {
+    let body = prepare_instances_body();
+    assert!(
+        body.contains("if !bucket_keys.contains(&key)"),
+        "键必须按所属段列表（opaque_keys / transparent_keys）判重后登记"
+    );
+    assert!(
+        !body.contains("if !buckets.contains_key(&key)"),
+        "禁止用桶是否已有该键来判断键是否需要登记：同一网格跨两段时会把半透明键吞掉"
+    );
+}
+
+/// 桶键必须带段标志：两段各自成桶，摊平也按段取桶。
+#[test]
+fn bucket_key_carries_segment_flag() {
+    let body = prepare_instances_body();
+    assert!(
+        body.contains(".entry((key.0, key.1, true))"),
+        "半透明段的桶丢失：玻璃 / 水面整层会凭空消失"
+    );
+    assert!(
+        body.contains("buckets.remove(&(key, surface, segment_transparent))"),
+        "摊平必须按 (键, 段) 取桶，否则两段互相顶掉"
     );
 }
 
@@ -66,10 +110,6 @@ fn opaque_batches_still_come_before_transparent() {
     assert!(
         opaque < extend,
         "必须先记下不透明段长度，再把半透明键接在后面"
-    );
-    assert!(
-        body.contains("if !buckets.contains_key(&key)"),
-        "键只在首次出现时登记，否则批次顺序会被重复推入打乱"
     );
 }
 

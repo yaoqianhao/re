@@ -2765,8 +2765,12 @@ impl Renderer {
         // `groups` 区间与旧实现逐个相同（像素基线不动）。
         let mut opaque_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
         let mut transparent_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
-        let mut buckets: HashMap<(MeshRef, Option<SurfaceKey>), Vec<StagedInstance>> =
-            HashMap::new();
+        // 桶键带「段」标志：同一个 (网格, 材质) 组合可能同时落在不透明段与半透明段
+        // （同一网格的不同物件 alpha 不同），两段各自成桶、各自摊平 —— 与旧实现的
+        // 「两段各自全场景过滤一遍」等价，但每个实例只被剔除/构造成一次。
+        let mut buckets: HashMap<(MeshRef, Option<SurfaceKey>, bool), Vec<u32>> = HashMap::new();
+        // 全部待摊平实例，按场景迭代顺序；桶里只存下标，两段共享同一份实例数据
+        let mut staged_all: Vec<StagedInstance> = Vec::new();
 
         // 一个待摊平实例：实例数据 + 阴影用包围盒 + 归属节点 + 半透明排序深度
         struct StagedInstance {
@@ -2812,9 +2816,10 @@ impl Renderer {
             } else {
                 &mut opaque_keys
             };
-            if !buckets.contains_key(&key) {
+            if !bucket_keys.contains(&key) {
                 bucket_keys.push(key);
             }
+            let mut occluded = false;
             let world_bounds = match self.mesh_cache.bounds(node.mesh) {
                 Some(local) => {
                     // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
@@ -2836,7 +2841,6 @@ impl Renderer {
                     // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的
                     // 贡献，用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
                     if occlusion_ready
-                        && !transparent
                         && self.occlusion.test(
                             &occlusion_settings,
                             &world,
@@ -2845,7 +2849,9 @@ impl Renderer {
                             screen_height,
                         )
                     {
-                        continue;
+                        // 同一实例还会进半透明段（半透明不写深度，金字塔里没有它的
+                        // 贡献），所以这里只标记「不透明段不要它」，不整体丢弃
+                        occluded = true;
                     }
                     Some(world)
                 }
@@ -2883,12 +2889,17 @@ impl Renderer {
             };
             // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
             let depth = transparency::view_depth(node.world.w_axis.truncate(), camera.position);
-            buckets.entry(key).or_default().push(StagedInstance {
+            let slot = staged_all.len() as u32;
+            staged_all.push(StagedInstance {
                 instance,
                 bounds: caster_box,
                 node: node.id,
                 depth,
             });
+            if !occluded {
+                buckets.entry((key.0, key.1, false)).or_default().push(slot);
+            }
+            buckets.entry((key.0, key.1, true)).or_default().push(slot);
         }
 
         // 摊平：不透明批次先入组，半透明批次攒到最后统一排序
@@ -2903,54 +2914,56 @@ impl Renderer {
         // 扩展二十五：与实例缓冲同序的节点 id —— 层级剔除靠它把实例挂回场景树
         let mut caster_nodes: Vec<r3e_core::NodeId> = Vec::new();
         // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
-        type TransparentBatch = (f32, MeshRef, Option<SurfaceKey>, Vec<StagedInstance>);
+        type TransparentBatch = (f32, MeshRef, Option<SurfaceKey>, Vec<u32>);
         let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
         for (index, entry) in keys.iter().enumerate() {
-            let Some(staged) = buckets.remove(entry) else {
+            let segment_transparent = index >= opaque_key_count;
+            let (key, surface) = *entry;
+            let Some(order_list) = buckets.remove(&(key, surface, segment_transparent)) else {
                 continue;
             };
-            let (key, surface) = *entry;
-            if staged.is_empty() {
+            if order_list.is_empty() {
                 continue;
             }
-            if index >= opaque_key_count {
+            if segment_transparent {
                 // 组间排序键 = 组内最远实例的深度：一次排序决定「哪个网格先画」，
                 // 组内顺序则再按 `back_to_front` 排细
-                let farthest = staged.iter().fold(0.0_f32, |far, item| {
-                    far.max(if item.depth.is_nan() {
-                        f32::INFINITY
-                    } else {
-                        item.depth
-                    })
+                let farthest = order_list.iter().fold(0.0_f32, |far, &slot| {
+                    let depth = staged_all[slot as usize].depth;
+                    far.max(if depth.is_nan() { f32::INFINITY } else { depth })
                 });
-                pending_transparent.push((farthest, key, surface, staged));
+                pending_transparent.push((farthest, key, surface, order_list));
                 continue;
             }
             let start = all.len() as u32;
-            for item in staged {
+            for slot in order_list {
+                let item = &staged_all[slot as usize];
                 all.push(item.instance);
                 caster_bounds.push(item.bounds);
                 caster_nodes.push(item.node);
             }
-            groups.push((key, start..all.len() as u32, surface));
+            if all.len() as u32 > start {
+                groups.push((key, start..all.len() as u32, surface));
+            }
         }
 
         // 半透明段起点：不透明批次全部入组之后的位置
         let mut transparent_start = groups.len();
         // 组间：远组先画（`total_cmp` 下降序，同深度保持首次出现顺序）
         pending_transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, key, surface, staged) in pending_transparent {
+        for (_, key, surface, order_list) in pending_transparent {
             let start = all.len() as u32;
-            let depths: Vec<f32> = staged.iter().map(|item| item.depth).collect();
+            let depths: Vec<f32> = order_list
+                .iter()
+                .map(|&slot| staged_all[slot as usize].depth)
+                .collect();
             let order = transparency::back_to_front(&depths);
             // 按「由远及近」的下标顺序把实例搬进实例缓冲
-            let mut slots: Vec<Option<StagedInstance>> = staged.into_iter().map(Some).collect();
             for slot in order {
-                if let Some(item) = slots[slot as usize].take() {
-                    all.push(item.instance);
-                    caster_bounds.push(item.bounds);
-                    caster_nodes.push(item.node);
-                }
+                let item = &staged_all[order_list[slot as usize] as usize];
+                all.push(item.instance);
+                caster_bounds.push(item.bounds);
+                caster_nodes.push(item.node);
             }
             groups.push((key, start..all.len() as u32, surface));
         }
