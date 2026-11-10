@@ -16,6 +16,7 @@ use r3e_core::{
 use winit::window::Window;
 
 use crate::envprobe::{self, EnvProbeSource, EnvProbeStats};
+use crate::instance_upload::{self, MAX_RANGES, MERGE_GAP};
 use crate::mesh::{vertex_layout, InstanceRaw};
 use crate::occlusion::{OcclusionCuller, OcclusionStats};
 use crate::pbr::{MaterialUniform, PbrMapFlags, SurfaceKey};
@@ -667,6 +668,29 @@ pub struct CullStats {
     pub branch_pruned: u32,
 }
 
+/// 主通道实例缓冲的脏段上传读数（扩展三十一）。
+///
+/// 口径：`recorded + skipped` 恒等于本帧实例记录总数，`bytes` 是这一帧真正
+/// `write_buffer` 出去的字节。静态场景里 `skipped` 应接近总数、`bytes` 趋近 0；
+/// `full = true` 的那一帧是换代 / 实例数变化 / 脏段碎到超限的退化路径。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InstanceUploadStats {
+    /// 本帧脏段数量（`full` 时恒为 1）。
+    pub ranges: u32,
+    /// 本帧真正写入的实例记录数。
+    pub recorded: u32,
+    /// 与上一帧逐字节相同、被跳过的实例记录数。
+    pub skipped: u32,
+    /// 本帧实际写出的字节数。
+    pub bytes: u64,
+    /// 全量上传本该写出的字节数 —— 与 `bytes` 相除就是本帧省下的比例。
+    pub full_bytes: u64,
+    /// 本帧是否退化成全量。稳态下应恒为 false。
+    pub full: bool,
+    /// 累计换代次数（缓冲重建 → 影子清零）。逐帧增长说明容量估算失效。
+    pub resets: u64,
+}
+
 /// 一帧的绘制统计，便于日志 / HUD 观测。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
@@ -738,6 +762,9 @@ pub struct RenderStats {
     /// 本帧 HDR 反射探针的状态（扩展二十三）。`active = false` 表示没配探针，
     /// 镜面 IBL 走解析天空、画面与扩展十二逐像素一致。
     pub env_probe: EnvProbeStats,
+    /// 本帧主通道实例缓冲的上传情况（扩展三十一）。全量路径下
+    /// `bytes == full_bytes`，脏段路径下 `skipped` 就是省掉的记录数。
+    pub instance_upload: InstanceUploadStats,
 }
 
 pub struct Renderer {
@@ -774,6 +801,16 @@ pub struct Renderer {
     material_cache: MaterialCache,
     instance_buffer: wgpu::Buffer,
     instance_capacity: u64,
+    /// 扩展三十一：**上一帧真正传上 GPU 的实例记录**的影子副本。
+    /// 脏段判定拿它和本帧的 `all` 逐字节比，所以它必须与 `instance_buffer` 的
+    /// 内容严格同步 —— 缓冲换代（`instance_capacity` 扩容）时必须一起清空，
+    /// 否则会把「新缓冲里的未初始化字节」当成已上传内容。
+    instance_shadow: Vec<InstanceRaw>,
+    /// 扩展三十一：本帧的上传读数，`render` 收尾时抄进 `RenderStats`。
+    instance_upload: InstanceUploadStats,
+    /// 扩展三十一：累计换代次数（缓冲重建次数），放渲染器里才不会被每帧
+    /// 重建的 `RenderStats` 清零。
+    instance_upload_resets: u64,
     /// P4：全体蒙皮实例共用的关节矩阵 storage buffer（容量固定为
     /// `MAX_JOINT_MATRICES` 个 mat4，约 256 KiB）。
     joint_buffer: wgpu::Buffer,
@@ -1518,6 +1555,10 @@ impl Renderer {
             material_cache,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            // 首帧没有影子：第一次上传自然走全量，之后就只传脏段
+            instance_shadow: Vec::new(),
+            instance_upload: InstanceUploadStats::default(),
+            instance_upload_resets: 0,
             joint_buffer,
             joint_bind_group,
             joint_scratch: Vec::new(),
@@ -1997,6 +2038,8 @@ impl Renderer {
                 occlusion: self.occlusion.stats(),
                 // 扩展二十三：探针状态在装载时就定了，逐帧原样带出
                 env_probe: self.env_probe_stats(),
+                // 扩展三十一：上传读数在上传那一刻就定型，这里原样抄进来
+                instance_upload: self.instance_upload,
             };
         }
 
@@ -3210,6 +3253,13 @@ impl Renderer {
         }
 
         if all.is_empty() {
+            // 没有实例可画：影子与读数都归零，下一帧若又有实例会自动走全量
+            // （影子长度为 0 → 与新版长度不等 → `plan_upload` 退化为全量）。
+            self.instance_shadow.clear();
+            self.instance_upload = InstanceUploadStats {
+                resets: self.instance_upload_resets,
+                ..Default::default()
+            };
             return InstancePlan {
                 groups,
                 transparent_start,
@@ -3225,7 +3275,9 @@ impl Renderer {
             };
         }
 
-        // 容量不足则扩容（按 2 倍增长，避免每帧重建）
+        // 容量不足则扩容（按 2 倍增长，避免每帧重建）。
+        // 扩展三十一：换代后的缓冲是未初始化内容，影子必须一起清空，
+        // 否则脏段判定会以为新缓冲里已经有上一帧的数据，跳掉本该上传的段。
         if all.len() as u64 > self.instance_capacity {
             let mut cap = self.instance_capacity;
             while cap < all.len() as u64 {
@@ -3238,10 +3290,15 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            self.instance_shadow.clear();
+            self.instance_shadow.shrink_to_fit();
+            self.instance_upload_resets += 1;
         }
 
-        self.queue
-            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all));
+        // 扩展三十一：只把「与上一帧逐字节不同」的连续段传上去。
+        // 记录内容完全不改，所以画面与全量上传逐位一致；静态场景下这一段
+        // 通常只有几段、几十个实例，而不是整张 960 KiB。
+        self.upload_instance_runs(&all);
 
         InstancePlan {
             groups,
@@ -3256,6 +3313,45 @@ impl Renderer {
             cull_pruned,
             cull_branch_pruned,
         }
+    }
+
+    /// 扩展三十一：把本帧实例记录按脏段传上 GPU，并刷新影子副本。
+    ///
+    /// 与全量上传的唯一差别是「跳过了逐字节相同的记录」：`plan_upload` 只在
+    /// 上一帧存在同长度影子时才给脏段，长度变化 / 换代 / 段数超限一律退化为
+    /// 单段全量，因此正确性不依赖调用方做任何假设。
+    ///
+    /// 影子必须在**写完 GPU 之后**才更新 —— 上传中途 panic 时宁可下一帧多传一遍，
+    /// 也不能让影子记着「传过了」而缓冲里其实还是旧数据。
+    fn upload_instance_runs(&mut self, all: &[InstanceRaw]) {
+        let stride = std::mem::size_of::<InstanceRaw>();
+        let prev_bytes = bytemuck::cast_slice::<InstanceRaw, u8>(&self.instance_shadow);
+        let next_bytes = bytemuck::cast_slice::<InstanceRaw, u8>(all);
+        let plan =
+            instance_upload::plan_upload(prev_bytes, next_bytes, stride, MERGE_GAP, MAX_RANGES);
+
+        for run in &plan.ranges {
+            let start = run.start as usize * stride;
+            let end = run.end as usize * stride;
+            self.queue.write_buffer(
+                &self.instance_buffer,
+                run.start as u64 * stride as u64,
+                &next_bytes[start..end],
+            );
+        }
+
+        self.instance_upload = InstanceUploadStats {
+            ranges: plan.range_count(),
+            recorded: plan.recorded,
+            skipped: plan.skipped,
+            bytes: plan.bytes,
+            full_bytes: all.len() as u64 * stride as u64,
+            full: plan.full,
+            resets: self.instance_upload_resets,
+        };
+
+        self.instance_shadow.clear();
+        self.instance_shadow.extend_from_slice(all);
     }
 
     /// 取网格材质自身的 alpha（无材质 / 无贴图时按 1.0 处理）。

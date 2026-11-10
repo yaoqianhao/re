@@ -272,6 +272,19 @@ impl EngineApi for LocalEngineApi<'_> {
                     "branch_pruned": s.occlusion.branch_pruned,
                 },
                 "msaa_samples": r3e_render::MSAA_SAMPLE_COUNT,
+                // 扩展三十一：实例缓冲的脏段上传。`recorded + skipped` = 本帧实例
+                // 记录总数；`bytes` 是真正传上 GPU 的字节，`full_bytes` 是全量上传
+                // 本该写的字节，相除就是本帧省下的比例。`full` 在首帧、扩容换代、
+                // 实例数变化或脏段碎到超限时为 true；`resets` 累计增长说明容量估算失效。
+                "instance_upload": {
+                    "ranges": s.instance_upload.ranges,
+                    "recorded": s.instance_upload.recorded,
+                    "skipped": s.instance_upload.skipped,
+                    "bytes": s.instance_upload.bytes,
+                    "full_bytes": s.instance_upload.full_bytes,
+                    "full": s.instance_upload.full,
+                    "resets": s.instance_upload.resets,
+                },
                 "render_frame_index": s.frame_index,
                 "ssao": {
                     "enabled": s.ssao.enabled,

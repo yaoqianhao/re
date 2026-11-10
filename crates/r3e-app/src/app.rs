@@ -1013,6 +1013,27 @@ impl EngineApp {
             stats.transparent_instances,
             stats.depth_prepass_draws
         );
+        // 实例上传探针（扩展三十一）：`跳过` 是与上一帧逐字节相同、没传的实例数。
+        // 静态场景里它应接近实例总数、`写` 趋近 0 KiB；`全量 true` 只出现在首帧、
+        // 扩容换代、实例数变化或脏段碎到超过上限的那一帧。`换代` 逐帧增长说明
+        // 容量估算失效（每帧都在重建缓冲）。
+        let upload = stats.instance_upload;
+        let saved_ratio = if upload.full_bytes == 0 {
+            0.0
+        } else {
+            100.0 - upload.bytes as f64 / upload.full_bytes as f64 * 100.0
+        };
+        log::info!(
+            "[{tag}] 实例上传：脏段 {} / 写 {} 条 / 跳过 {} 条 / {:.1} KiB（全量 {:.1} KiB，省 {:.1}%）/ 全量 {} / 换代 {}",
+            upload.ranges,
+            upload.recorded,
+            upload.skipped,
+            upload.bytes as f64 / 1024.0,
+            upload.full_bytes as f64 / 1024.0,
+            saved_ratio,
+            upload.full,
+            upload.resets
+        );
         // 遮挡剔除探针（扩展二十二）：`启用` 是「真的在判」（场景开关 + 金字塔就绪），
         // 刚开的第一帧金字塔还在读回路上，所以会先有一段 `启用 false` 的过渡期。
         // `读回` 只在取到新深度的那一帧为 true（默认每 4 帧一次）。
