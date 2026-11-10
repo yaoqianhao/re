@@ -257,12 +257,19 @@ impl EngineApi for LocalEngineApi<'_> {
                 "depth_prepass_draws": s.depth_prepass_draws,
                 // 扩展二十二：遮挡剔除。`enabled` 是「真的在判」（开关开 + 金字塔就绪），
                 // `occluded` 是本帧因此少画的实例数，`readback` 表示本帧刚取回一份新深度。
+                // 扩展三十：`hierarchy` 为 true 时走的是按子树预筛（`box_tests` /
+                // `pruned` / `branch_pruned` 才有意义），`tested + pruned` = 过视锥的
+                // 不透明实例数；`hierarchy` 为 false 时退回逐实例，`tested` 就是全部。
                 "occlusion": {
                     "enabled": s.occlusion.enabled,
                     "tested": s.occlusion.tested,
                     "occluded": s.occlusion.occluded,
                     "readback": s.occlusion.readback,
                     "levels": s.occlusion.levels,
+                    "hierarchy": s.occlusion.hierarchy,
+                    "box_tests": s.occlusion.box_tests,
+                    "pruned": s.occlusion.pruned,
+                    "branch_pruned": s.occlusion.branch_pruned,
                 },
                 "msaa_samples": r3e_render::MSAA_SAMPLE_COUNT,
                 "render_frame_index": s.frame_index,

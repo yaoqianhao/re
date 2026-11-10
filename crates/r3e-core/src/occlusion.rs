@@ -27,6 +27,7 @@
 //! 本模块零 GPU 依赖：金字塔是纯 `Vec<f32>`，判定是纯算术，因此全部可单测。
 
 use crate::aabb::Aabb;
+use crate::shadow_cull::{CasterTree, LevelCounts};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
@@ -531,9 +532,84 @@ pub fn test_aabb(
     }
 }
 
+/// 遮挡剔除的层级预筛结果（扩展三十）。
+///
+/// 与 [`crate::shadow_cull::FrustumCullPlan`] 同构：掩码按 [`CasterTree`] 节点下标，
+/// `true` = 该节点的实例本帧照画（没被遮挡）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OcclusionCullPlan {
+    /// 按 [`CasterTree`] 节点下标的「照画」标记。
+    pub mask: Vec<bool>,
+    /// 判定成本与省下的量（`pruned` = 没做实例级判定就被判遮挡的实例数）。
+    pub counts: LevelCounts,
+    /// 因遮挡被剔掉的实例数（= 掩码为 `false` 的节点实例数之和）。
+    pub occluded: u32,
+}
+
+impl OcclusionCullPlan {
+    /// 某节点是否照画。越界（节点不在表里）按**照画**处理 —— 掩码错位的代价是
+    /// 多画一个物件，而不是物件凭空消失。
+    pub fn keeps(&self, node: usize) -> bool {
+        self.mask.get(node).copied().unwrap_or(true)
+    }
+}
+
+/// 遮挡剔除的层级预筛（扩展三十）：把「逐实例判 [`test_aabb`]」换成「按子树下探」。
+///
+/// 复用 [`crate::shadow_cull::CasterTree`] 的自顶向下逻辑：子树盒（枝内所有实例盒
+/// 的并集）被判遮挡就整枝跳过，枝内实例连一次金字塔查询都不做。省下的是
+/// `project_aabb` 的 8 次投影 + 两层 tile 遍历 —— 遮挡判定里最贵的一段。
+///
+/// 保守性：子盒 `A ⊆ B` 时，`B` 的屏幕矩形包含 `A` 的矩形、`A` 的最近深度不小于
+/// `B` 的（`A` 更靠后），偏置 `bias = d × (1 - nearest)` 与阈值
+/// `nearest - bias = nearest × (1 + d) - d` 都随 `nearest` 单调，因此
+/// **`B` 判遮挡 ⇒ `A` 判遮挡**，整枝跳过不会误剔。
+///
+/// 唯一不完全一致的情形是 [`test_aabb`] 自己 **fail-open** 的那些实例（投影跨
+/// 近平面 / 矩形退化成线 / 完全落在屏幕外）：它们单独判定时一律「可见」，层级却
+/// 可能随子树盒一起被剔。这类实例的屏幕覆盖面积恒为 0 —— 一个投影面积为 0 的
+/// AABB 里装不出投影面积非 0 的三角形 —— 光栅化本来就不产生片元，所以**画面逐
+/// 像素不变**。差分测试 [`plan_occlusion_matches_per_instance`] 把这条口径钉住。
+///
+/// 调用方约定：本函数只负责遮挡，**不含视锥**。先过视锥再进这里，「完全在屏幕外」
+/// 这一族 fail-open 根本到不了；金字塔没就绪 / 开关关闭时直接返回全保留。
+pub fn plan_occlusion(
+    tree: &CasterTree,
+    pyramid: &DepthPyramid,
+    view_projection: &Mat4,
+    width: u32,
+    height: u32,
+    settings: &OcclusionSettings,
+) -> OcclusionCullPlan {
+    if settings.is_neutral() || !pyramid.is_valid() || tree.is_empty() {
+        return OcclusionCullPlan {
+            mask: vec![true; tree.len()],
+            counts: LevelCounts::default(),
+            occluded: 0,
+        };
+    }
+    let mut mask = vec![false; tree.len()];
+    let counts = tree.descend(&mut mask, |aabb| {
+        !test_aabb(pyramid, aabb, view_projection, width, height, settings).is_culled()
+    });
+    let occluded = tree
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !mask[*index])
+        .map(|(_, node)| node.casts)
+        .fold(0u32, u32::saturating_add);
+    OcclusionCullPlan {
+        mask,
+        counts,
+        occluded,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shadow_cull::CasterNode;
 
     /// 单位立方体。
     fn unit_aabb() -> Aabb {
@@ -889,5 +965,183 @@ mod tests {
         let invalid = DepthPyramid::default();
         let bounds = ScreenBounds::new(0.0, 0.0, 8.0, 8.0, 1.0);
         assert!(!invalid.is_occluded(&bounds, &enabled()));
+    }
+
+    // ---- 扩展三十：遮挡剔除的层级预筛 ----
+
+    /// 把一组实例盒装成「一个纯分组根 + 每实例一个叶」的两级树，并刷新成当前盒。
+    /// 返回的树里实例 `i` 挂在节点 `i + 1` 上（节点 0 是根，`casts = 0`）。
+    fn hierarchy_tree(bounds: &[Aabb]) -> CasterTree {
+        let mut nodes = vec![CasterNode::group(None)];
+        for &bounds in bounds {
+            nodes.push(CasterNode::leaf(bounds).under(0));
+        }
+        let mut tree = CasterTree::new(nodes);
+        let boxes: Vec<Aabb> = std::iter::once(Aabb::EMPTY)
+            .chain(bounds.iter().copied())
+            .collect();
+        let casts: Vec<u32> = std::iter::once(0u32)
+            .chain(std::iter::repeat_n(1u32, bounds.len()))
+            .collect();
+        tree.refresh(&boxes, &casts);
+        tree
+    }
+
+    /// 一个盒在屏幕上是不是「恒零像素覆盖」—— 即 [`test_aabb`] 会 fail-open 的那族：
+    /// 投影失败（跨近平面 / 相机背后）、矩形退化成线、完全落在屏幕外。
+    fn covers_no_pixels(bounds: &Aabb, vp: &Mat4, width: u32, height: u32) -> bool {
+        let Some(s) = project_aabb(bounds, vp, width, height) else {
+            return true;
+        };
+        s.max_x <= s.min_x
+            || s.max_y <= s.min_y
+            || s.max_x <= 0.0
+            || s.max_y <= 0.0
+            || s.min_x >= width as f32
+            || s.min_y >= height as f32
+    }
+
+    /// 一份混合夹具：视锥内外、远近、退化、跨近平面都在里面。
+    fn mixed_boxes() -> Vec<Aabb> {
+        vec![
+            // 0-2：屏幕中央、远近不同的正常盒
+            Aabb::new(Vec3::new(-0.5, -0.5, 2.0), Vec3::new(0.5, 0.5, 3.0)),
+            Aabb::new(Vec3::new(-0.4, -0.4, 4.0), Vec3::new(0.4, 0.4, 4.5)),
+            Aabb::new(Vec3::new(-0.2, -0.2, 0.5), Vec3::new(0.2, 0.2, 1.0)),
+            // 3：屏幕右侧很远，投影落在屏幕外
+            Aabb::new(Vec3::new(40.0, -0.5, 2.0), Vec3::new(41.0, 0.5, 3.0)),
+            // 4：x 方向压成零厚的薄片 → 投影矩形宽为 0
+            Aabb::new(Vec3::new(0.0, -0.5, 2.0), Vec3::new(0.0, 0.5, 3.0)),
+            // 5：相机背后（相机在 z = +5）→ 角点 w < 0
+            Aabb::new(Vec3::new(-0.5, -0.5, 6.0), Vec3::new(0.5, 0.5, 7.0)),
+            // 6：缺 AABB 的 fail-open 巨盒
+            crate::shadow_cull::fail_open_bounds(),
+        ]
+    }
+
+    #[test]
+    fn plan_occlusion_matches_per_instance() {
+        // 差分：层级预筛与逐实例判定必须一致；唯一允许的差异只出现在
+        // 「屏幕覆盖恒为零像素」的实例上（fail-open 族，光栅化不产生片元）。
+        let vp = camera();
+        let (width, height) = (800u32, 800u32);
+        let settings = enabled();
+        let bounds = mixed_boxes();
+        let tree = hierarchy_tree(&bounds);
+        let mut occluded_agree = 0u32;
+        // 两份金字塔：一近（全遮）、一远（全不遮）—— 把两种结论都覆盖到
+        for depth in [0.01f32, 0.99] {
+            let pyramid = flat_pyramid(width, height, depth);
+            let plan = plan_occlusion(&tree, &pyramid, &vp, width, height, &settings);
+            assert_eq!(plan.mask.len(), tree.len());
+            for (index, aabb) in bounds.iter().enumerate() {
+                let individual =
+                    test_aabb(&pyramid, aabb, &vp, width, height, &settings).is_culled();
+                let hierarchical = !plan.keeps(index + 1);
+                if individual && hierarchical {
+                    occluded_agree += 1;
+                }
+                if hierarchical && !individual {
+                    assert!(
+                        covers_no_pixels(aabb, &vp, width, height),
+                        "金字塔 {depth} 下实例 {index} 被层级剔掉、逐实例判定却保留，且有像素覆盖"
+                    );
+                }
+                if individual {
+                    assert!(
+                        hierarchical,
+                        "金字塔 {depth} 下实例 {index} 逐实例判遮挡但层级没剔 —— 层级树漏判"
+                    );
+                }
+            }
+        }
+        // 夹具里至少要有实例在两种路径下都判遮挡，否则这条差分是空转
+        assert!(occluded_agree >= 2, "两种路径都判遮挡的实例太少");
+    }
+
+    #[test]
+    fn plan_occlusion_prunes_multi_instance_branch() {
+        // 一整枝远物件都被挡在墙后：根子树盒直接判遮挡，枝内一次实例判定都不做
+        let vp = camera();
+        let (width, height) = (800u32, 800u32);
+        let bounds: Vec<Aabb> = (0..6)
+            .map(|i| {
+                let z = 1.6 + i as f32 * 0.1;
+                Aabb::new(Vec3::new(-0.1, -0.1, z), Vec3::new(0.1, 0.1, z + 0.05))
+            })
+            .collect();
+        let tree = hierarchy_tree(&bounds);
+        let pyramid = flat_pyramid(width, height, 0.01);
+        let plan = plan_occlusion(&tree, &pyramid, &vp, width, height, &enabled());
+        assert_eq!(plan.occluded, bounds.len() as u32, "整枝都被遮挡");
+        assert_eq!(
+            plan.counts.instance_tests, 0,
+            "根子树盒一次判过就不用下探到实例"
+        );
+        assert_eq!(plan.counts.branch_pruned, bounds.len() as u32);
+        assert!(plan.counts.box_tests <= 2, "只需判根子树盒");
+    }
+
+    #[test]
+    fn plan_occlusion_fails_open_without_pyramid() {
+        // 金字塔没就绪 / 开关关闭 → 全保留，与关闭遮挡剔除前逐个一致
+        let vp = camera();
+        let bounds = mixed_boxes();
+        let tree = hierarchy_tree(&bounds);
+        for plan in [
+            plan_occlusion(&tree, &DepthPyramid::default(), &vp, 800, 800, &enabled()),
+            plan_occlusion(
+                &tree,
+                &flat_pyramid(800, 800, 0.01),
+                &vp,
+                800,
+                800,
+                &OcclusionSettings::default(),
+            ),
+        ] {
+            assert!(plan.mask.iter().all(|keep| *keep), "一律照画");
+            assert_eq!(plan.occluded, 0);
+            assert_eq!(plan.counts, LevelCounts::default());
+        }
+    }
+
+    #[test]
+    fn plan_occlusion_counts_wiring() {
+        // 掩码 / 计数 / occluded 三者自洽；越界与空树都要 fail-open
+        let vp = camera();
+        let (width, height) = (800u32, 800u32);
+        let bounds = mixed_boxes();
+        let tree = hierarchy_tree(&bounds);
+        let pyramid = flat_pyramid(width, height, 0.01);
+        let plan = plan_occlusion(&tree, &pyramid, &vp, width, height, &enabled());
+        assert_eq!(plan.mask.len(), tree.len());
+        // occluded = 掩码为 false 的节点实例数之和
+        let expected: u32 = tree
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !plan.mask[*index])
+            .map(|(_, node)| node.casts)
+            .sum();
+        assert_eq!(plan.occluded, expected);
+        // 判定过的实例 + 没判就剔掉的实例 = 全部实例
+        assert_eq!(
+            plan.counts.instance_tests + plan.counts.pruned,
+            tree.total_casts()
+        );
+        assert!(plan.counts.branch_pruned <= plan.counts.pruned);
+        // 越界下标按照画处理（掩码错位的代价是多画，不是少画）
+        assert!(plan.keeps(tree.len()));
+        assert!(plan.keeps(usize::MAX));
+    }
+
+    #[test]
+    fn plan_occlusion_empty_tree_keeps_everything() {
+        let vp = camera();
+        let tree = CasterTree::default();
+        let pyramid = flat_pyramid(64, 64, 0.01);
+        let plan = plan_occlusion(&tree, &pyramid, &vp, 64, 64, &enabled());
+        assert!(plan.mask.is_empty());
+        assert_eq!(plan.occluded, 0);
     }
 }

@@ -1027,6 +1027,18 @@ impl EngineApp {
             stats.occlusion.occluded,
             stats.culled
         );
+        // 扩展三十：遮挡剔除的层级预筛探针。`层级 true` 才走子树预筛（金字塔就绪 +
+        // 开关打开），false = 退回逐实例，此时 `判定` 就是全部不透明实例数。
+        // `判定 + 未判即裁` 恒等于过视锥的不透明实例数；其中只有 `整枝` 是层级相对
+        // 逐实例判定的**净收益**，叶子被裁在旧路径里也是一次 AABB，省不下来。
+        log::info!(
+            "[{tag}] 遮挡层级剔除：层级 {} / 盒判定 {} / 判定 {} / 未判即裁 {} / 其中整枝 {}",
+            stats.occlusion.hierarchy,
+            stats.occlusion.box_tests,
+            stats.occlusion.tested,
+            stats.occlusion.pruned,
+            stats.occlusion.branch_pruned
+        );
         // 遮蔽探针（扩展十七）：passes 恒为 2（生成 + 散焦），为 0 说明本帧没提交——
         // 段未开、强度为 0，或设置收敛成了中性值。`samples` 打印「场景要的 / 实际生效的」，
         // 两者不等就说明被夹进了 [4, 16]（或场景压根没写这一段）。

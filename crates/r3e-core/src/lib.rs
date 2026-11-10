@@ -80,9 +80,10 @@ pub use mesh::{
 };
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use occlusion::{
-    project_aabb, test_aabb, DepthPyramid, OcclusionSettings, OcclusionVerdict, ScreenBounds,
-    DEFAULT_DEPTH_BIAS, DEFAULT_MARGIN_PX, DEFAULT_MAX_TILES, DEFAULT_TILE_SIZE, MAX_DEPTH_BIAS,
-    MAX_MARGIN_PX, MAX_MAX_TILES, MAX_PYRAMID_LEVELS, MAX_TILE_SIZE, MIN_MAX_TILES, MIN_TILE_SIZE,
+    plan_occlusion, project_aabb, test_aabb, DepthPyramid, OcclusionCullPlan, OcclusionSettings,
+    OcclusionVerdict, ScreenBounds, DEFAULT_DEPTH_BIAS, DEFAULT_MARGIN_PX, DEFAULT_MAX_TILES,
+    DEFAULT_TILE_SIZE, MAX_DEPTH_BIAS, MAX_MARGIN_PX, MAX_MAX_TILES, MAX_PYRAMID_LEVELS,
+    MAX_TILE_SIZE, MIN_MAX_TILES, MIN_TILE_SIZE,
 };
 pub use postfx::{
     bright_pass, expose, exposure_scale, fxaa_edge_visible, luminance, resolve, tonemap,

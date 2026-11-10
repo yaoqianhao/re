@@ -2977,6 +2977,29 @@ impl Renderer {
                 None => (0, 0, 0, 0),
             };
 
+        // 扩展三十：遮挡剔除同样升级成按子树预筛，复用上面刚 refresh 过的那棵树
+        // （同一帧、同一批盒，不必重建）。与视锥不同的是这里要额外证明「整枝跳过
+        // 不误剔」：子树盒 B 判遮挡 ⇒ 任意子盒 A ⊆ B 也判遮挡（A 的屏幕矩形更小、
+        // 最近深度更远，而阈值随最近深度单调），证明写在 `plan_occlusion` 文档里，
+        // 差分测试 `plan_occlusion_matches_per_instance` 钉住两路径逐实例一致。
+        // 金字塔没就绪（首帧 / 刚 resize / 开关关闭）时 `plan` 返回 `None`，
+        // 下面整段退回逐实例 `test`，实例数与关闭该功能时逐个相同。
+        let occlusion_plan = match (self.cull_tree.as_ref(), occlusion_ready) {
+            (Some(tree), true) => self.occlusion.plan(
+                &occlusion_settings,
+                tree,
+                &view_projection,
+                screen_width,
+                screen_height,
+            ),
+            _ => None,
+        };
+        if let Some(plan) = &occlusion_plan {
+            // 记账在循环外做一次：`record_hierarchy` 要 `&mut self`，循环里还要读
+            // 掩码，分开恰好避开了同时借用。
+            self.occlusion.record_hierarchy(plan);
+        }
+
         // 第二遍：判剔除 + 入桶
         for item in &prepared {
             // 层级预筛：拿不到掩码（树没建起来 / 节点不在表里）一律保留，宁可多画
@@ -3006,25 +3029,33 @@ impl Renderer {
             }
             let mut occluded = false;
             let world_bounds = item.world;
-            // 扩展二十二：视锥内还要再问一句「是不是被前面的东西挡满了」。
+            // 扩展二十二 / 三十：视锥内还要再问一句「是不是被前面的东西挡满了」。
             // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的贡献，
             // 用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
             //
-            // 遮挡金字塔是上一帧的读回，得按**逐实例**问才准（同一棵子树里近处可能
-            // 挡住远处，整枝跳过的前提不成立），所以这一层不做层级化。
+            // 判定走层级预筛：掩码直接给出「这个节点的实例要不要画」，被整枝跳过的
+            // 实例连 `project_aabb` 都不做。拿不到掩码（没建树 / 节点不在表里 /
+            // 金字塔未就绪）才退回逐实例 `test` —— 缺 AABB 的节点在树里登记的是
+            // fail-open 巨盒，掩码必为「照画」，与逐实例口径一致。
             if occlusion_ready {
-                if let Some(world) = world_bounds {
-                    if self.occlusion.test(
-                        &occlusion_settings,
-                        &world,
-                        &view_projection,
-                        screen_width,
-                        screen_height,
-                    ) {
-                        // 同一实例还会进半透明段（半透明不写深度，金字塔里没有它的
-                        // 贡献），所以这里只标记「不透明段不要它」，不整体丢弃
-                        occluded = true;
-                    }
+                let culled_by_occlusion = match (&occlusion_plan, item.tree_slot) {
+                    (Some(plan), Some(slot)) => !plan.keeps(slot),
+                    // 树里没有这个节点：掩码无从查起，按可见处理
+                    (Some(_), None) => false,
+                    (None, _) => world_bounds.is_some_and(|world| {
+                        self.occlusion.test(
+                            &occlusion_settings,
+                            &world,
+                            &view_projection,
+                            screen_width,
+                            screen_height,
+                        )
+                    }),
+                };
+                if culled_by_occlusion {
+                    // 同一实例还会进半透明段（半透明不写深度，金字塔里没有它的
+                    // 贡献），所以这里只标记「不透明段不要它」，不整体丢弃
+                    occluded = true;
                 }
             }
             // 扩展二十四：阴影裁剪同样 fail-open —— 没有 AABB 的实例

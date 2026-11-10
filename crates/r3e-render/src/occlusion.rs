@@ -22,8 +22,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use r3e_core::occlusion::{test_aabb, DepthPyramid, OcclusionSettings, OcclusionVerdict};
-use r3e_core::Aabb;
+use r3e_core::occlusion::{
+    plan_occlusion, test_aabb, DepthPyramid, OcclusionCullPlan, OcclusionSettings, OcclusionVerdict,
+};
+use r3e_core::{Aabb, CasterTree};
 
 /// 默认读回间隔（帧）。4 帧约等于 60fps 下 15Hz，物件移动的滞后肉眼基本看不出来。
 pub const DEFAULT_READBACK_INTERVAL: u64 = 4;
@@ -40,6 +42,8 @@ pub struct OcclusionStats {
     /// 本帧是否启用（相机 `enabled` 且金字塔就绪才算真正在判）。
     pub enabled: bool,
     /// 本帧做过遮挡判定的实例数（已通过视锥剔除的那部分）。
+    ///
+    /// 扩展三十起这不再是「全部不透明实例」：被整枝跳过的那部分不计入，见 `pruned`。
     pub tested: u32,
     /// 本帧因遮挡被剔除的实例数。0 表示没剔到或开关关闭。
     pub occluded: u32,
@@ -47,6 +51,18 @@ pub struct OcclusionStats {
     pub readback: bool,
     /// 当前金字塔层数；0 表示还没有可用金字塔。
     pub levels: u32,
+    /// 扩展三十：本帧是否走了「按子树预筛」的层级路径。
+    /// false = 金字塔没就绪 / 开关关闭，此时退回逐实例判定。
+    pub hierarchy: bool,
+    /// 扩展三十：本帧做的层级盒判定数（被下探的树节点 + 混合节点自身盒）。
+    /// 远小于 `tested` 说明整枝跳过真的在起作用。
+    pub box_tests: u32,
+    /// 扩展三十：没做实例级判定就被判遮挡的实例数（整枝跳过 + 叶子直接被裁）。
+    /// `tested + pruned` 恒等于「过了视锥的不透明实例数」。
+    pub pruned: u32,
+    /// 扩展三十：`pruned` 里来自多实例子树的部分 —— 层级预筛的净收益。
+    /// 叶子被裁在逐实例判定里也是一次 AABB，省不下来。
+    pub branch_pruned: u32,
 }
 
 /// 一次读回的 buffer 元信息。buffer 本体留在 [`OcclusionCuller`] 里复用。
@@ -149,6 +165,11 @@ impl OcclusionCuller {
         self.stats.tested = 0;
         self.stats.occluded = 0;
         self.stats.readback = false;
+        // 扩展三十：层级预筛的逐帧计数同样每帧清零，由 `record_hierarchy` 累加
+        self.stats.hierarchy = false;
+        self.stats.box_tests = 0;
+        self.stats.pruned = 0;
+        self.stats.branch_pruned = 0;
         if !settings.enabled {
             if self.pyramid.is_some() {
                 self.reset();
@@ -305,6 +326,8 @@ impl OcclusionCuller {
     /// 对一个世界 AABB 做两阶段遮挡判定，并累计统计。
     ///
     /// 金字塔没就绪 / 参数中性 / 投影失败时一律返回 `false`（可见）。
+    /// 扩展三十起这是**退化路径**：金字塔就绪时调用方走 [`Self::plan`]，
+    /// 只有没建成层级树（`None` 树 / 节点不在表里）才逐个问这里。
     pub fn test(
         &mut self,
         settings: &OcclusionSettings,
@@ -324,6 +347,49 @@ impl OcclusionCuller {
             }
             _ => false,
         }
+    }
+
+    /// 扩展三十：按层级树做遮挡预筛，返回与树节点一一对应的「照画」掩码。
+    ///
+    /// 金字塔没就绪（首帧 / 刚 resize / 开关关闭）时返回 `None`，调用方必须退回
+    /// 逐实例 [`Self::test`]。判定口径见 [`r3e_core::occlusion::plan_occlusion`]：
+    /// 子树盒被判遮挡 ⇒ 枝内实例一个都不做金字塔查询。
+    ///
+    /// 只读 `&self`：先拿 plan、再 [`Self::record_hierarchy`] 记账，调用处不必
+    /// 在两个 `&mut self` 方法之间来回借。
+    pub fn plan(
+        &self,
+        settings: &OcclusionSettings,
+        tree: &CasterTree,
+        view_projection: &glam::Mat4,
+        width: u32,
+        height: u32,
+    ) -> Option<OcclusionCullPlan> {
+        let pyramid = self.pyramid.as_ref()?;
+        Some(plan_occlusion(
+            tree,
+            pyramid,
+            view_projection,
+            width,
+            height,
+            settings,
+        ))
+    }
+
+    /// 把一次层级预筛的结果并进本帧统计。
+    ///
+    /// `tested` 记的是「真做了实例级判定的实例数」，因此加的是
+    /// `instance_tests` 而不是过视锥的实例总数 —— 差的那部分体现在 `pruned`。
+    pub fn record_hierarchy(&mut self, plan: &OcclusionCullPlan) {
+        self.stats.hierarchy = true;
+        self.stats.tested = self.stats.tested.saturating_add(plan.counts.instance_tests);
+        self.stats.occluded = self.stats.occluded.saturating_add(plan.occluded);
+        self.stats.box_tests = self.stats.box_tests.saturating_add(plan.counts.box_tests);
+        self.stats.pruned = self.stats.pruned.saturating_add(plan.counts.pruned);
+        self.stats.branch_pruned = self
+            .stats
+            .branch_pruned
+            .saturating_add(plan.counts.branch_pruned);
     }
 }
 
@@ -390,5 +456,46 @@ mod tests {
         assert!(!stats.enabled);
         assert_eq!(stats.levels, 0);
         assert_eq!(stats.occluded, 0);
+    }
+
+    #[test]
+    fn plan_needs_a_pyramid() {
+        // 金字塔没就绪 → `None`，调用方必须退回逐实例 `test`（fail-open）
+        let culler = OcclusionCuller::new();
+        let tree = CasterTree::default();
+        let vp = glam::Mat4::IDENTITY;
+        assert!(culler
+            .plan(&OcclusionSettings::default(), &tree, &vp, 64, 64)
+            .is_none());
+        let stats = culler.stats();
+        assert!(!stats.hierarchy);
+        assert_eq!(stats.box_tests, 0);
+        assert_eq!(stats.pruned, 0);
+    }
+
+    #[test]
+    fn record_hierarchy_accumulates_counts() {
+        // 记账口径：`tested` 只加真正做了实例判定的量，省下的落在 `pruned` /
+        // `branch_pruned`；多次调用累加而不是覆盖。
+        let mut culler = OcclusionCuller::new();
+        let plan = OcclusionCullPlan {
+            mask: vec![true, false, true],
+            counts: r3e_core::LevelCounts {
+                box_tests: 3,
+                instance_tests: 2,
+                pruned: 4,
+                branch_pruned: 4,
+            },
+            occluded: 4,
+        };
+        culler.record_hierarchy(&plan);
+        culler.record_hierarchy(&plan);
+        let stats = culler.stats();
+        assert!(stats.hierarchy);
+        assert_eq!(stats.box_tests, 6);
+        assert_eq!(stats.tested, 4);
+        assert_eq!(stats.pruned, 8);
+        assert_eq!(stats.branch_pruned, 8);
+        assert_eq!(stats.occluded, 8);
     }
 }
