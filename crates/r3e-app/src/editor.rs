@@ -296,6 +296,20 @@ impl EngineApi for LocalEngineApi<'_> {
                     "full": s.joint_upload.full,
                     "resets": s.joint_upload.resets,
                 },
+                // 扩展三十五：暂存环（持久映射槽 + 多帧飞行）。`writes` 是队列级
+                // write_buffer 次数，`saves` 是被合掉的次数，`copies` 是块拷贝条数。
+                "upload_staging": {
+                    "enabled": s.upload_staging.enabled,
+                    "slots": s.upload_staging.slots,
+                    "capacity": s.upload_staging.capacity,
+                    "frames": s.upload_staging.frames,
+                    "writes": s.upload_staging.writes,
+                    "copies": s.upload_staging.copies,
+                    "bytes": s.upload_staging.bytes,
+                    "saves": s.upload_staging.saves,
+                    "rebuilds": s.upload_staging.rebuilds,
+                    "fallbacks": s.upload_staging.fallbacks,
+                },
                 "render_frame_index": s.frame_index,
                 "ssao": {
                     "enabled": s.ssao.enabled,

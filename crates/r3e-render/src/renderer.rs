@@ -25,6 +25,9 @@ use crate::ssao::{SsaoPass, SsaoStats};
 use crate::text::{TextPass, TextStats};
 use crate::transparency;
 use crate::ui::{UiImageProvider, UiPass, UiStats};
+use crate::upload_staging::{
+    self, slot_fit, SlotFit, SlotRing, StagedCopy, STAGING_MIN_BYTES, STAGING_SLOTS,
+};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INITIAL_INSTANCE_CAPACITY: u64 = 512;
@@ -691,6 +694,37 @@ pub struct InstanceUploadStats {
     pub resets: u64,
 }
 
+/// 扩展三十五：暂存环的读数。
+///
+/// 口径：`frames` 是走过暂存路径的帧数，`writes` 是这些帧里真正打到
+/// `Queue::write_buffer` 的次数（理想情况 = `frames`，即一帧一次），`copies`
+/// 是命令编码器里录制的 `copy_buffer_to_buffer` 条数（≈ 脏段总数），`fallbacks`
+/// 是装不下 / 超上限而退化回逐段直传的次数。`saves` = 逐段直传本该有的调用次数
+/// 减去 `writes`，就是这一层省掉的队列往返。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StagingStats {
+    /// 暂存路径是否启用（`R3E_UPLOAD_STAGING=0` 可关掉，回到逐段 `write_buffer`）。
+    pub enabled: bool,
+    /// 槽数（多帧飞行深度）。
+    pub slots: u32,
+    /// 单槽字节容量。
+    pub capacity: u64,
+    /// 累计走暂存路径的帧数。
+    pub frames: u64,
+    /// 累计 `Queue::write_buffer` 调用次数（暂存路径下每帧至多一次）。
+    pub writes: u64,
+    /// 累计录制的块拷贝条数。
+    pub copies: u64,
+    /// 累计暂存字节数。
+    pub bytes: u64,
+    /// 累计退化次数（装不下 / 超上限 / 关闭）。
+    pub fallbacks: u64,
+    /// 累计因扩容重建暂存环的次数。逐帧增长说明容量估算失效。
+    pub rebuilds: u64,
+    /// 本帧省掉的 `write_buffer` 调用次数（`ranges - 1` 的累计和，下限 0）。
+    pub saves: u64,
+}
+
 /// 一帧的绘制统计，便于日志 / HUD 观测。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
@@ -768,6 +802,270 @@ pub struct RenderStats {
     /// 本帧关节矩阵缓冲的上传情况（扩展三十二）。记录是 mat4（64 B），
     /// `skipped` 是与上一帧逐字节相同、没传的矩阵数；`resets` 恒为 0。
     pub joint_upload: InstanceUploadStats,
+    /// 扩展三十五：暂存环（持久暂存 + 多帧飞行）的读数。脏段数据先打包进
+    /// 一块 CPU 暂存区、一帧只调一次 `write_buffer`，再由编码器按段块拷贝。
+    pub upload_staging: StagingStats,
+}
+
+/// 扩展三十五：块拷贝的目标缓冲。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagingTarget {
+    /// 主通道实例缓冲（`instance_buffer`）。
+    Instances,
+    /// 蒙皮关节矩阵缓冲（`joint_buffer`）。
+    Joints,
+}
+
+/// 一条待录进命令编码器的块拷贝。
+#[derive(Debug, Clone, Copy)]
+struct PendingCopy {
+    target: StagingTarget,
+    copy: StagedCopy,
+}
+
+/// 扩展三十五：暂存环本体（GPU 侧）。
+///
+/// 每帧的脏段数据先 memcpy 进 `frame_bytes`，帧内**只调一次**
+/// `Queue::write_buffer` 把它整体塞进当前槽，再由命令编码器把槽里的各段
+/// `copy_buffer_to_buffer` 到目标缓冲。槽数 = 多帧飞行深度，只有本帧拷贝
+/// 全部录制完成才轮转 —— 保证 GPU 还在读的槽不会被下一帧覆盖。
+struct UploadStaging {
+    /// 每槽一块缓冲：`write_buffer` 写入（COPY_DST），编码器读出（COPY_SRC）。
+    slots: Vec<wgpu::Buffer>,
+    ring: SlotRing,
+    /// 单槽字节容量。
+    capacity: u64,
+    /// 本帧待写进槽的字节（实例与关节合并成一次写入）。
+    frame_bytes: Vec<u8>,
+    /// 本帧待录制的块拷贝。
+    pending: Vec<PendingCopy>,
+    /// 总开关（`R3E_UPLOAD_STAGING=0` 关闭，回到逐段 `write_buffer`）。
+    enabled: bool,
+    /// 累计读数。
+    stats: StagingStats,
+    /// 本帧已发生的 `write_buffer` 次数（每帧开头清零）。
+    frame_writes: u64,
+    /// 本帧走暂存路径的脏段总数（用来算省下的调用次数，每帧开头清零）。
+    frame_ranges: u64,
+    /// 走暂存路径时，本帧实例记录的快照 —— 要等命令**提交之后**才写进影子。
+    ///
+    /// 暂存路径的 GPU 写入是 `copy_buffer_to_buffer`，只有 submit 之后才真正
+    /// 生效；若像直传路径那样当场更新影子，一旦本帧命令没有提交，影子会记着
+    /// 「传过了」而缓冲里还是旧数据，造成永久漏传（扩展三十一的踩坑）。
+    shadow_instances: Option<Vec<InstanceRaw>>,
+    /// 同上，关节矩阵侧（`mat4`，定长、不换代）。
+    shadow_joints: Option<Vec<[f32; 16]>>,
+}
+
+impl UploadStaging {
+    /// 建环：`STAGING_SLOTS` 块最小容量的缓冲。
+    fn new(device: &wgpu::Device, enabled: bool) -> Self {
+        let mut staging = Self {
+            slots: Vec::new(),
+            ring: SlotRing::new(STAGING_SLOTS),
+            capacity: STAGING_MIN_BYTES,
+            frame_bytes: Vec::new(),
+            pending: Vec::new(),
+            enabled,
+            stats: StagingStats {
+                enabled,
+                slots: STAGING_SLOTS as u32,
+                capacity: STAGING_MIN_BYTES,
+                ..Default::default()
+            },
+            frame_writes: 0,
+            frame_ranges: 0,
+            shadow_instances: None,
+            shadow_joints: None,
+        };
+        staging.allocate(device);
+        staging
+    }
+
+    /// 按当前 `capacity` 重建全部槽（扩容 / 首次分配共用）。
+    fn allocate(&mut self, device: &wgpu::Device) {
+        self.slots.clear();
+        for index in 0..self.ring.slots() {
+            self.slots
+                .push(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("r3e-upload-staging-{index}")),
+                    size: self.capacity,
+                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+        }
+        // 重建后所有旧槽内容作废，本帧已排的拷贝也一并丢弃（宁可多传一遍）
+        self.frame_bytes.clear();
+        self.pending.clear();
+        self.ring.reset();
+        self.stats.capacity = self.capacity;
+    }
+
+    /// 每帧开头：清零本帧写入计数。
+    fn begin_frame(&mut self) {
+        self.frame_writes = 0;
+        self.frame_ranges = 0;
+        // 上一帧若没走到提交，这里把「已暂存但没生效」的影子丢掉：
+        // 影子保持原值，下一帧自然还会把同样的脏段再传一遍。
+        self.shadow_instances = None;
+        self.shadow_joints = None;
+    }
+
+    /// 把一条上传路径的脏段打进暂存区。
+    ///
+    /// 返回 `true` = 已进暂存（调用方不要再逐段 `write_buffer`）；
+    /// 返回 `false` = 装不下 / 超上限 / 已关闭（调用方必须退化回逐段直传）。
+    fn stage(
+        &mut self,
+        device: &wgpu::Device,
+        target: StagingTarget,
+        next_bytes: &[u8],
+        stride: usize,
+        ranges: &[std::ops::Range<u32>],
+    ) -> bool {
+        if !self.enabled || ranges.is_empty() {
+            return false;
+        }
+        let stride = stride.max(1);
+        let need: u64 = ranges
+            .iter()
+            .map(|run| run.end.saturating_sub(run.start) as u64 * stride as u64)
+            .sum();
+        // 槽容量按「本帧已打包字节 + 本次需求」规划：实例与关节共用一个槽
+        let want = self.frame_bytes.len() as u64 + need;
+        match slot_fit(want, self.capacity) {
+            SlotFit::Fits => {}
+            SlotFit::Grow(bytes) => {
+                self.capacity = bytes;
+                self.allocate(device);
+                self.stats.rebuilds += 1;
+            }
+            SlotFit::TooLarge => {
+                self.stats.fallbacks += 1;
+                return false;
+            }
+        }
+
+        let pack = upload_staging::pack_runs(next_bytes, stride, ranges, self.capacity);
+        if pack.over_budget || pack.copies.is_empty() {
+            self.stats.fallbacks += 1;
+            return false;
+        }
+        let base = self.frame_bytes.len() as u64;
+        self.frame_ranges += ranges.len() as u64;
+        self.frame_bytes.extend_from_slice(&pack.bytes);
+        for mut copy in pack.copies {
+            copy.src_offset += base;
+            self.pending.push(PendingCopy { target, copy });
+        }
+        true
+    }
+
+    /// 本帧一次写入：把 `frame_bytes` 整体塞进当前槽。
+    fn flush(&mut self, queue: &wgpu::Queue) {
+        if self.frame_bytes.is_empty() {
+            return;
+        }
+        let slot = self.ring.cursor();
+        queue.write_buffer(&self.slots[slot], 0, &self.frame_bytes);
+        self.frame_writes += 1;
+        self.stats.writes += 1;
+        self.stats.bytes += self.frame_bytes.len() as u64;
+        self.frame_bytes.clear();
+        // 本帧本该有的逐段调用次数 - 实际调用次数 = 省下的队列往返
+        self.stats.saves += upload_staging::saved_calls(self.frame_ranges, self.frame_writes);
+    }
+
+    /// 把排好的块拷贝录进编码器，并轮转槽位（多帧飞行）。
+    ///
+    /// 调用点必须在**创建编码器之后、提交之前**，且每帧只调一次；录完即认为
+    /// 本槽的数据会被 GPU 消费，因此紧接着推进到下一槽。
+    fn record(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        instance_buffer: &wgpu::Buffer,
+        joint_buffer: &wgpu::Buffer,
+    ) {
+        if self.pending.is_empty() {
+            // 本帧没有走暂存的数据：仍要轮转，否则下一帧会写到 GPU 可能还在读的槽
+            self.ring.advance(true);
+            return;
+        }
+        let slot = self.ring.cursor();
+        let source = &self.slots[slot];
+        for item in &self.pending {
+            let target = match item.target {
+                StagingTarget::Instances => instance_buffer,
+                StagingTarget::Joints => joint_buffer,
+            };
+            encoder.copy_buffer_to_buffer(
+                source,
+                item.copy.src_offset,
+                target,
+                item.copy.dst_offset,
+                item.copy.size,
+            );
+        }
+        self.stats.copies += self.pending.len() as u64;
+        self.stats.frames += 1;
+        self.pending.clear();
+        self.ring.advance(true);
+    }
+
+    /// 丢掉本帧尚未提交的拷贝（目标缓冲换代时用）。
+    fn drop_pending(&mut self) {
+        self.pending.clear();
+        self.frame_bytes.clear();
+        self.shadow_instances = None;
+        self.shadow_joints = None;
+    }
+
+    /// 走暂存路径时登记本帧的实例记录快照（提交后才应用）。
+    fn set_instance_shadow(&mut self, all: &[InstanceRaw]) {
+        self.shadow_instances = Some(all.to_vec());
+    }
+
+    /// 走暂存路径时登记本帧的关节记录快照（提交后才应用）。
+    fn set_joint_shadow(&mut self, joints: &[[f32; 16]]) {
+        self.shadow_joints = Some(joints.to_vec());
+    }
+
+    /// 命令提交之后调用：把暂存路径的影子一次性对齐到本帧内容。
+    ///
+    /// 此刻 `copy_buffer_to_buffer` 已入队，影子与 GPU 缓冲重新同步；
+    /// 直传路径的影子在 `write_buffer` 当场就更新过，这里不会重复写。
+    fn commit_shadows(
+        &mut self,
+        instance_shadow: &mut Vec<InstanceRaw>,
+        joint_shadow: &mut Vec<[f32; 16]>,
+    ) {
+        if let Some(records) = self.shadow_instances.take() {
+            instance_shadow.clear();
+            instance_shadow.extend_from_slice(&records);
+        }
+        if let Some(records) = self.shadow_joints.take() {
+            joint_shadow.clear();
+            joint_shadow.extend_from_slice(&records);
+        }
+    }
+
+    /// 对外读数快照（把与槽位状态相关的字段对齐到当前值）。
+    fn snapshot(&self) -> StagingStats {
+        StagingStats {
+            enabled: self.enabled,
+            slots: self.ring.slots() as u32,
+            capacity: self.capacity,
+            ..self.stats
+        }
+    }
+}
+
+/// 环境开关：`R3E_UPLOAD_STAGING=0` 时关闭暂存环，回到逐段 `write_buffer`。
+fn staging_enabled_from_env() -> bool {
+    !matches!(
+        std::env::var("R3E_UPLOAD_STAGING").ok().as_deref(),
+        Some("0")
+    )
 }
 
 pub struct Renderer {
@@ -827,6 +1125,9 @@ pub struct Renderer {
     /// 扩展三十二：关节矩阵的脏段上传读数。关节缓冲容量固定
     /// （`MAX_JOINT_MATRICES`）不换代，所以这里的 `resets` 恒为 0。
     joint_upload: InstanceUploadStats,
+    /// 扩展三十五：暂存环（实例 + 关节共用）。脏段数据先在这里攒成一帧一次写入，
+    /// 再由编码器按段块拷贝到目标缓冲；多帧飞行保证 GPU 在读的槽不被覆盖。
+    staging: UploadStaging,
     /// 阶段 D / 扩展十六：方向光阴影贴图数组（`MAX_CASCADES` 层）+ 比较采样器。
     shadow_size: u32,
     _shadow_texture: wgpu::Texture,
@@ -1543,6 +1844,9 @@ impl Renderer {
         // 遮蔽吃主通道深度、产出与 HDR 同尺寸的 AO 图，所以与窗口同级创建
         let ssao = SsaoPass::new(&device, (width, height), &depth_view);
 
+        // 扩展三十五：暂存环要在 `device` 被 move 进结构体之前建好
+        let staging = UploadStaging::new(&device, staging_enabled_from_env());
+
         Ok(Self {
             device,
             queue,
@@ -1575,6 +1879,7 @@ impl Renderer {
             // 首帧没有关节影子：第一次有蒙皮时自然走全量
             joint_shadow: Vec::new(),
             joint_upload: InstanceUploadStats::default(),
+            staging,
             shadow_size,
             _shadow_texture: shadow_texture,
             shadow_view,
@@ -1878,6 +2183,8 @@ impl Renderer {
         // 关闭时这里只做一次 `enabled` 判断，不 poll、不动 buffer。
         let occlusion_settings = scene.occlusion.sanitized();
         self.occlusion.begin_frame(&self.device, occlusion_settings);
+        // 扩展三十五：本帧暂存写入计数归零（`prepare_instances` 里攒包、`flush` 落槽）
+        self.staging.begin_frame();
         let plan = self.prepare_instances(scene);
         let groups = plan.groups;
         let transparent_start = plan.transparent_start;
@@ -1905,6 +2212,12 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("r3e-encoder"),
             });
+
+        // 扩展三十五：把本帧暂存环里的块拷贝录进编码器 —— 之前 `prepare_*` 阶段
+        // 只往暂存槽写了一次，真正的「槽 → 实例/关节缓冲」搬运在这里按段展开。
+        // 必须紧跟编码器创建、在任何绘制 pass 之前，且本帧一定会被提交。
+        self.staging
+            .record(&mut encoder, &self.instance_buffer, &self.joint_buffer);
 
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
         let mut shadow_draws = 0u32;
@@ -2064,6 +2377,8 @@ impl Renderer {
                 instance_upload: self.instance_upload,
                 // 扩展三十二：关节矩阵的脏段读数，同样是上传时定型
                 joint_upload: self.joint_upload,
+                // 扩展三十五：暂存环（一帧一次写入 + 多帧飞行）的累计读数
+                upload_staging: self.staging.snapshot(),
             };
         }
 
@@ -2158,6 +2473,10 @@ impl Renderer {
         self.stats.ui_draws = ui_stats.draw_calls;
 
         self.queue.submit(Some(encoder.finish()));
+        // 扩展三十五：槽 → 实例/关节的块拷贝已随本帧提交，此刻才允许把影子
+        // 对齐到本帧内容；提交前更新会让「没提交的帧」永久漏传（扩展三十一不变量）。
+        self.staging
+            .commit_shadows(&mut self.instance_shadow, &mut self.joint_shadow);
         // 扩展二十二：命令提交后才挂 map_async —— 此时 copy 已入队，
         // 回调在下一次 `poll` 里被触发，本帧绝不等待 GPU。
         if depth_readback {
@@ -3280,6 +3599,8 @@ impl Renderer {
             // 没有实例可画：影子与读数都归零，下一帧若又有实例会自动走全量
             // （影子长度为 0 → 与新版长度不等 → `plan_upload` 退化为全量）。
             self.instance_shadow.clear();
+            // 扩展三十五：关节那一侧可能已经排进暂存环，这里仍要把它推上去
+            self.staging.flush(&self.queue);
             self.instance_upload = InstanceUploadStats {
                 resets: self.instance_upload_resets,
                 ..Default::default()
@@ -3317,12 +3638,18 @@ impl Renderer {
             self.instance_shadow.clear();
             self.instance_shadow.shrink_to_fit();
             self.instance_upload_resets += 1;
+            // 扩展三十五：换代后旧缓冲作废，暂存环里已排但未提交的拷贝必须丢弃
+            // （否则会拷进刚被替换掉的那个 `wgpu::Buffer`）
+            self.staging.drop_pending();
         }
 
         // 扩展三十一：只把「与上一帧逐字节不同」的连续段传上去。
         // 记录内容完全不改，所以画面与全量上传逐位一致；静态场景下这一段
         // 通常只有几段、几十个实例，而不是整张 960 KiB。
         self.upload_instance_runs(&all);
+        // 扩展三十五：本帧的实例 + 关节脏段都已打进暂存区，这里一次性写进当前槽。
+        // 放在两条上传路径之后，所以一帧只有一次 `write_buffer`。
+        self.staging.flush(&self.queue);
 
         InstancePlan {
             groups,
@@ -3354,14 +3681,31 @@ impl Renderer {
         let plan =
             instance_upload::plan_upload(prev_bytes, next_bytes, stride, MERGE_GAP, MAX_RANGES);
 
-        for run in &plan.ranges {
-            let start = run.start as usize * stride;
-            let end = run.end as usize * stride;
-            self.queue.write_buffer(
-                &self.instance_buffer,
-                run.start as u64 * stride as u64,
-                &next_bytes[start..end],
-            );
+        // 扩展三十五：优先把脏段打进暂存环 —— 一帧只做一次 `write_buffer`，
+        // 逐段搬运改由命令编码器里的块拷贝完成（省的是调用开销，不是带宽）。
+        // 装不下 / 超上限 / 开关关闭时 `stage` 返回 false，走下面的逐段直传。
+        let staged = self.staging.stage(
+            &self.device,
+            StagingTarget::Instances,
+            next_bytes,
+            stride,
+            &plan.ranges,
+        );
+        if staged {
+            self.staging.set_instance_shadow(all);
+        } else {
+            for run in &plan.ranges {
+                let start = run.start as usize * stride;
+                let end = run.end as usize * stride;
+                self.queue.write_buffer(
+                    &self.instance_buffer,
+                    run.start as u64 * stride as u64,
+                    &next_bytes[start..end],
+                );
+            }
+            // 直传路径当场生效，影子也当场刷新（与扩展三十一的不变量一致）
+            self.instance_shadow.clear();
+            self.instance_shadow.extend_from_slice(all);
         }
 
         self.instance_upload = InstanceUploadStats {
@@ -3373,9 +3717,6 @@ impl Renderer {
             full: plan.full,
             resets: self.instance_upload_resets,
         };
-
-        self.instance_shadow.clear();
-        self.instance_shadow.extend_from_slice(all);
     }
 
     /// 扩展三十二：把本帧关节矩阵按脏段传上 GPU，并刷新影子副本。
@@ -3401,14 +3742,29 @@ impl Renderer {
         let plan =
             instance_upload::plan_upload(prev_bytes, next_bytes, stride, MERGE_GAP, MAX_RANGES);
 
-        for run in &plan.ranges {
-            let start = run.start as usize * stride;
-            let end = run.end as usize * stride;
-            self.queue.write_buffer(
-                &self.joint_buffer,
-                run.start as u64 * stride as u64,
-                &next_bytes[start..end],
-            );
+        // 扩展三十五：与实例路径共用同一个暂存槽（同一帧一次写入），
+        // 记录是 mat4（64 B），拷贝目标换成关节缓冲。
+        let staged = self.staging.stage(
+            &self.device,
+            StagingTarget::Joints,
+            next_bytes,
+            stride,
+            &plan.ranges,
+        );
+        if staged {
+            self.staging.set_joint_shadow(joints);
+        } else {
+            for run in &plan.ranges {
+                let start = run.start as usize * stride;
+                let end = run.end as usize * stride;
+                self.queue.write_buffer(
+                    &self.joint_buffer,
+                    run.start as u64 * stride as u64,
+                    &next_bytes[start..end],
+                );
+            }
+            self.joint_shadow.clear();
+            self.joint_shadow.extend_from_slice(joints);
         }
 
         self.joint_upload = InstanceUploadStats {
@@ -3420,9 +3776,6 @@ impl Renderer {
             full: plan.full,
             resets: 0,
         };
-
-        self.joint_shadow.clear();
-        self.joint_shadow.extend_from_slice(joints);
     }
 
     /// 取网格材质自身的 alpha（无材质 / 无贴图时按 1.0 处理）。

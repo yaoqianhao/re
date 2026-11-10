@@ -14,6 +14,7 @@ pub mod ssao;
 pub mod text;
 pub mod transparency;
 pub mod ui;
+pub mod upload_staging;
 
 pub use envprobe::{
     encode_faces, f16_to_f32, f32_to_f16, mip_lod, EnvProbeFaceUpload, EnvProbeSource,
@@ -38,4 +39,8 @@ pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
 pub use ui::{
     images_to_load, plan_ui, plan_ui_limited, UiBatch, UiBuild, UiImageProvider, UiInstance,
     UiPass, UiStats, MAX_UI_QUADS, MAX_UI_TEXTURE_DIM,
+};
+pub use upload_staging::{
+    pack_runs, slot_bytes, slot_fit, SlotFit, SlotRing, StagedCopy, StagedPack, STAGING_ALIGN,
+    STAGING_MAX_BYTES, STAGING_MIN_BYTES, STAGING_SLOTS,
 };

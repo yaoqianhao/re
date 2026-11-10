@@ -1067,6 +1067,23 @@ impl EngineApp {
             joint_saved,
             joints.full
         );
+        // 暂存环探针（扩展三十五）：`写` 是队列级 write_buffer 次数，`拷贝` 是块拷贝条数。
+        // 零碎脏段被收成一次写时 `省 >= 0`；`退化` 增长说明本帧字节超过 8 MiB 或打包装不下，
+        // 已回落到逐段直传（此时 `写` 会等于脏段数之和）。
+        let staging = stats.upload_staging;
+        log::info!(
+            "[{tag}] 暂存环：{} / 槽 {} / 容量 {:.1} KiB / 帧 {} / 写 {} 次 / 拷贝 {} 条 / {:.1} KiB / 省写 {} 次 / 重建 {} / 退化 {}",
+            if staging.enabled { "启用" } else { "关闭" },
+            staging.slots,
+            staging.capacity as f64 / 1024.0,
+            staging.frames,
+            staging.writes,
+            staging.copies,
+            staging.bytes as f64 / 1024.0,
+            staging.saves,
+            staging.rebuilds,
+            staging.fallbacks
+        );
         // 遮挡剔除探针（扩展二十二）：`启用` 是「真的在判」（场景开关 + 金字塔就绪），
         // 刚开的第一帧金字塔还在读回路上，所以会先有一段 `启用 false` 的过渡期。
         // `读回` 只在取到新深度的那一帧为 true（默认每 4 帧一次）。
