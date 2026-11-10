@@ -146,22 +146,24 @@ rust3d-engine/
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
 | r3e-core | 19,034 | 3,448 | 423 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `envmap.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 8,909 | 2,472 | 180 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-render | 9,281 | 2,630 | 199 | `renderer.rs` / `instance_upload.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,227 | 585 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
 | r3e-script | 5,402 | 1,219 | 88 | `api.rs` / `lib.rs`（含文本、UI、音频、空间化音频、材质、环境、HDR 环境探针、遮蔽、遮挡剔除、动画层、局部阴影语义单测） |
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-app | 6,934 | 231 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
+| r3e-app | 6,965 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **58,132** | **10,273** | **1,010** | **约 5.8 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 71 个套件 / 1,006 passed / 0 failed** |
+| **合计** | **58,535** | **10,430** | **1,029** | **约 5.9 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 72 个套件 / 1,025 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,310 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
 扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测，
 扩展二十九（主通道视锥剔除层级化）再增量 +241 src / +387 tests / +14 单测 / +2 套件，
-扩展三十（主通道遮挡剔除层级化）再增量 +414 src（净）/ 0 tests / +7 单测 / 0 套件
-（综上停在扩展三十收尾：58,132 行 / 10,273 tests 行 / 1,010 单测 / 71 套件 1,006 passed；
+扩展三十（主通道遮挡剔除层级化）再增量 +414 src（净）/ 0 tests / +7 单测 / 0 套件，
+扩展三十一（实例缓冲持久化 + 脏段上传）再增量 +403 src / +157 tests / +19 单测 / +1 套件
+（`instance_upload.rs` 274 行 11 测、`instance_upload_contract.rs` 158 行 8 测，另加渲染器与 app/编辑器探针接线）
+（综上停在扩展三十一收尾：58,535 行 / 10,430 tests 行 / 1,029 单测 / 72 套件 1,025 passed；
 更早的扩展二十三收尾快照为 56,243 行 / 8,619 tests 行 / 932 单测 / 63 套件 928 passed）。
 单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
@@ -175,8 +177,8 @@ Release 二进制 14.3 MB（14,949,888 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,006 passed / 0 failed（71 个套件；较扩展二十九收尾的 999 增 7：`occlusion.rs`（core）内联 5 条 + `occlusion.rs`（render）内联 2 条） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,010 passed / 0 failed（默认特性 + `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,025 passed / 0 failed（72 个套件；较扩展三十收尾的 1,006 增 19：`instance_upload.rs` 内联 11 条 + `instance_upload_contract.rs` 8 条） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,029 passed / 0 failed（默认特性 + `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -1084,6 +1086,11 @@ SSAO、快照一路扩散，表现是一整片区域随机刷黑或噪点，而�
 
 之所以把模型矩阵放进实例缓冲而不是 uniform：这样**整个场景一次上传、按网格分组一次绘制**，不随物件数量增加 draw call。`step_mode = Instance` 让每个实例读同一份顶点但不同矩阵。
 
+**实例缓冲是持久的，上传按脏段**（扩展三十一）：`instance_buffer` 按 2 倍扩容跨帧复用，另有
+`instance_shadow: Vec<InstanceRaw>` 保存**上一帧真正写进 GPU 的那批字节**；每帧只把与影子不同的记录按连续
+区间 `write_buffer` 上去（§5.23）。所以「实例格式」这一层没有任何变化——96 B/实例、`step_mode = Instance`
+都不动，变的只是「什么时候写、写多少」：稳态静态场景一帧写 0 字节。
+
 ### 5.2 程序化网格
 
 `MeshData::for_kind(kind)` 按类型分派，全部在 CPU 侧生成后上传，无文件 IO：
@@ -1155,18 +1162,24 @@ render(scene):
   ├─ prepare_instances(scene)
   │   ├─ camera.aspect ← 真实窗口比例
   │   ├─ 组装 CameraUniform 并 write_buffer（view_proj / camera_pos / light_dir / light_color+intensity / ambient）
-  │   ├─ 先按网格 + 材质分出键表，再按「alpha = node.color.w × 网格材质 alpha」拆成
-  │   │   opaque_keys / transparent_keys，拼出 keys = 不透明 ++ 半透明
-  │   │   （`transparent_start` = 不透明批次数，绘制时切一次管线即可）
-  │   ├─ 遍历 scene.iter()：跳过 !visible；用 node.world 与 node.color 组装 InstanceRaw
-  │   │   ├─ 不透明实例直接进实例缓冲，每组记录 Range<u32>（连续区间）
-  │   │   └─ 半透明实例先攒 staged（带 view_depth 排序键），等整批收齐再排
-  │   ├─ 顺带 union 出可见物件的世界包围盒，返回给阴影通道拟合光源相机
-  │   ├─ 半透明批次：组间按「组内最远深度」降序，组内按 transparency::back_to_front
-  │   │   由远及近搬进实例缓冲（同分保持原顺序，顺序稳定可复现）
+  │   ├─ 第一遍（只收集，不看剔除）：遍历 scene.iter() 跳过 !visible
+  │   │   ├─ 算世界包围盒（蒙皮网格按 SKIN_CULL_MARGIN 外扩）并 union 进 scene_bounds
+  │   │   └─ 写回 cull_tree 节点盒，攒 prepared{id, tree_slot, world, key, world_matrix, color}
+  │   ├─ 视锥掩码 refresh + plan_frustum(cull_tree) → mask_frustum（扩展二十九）
+  │   ├─ 遮挡掩码 plan_occlusion(cull_tree, 上一帧金字塔) → mask_occlusion（扩展三十；
+  │   │   金字塔未就绪 / 开关关 → None，整段回退逐实例判）
+  │   ├─ 第二遍：两掩码相与筛，用 node.world 与 node.color 组装 InstanceRaw
+  │   │   ├─ 透明节点只进半透明桶且不吃遮挡剔除；不透明且未被遮挡只进不透明桶（扩展二十八）
+  │   │   ├─ 按「alpha = node.color.w × 网格材质 alpha」分键、桶键带段标志，摊平成
+  │   │   │   groups（不透明在前、`transparent_start` = 不透明批次数）
+  │   │   └─ 半透明批次：组间按「组内最远深度」降序，组内按 transparency::back_to_front
+  │   │       由远及近搬（同分保持原顺序，顺序稳定可复现）
+  │   ├─ 关节槽位按入桶顺序分配（skinned 才写 joint_scratch）
   │   ├─ 惰性上传尚未创建的网格（首次用某网格才传）
-  │   ├─ 实例数超过容量 → 2 倍扩容重建 buffer
-  │   └─ write_buffer 上传全部实例
+  │   ├─ 实例数超过容量 → 2 倍扩容重建 buffer，并清空 instance_shadow（下一帧必全量）
+  │   ├─ instance_upload::plan_upload(影子, 本帧全部记录, 96, MERGE_GAP=8, MAX_RANGES=24)
+  │   │   → 逐脏段 write_buffer；写完才把影子换成本帧记录（扩展三十一）
+  │   └─ 统计 instance_upload{ranges, recorded, skipped, bytes, full_bytes, full, resets}
   ├─ prepare_shadow(groups, bounds, light)  → bool 是否需要跑阴影通道
   │   ├─ shadow.size 变化 → 重建深度纹理 + 采样器 bind group（贴图句柄不能原地 resize）
   │   ├─ Light::shadow_view_projection(场景包围球) → 光源正交矩阵
@@ -1217,7 +1230,11 @@ render(scene):
   ├─ queue.submit + queue.present
 ```
 
-**关键性质**：每帧从 `Scene` **全量重建**实例数据，不维护任何 GPU 侧持久状态（除了静态网格与管线）。因此脚本删物件、改颜色、改位置，都不需要通知渲染器，也不存在"状态没同步"的问题。代价是每帧一次 O(可见物件数) 的 CPU 组装与全量上传——在当前规模（数千物件）完全够用，上万物件时会成为瓶颈。
+**关键性质**：每帧从 `Scene` 重新算出「本帧画哪些实例、按什么顺序」，但**不再无条件全量上传**——实例缓冲
+跨帧复用，只有内容变了的记录才写（扩展三十一，§5.23）。因此脚本删物件、改颜色、改位置仍然不需要通知渲染器，
+也不存在"状态没同步"的问题：脏段是**比较**出来的，不是**通知**出来的。仍然不维护其它 GPU 侧持久状态
+（除静态网格与管线）。CPU 侧成本是 O(可见物件数) 的实例组装 + O(实例数) 的 memcmp；GPU 侧带宽在静态场景
+降为零，上万物件时的瓶颈因此从「上传」挪到「组装与比较」。
 
 **Draw call 数 = 实际使用的网格种类数**（≤ 4）。1000 个立方体是 1 个 draw call，不是 1000 个。
 
@@ -1467,8 +1484,14 @@ pub struct RenderStats {
     pub transparent_draws: u32,     // 半透明通道 draw call（扩展十九）；0 = 本帧无半透明批次
     pub transparent_instances: u32, // 半透明通道实例数
     pub depth_prepass_draws: u32,   // 深度预通道 draw call（只画不透明段）
+    pub instance_upload: InstanceUploadStats, // 实例上传（扩展三十一）：ranges / recorded / skipped / bytes / full_bytes / full / resets
 }
 ```
+
+`instance_upload` 里除 `resets`（**累计**换代次数，扩容重建缓冲的次数，放在 `Renderer` 上才不会被每帧清零）外
+都是**本帧**值：`ranges` 脏段数、`recorded` 实写记录数、`skipped` 与上一帧逐字节相同而跳过的记录数
+（`recorded + skipped` 恒等于本帧记录总数）、`bytes` / `full_bytes` 实写与本帧总字节、`full` 是否退化成整张全量。
+含义与实测读数见 §5.23 / §8.26。
 
 `ssao.passes` 的取值只有三种：`0`（场景没开遮蔽段，整条链跳过）、`2`（遮蔽 + 4×4 散焦各一次全屏 pass）。
 `ssao.samples` 是**实际生效**的核样本数（已被夹进 `[4, 16]`），与场景里写的值可能不同——这正是要观测它的原因。
@@ -2784,6 +2807,56 @@ pub struct OcclusionCullPlan {
 - **盒判定本身有成本**：树节点数多于实例数时（层级平坦、实例都挂在根下）净收益为 0 甚至略负，
   与扩展二十九同性质，都摊在噪声里。
 
+### 5.23 实例缓冲持久化与脏段上传（扩展三十一）
+
+**问题**：扩展二十七把实例收集压成单遍之后，收集侧的热点基本没了，剩下的热点是「每帧把整张实例缓冲重传一遍」。
+一万实例 = 960 KiB/帧，而静态场景里这 960 KiB 有九成以上与上一帧**逐字节相同** —— 传的是同一份数据。
+
+**做法**：把「算脏段」抽成 `r3e-render/src/instance_upload.rs` 里的**零依赖纯函数**
+`plan_upload(prev, next, record, merge_gap, max_ranges) -> UploadPlan`，渲染器只负责「按计划写」与「维护影子」。
+
+| 输入 / 输出 | 含义 |
+| --- | --- |
+| `prev` | 上一帧真正上传过的字节（`instance_shadow` 的 `u8` 视图） |
+| `next` | 本帧要画的全部 `InstanceRaw` |
+| `record` | 单条记录字节数（`size_of::<InstanceRaw>()` = 96） |
+| `merge_gap` | 相邻脏区之间允许的空洞记录数（`MERGE_GAP = 8`） |
+| `max_ranges` | 单帧脏段上限（`MAX_RANGES = 24`），超了退化为全量 |
+| `UploadPlan.ranges` | 连续**记录下标**区间，升序、互不重叠（渲染器乘 96 换算成字节偏移） |
+| `recorded` / `skipped` | 本次写入 / 跳过的记录数，两者之和恒等于记录总数 |
+| `bytes` / `full` | 本次实际字节数 / 是否退化成「从 0 开始整张一段」 |
+
+判定与取舍：
+
+- **按记录整段比较**（memcmp 语义，不是逐 `f32` 字段比）：NaN、`-0.0`、位模式不同的 `0.0` 都算「变了」——
+  位不同就算脏，宁多传不漏传；
+- **长度不等即全量**：实例数变了（脚本增删节点）就没有逐条可比基线，整张传；扩容换代同理，且换代时
+  **清空影子**，让下一帧必然全量；
+- **`MERGE_GAP` 是「字节换调用」**：两段脏区之间的空洞 ≤ 8 条（768 B）就并进同一段，用几百字节换掉一次
+  `write_buffer`；
+- **`MAX_RANGES` 是反方向的同一笔账**：`write_buffer` 每次调用都要过队列校验，碎成上百段比整张传更贵，
+  所以超过 24 段就整张全量；
+- **影子在写完 GPU 之后才更新**：中途 panic 时宁可下一帧多传一遍，也不能让影子记着「传过了」而缓冲里
+  其实还是旧数据。
+
+**边界**：
+
+- 影子是 96 B/实例的**额外 CPU 内存**（一万实例 ≈ 938 KiB），每帧还要做一次 O(实例数) 的 memcmp——
+  省的是带宽，CPU 侧仍有比较成本；
+- **半透明批次按深度重排**：相机一动，`back_to_front` 的顺序整体变化，脏区连成一大片、退化成接近全量。
+  省得最多的是「不透明为主 + 静态或缓慢变化」的场景；
+- 实例记录本身的装配（`InstanceRaw` 逐条组装、桶摊平、排序）**没有变**，省掉的是上传；
+- 仍是 `queue.write_buffer`，没有持久映射缓冲、没有多帧飞行（`upload` 与 `submit` 的节奏未变），
+  也**不减少 draw call**（合批规则没动）；
+- 记录内容一个字节都没改，所以画面与全量上传**逐位一致**，像素基线不需要重建。
+
+契约由 `crates/r3e-render/tests/instance_upload_contract.rs`（8 条）与 `instance_upload.rs` 内联（11 条）守：
+`defaults_report_nothing_uploaded` / `instance_record_stride_is_ninety_six_bytes` /
+`one_moving_instance_uploads_one_range` / `static_frame_uploads_zero_bytes` /
+`instance_count_change_forces_full_upload` / `renderer_uploads_through_dirty_runs` /
+`buffer_rebuild_clears_shadow` / `stats_are_self_consistent`；内联侧另钉住空洞合并边界、段数超限退化、
+位级差异算脏、96 B 记录对齐。
+
 ### 8.1 程序入口（main.rs）
 
 ```rust
@@ -3689,6 +3762,49 @@ $env:R3E_VISUAL_REGRESSION = "1"; $env:R3E_VISUAL_STRICT = "1"; cargo test -p r3
 
 ---
 
+### 8.26 实例上传的探针（扩展三十一）
+
+**① 探针**：§8.25 那行之后、遮挡剔除行之前，多一行（同一次 `--run-seconds`，起止各一次）：
+
+```
+[frame] 实例上传：脏段 0 / 写 0 条 / 跳过 1539 条 / 0.0 KiB（全量 144.3 KiB，省 100.0%）/ 全量 false / 换代 1
+```
+
+| 字段 | 来源 | 读法 |
+| --- | --- | --- |
+| `脏段` | `stats.instance_upload.ranges` | 本帧提交了几次 `write_buffer`；`0` = 一个字节都不用传 |
+| `写` | `recorded` | 实写记录数（含为合并而重传的空洞） |
+| `跳过` | `skipped` | 与上一帧逐字节相同、没传的记录数；`写 + 跳过` = 本帧记录总数 |
+| `KiB（全量 … 省 …%）` | `bytes` / `full_bytes` | 实写字节、本帧总字节，括号里的比例是 `100 - bytes/full_bytes` |
+| `全量` | `full` | `true` = 退化成整张一段；只出现在首帧、容量换代、实例数变化、脏段碎到超 24 段 |
+| `换代` | `resets`（累计） | 实例缓冲重建次数。**逐帧增长**说明容量估算失效（每帧都在重建缓冲） |
+
+**② 没有新增脚本 API**：这是纯上传层优化，开关就是「有没有变」——不改场景、脚本、RPC 的任何一个字节。
+
+**③ 怎么验证**：
+
+```powershell
+# CPU 侧：脏段计划与逐字节比较等价（差分 + 合并 + 退化 + 换代）
+cargo test -p r3e-render instance_upload
+
+# 画面没漂：记录内容未改，像素必须与扩展三十基线一致
+$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
+```
+
+**④ 实测**（Release，RTX 5060 Laptop / Vulkan，`--run-seconds` 取起止两帧）：
+
+| 场景 | 实例数 | 脏段 | 写 / 跳过 | 实写 / 全量 | 全量 | 换代 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 自造静态场景（群体，物体不动） | 1,537 | 0 | 0 / 1,539 | 0.0 KiB / 144.3 KiB（省 100%） | false | 1 |
+| `assets/scene.json` + `scripts/main.rhai`（有增删） | 变化 | 1 | 5 / 3 → 7 / 0 | 省 37.5% → 全量 | false → true | 0 |
+| 只旋转两个物件（实例数不变） | 不变 | 1 | 3 / 3 | 省 50.0% | false | 0 |
+
+第二行是「脚本每帧增删临时节点」的典型形态：实例数一变，当帧只能全量（`写 7 / 跳过 0`），这正是
+`plan_upload` 的设计取舍——没有逐条可比基线时不猜。第三行说明「只动两个物件」时只传那两条记录
+（3 条 = 2 条真改 + 1 条被 `MERGE_GAP` 并进来的空洞）。
+
+---
+
 ## 9. 端到端数据流
 
 ```
@@ -3776,11 +3892,14 @@ $env:R3E_VISUAL_REGRESSION = "1"; $env:R3E_VISUAL_STRICT = "1"; cargo test -p r3
 ### 11.2 性能特征
 
 - **Draw call**：≤ 4（实际使用的网格种类数），与物件数无关。
-- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（96 B/物件）组装与一次 `write_buffer`；
+- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（96 B/物件）组装，
+  外加一次 O(实例数) 的 memcmp（脏段比较）与若干次 `write_buffer`（只传脏段）；
   视锥测试前先查 `MeshCache::bounds`（哈希，`MeshRef` 为键），不重扫顶点、不走 `dyn`。
   蒙皮实例额外做一次关节矩阵求解（O(关节数)）与第二路 `write_buffer`。
-- **上传带宽**：实例数 × 96 B/帧 + 关节矩阵 64 B/关节/帧。1000 物件 ≈ 94 KB/帧，
-  60 FPS 下约 5.6 MB/s；单个 37 关节的角色每帧仅 2.4 KB，可忽略。
+- **上传带宽**（扩展三十一起按脏段计）：实例侧最坏仍是 实例数 × 96 B/帧，稳态静态场景为 **0 B/帧**；
+  1,537 实例场景实测稳态 `脏段 0 / 写 0 条 / 跳过 1,539 条`，只转两个物件时 `脏段 1 / 写 3 条`（省 50%）。
+  不做脏段时的基线是 1000 物件 ≈ 94 KB/帧、60 FPS 下约 5.6 MB/s；关节矩阵仍固定 64 B/关节/帧
+  （37 关节角色每帧 2.4 KB，可忽略）——关节侧**没有**做脏段比较。
 - **世界矩阵求解**：`update_world_transforms` 带记忆化缓存 + 深度上限，深层次结构下仍是 O(n)。
 - **实测规模**：数千物件的群体动画（`example_swarm.rhai`）在 RTX 5060 Laptop / Vulkan 下运行正常，帧时间 1 ms 量级。
 - **遮挡剔除成本**（扩展二十二，缺省关闭，开启后）：CPU 侧每条判定是投影 + 至多 `max_tiles`（默认 256）次 `f32` 比较，
@@ -3793,7 +3912,9 @@ $env:R3E_VISUAL_REGRESSION = "1"; $env:R3E_VISUAL_STRICT = "1"; cargo test -p r3
   上传是一次性 `6 × mip_levels` 次 `write_texture`（缺省 36 次，约 1 MiB f16 数据）。
   **每帧开销为零**：探针配置不变时 `sync_env_probe` 在比较后直接返回，镜头 / 物件数都不影响它；
   唯一的偶发尖峰是「换探针」那一帧重建整批材质 bind group。
-- **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配。
+- **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配，
+  且换代当帧强制全量上传（`instance_shadow` 清空，`resets` 累计 +1）。影子缓冲本身是 96 B/实例的
+  CPU 内存（1,537 实例 ≈ 144 KiB），随扩容同步增长。
 - **阴影通道成本**：单级时顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
   开启 N 级级联则为 N 倍（每级一次全场景深度 pass）。主通道每片元多 9 次 `textureSampleCompare`
   （3×3 PCF），级联过渡带内翻倍到 18 次。2048² 单级贴图实测仍满帧；4 级 2048² 实测亦满帧
@@ -3808,7 +3929,9 @@ $env:R3E_VISUAL_REGRESSION = "1"; $env:R3E_VISUAL_STRICT = "1"; cargo test -p r3
    渐进复核，或加「连续 N 帧才剔」的迟滞消除延迟一帧的抖动。
 2. **半透明排序细化**：实例级由远及近已在扩展十九落地；进一步可做逐三角形排序或 OIT（权重无关透明），解决同网格内相交半透明。
 3. **MSAA 可配置化**：4× 已落地（扩展十九）；进一步可做运行时切换 `1×/2×/4×/8×` 与 `sample_count` 自适应，或上 TAA 补时间维度抗锯齿。
-4. **脏标记**：若物件规模上万，把"每帧全量上传"改为"版本号变化才上传"。
+4. **实例上传的时间维度**（扩展三十一已落地一半）：已从「每帧全量上传」换成「按记录比较 + 脏段上传」
+   （§5.23），静态场景零上传。进一步可做「场景版本号 / 节点脏标志」跳过整帧比较（省掉 96 B×N 的 memcmp）、
+   给关节矩阵也做脏段、或换持久映射缓冲 + 多帧飞行（目前仍是每帧 `write_buffer` 逐段提交）。
 5. **级联遮挡体的 GPU 代理预筛**：扩展二十四按 AABB 裁掉级外遮挡体、扩展二十五把判定改成
    按场景树的层级剔除（§4.18 / §5.18，扁平场景净收益为 0，组装场景实测约三成）。进一步可把判定
    搬到 GPU：级联层级包围盒做成实例化球/盒代理 + 硬件裁剪，或跨帧复用上一帧的掩码。
@@ -3858,6 +3981,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; $env:R3E_VISUAL_STRICT = "1"; cargo test -p r3
 | **二十八（已完成：段归属下沉到节点）** | **一份几何只进自己那一段的桶**：`prepare_instances` 的入桶从「无条件两段各收一次」改成按节点自身透明性分支（`transparent` → 半透明桶；否则吃遮挡剔除结果后进不透明桶），段标志成为桶键第三位、`opaque_keys` / `transparent_keys` 各自判重；`visual_regression` 夹具主通道实例 10 → 7、半透明段透明实例 3 → 2（少的 3 个是重复份），draw call 不变、像素逐位不变 | `render/renderer.rs`；`render/tests/instance_buckets_contract.rs`（4 → 7：补「键按段登记」「桶键带段标志」「玻璃不进不透明段」） | 无（同一份几何少画一次；`R3E_VISUAL_STRICT=1` 原基线通过、无需重建）。**行为变化**：半透明物件不再被遮挡剔除（金字塔里本就没有它的深度贡献）。**边界**：仍单线程、仍每帧从零收集、`HashMap` 不跨帧复用 |
 | **二十九（已完成：主通道视锥剔除层级化）** | **视锥那一关从逐实例改成按子树整枝跳判**：复用扩展二十五的 `CasterTree`，`plan_frustum` 自顶向下（子树盒整块在视锥外就整枝跳过、混合节点自身盒复判、叶子逐实例），`prepare_instances` 拆两遍（收盒 → `refresh` + `plan_frustum` → 按节点掩码筛再遮挡 / 入桶）；无 AABB 的节点在树里登记 `fail_open_bounds` 巨盒（fail-open 不剪）；掩码对两段都生效（半透明也吃视锥剔除），计数 `cull_tree` / `cull_slots` / `cull_layout` 进探针与 `engine_stats`；`descend` 提成 `pub` 供两条 plan 共用 | `core/shadow_cull.rs`（`plan_frustum` / `CullPlan` / `LevelCounts`，新增 `tests/frustum_cull_hierarchy.rs` 8 条）、`render/renderer.rs`（`sync_cull_layout` + 两遍 prepare）、`app/src/app.rs` 探针、`app/src/editor.rs` stats | 无（掩码与逐实例判定逐位相同，像素基线不变）。**边界**：`refresh` 是 O(节点) 两次遍历、扁平场景净收益为 0、树按 `layout_version` 重建 |
 | **三十（已完成：主通道遮挡剔除层级化）** | **遮挡那一关也按子树整枝跳判**：`plan_occlusion(tree, pyramid, ...)` 用同一棵 `CasterTree` + 上一帧深度金字塔（保守前提：子树盒的屏幕矩形包住子盒、`nearest` 更近、阈值单调 ⇒ 子树被挡则子盒必被挡），`OcclusionCullPlan { mask, counts, occluded }`；无金字塔 / 空树 / 开关关时返回 `None` 整段退回逐实例 `test`（fail-open），半透明段不剔；`record_hierarchy` 在循环外累加、循环内只读掩码（避开同时借用）；`OcclusionStats` 新增 `hierarchy` / `box_tests` / `pruned` / `branch_pruned` 进日志与 `engine_stats` | `core/occlusion.rs`（`plan_occlusion` / `OcclusionCullPlan`，内联 5 条）、`core/shadow_cull.rs`（`descend` → `pub(crate)`）、`core/lib.rs` 导出、`render/renderer.rs`（第二遍遮挡段接掩码）、`render/occlusion.rs`（2 条测试）、`app/src/app.rs` 探针、`app/src/editor.rs` stats | 无（截图与关闭遮挡时逐字节相同、sha256 一致；像素基线无需重建）。**边界**：延迟一帧（金字塔滞后）、只剔不透明段、零屏幕覆盖按不可见（两路径一致）、盒判定本身有成本（扁平场景净收益为 0） |
+| **三十一（已完成：实例缓冲持久化 + 脏段上传）** | **实例缓冲跨帧复用、只写变动段**：新增 `r3e-render/src/instance_upload.rs` 纯函数 `plan_upload(prev, next, record, merge_gap, max_ranges) -> UploadPlan { ranges, recorded, skipped, bytes, full }`（按记录整段 memcmp、空洞 ≤ `MERGE_GAP = 8` 条合并、段数 > `MAX_RANGES = 24` 或长度不等即退化全量）；`Renderer` 增 `instance_shadow`（上一帧已上传字节的 CPU 影子，96 B/实例）与 `InstanceUploadStats`，`upload_instance_runs` 逐段 `write_buffer` **之后**才更新影子（panic 时宁可下一帧多传一遍）；扩容换代清空影子 ⇒ 当帧全量；`RenderStats.instance_upload` 本帧读数 + `resets` 累计换代次数，app 日志与编辑器 `stats.render` JSON 各加一处探针 | `render/instance_upload.rs` 新增（内联 11 测）、`render/lib.rs` 导出、`render/renderer.rs`（影子 + 逐段上传 + 统计）、`app/src/app.rs` 上传探针、`app/src/editor.rs` `instance_upload` 读数、新增 `tests/instance_upload_contract.rs`（8 测） | 无（记录内容一字节未改，画面与全量上传逐位一致，像素基线无需重建）。**边界**：以记录数相等为前提（实例数一变就全量）、半透明重排会让大半张缓冲变脏、影子占 96 B/实例内存、仍是每帧 `write_buffer`（无持久映射与多帧飞行）、关节矩阵未做脏段 |
 
 两条与顺序相关的说明：
 
@@ -3930,6 +4054,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 段归属下沉到节点（扩展二十八） | `cargo test -p r3e-render --test instance_buckets_contract` → 7 passed（新增 `node_enters_only_its_own_segment`）；`cargo test --workspace` 69 套件 **985 passed / 0 failed**（扩展二十七收尾为 984）；`--features rapier` **989 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）0 warning；`cargo build --release` + `r3e.exe --run-seconds 2` 退出码 0（二进制 14,949,888 字节）。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → `captured_frame_matches_baseline ... ok`，与既有基准图**逐位一致、无需重建** —— 旧的「两段全收」之所以像素也对，是因为不透明段那次绘制自己做完了混合并写了深度、半透明段重画被 `depth_compare = Less` 判等丢弃，只有一次生效；去掉重复份后玻璃改由半透明段按 `back_to_front` 画，单块不重叠玻璃结果相同。**探针取证（改前 → 改后）**：`visual_regression` 夹具主通道实例 **10 → 7**、半透明段透明实例 **3 → 2**、draw call 5 不变；`--run-seconds 2` 缺省场景主通道实例 8 / 透明实例 0（缺省场景无半透明物件）。 |
 | 主通道视锥剔除层级化（扩展二十九） | `cargo test -p r3e-core --test frustum_cull_hierarchy` → 8 passed；`cargo test -p r3e-render --test frustum_cull_wiring` → 6 passed；`cargo test --workspace` 71 套件 **999 passed / 0 failed**（扩展二十八收尾为 69 套件 985）；`--features rapier` **1,003 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → 2 passed，与既有基准图**逐位一致、无需重建**（`prepared` 保持场景迭代序，桶序与 `groups` 区间逐个相同）。**探针取证**：`visual_regression` 夹具（7 实例、层级平坦）视锥层级剔除 盒判定 7 / 实例判定 7 / 未判即裁 0 / 整枝 0 —— 净收益 0 且无报错；自造两级场景（1 地面 + 6 父 × 4 子，父子树整体在视锥外）31 实例 → 盒判定 9 / 实例判定 3 / 未判即裁 30 / 其中整枝 30 / 建树 1，旧路径的 31 次实例 AABB 降到 12 次判定，且建树次数稳态为 1。踩坑：探针首版把父节点放在 z = -40 以为是「视锥外」，相机朝 -z 看时那其实在正前方锥内，读数看着像零收益；父节点要放到相机背后（z = +60）才暴露整枝收益 |
 | 主通道遮挡剔除层级化（扩展三十） | `cargo test -p r3e-core occlusion` → lib 内联 **34 passed** + `tests/occlusion.rs` **7 passed**（新增 5 条 `plan_occlusion_matches_per_instance` / `_prunes_multi_instance_branch` / `_fails_open_without_pyramid` / `_counts_wiring` / `_empty_tree_keeps_everything`）；`cargo test -p r3e-render occlusion` → **8 passed**（新增 `plan_needs_a_pyramid` / `record_hierarchy_accumulates_counts`）；`cargo test --workspace` 71 套件 **1,006 passed / 0 failed**（扩展二十九收尾为 999）；`--features rapier` **1,010 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → 2 passed，与既有基准图**逐位一致、无需重建**（掩码与逐实例 `test_aabb` 差分逐实例相同）。**GPU 实跑取证**（RTX 5060 Laptop / Vulkan，自造场景：1 面贴脸墙 + 3 父 × 3 子 = 13 实例，`--run-seconds 3`，退出码 0）：启用遮挡 → `遮挡层级剔除：层级 true / 盒判定 4 / 判定 1 / 未判即裁 12 / 其中整枝 12`，`draws` 3 → 1、`instances` 13 → 1；同场景关掉遮挡 → `层级 false / 盒判定 0 / 判定 0`、`draws` 3 / `instances` 13；两者第 40 帧截图（640×480）**sha256 完全相同**，即整枝剪掉的 12 个实例在关闭遮挡时也被墙挡住，一个可见像素都没吃掉。**观感待人工验证**：物体瞬移（金字塔滞后一帧）时「有没有闪进来又闪出去」属取舍判断，自动化只证明开关关闭路径与基线逐位相同 |
+| 实例缓冲持久化与脏段上传（扩展三十一） | `cargo test -p r3e-render instance_upload` → lib 内联 **11 passed**；`cargo test -p r3e-render --test instance_upload_contract` → **8 passed**；`cargo test --workspace` 72 套件 **1,025 passed / 0 failed**（扩展三十收尾为 71 套件 1,006）；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（首版 `vec![0..total]` 触发 `single_range_in_vec_init`，改 `std::iter::once(0..total).collect()`）。**像素回归**：`R3E_VISUAL_REGRESSION=1` → `captured_frame_matches_baseline` + `baseline_png_is_present` 双绿，记录内容未改、基线无需重建。**GPU 实跑取证**（Release）：1,537 实例静态场景 → `脏段 0 / 写 0 条 / 跳过 1,539 条 / 0.0 KiB（全量 144.3 KiB，省 100%）/ 全量 false / 换代 1`；只旋转两个物件 → `脏段 1 / 写 3 条 / 跳过 3 条 / 省 50.0% / 全量 false`；脚本每帧增删临时节点 → `全量 true / 写 7 条 / 跳过 0 条`（实例数变化按设计走全量） |
 
 ---
 
