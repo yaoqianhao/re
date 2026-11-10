@@ -146,7 +146,7 @@ rust3d-engine/
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
 | r3e-core | 19,247 | 3,721 | 429 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `envmap.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 9,377 | 2,775 | 209 | `renderer.rs` / `instance_upload.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-render | 9,377（+762，未重算入合计） | 2,775 | 209（+12） | `renderer.rs` / `instance_upload.rs` / `upload_staging.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,227 | 585 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
@@ -173,8 +173,12 @@ rust3d-engine/
 扩展三十四（屏幕射线拾取）再增量 +346 src / +215 tests / +16 单测 / +1 套件
 （`core/pick.rs` 346 行含 8 条内联测试、`script/tests/pick_api.rs` 215 行 8 测、
 `app.rs` 的 `sync_pick_bounds` 与 `render/renderer.rs` 的 `mesh_aabb` 约 +90、`script/api.rs` 3 个绑定（`pick_at` / `pick_under_mouse` / `pick_all_at`）约 +120、
-`scripts/pick_demo.rhai` 76 行不计入 Rust 行数）
-（综上停在扩展三十四收尾：58,741 行 / 9,517 tests 行 / 1,061 单测 / 75 套件 1,057 passed，`--features rapier` 同 75 套件 1,061 passed。
+`scripts/pick_demo.rhai` 76 行不计入 Rust 行数），
+扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
+（`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
+`lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
+（综上停在扩展三十五收尾：59,984 行 / 11,170 tests 行 / 1,073 单测 / 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed。
+扩展三十四收尾为 58,741 行 / 9,517 tests 行 / 1,061 单测 / 75 套件 1,057 passed，
 **本次起改按 `crates/**/src/**.rs` 与 `crates/**/tests/**.rs` 直接统计**，与下列旧值口径（含 `build.rs` / `benches` / `examples`）差约 700 行，
 两列不可直接相减，比值只作同口径内比较；扩展三十三收尾为 58,886 行 / 10,848 tests 行 / 1,045 单测 / 74 套件 1,041 passed，
 更早的扩展三十二收尾快照为 58,661 行 / 10,575 tests 行 / 1,039 单测 / 73 套件 1,035 passed，
@@ -182,9 +186,9 @@ rust3d-engine/
 扩展二十三收尾为 56,243 行 / 8,619 tests 行 / 932 单测 / 63 套件 928 passed）。
 单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 1,041。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 1,069（`#[test]` 全量标注 1,073，减 rapier-only 4 条）。
 
-Release 二进制 14.3 MB（14,971,904 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
+Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
 
 ### 3.3 质量门（每次改动后必过）
@@ -192,8 +196,8 @@ Release 二进制 14.3 MB（14,971,904 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,041 passed / 0 failed（74 个套件；较扩展三十二收尾的 1,035 增 6：新增 `skin_relative_stable.rs` 6 条） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,045 passed / 0 failed（74 个套件；默认特性 1,041 + 只在 rapier 下参与的 4 条）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,069 passed / 0 failed（75 个套件；较扩展三十四收尾的 1,057 增 12：`upload_staging.rs` 内联 12 条） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,073 passed / 0 failed（75 个套件；默认特性 1,069 + 只在 rapier 下参与的 4 条）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -1194,10 +1198,13 @@ render(scene):
   │   ├─ 惰性上传尚未创建的网格（首次用某网格才传）
   │   ├─ 实例数超过容量 → 2 倍扩容重建 buffer，并清空 instance_shadow（下一帧必全量）
   │   ├─ instance_upload::plan_upload(影子, 本帧全部记录, 96, MERGE_GAP=8, MAX_RANGES=24)
-  │   │   → 逐脏段 write_buffer；写完才把影子换成本帧记录（扩展三十一）
-  │   ├─ 关节矩阵同一函数 plan_upload(影子, joint_scratch, 64, 8, 24) → 逐脏段 write_buffer
-  │   │   （扩展三十二；无蒙皮帧清空 joint_shadow，定长缓冲不换代）
+  │   │   → 脏段优先交给 staging.stage（扩展三十五）；
+  │   │     装不下 / 超 8 MiB / 开关关闭时回退逐脏段 write_buffer（扩展三十一）
+  │   ├─ 关节矩阵同一函数 plan_upload(影子, joint_scratch, 64, 8, 24) → 同样先走 staging.stage
+  │   │   （扩展三十二 / 三十五；无蒙皮帧清空 joint_shadow，定长缓冲不换代）
+  │   ├─ staging.flush(queue) → 本帧唯一一次 write_buffer（实例 + 关节整块写进当前槽）
   │   └─ 统计 instance_upload{…} / joint_upload{ranges, recorded, skipped, bytes, full_bytes, full}
+  │      + upload_staging{frames, writes, copies, bytes, saves, rebuilds, fallbacks}
   ├─ prepare_shadow(groups, bounds, light)  → bool 是否需要跑阴影通道
   │   ├─ shadow.size 变化 → 重建深度纹理 + 采样器 bind group（贴图句柄不能原地 resize）
   │   ├─ Light::shadow_view_projection(场景包围球) → 光源正交矩阵
@@ -1504,6 +1511,7 @@ pub struct RenderStats {
     pub depth_prepass_draws: u32,   // 深度预通道 draw call（只画不透明段）
     pub instance_upload: InstanceUploadStats, // 实例上传（扩展三十一）：ranges / recorded / skipped / bytes / full_bytes / full / resets
     pub joint_upload: JointUploadStats,       // 关节上传（扩展三十二）：同上但无 resets
+pub upload_staging: StagingStats,         // 暂存环（扩展三十五）：enabled / slots / capacity / frames / writes / copies / bytes / saves / rebuilds / fallbacks
 }
 ```
 
@@ -2868,8 +2876,10 @@ pub struct OcclusionCullPlan {
 - **半透明批次按深度重排**：相机一动，`back_to_front` 的顺序整体变化，脏区连成一大片、退化成接近全量。
   省得最多的是「不透明为主 + 静态或缓慢变化」的场景；
 - 实例记录本身的装配（`InstanceRaw` 逐条组装、桶摊平、排序）**没有变**，省掉的是上传；
-- 仍是 `queue.write_buffer`，没有持久映射缓冲、没有多帧飞行（`upload` 与 `submit` 的节奏未变），
-  也**不减少 draw call**（合批规则没动）；
+- **扩展三十五已补掉"每帧 N 次 `write_buffer`"这一项**：脏段先拷进 3 槽暂存环，一帧只写一次、
+  逐段改走 `copy_buffer_to_buffer`（`upload` 与 `submit` 的节奏仍未变，即"一帧一次写 + 环形槽飞行"，
+  不是长期 `map`——wgpu 的拷贝源必须 unmapped）；
+- 也**不减少 draw call**（合批规则没动）；
 - 记录内容一个字节都没改，所以画面与全量上传**逐位一致**，像素基线不需要重建。
 
 契约由 `crates/r3e-render/tests/instance_upload_contract.rs`（8 条）与 `instance_upload.rs` 内联（11 条）守：
@@ -3028,6 +3038,74 @@ M_i = frame_local⁻¹ · (A⁻¹ · joint_i)          // 全程无 X：A 与 jo
 
 契约由 `crates/r3e-core/src/pick.rs` 内联 8 条几何测试（射线归一退化兜底、slab 入点距离、屏幕角点张开、最近命中与交点、屏幕中心命中、
 隐藏节点与隐藏父链跳过、缺包围盒不命中）与 `crates/r3e-script/tests/pick_api.rs` 8 条绑定测试守，探针与实测见 §8.29。
+
+### 5.27 暂存环与多帧飞行：一帧一次写入（扩展三十五）
+
+**问题**：扩展三十一 / 三十二把「传多少字节」压到脏段级别，但**调用次数**没变。`MAX_RANGES = 24` 意味着
+单帧最多 24 次实例 `write_buffer` + 24 次关节 `write_buffer`，而静态场景里这些段往往只有几百字节——
+真正贵的是调用开销：每次 `Queue::write_buffer` 都要在 wgpu 内部临时缓冲上映射一次、录一次
+`copy_buffer_to_buffer`、做一次队列校验。省带宽并不省这些往返。
+
+更根本的一点：**wgpu 没有「持久映射的顶点缓冲」**。作为拷贝源的缓冲必须先处于 unmapped 状态，
+长期 map 着的缓冲不能进命令编码器。所以教科书式「persistent mapped buffer + N 帧飞行」在 wgpu 里
+只能换个形态实现——把「映射一次写一批」改成「一帧写一块，槽位轮转」。
+
+**做法**：`renderer.rs` 内新增 `UploadStaging`（环形暂存槽 + 本帧打包缓冲），纯 CPU 契约部分
+（`pack_runs` / `slot_bytes` / `slot_fit` / `SlotRing` / `saved_calls`）独立在 `upload_staging.rs`，不依赖设备、可单测。
+
+```
+prepare_instances
+  ├─ upload_instance_runs → plan_upload(脏段) → staging.stage(Instances) ─┐
+  └─ upload_joint_runs    → plan_upload(脏段) → staging.stage(Joints)   ─┤ 本帧字节追加进 frame_bytes
+                                                                        │
+  staging.flush(queue)  ← 本帧**唯一**一次 write_buffer（整块 → 当前槽）  ─┘
+
+render_to_view
+  ├─ create_command_encoder
+  ├─ staging.record(encoder)  ← 按 copies 逐条 copy_buffer_to_buffer（槽 → 实例/关节缓冲）
+  ├─ …阴影 / 主通道 / 后处理 / 文本 / UI…
+  ├─ queue.submit
+  └─ staging.commit_shadows(&mut instance_shadow, &mut joint_shadow)  ← 提交后才对齐影子
+```
+
+| 组件 | 位置 | 职责 |
+| --- | --- | --- |
+| `StagedPack` / `pack_runs` | `upload_staging.rs` | 把「记录下标区间」按 `stride` 拷成一块连续字节，同时给出逐段 `StagedCopy{dst_offset, src_offset, size}`；装不下返回 `over_budget`，**不截断打包** |
+| `slot_bytes` / `slot_fit` | 同上 | 单槽容量规划：按 256 B 上取整、下限 `STAGING_MIN_BYTES = 64 KiB`、上限 `STAGING_MAX_BYTES = 8 MiB`；超上限返回 `TooLarge` |
+| `SlotRing` | 同上 | 多帧飞行的游标状态机：`advance(committed)` 只在已提交时推进，`STAGING_SLOTS = 3` 深 |
+| `saved_calls` | 同上 | 统计口径：`脏段数 - 实际写入数`，即本帧省下的队列往返 |
+| `UploadStaging` | `renderer.rs` | `stage`（打包 + 容量成长）/ `flush`（一帧一次写）/ `record`（录制块拷贝 + 轮转）/ `drop_pending`（目标缓冲换代时丢弃）/ `commit_shadows`（提交后对齐影子） |
+| `StagingStats` | 同上 | 挂进 `RenderStats.upload_staging`：`enabled` / `slots` / `capacity` / `frames` / `writes` / `copies` / `bytes` / `saves` / `rebuilds` / `fallbacks` |
+
+**三条必须遵守的不变量**：
+
+1. **影子推迟到 submit 之后**。扩展三十一的规矩是「影子必须在写完之后更新」，直传路径的
+   `write_buffer` 当场生效，所以当场更新是对的；暂存路径的 GPU 写入是 `copy_buffer_to_buffer`，
+   **submit 才生效**。若照抄直传路径的做法当场更新影子，一旦该帧命令没有提交（panic / 提前返回），
+   影子就记着「传过了」而缓冲里仍是旧数据——之后永远算不出这段脏区，属于最难查的永久漏传。
+   因此 `stage` 只把本帧记录放进 `shadow_instances` / `shadow_joints`，由 `commit_shadows` 在
+   `queue.submit` 之后一次性落盘；`begin_frame` 与 `drop_pending` 都会清掉未提交的快照。
+2. **轮转只在录完之后**。`record` 末尾才 `advance(true)`；本帧没有暂存数据时也要推进，
+   否则下一帧会写进 GPU 可能还在读的同一个槽。3 帧深度覆盖「本帧录制 + 上帧在飞 + 上上帧未必完成」。
+3. **实例与关节共用一个槽**。同一帧两条路径的字节在 `frame_bytes` 里顺序拼接，`src_offset` 带基址偏移，
+   所以实例 + 关节合起来仍然只有一次 `write_buffer`。
+
+**取舍与边界**：
+
+- **省的是调用，不是带宽**：总字节数与直传路径逐字节相同（`pack_runs` 只做搬运），
+  脏段判定、影子内容、`InstanceUploadStats` 全都不变，画面与扩展三十一逐位一致；
+- **多一次 CPU memcpy**：本帧脏段要多拷进 `frame_bytes` 一次。静态场景脏段几十字节时可忽略；
+  大改场景（全量 960 KiB）时这次 memcpy 相对 24 次 `write_buffer` 仍划算，但这不等于零成本；
+- **> 8 MiB 一律退化**：超上限直接回逐段 `write_buffer`（`stats.fallbacks` 计数），
+  绝不为了「优化」让大场景变慢，也避免为极少数帧白占三倍显存；
+- **队列级写入顺序依赖 wgpu 保证**：回写到同一槽时，`queue.write_buffer` 自身的 pending-write 机制
+  保证它与先前 submit 的顺序，因此环形槽不需要额外 fence；但**绝不能**把同一槽在未提交时重写两次；
+- **不减少 draw call**：这是上传路径的优化，与批次合并无关；
+- **开关**：`R3E_UPLOAD_STAGING=0` 关闭，回到扩展三十一的逐段直传，用于对照取证。
+
+契约由 `upload_staging.rs` 内联 12 条测试守（段内字节逐位搬运、96 B 记录偏移、多段顺序与 `src_offset` 累加、
+超容量不截断、`slot_bytes` 下限与对齐、`slot_fit` 三分支、`saved_calls` 口径、环未提交不推进、
+三槽回绕、零槽钳制），探针与实测见 §8.30。
 
 ### 8.1 程序入口（main.rs）
 
@@ -4105,6 +4183,68 @@ cargo test -p r3e-script --test scripts_compile
 此时 `pick_at` 的射线退化、必然点空。脚本要在开局自检拾取，得像 `pick_demo.rhai` 那样
 等到首个 `screen_width() > 0.0` 的帧再做，否则会拿到一条"什么都没点中"的假结论。
 
+
+### 8.30 上传暂存环的探针（扩展三十五）
+
+**① 帧探针字段**：`RenderStats.upload_staging`（`StagingStats`），日志行是
+
+```
+[stats] 暂存环：启用 槽3 容量64.0 KiB 帧702 写702 拷贝703 1623.7 KiB 省写1 重建0 退化0
+```
+
+| 字段 | 含义 | 怎么读 |
+| --- | --- | --- |
+| `启用` / `enabled` | `R3E_UPLOAD_STAGING` 未置 0 且有实际写入 | 关闭时其余字段恒 0 |
+| `槽` / `slots` | 环形槽深度（固定 3） | 飞行帧上限；`writes` 不超过 `frames` × 1 |
+| `容量` / `capacity` | 当前暂存缓冲字节数 | 按需成长，封顶 8 MiB |
+| `帧` / `frames` | 有暂存写入的帧数 | 与 `写` 对比即"每帧写几次" |
+| `写` / `writes` | `write_buffer` 次数 | 每帧最多 1 次，这是本扩展要压的唯一指标 |
+| `拷贝` / `copies` | `copy_buffer_to_buffer` 条数 | 等于本帧脏段数的累加 |
+| `字节` / `bytes` | 拷进暂存区的总字节 | 与扩展三十一的脏段字节同源 |
+| `省写` / `saves` | `saved_calls(段数, 写次)` 累加 | ≈ `拷贝 - 写`，段数 > 1 才为正 |
+| `重建` / `rebuilds` | 暂存缓冲扩容次数 | 只该在前几帧增长 |
+| `退化` / `fallbacks` | 装不下而回退逐段直传的次数 | > 0 说明槽容量顶到 8 MiB 上限 |
+
+**② 复现脚本**：`scripts/staging_demo.rhai`（40 个 cube，分成 4 组，每组每帧各动一点 → 每帧 4 段脏区）。
+
+```powershell
+cargo build --release -p r3e-app
+target\x86_64-pc-windows-gnu\release\r3e.exe assets\scene.json scripts\staging_demo.rhai --run-seconds 12
+# 对照（关闭暂存环，回到逐段直传）
+$env:R3E_UPLOAD_STAGING = "0"
+target\x86_64-pc-windows-gnu\release\r3e.exe assets\scene.json scripts\staging_demo.rhai --run-seconds 12
+```
+
+**③ CPU 侧**：
+
+```powershell
+# 打包契约：逐段字节一致、源连续 / 目标绝对、空区间、超预算不截断、96 B 记录对齐、槽位轮转
+cargo test -p r3e-render upload_staging
+```
+
+**④ 实测**（Release，RTX 5060 Laptop / Vulkan）：
+
+| 场景 | 脏段 / 帧 | `write_buffer` | 暂存环观测 |
+| --- | --- | --- | --- |
+| 40 实例，每帧 4 段（`staging_demo.rhai`） | 4（全量 46 条，跳过 42 条，省 91.3%） | 4 次 → **1 次** | 695 帧：`写 695 / 拷贝 2,777 / 省写 2,082 / 重建 0 / 退化 0` |
+| 同上，`R3E_UPLOAD_STAGING=0` | 4 | 4 次 | `启用 false`，其余恒 0 |
+| 37 关节动画（`scene_anim.json`） | 1（`plan_upload` 已并段） | 1 次 → 1 次 | 702 帧：`写 702 / 拷贝 703 / 省写 1`（第 1 帧后再无合并空间，**收益为 0**，如实留档） |
+
+**⑤ 视觉基线**：开关两种模式下 `--capture-frame 40` 的 PNG **sha256 完全相同**（195cb1ed…），
+即暂存只是换了搬运路径，像素零差异，`visual_regression` 基线未重建（严格模式 2 passed）。
+
+**⑥ 两条必须记住的约束**：
+
+- **影子不能在 `write_buffer` 之后立刻刷**。`copy_buffer_to_buffer` 要等 `queue.submit` 才生效，
+  这一帧若因为窗口最小化 / 无重绘被丢弃，影子记着"已传"而 GPU 里其实没有 → 旧数据永久漏传。
+  所以 `Renderer` 把影子提交挪到提交之后（`commit_shadows`），暂存缓冲在提交前一律 `drop_pending`。
+- **目标缓冲换代必须先丢暂存环**（`instance_capacity` / 关节缓冲重建三处），否则上一代槽里的
+  字节会被拷进新缓冲，实例带旧矩阵闪一帧——与扩展三十一"换代清影子"是同一类故障。
+
+**⑦ clippy 的老坑**：单测里写 `&[1..3]` 这种"只有一个元素的 Range 数组"会被
+`single_range_in_vec_init` 拦成 error（`-D warnings` 直接编译失败）。扩展三十一
+（`plan_upload`）踩过一次，本轮又踩一次；正解是走具名构造 `fn one(run: Range<u32>) -> [Range<u32>; 1]`。
+
 ---
 
 ## 9. 端到端数据流
@@ -4239,8 +4379,11 @@ cargo test -p r3e-script --test scripts_compile
 4. **实例 / 关节上传的时间维度**（扩展三十一、三十二、三十三已落地）：两路都已从「每帧全量上传」换成
    「按记录比较 + 脏段上传」（§5.23 / §5.24），静态场景两路都零上传，动画场景关节侧调用次数从 37 次降到 1 次；
    关节侧另由扩展三十三（§5.25）把求解式换成「骨骼树顶点为基准的常量相对链」，消掉浮点共轭带来的伪脏，
-   「骨骼不动、整只模型在转」也归零。剩下的两条：① 做「场景版本号 / 节点脏标志」跳过整帧比较
-   （省掉 96 B×N 与 64 B×M 的 memcmp）；② 换持久映射缓冲 + 多帧飞行（目前仍是每帧 `write_buffer` 逐段提交）。
+   「骨骼不动、整只模型在转」也归零。扩展三十五（§5.27）再把「一帧 N 次 `write_buffer`」收成一次
+   （脏段先拷进 3 槽暂存环，一帧一次写 + 逐段 `copy_buffer_to_buffer` 飞行）。
+   三条候选的去留：① **否决**「场景版本号 / 节点脏标志」跳比较——`Scene::get_mut` / `find_mut` 裸返
+   `&mut Node`，版本号必然漏记，除非改成带 revision 的 guard（破坏公共 API）；② **已落地**暂存环 + 多帧飞行；
+   ③ 仍留：把 `plan_upload` 的 `memcmp` 本身换成增量脏标记（同样受 ① 的公共 API 限制，短期内不做）。
 5. **级联遮挡体的 GPU 代理预筛**：扩展二十四按 AABB 裁掉级外遮挡体、扩展二十五把判定改成
    按场景树的层级剔除（§4.18 / §5.18，扁平场景净收益为 0，组装场景实测约三成）。进一步可把判定
    搬到 GPU：级联层级包围盒做成实例化球/盒代理 + 硬件裁剪，或跨帧复用上一帧的掩码。
@@ -4294,6 +4437,7 @@ cargo test -p r3e-script --test scripts_compile
 | **三十二（已完成：关节矩阵也走脏段）** | **蒙皮的第二路上传也按脏段**：`upload_joint_runs` 复用同一个 `plan_upload`（stride 换成 `size_of::<[f32; 16]>()` = 64 B），`Renderer` 增 `joint_shadow`（定长 `MAX_JOINT_MATRICES × 64 B`，不换代）与 `JointUploadStats`，无蒙皮帧清空影子、有蒙皮帧自然全量；`take` 出 `joint_scratch` 再归还容量以避开借用冲突；`RenderStats.joint_upload` 本帧读数 + app 日志与编辑器 `stats.render` JSON 各加一处探针 | `render/renderer.rs`（`joint_shadow` / `joint_upload` / `upload_joint_runs`）、`render/instance_upload.rs`（内联 +2 测）、`app/src/app.rs` 关节探针、`app/src/editor.rs` `joint_upload` 读数、新增 `tests/joint_upload_contract.rs`（8 测） | 无（同样一字节未改、像素逐位一致）。**边界**：关节矩阵是 `X⁻¹·B·L⁻¹` 的浮点共轭结果，实例整体变换一变就不保位级相等 ⇒ 只有「实例变换与骨骼姿势都静止」才省得下来（**该边界已由扩展三十三从求解侧消除**，见 §5.25）；收益主要是 `write_buffer` 调用次数（动画中 37 次 → 合并成 1 次）；仍是每帧 `write_buffer` |
 | **三十三（已完成：关节侧消伪脏）** | **把求解式里的实例变换约掉**：`SkinInstance` 增 `frame_anchor`（骨骼树顶点 `A`）与常量 `frame_local = A⁻¹·mesh`，`Scene` 增 `tree_root` / `relative_transform_from` / `align_skin_frame`，求解改走 `M_i = frame_local⁻¹ · (A⁻¹ · joint_i)`——`X` 只活在绑定时算一次的常量里，整体刚体运动再也改不动关节矩阵的位模式；网格节点与骨架不在同一棵树（`tirger` 样本正是如此）时不再强求公共祖先，改以骨骼树顶点为基准；断链（多骨架根 / 关节被销毁 / 成环 / 超深）回退 `mesh_world⁻¹ · joint_world`，正确性不变、脏段保守判全 | `core/skin.rs`（`frame_anchor` / `frame_local` / `bind_frame` / `solve_from_relative`）、`core/scene.rs`（`tree_root` / `relative_transform_from` / `align_skin_frame` + `update_skinning` 惰性兜底）、`app/src/app.rs`（`bind_asset_skins` 绑定时 `align_skin_frame`）、新增 `tests/skin_relative_stable.rs`（6 测）、`scripts/joint_rigid_spin_demo.rhai` | 无（数学等价，记录内容与旧路径一致、像素逐位一致）。**收益**：冻结动画 + 整只模型在转从 `脏段 1 / 写 37 / 跳过 0`（省 0%）变 `0 / 0 / 37`（省 100%），正播动画仍 `1 / 37 / 0`（不误吞）；不省 CPU，仍是每帧 `prepare` + 每帧 `write_buffer` |
 | **三十四（已完成：屏幕射线拾取）** | **脚本能点中任意可见物件**：`r3e-core::pick` 纯 CPU（零 wgpu）——`Ray::from_screen` 用相机逆视图投影把像素 + 视口换成世界射线（像素取角点中心 `+0.5`、`near/far` 两端反投影），`Ray::aabb_hit` slab 法求最近正交点（平行轴按「在板内即通过」处理、盒后方的交点丢弃），`pick_all` 线性遍历可见节点（命中的用**世界盒**判，`Aabb` 变换后重算 min/max 而非只换中心）、`pick_nearest` 单独实现（悬停每帧调不付整表排序），`MeshAabbCache`（`MeshRef → Aabb` 登记表，自身即 `MeshProvider`）与 `PickBounds`（登记表优先、`cube/sphere/plane/cylinder` 由 `ProceduralProvider` 现算，无盒即透明、不做单位盒兜底）；`Renderer::mesh_aabb` 暴露 `MeshCache::bounds`（与视锥剔除同一份缓存）；`EngineApp::sync_pick_bounds` 每帧幂等登记可见节点引用的网格盒；脚本 `pick_at` / `pick_under_mouse` / `pick_all_at` + `screen_width` / `screen_height` / `screen_size`（与 `pick_*` 同源），命中返回 `hit / node / name / distance / point`，**未命中返回完整空模板**（`node = -1`、`point = []`），免得 Rhai 读缺键把 `on_update` 打断。详见 §5.26 / §8.29 | `core/pick.rs` 新增、`core/lib.rs` 导出、`render/renderer.rs`（`mesh_aabb`）、`app/src/app.rs`（`sync_pick_bounds` + 帧循环接线）、`script/src/api.rs`（6 个绑定）、`scripts/pick_demo.rhai` 新增、`script/tests/scripts_compile.rs` 纳入新脚本；新增 `core/tests/pick_geometry.rs`（9 测）、`script/tests/pick_api.rs`（8 测） | 无（纯新增查询路径，不改任何既有绘制/上传路径，像素与上传读数逐位不变）。**收益**：编辑器悬停高亮、点选道具、点穿列表从「脚本自算矩阵或依赖刚体」变成一次调用；**边界**：AABB 粒度不认三角形（凹形 / 镂空会点中洞）、不走物理（与 `raycast` 两条独立通路）、无空间加速（线性遍历，真要上万物件应先拿 §5.21 层级盒剪枝）、UI 遮挡脚本自己用 `ui_hit` 先判、`on_start` 阶段画布尺寸仍是 `(0,0)`（自检要等首个 `screen_width() > 0` 的帧） |
+| **三十五（已完成：暂存环 + 多帧飞行）** | **把一帧里的 N 次 `write_buffer` 收成一次**：新增 `r3e-render/src/upload_staging.rs` 纯 CPU 契约（`pack_runs` 按 `stride` 把脏段拷成一块连续字节并给出逐段 `StagedCopy{dst_offset, src_offset, size}`、装不下返回 `over_budget` 不截断；`slot_bytes` / `slot_fit` 按 256 B 上取整、下限 `STAGING_MIN_BYTES = 64 KiB`、上限 `STAGING_MAX_BYTES = 8 MiB`；`SlotRing` 只在已提交时 `advance`，深度 `STAGING_SLOTS = 3`；`saved_calls(段数, 写入数)` 定口径）；`Renderer` 增 `UploadStaging`（`stage` 打包 + 容量按需成长 / `flush` 本帧唯一一次 `write_buffer` / `record` 逐段 `copy_buffer_to_buffer` 后轮转 / `drop_pending` 换代时丢弃 / `commit_shadows` 提交后对齐影子）+ `StagingStats`（`enabled` / `slots` / `capacity` / `frames` / `writes` / `copies` / `bytes` / `saves` / `rebuilds` / `fallbacks`），实例与关节两路**共用同一个槽**，`R3E_UPLOAD_STAGING=0` 可关闭回逐段直传。**关键不变量**：影子推迟到 `queue.submit` 之后才落盘（`copy_buffer_to_buffer` 提交才生效，提前刷影子会在未提交帧上永久漏传）、`record` 末尾才推进槽位、目标缓冲换代前 `drop_pending`。详见 §5.27 / §8.30 | 后台取证：`render/upload_staging.rs` 新增（内联 12 测）、`render/lib.rs` 导出、`render/renderer.rs`（`UploadStaging` + 两条上传路径接入 + 提交后 `commit_shadows` + 三个换代点的 `drop_pending`）、`app/src/app.rs` 帧探针、`app/src/editor.rs` `stats.render.upload_staging` | 无（`pack_runs` 只做搬运，字节与脏段判定逐位不变；GPU 实跑第 40 帧截图在开关开 / 关两种模式下 **sha256 完全相同** 195cb1ed…，像素基线无需重建）。**实测收益**：40 实例 / 每帧 4 段脏区 → 695 帧共 `写 695 次 / 拷贝 2,777 条 / 省写 2,082 次`（平均 4 段 1 写）；37 关节动画场景 `写 702 / 拷贝 703 / 省写 1`（`plan_upload` 已先把 37 个矩阵并成 1 段，这一层**收益为 0**，不虚构）。**边界**：wgpu 没有持久映射顶点缓冲（拷贝源必须 unmapped），所以是"一帧一次写 + 环形槽飞行"而非长期 map；多一次 CPU memcpy；> 8 MiB 一律退化逐段（`fallbacks`）；不减少 draw call、不省带宽、不省 `plan_upload` 的 memcmp |
 
 两条与顺序相关的说明：
 
@@ -4370,6 +4514,8 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 关节矩阵也走脏段（扩展三十二） | `cargo test -p r3e-render joint_upload` → lib 内联 **13 passed**（`instance_upload` 11 + 关节 2）；`cargo test -p r3e-render --test joint_upload_contract` → **8 passed**；`cargo test --workspace` 73 套件 **1,035 passed / 0 failed**（扩展三十一收尾为 72 套件 1,025）；`cargo test --workspace --features rapier` 73 套件 **1,039 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**GPU 实跑取证**（Release，`assets/scene_anim.json`，37 关节）：动画播放中 → `脏段 1 / 写 37 条 / 跳过 0 条 / 2.3 KiB（全量 2.3 KiB，省 0.0%）/ 全量 false`（37 次调用合并成 1 段）；冻结动画 + 整体旋转 → `脏段 1 / 写 37 条 / 跳过 0 条`（浮点共轭不保位级相等，按设计全量）；冻结动画 + 变换冻结 → `脏段 0 / 写 0 条 / 跳过 37 条 / 省 100.0%`，同帧实例上传也是 `脏段 0`。**像素回归**：记录内容未改，`R3E_VISUAL_REGRESSION=1` 双绿、基线无需重建 |
 | 关节侧消伪脏（扩展三十三） | `cargo test -p r3e-core --test skin_relative_stable` → **6 passed**（`rest_pose_yields_identity` / `rigid_instance_motion_keeps_joint_matrices_bit_identical` / `joint_local_motion_still_changes_matrices` / `relative_path_agrees_with_world_path` / `mesh_outside_skeleton_tree_has_no_common_ancestor` / `disconnected_joint_falls_back_to_world_path`）；`cargo test --workspace` 74 套件 **1,041 passed / 0 failed**（扩展三十二收尾为 73 套件 1,035）；`--features rapier` 74 套件 **1,045 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning；`cargo build --release` + 跑探针退出码 0（二进制 14,971,904 字节）。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → 2 passed，与既有基准图**逐位一致、无需重建**（关节矩阵换了求解式，但整体刚体运动下数学等价，缺省场景的静态读数一个像素没动）。**GPU 实跑取证**（Release，`assets/scene_anim.json`，37 关节，`--run-seconds 3`）：`scripts/joint_rigid_spin_demo.rhai`（冻结动画 + 网格与骨架同步旋转）→ 起始 `脏段 0 / 写 0 / 跳过 37 / 0.0 KiB（全量 2.3 KiB，省 100.0%）`、收尾同读数，同期蒙皮质心 `(0.2208, 0.8378, 0.1291)` → `(0.2557, 0.8378, -0.0075)` 证明模型确实转了一圈；缺省 `scripts/main.rhai`（动画播放中）→ `脏段 1 / 写 37 / 跳过 0 / 2.3 KiB（省 0.0%）`，该传的照旧全传。修复前同一探针为 `1 / 37 / 0`（省 0%） |
 | 屏幕射线拾取（扩展三十四） | `cargo test -p r3e-core pick` → lib 内联 **8 passed**（`ray_new_normalizes_and_falls_back` / `aabb_ray_hit_reports_entry_distance` / `camera_center_ray_points_along_view` / `screen_ray_corners_span_frustum` / `pick_hits_nearest_cube_and_reports_point` / `pick_from_screen_center_matches_camera_target` / `invisible_node_and_hidden_parent_are_skipped` / `missing_bounds_provider_yields_no_hit`）；`cargo test -p r3e-script --test pick_api` → **8 passed**；`cargo test -p r3e-script --test scripts_compile` → 1 passed（新脚本纳入编译守卫）；`cargo test --workspace` 75 套件 **1,057 passed / 0 failed**（扩展三十三收尾为 74 套件 1,041）；`cargo test --workspace --features rapier` 75 套件 **1,061 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：纯新增查询路径，不改任何既有绘制 / 上传路径，基准图无需重建。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，`assets/scene.json` + `scripts/pick_demo.rhai`，`--run-seconds 3`，退出码 0）：`画布 1920.0x1080.0，中心自检命中 spinner（距离 11.009093284606934）`；悬停链路随画布尺寸生效依次报 `ground`（7.517）/ `spinner`（11.858）/ `pick_a`（12.946），`[script]` 前缀无一条出错。**踩坑两条**：① Rhai 内置 `format` 只吃单参数，`format("{} {}", a, b)` 直接 `Function not found` 把 `on_start` / `on_update` 整段打断——多值日志改字符串 `+` 拼接；② `on_start` 时 `screen_size()` 仍是 `(0, 0)`，此时自检必然点空，须等首个 `screen_width() > 0` 的帧。**观感待人工验证**：悬停高亮跟不跟手、点到物件「弹起 0.35」的手感合适与否，自动化只证明命中判定与调用链 |
+| 上传暂存环（扩展三十五） | `cargo test -p r3e-render upload_staging` → lib 内联 **12 passed**；`cargo test --workspace` 75 套件 **1,069 passed / 0 failed**（扩展三十四收尾为 1,057）；`cargo test --workspace --features rapier` 75 套件 **1,073 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（本轮先被 `single_range_in_vec_init` 拦下，见 §8.30 ⑦）。**GPU 实跑**（RTX 5060 Laptop / Vulkan，Release）：`assets/scene.json` + `scripts/staging_demo.rhai`（40 实例 / 每帧 4 段脏区）→ 695 帧 `写 695 / 拷贝 2,777 / 省写 2,082`，即每帧 `write_buffer` 由 4 次降到 1 次；`R3E_UPLOAD_STAGING=0` 时探针报「关闭」且帧探针其余字段恒 0；两模式下 `--capture-frame 40` 截图 sha256 完全相同（195cb1ed…），`visual_regression` 严格模式 2 passed、基线未重建。`scene_anim.json`（37 关节）反例留档：`写 702 / 拷贝 703 / 省写 1`，`plan_upload` 已并段时该层收益为 0 |
+
 
 ---
 
