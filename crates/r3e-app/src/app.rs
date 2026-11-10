@@ -990,6 +990,18 @@ impl EngineApp {
             stats.shadow_branch_pruned,
             stats.caster_tree_builds
         );
+        // 扩展二十九：主通道视锥的层级剔除探针。`盒判定` 是被下探的树节点数；
+        // `实例判定 + 未判即裁` = 过层级筛的实例数（可见 + 被视锥剔掉），它应等于
+        // 「可见节点数」—— 与 `主通道实例 + culled` 对得上的话说明没有漏判。
+        // 其中只有 `整枝` 是相对逐实例判定的净收益，`建树次数` 稳态应不变。
+        log::info!(
+            "[{tag}] 视锥层级剔除：盒判定 {} / 实例判定 {} / 未判即裁 {} / 其中整枝 {} / 建树次数 {}",
+            stats.cull.box_tests,
+            stats.cull.instance_tests,
+            stats.cull.pruned,
+            stats.cull.branch_pruned,
+            stats.cull.tree_builds
+        );
         // 半透明 / MSAA 探针（扩展十九）：`透明 draw` 为 0 表示本帧没有半透明批次
         // （场景里没有 alpha < 0.999 的物件，或被视锥剔除干净）。
         // `深度预通道 draw` 恒等于不透明批次的 draw call 数——它是遮蔽通道的单采样

@@ -20,6 +20,7 @@
 //! 零 wgpu / winit 依赖：本模块只吃矩阵与包围盒，纯 CPU 可测。
 
 use crate::aabb::Aabb;
+use crate::frustum::Frustum;
 use glam::{Mat4, Vec4};
 use std::ops::Range;
 
@@ -197,6 +198,18 @@ pub struct CasterHierarchyPlan {
     pub branch_pruned: u32,
 }
 
+/// 主通道视锥剔除的层级判定结果（扩展二十九，单相机一份）。
+///
+/// 与 [`CasterHierarchyPlan`] 的区别：这里只有一台相机、一份掩码，
+/// 掩码语义是「该节点的实例本帧是否可见」。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FrustumCullPlan {
+    /// 按 [`CasterTree`] 节点下标的可见标记。
+    pub mask: Vec<bool>,
+    /// 判定成本与省下的量（`pruned` 即本帧没做实例级判定就剔掉的实例数）。
+    pub counts: LevelCounts,
+}
+
 /// 遮挡体的层级树（扁平存储）。
 ///
 /// 构造后子树包围盒与子树实例数就已经聚好，`plan` 只做自顶向下的判定。
@@ -342,8 +355,37 @@ impl CasterTree {
         plan
     }
 
+    /// 主通道视锥剔除的层级判定（扩展二十九）。
+    ///
+    /// 与 [`Self::plan`] 共用同一套自顶向下下探：子树盒整块在视锥外就整枝跳过，
+    /// 保留才下探，叶子直接按子树盒的结论定论。返回的掩码与「逐实例调用
+    /// [`Frustum::intersects_aabb`]」逐位相同（差分测试钉住），因此渲染层可以
+    /// 放心用它跳过整枝的实例装配，画面逐像素不变。
+    ///
+    /// 空盒的约定由调用方负责：渲染层「拿不到包围盒」时传
+    /// [`fail_open_bounds`]，不要把 [`Aabb::EMPTY`] 塞给有实例的节点 ——
+    /// 空盒在任何视锥下都判不相交，会被当成视锥外剔掉。
+    pub fn plan_frustum(&self, frustum: &Frustum) -> FrustumCullPlan {
+        let mut mask = vec![false; self.nodes.len()];
+        let counts = self.descend(&mut mask, |aabb| frustum.intersects_aabb(aabb));
+        FrustumCullPlan { mask, counts }
+    }
+
     /// 单级的自顶向下判定：子树盒被裁就整枝跳过，否则下探，叶子逐实例判。
     fn level_mask(&self, view_proj: &Mat4, mask: &mut [bool]) -> LevelCounts {
+        self.descend(mask, |aabb| aabb_in_cascade(view_proj, aabb))
+    }
+
+    /// 通用的自顶向下判定：`keep(aabb) == false` 表示「这块区域整块不可见」。
+    ///
+    /// 级联裁剪（扩展二十五）与主通道视锥剔除（扩展二十九）共用这一套下探逻辑，
+    /// 差别只在判定函数：前者看级联正交投影的 xy/z 区间，后者看 6 个视锥平面。
+    /// 两者都满足同一条保守前提 —— **子盒的可见范围一定落在子树盒的可见范围内**，
+    /// 所以「子树盒不可见」⇒「枝内每个实例都不可见」，整枝跳过不会误剔。
+    fn descend<F>(&self, mask: &mut [bool], keep: F) -> LevelCounts
+    where
+        F: Fn(&Aabb) -> bool,
+    {
         let mut counts = LevelCounts::default();
         let mut stack: Vec<usize> = self.roots.clone();
         while let Some(index) = stack.pop() {
@@ -352,7 +394,7 @@ impl CasterTree {
                 continue;
             }
             counts.box_tests = counts.box_tests.saturating_add(1);
-            if !aabb_in_cascade(view_proj, &self.subtree[index]) {
+            if !keep(&self.subtree[index]) {
                 // 整枝都在级外：掩码保持 false，枝内实例一个都不再判
                 counts.pruned = counts.pruned.saturating_add(self.sizes[index]);
                 if self.sizes[index] > 1 {
@@ -369,7 +411,7 @@ impl CasterTree {
                 } else {
                     // 混合节点：子树盒比自身盒大，自身实例再判一次更精确的
                     counts.box_tests = counts.box_tests.saturating_add(1);
-                    aabb_in_cascade(view_proj, &node.bounds)
+                    keep(&node.bounds)
                 };
             }
             stack.extend(self.children[index].iter().copied());

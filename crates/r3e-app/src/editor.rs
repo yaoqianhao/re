@@ -239,6 +239,16 @@ impl EngineApi for LocalEngineApi<'_> {
                 "shadow_branch_pruned": s.shadow_branch_pruned,
                 "shadow_box_tests": s.shadow_box_tests,
                 "caster_tree_builds": s.caster_tree_builds,
+                // 扩展二十九：主通道视锥的层级剔除。`pruned` 是「没做实例判定就被
+                // 整枝剪掉」的实例数，`instance_tests + pruned` 应等于可见节点数；
+                // 只有 `branch_pruned` 是相对逐实例判定的净收益。
+                "cull": {
+                    "box_tests": s.cull.box_tests,
+                    "instance_tests": s.cull.instance_tests,
+                    "pruned": s.cull.pruned,
+                    "branch_pruned": s.cull.branch_pruned,
+                    "tree_builds": s.cull.tree_builds,
+                },
                 // 扩展十九：半透明批次与 MSAA。`transparent_draws` 为 0 = 本帧没有
                 // 半透明物件；`depth_prepass_draws` 应恒等于不透明批次的 draw call 数，
                 // 掉成 0 说明遮蔽通道的单采样深度来源断了。

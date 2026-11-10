@@ -649,6 +649,24 @@ impl CapturedFrame {
     }
 }
 
+/// 主通道视锥剔除的层级化读数（扩展二十九）。
+///
+/// 语义与阴影通道那套（`shadow_pruned` / `shadow_box_tests`）同构，只是下标从
+/// 「(级, 遮挡体)」换成「实例」：`instance_tests + pruned` 恒等于「过层级筛的实例数」。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CullStats {
+    /// 累计重建主通道视锥树的次数。稳态下应保持不变。
+    pub tree_builds: u64,
+    /// 本帧做的层级盒判定数（被下探的树节点 + 叶子判定）。
+    pub box_tests: u32,
+    /// 本帧真正落到单个实例上的判定数。
+    pub instance_tests: u32,
+    /// 没做实例判定就定成不可见的实例数（整枝跳过 + 叶子直接被裁）。
+    pub pruned: u32,
+    /// `pruned` 里来自多实例子树的部分 —— 层级剔除的净收益。
+    pub branch_pruned: u32,
+}
+
 /// 一帧的绘制统计，便于日志 / HUD 观测。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
@@ -681,6 +699,8 @@ pub struct RenderStats {
     /// 扩展二十五：累计重建遮挡体层级树的次数。稳态下应保持不变 —— 逐帧增长
     /// 说明 `Scene::layout_version` 在每帧被推进（增删节点），缓存没生效。
     pub caster_tree_builds: u64,
+    /// 扩展二十九：主通道视锥剔除的层级化读数。
+    pub cull: CullStats,
     pub frame_index: u64,
     /// 本帧文本通道画出的字形四边形数（M1 文字渲染）。
     pub text_glyphs: u32,
@@ -829,6 +849,23 @@ pub struct Renderer {
     caster_instance_nodes: Vec<usize>,
     /// 累计重建层级树的次数（只增不减，观测缓存是否真的生效）。
     caster_tree_builds: u64,
+    /// 扩展二十九：主通道视锥剔除的层级树缓存。
+    ///
+    /// 与 `caster_tree` **分开一棵**：那棵只装「进桶的遮挡体」（被视锥剔掉的实例根本
+    /// 不在里面），这棵要装「场景里所有可见节点」—— 整枝预筛必须看得见会被剔的实例，
+    /// 否则子树盒会缩水成「只剩可见实例」，反而把本该保留的枝剪掉。两者语义不同，
+    /// 共用一棵会互相踩。拓扑同样只在 `Scene::layout_version` 前进时重建。
+    cull_tree: Option<CasterTree>,
+    /// 节点 id → 视锥树节点下标（与 `cull_tree` 同寿命）。
+    cull_slots: HashMap<r3e_core::NodeId, usize>,
+    /// `cull_tree` / `cull_slots` 对应的场景结构版本。
+    cull_layout: u64,
+    /// 本帧各节点自身的实例包围盒（长度 = 树节点数，逐帧覆写）。
+    cull_node_bounds: Vec<Aabb>,
+    /// 本帧各节点自身的实例数（长度 = 树节点数，逐帧覆写）。
+    cull_node_casts: Vec<u32>,
+    /// 累计重建主通道视锥树的次数。
+    cull_tree_builds: u64,
     stats: RenderStats,
 }
 
@@ -873,6 +910,11 @@ struct InstancePlan {
     /// 与实例缓冲同序的节点 id（扩展二十五）。层级剔除用它把实例挂回场景树：
     /// 按实例顺序展开成树节点掩码时，下标一一对应。
     caster_nodes: Vec<r3e_core::NodeId>,
+    /// 扩展二十九：主通道视锥树本帧的层级判定读数（进 `RenderStats::cull`）。
+    cull_box_tests: u32,
+    cull_instance_tests: u32,
+    cull_pruned: u32,
+    cull_branch_pruned: u32,
 }
 
 /// 一次阴影提交的实例区间：`(groups 下标, 实例缓冲区间)`。
@@ -1513,6 +1555,12 @@ impl Renderer {
             caster_node_casts: Vec::new(),
             caster_instance_nodes: Vec::new(),
             caster_tree_builds: 0,
+            cull_tree: None,
+            cull_slots: HashMap::new(),
+            cull_layout: 0,
+            cull_node_bounds: Vec::new(),
+            cull_node_casts: Vec::new(),
+            cull_tree_builds: 0,
             stats: RenderStats::default(),
         })
     }
@@ -1925,6 +1973,13 @@ impl Renderer {
                 shadow_branch_pruned: shadow_plan.branch_pruned,
                 shadow_box_tests: shadow_plan.box_tests,
                 caster_tree_builds: self.caster_tree_builds,
+                cull: CullStats {
+                    tree_builds: self.cull_tree_builds,
+                    box_tests: plan.cull_box_tests,
+                    instance_tests: plan.cull_instance_tests,
+                    pruned: plan.cull_pruned,
+                    branch_pruned: plan.cull_branch_pruned,
+                },
                 frame_index: scene.frame,
                 text_glyphs: 0,
                 text_draws: 0,
@@ -2474,11 +2529,11 @@ impl Renderer {
         })
     }
 
-    /// 场景结构变了才重建层级树（`caster_tree` 与 `caster_slots` 同寿命）。
-    fn sync_caster_layout(&mut self, scene: &Scene) {
-        if self.caster_tree.is_some() && self.caster_layout == scene.layout_version() {
-            return;
-        }
+    /// 把场景树压成「扁平节点表 + id → 下标表」，供层级剔除建树用。
+    ///
+    /// `Scene` 按创建序迭代，父节点通常先于子节点入表，但兄弟间顺序不保证，
+    /// 所以分两趟：先占位拿全 id，第二趟才回填父指针。
+    fn layout_slots(scene: &Scene) -> (Vec<CasterNode>, HashMap<r3e_core::NodeId, usize>) {
         let mut nodes: Vec<CasterNode> = Vec::with_capacity(scene.len());
         let mut slots: HashMap<r3e_core::NodeId, usize> = HashMap::with_capacity(scene.len());
         for node in scene.iter() {
@@ -2489,17 +2544,38 @@ impl Renderer {
                 casts: 0,
             });
         }
-        // 第二趟才填父指针：`Scene` 按创建序迭代，父节点必然先于此节点的子节点入表，
-        // 但同一次迭代里也能处理（父可能排在兄弟后面），分两趟最省心。
         for (index, node) in scene.iter().enumerate() {
             nodes[index].parent = node.parent.and_then(|parent| slots.get(&parent).copied());
         }
+        (nodes, slots)
+    }
+
+    /// 场景结构变了才重建层级树（`caster_tree` 与 `caster_slots` 同寿命）。
+    fn sync_caster_layout(&mut self, scene: &Scene) {
+        if self.caster_tree.is_some() && self.caster_layout == scene.layout_version() {
+            return;
+        }
+        let (nodes, slots) = Self::layout_slots(scene);
         self.caster_node_bounds = vec![Aabb::EMPTY; nodes.len()];
         self.caster_node_casts = vec![0; nodes.len()];
         self.caster_tree = Some(CasterTree::new(nodes));
         self.caster_slots = slots;
         self.caster_layout = scene.layout_version();
         self.caster_tree_builds = self.caster_tree_builds.saturating_add(1);
+    }
+
+    /// 场景结构变了才重建主通道视锥树（扩展二十九，与 `sync_caster_layout` 同套路）。
+    fn sync_cull_layout(&mut self, scene: &Scene) {
+        if self.cull_tree.is_some() && self.cull_layout == scene.layout_version() {
+            return;
+        }
+        let (nodes, slots) = Self::layout_slots(scene);
+        self.cull_node_bounds = vec![Aabb::EMPTY; nodes.len()];
+        self.cull_node_casts = vec![0; nodes.len()];
+        self.cull_tree = Some(CasterTree::new(nodes));
+        self.cull_slots = slots;
+        self.cull_layout = scene.layout_version();
+        self.cull_tree_builds = self.cull_tree_builds.saturating_add(1);
     }
 
     /// 重建阴影深度图数组与对应的 bind group（改 `shadow.size` 时触发）。
@@ -2801,25 +2877,45 @@ impl Renderer {
         // 同一网格常被多次引用，材质 alpha 只查一次
         let mut mesh_alphas: HashMap<MeshRef, f32> = HashMap::new();
 
+        // 第一遍的中间态：判剔除 + 构造实例所需的全部信息。
+        // 存下来是为了第二遍不必回查场景（树节点下标也算好了）。
+        struct PreparedNode {
+            id: r3e_core::NodeId,
+            /// 场景树节点下标；`None` = 节点不在树里（不该发生，按保留处理）
+            tree_slot: Option<usize>,
+            /// 世界包围盒；`None` = 网格没有 AABB（fail-open，永不剔除）
+            world: Option<Aabb>,
+            key: (MeshRef, Option<SurfaceKey>),
+            world_matrix: Mat4,
+            color: Vec4,
+        }
+
+        // 扩展二十九：视锥剔除从「逐实例判定」升级成「按子树预筛」，复用扩展二十五
+        // 在阴影通道验证过的 `CasterTree` 套路。办法是把原来的单遍拆成两遍：
+        //   第一遍只收集 —— 算世界包围盒、并进 `scene_bounds`、把盒写回层级树节点。
+        //     这一遍**不看视锥**：子树盒要等所有实例的盒都写进去才聚合得出来。
+        //   第二遍才判视锥 —— 拿掩码，被整枝剪掉的实例连一次 AABB 测试都不做。
+        // 中间态 `prepared` 保持场景迭代顺序，所以桶内顺序、键的首次出现顺序与
+        // 单遍实现逐个相同，摊平出来的 `groups` 与像素基线都不动。
+        let mut prepared: Vec<PreparedNode> = Vec::with_capacity(scene.len());
+        self.sync_cull_layout(scene);
+        let tree_len = self.cull_tree.as_ref().map_or(0, CasterTree::len);
+        if self.cull_node_bounds.len() != tree_len {
+            self.cull_node_bounds.resize(tree_len, Aabb::EMPTY);
+            self.cull_node_casts.resize(tree_len, 0);
+        }
+        for bounds in self.cull_node_bounds.iter_mut() {
+            *bounds = Aabb::EMPTY;
+        }
+        for casts in self.cull_node_casts.iter_mut() {
+            *casts = 0;
+        }
+
         for node in scene.iter() {
             if !node.visible {
                 continue;
             }
             let key = (node.mesh, node.material.map(SurfaceKey::new));
-            let mesh_alpha = *mesh_alphas
-                .entry(node.mesh)
-                .or_insert_with(|| self.mesh_material_alpha(node.mesh));
-            let transparent = transparency::is_transparent(node.color.w * mesh_alpha);
-            // 键顺序与旧实现同构：不透明键一段、半透明键一段，各段内按首次出现
-            let bucket_keys = if transparent {
-                &mut transparent_keys
-            } else {
-                &mut opaque_keys
-            };
-            if !bucket_keys.contains(&key) {
-                bucket_keys.push(key);
-            }
-            let mut occluded = false;
             let world_bounds = match self.mesh_cache.bounds(node.mesh) {
                 Some(local) => {
                     // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
@@ -2833,26 +2929,6 @@ impl Renderer {
                         Some(b) => b.union(&world),
                         None => world,
                     });
-                    if !frustum.intersects_aabb(&world) {
-                        culled += 1;
-                        continue;
-                    }
-                    // 扩展二十二：视锥内还要再问一句「是不是被前面的东西挡满了」。
-                    // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的
-                    // 贡献，用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
-                    if occlusion_ready
-                        && self.occlusion.test(
-                            &occlusion_settings,
-                            &world,
-                            &view_projection,
-                            screen_width,
-                            screen_height,
-                        )
-                    {
-                        // 同一实例还会进半透明段（半透明不写深度，金字塔里没有它的
-                        // 贡献），所以这里只标记「不透明段不要它」，不整体丢弃
-                        occluded = true;
-                    }
                     Some(world)
                 }
                 // 拿不到包围盒就不剔除（fail-open），宁可多画也不让物件凭空消失
@@ -2861,11 +2937,101 @@ impl Renderer {
                     None
                 }
             };
+            // 写回层级树：缺盒的实例按 fail-open 巨盒登记 —— 它所在的那整枝都不能被
+            // 预筛剪掉，与逐实例实现里「拿不到包围盒就不剔」是同一句话。
+            //
+            // 注：r3e 没有「纯分组节点」这一说（`ObjectDesc.mesh` 缺省就是内置 cube，
+            // `MeshRef` 也没有空变体），所以每个节点自身都至少有一个实例、都是 `casts=1`。
+            let tree_slot = self.cull_slots.get(&node.id).copied();
+            if let Some(tree_slot) = tree_slot {
+                self.cull_node_bounds[tree_slot] =
+                    world_bounds.unwrap_or_else(r3e_core::fail_open_bounds);
+                self.cull_node_casts[tree_slot] = 1;
+            }
+            prepared.push(PreparedNode {
+                id: node.id,
+                tree_slot,
+                world: world_bounds,
+                key,
+                world_matrix: node.world,
+                color: node.color,
+            });
+        }
+
+        // 树从他「全场景可见节点」的盒聚合出子树盒，自顶向下筛一遍
+        let cull_plan = match self.cull_tree.as_mut() {
+            Some(tree) => {
+                tree.refresh(&self.cull_node_bounds, &self.cull_node_casts);
+                Some(tree.plan_frustum(&frustum))
+            }
+            None => None,
+        };
+        let (cull_box_tests, cull_instance_tests, cull_pruned, cull_branch_pruned) =
+            match &cull_plan {
+                Some(plan) => (
+                    plan.counts.box_tests,
+                    plan.counts.instance_tests,
+                    plan.counts.pruned,
+                    plan.counts.branch_pruned,
+                ),
+                None => (0, 0, 0, 0),
+            };
+
+        // 第二遍：判剔除 + 入桶
+        for item in &prepared {
+            // 层级预筛：拿不到掩码（树没建起来 / 节点不在表里）一律保留，宁可多画
+            if let Some(plan) = &cull_plan {
+                let keep = item
+                    .tree_slot
+                    .and_then(|slot| plan.mask.get(slot).copied())
+                    .unwrap_or(true);
+                if !keep {
+                    culled += 1;
+                    continue;
+                }
+            }
+            let key = item.key;
+            let mesh_alpha = *mesh_alphas
+                .entry(key.0)
+                .or_insert_with(|| self.mesh_material_alpha(key.0));
+            let transparent = transparency::is_transparent(item.color.w * mesh_alpha);
+            // 键顺序与旧实现同构：不透明键一段、半透明键一段，各段内按首次出现
+            let bucket_keys = if transparent {
+                &mut transparent_keys
+            } else {
+                &mut opaque_keys
+            };
+            if !bucket_keys.contains(&key) {
+                bucket_keys.push(key);
+            }
+            let mut occluded = false;
+            let world_bounds = item.world;
+            // 扩展二十二：视锥内还要再问一句「是不是被前面的东西挡满了」。
+            // 只剔不透明批次：半透明物件不写深度，金字塔里根本没有它们的贡献，
+            // 用不透明深度去剔半透明会让玻璃 / 水面整层凭空消失。
+            //
+            // 遮挡金字塔是上一帧的读回，得按**逐实例**问才准（同一棵子树里近处可能
+            // 挡住远处，整枝跳过的前提不成立），所以这一层不做层级化。
+            if occlusion_ready {
+                if let Some(world) = world_bounds {
+                    if self.occlusion.test(
+                        &occlusion_settings,
+                        &world,
+                        &view_projection,
+                        screen_width,
+                        screen_height,
+                    ) {
+                        // 同一实例还会进半透明段（半透明不写深度，金字塔里没有它的
+                        // 贡献），所以这里只标记「不透明段不要它」，不整体丢弃
+                        occluded = true;
+                    }
+                }
+            }
             // 扩展二十四：阴影裁剪同样 fail-open —— 没有 AABB 的实例
             // 一律当成「可能在任何一级里」，绝不因为缺数据把影子弄丢。
             let caster_box = world_bounds.unwrap_or_else(r3e_core::fail_open_bounds);
-            let color: Vec4 = node.color;
-            let joint_base = match scene.skin_of(node.id) {
+            let color: Vec4 = item.color;
+            let joint_base = match scene.skin_of(item.id) {
                 Some(skin) if skin.is_solved() => {
                     let need = skin.joint_matrices.len();
                     if self.joint_scratch.len() + need > r3e_core::MAX_JOINT_MATRICES {
@@ -2882,18 +3048,19 @@ impl Renderer {
                 _ => 0,
             };
             let instance = InstanceRaw {
-                model: node.world.to_cols_array_2d(),
+                model: item.world_matrix.to_cols_array_2d(),
                 color: color.to_array(),
                 joint_base,
                 _pad: [0; 3],
             };
             // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
-            let depth = transparency::view_depth(node.world.w_axis.truncate(), camera.position);
+            let depth =
+                transparency::view_depth(item.world_matrix.w_axis.truncate(), camera.position);
             let slot = staged_all.len() as u32;
             staged_all.push(StagedInstance {
                 instance,
                 bounds: caster_box,
-                node: node.id,
+                node: item.id,
                 depth,
             });
             // 扩展二十八：实例**只进自己那一段**的桶。段归属由节点自身的透明性决定，
@@ -3020,6 +3187,10 @@ impl Renderer {
                 scene_bounds,
                 caster_bounds,
                 caster_nodes,
+                cull_box_tests,
+                cull_instance_tests,
+                cull_pruned,
+                cull_branch_pruned,
             };
         }
 
@@ -3049,6 +3220,10 @@ impl Renderer {
             scene_bounds,
             caster_bounds,
             caster_nodes,
+            cull_box_tests,
+            cull_instance_tests,
+            cull_pruned,
+            cull_branch_pruned,
         }
     }
 
