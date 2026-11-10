@@ -271,4 +271,31 @@ mod tests {
         assert_eq!(plan.bytes, 96);
         assert_eq!(plan.skipped, 2);
     }
+
+    #[test]
+    fn joint_matrices_use_sixty_four_byte_records() {
+        // 扩展三十二：关节记录是 mat4（64 B）。改了第 1 个矩阵的平移列
+        // （列主序 index 12 = 字节 48）也只能脏那一条，不能牵连同帧其它角色。
+        let stride = 64usize;
+        let mut prev = vec![0u8; stride * 4];
+        let mut next = prev.clone();
+        prev[stride + 48] = 0;
+        next[stride + 48] = 1;
+        let plan = plan_upload(&prev, &next, stride, MERGE_GAP, MAX_RANGES);
+        assert_eq!(values_of(&plan), vec![1..2]);
+        assert_eq!(plan.bytes, 64);
+        assert_eq!(plan.skipped, 3);
+    }
+
+    #[test]
+    fn static_pose_uploads_nothing() {
+        // 没有动画的蒙皮物件每帧矩阵逐字节相同：零字节上传，全部计入跳过
+        let stride = 64usize;
+        let joints = vec![7u8; stride * 96];
+        let plan = plan_upload(&joints, &joints, stride, MERGE_GAP, MAX_RANGES);
+        assert!(plan.is_empty());
+        assert_eq!(plan.bytes, 0);
+        assert_eq!(plan.recorded, 0);
+        assert_eq!(plan.skipped, 96);
+    }
 }

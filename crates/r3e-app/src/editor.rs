@@ -285,6 +285,17 @@ impl EngineApi for LocalEngineApi<'_> {
                     "full": s.instance_upload.full,
                     "resets": s.instance_upload.resets,
                 },
+                // 扩展三十二：关节矩阵的脏段上传。口径同上，记录换成 mat4（64 B）；
+                // 关节缓冲容量固定不换代，`resets` 恒为 0。
+                "joint_upload": {
+                    "ranges": s.joint_upload.ranges,
+                    "recorded": s.joint_upload.recorded,
+                    "skipped": s.joint_upload.skipped,
+                    "bytes": s.joint_upload.bytes,
+                    "full_bytes": s.joint_upload.full_bytes,
+                    "full": s.joint_upload.full,
+                    "resets": s.joint_upload.resets,
+                },
                 "render_frame_index": s.frame_index,
                 "ssao": {
                     "enabled": s.ssao.enabled,

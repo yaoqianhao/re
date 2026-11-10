@@ -765,6 +765,9 @@ pub struct RenderStats {
     /// 本帧主通道实例缓冲的上传情况（扩展三十一）。全量路径下
     /// `bytes == full_bytes`，脏段路径下 `skipped` 就是省掉的记录数。
     pub instance_upload: InstanceUploadStats,
+    /// 本帧关节矩阵缓冲的上传情况（扩展三十二）。记录是 mat4（64 B），
+    /// `skipped` 是与上一帧逐字节相同、没传的矩阵数；`resets` 恒为 0。
+    pub joint_upload: InstanceUploadStats,
 }
 
 pub struct Renderer {
@@ -817,6 +820,13 @@ pub struct Renderer {
     joint_bind_group: wgpu::BindGroup,
     /// 每帧收集的关节矩阵，扁平存 16 个 f32 / 矩阵，直接 memcpy 上传。
     joint_scratch: Vec<[f32; 16]>,
+    /// 扩展三十二：**上一帧真正传上 GPU 的关节矩阵**的影子副本。
+    /// 与 `joint_buffer` 内容严格同步；无蒙皮帧（`joint_scratch` 为空）时一起清空，
+    /// 下一帧若又有蒙皮就自动退化为全量。
+    joint_shadow: Vec<[f32; 16]>,
+    /// 扩展三十二：关节矩阵的脏段上传读数。关节缓冲容量固定
+    /// （`MAX_JOINT_MATRICES`）不换代，所以这里的 `resets` 恒为 0。
+    joint_upload: InstanceUploadStats,
     /// 阶段 D / 扩展十六：方向光阴影贴图数组（`MAX_CASCADES` 层）+ 比较采样器。
     shadow_size: u32,
     _shadow_texture: wgpu::Texture,
@@ -1562,6 +1572,9 @@ impl Renderer {
             joint_buffer,
             joint_bind_group,
             joint_scratch: Vec::new(),
+            // 首帧没有关节影子：第一次有蒙皮时自然走全量
+            joint_shadow: Vec::new(),
+            joint_upload: InstanceUploadStats::default(),
             shadow_size,
             _shadow_texture: shadow_texture,
             shadow_view,
@@ -2040,6 +2053,8 @@ impl Renderer {
                 env_probe: self.env_probe_stats(),
                 // 扩展三十一：上传读数在上传那一刻就定型，这里原样抄进来
                 instance_upload: self.instance_upload,
+                // 扩展三十二：关节矩阵的脏段读数，同样是上传时定型
+                joint_upload: self.joint_upload,
             };
         }
 
@@ -3221,13 +3236,13 @@ impl Renderer {
                 r3e_core::MAX_JOINT_MATRICES
             );
         }
-        if !self.joint_scratch.is_empty() {
-            self.queue.write_buffer(
-                &self.joint_buffer,
-                0,
-                bytemuck::cast_slice(&self.joint_scratch),
-            );
-        }
+        // 扩展三十二：关节矩阵也走脏段上传 —— 同一姿势的蒙皮物件（无动画的
+        // 摆件、暂停的动画）每帧矩阵逐字节相同，一个字节都不用再传。
+        let joints = std::mem::take(&mut self.joint_scratch);
+        self.upload_joint_runs(&joints);
+        // 归还容量（`take` 出的 Vec 直接还给字段，下一帧 push 不用重新分配）
+        self.joint_scratch = joints;
+        self.joint_scratch.clear();
 
         // 确保用到的网格都已上传（内置即时生成，资产从注入的 MeshProvider 取）
         let mut uploaded: Vec<MeshRef> = Vec::new();
@@ -3352,6 +3367,53 @@ impl Renderer {
 
         self.instance_shadow.clear();
         self.instance_shadow.extend_from_slice(all);
+    }
+
+    /// 扩展三十二：把本帧关节矩阵按脏段传上 GPU，并刷新影子副本。
+    ///
+    /// 与实例路径共用同一套 `plan_upload`，只把「记录」从 `InstanceRaw`（96 B）
+    /// 换成 `mat4`（64 B）：空洞合并（`MERGE_GAP`）与段数上限（`MAX_RANGES`）
+    /// 沿用同一个启发式，因为二者对 `write_buffer` 调用次数同样敏感。
+    ///
+    /// 关节矩阵按**入桶顺序**排进缓冲，所以实例顺序一变（半透明重排、剔除
+    /// 结果变化）槽位就跟着挪位，脏段会变多 —— 那是保守的多传，不影响正确性。
+    /// 蒙皮实例数变化时长度不等，`plan_upload` 直接退化为全量；关节缓冲容量
+    /// 固定、从不换代，因此这里不需要处理「影子失效」以外的退化路径。
+    fn upload_joint_runs(&mut self, joints: &[[f32; 16]]) {
+        if joints.is_empty() {
+            // 本帧没有蒙皮实例：影子清空，下一帧若又有蒙皮会自动走全量
+            self.joint_shadow.clear();
+            self.joint_upload = InstanceUploadStats::default();
+            return;
+        }
+        let stride = std::mem::size_of::<[f32; 16]>();
+        let prev_bytes = bytemuck::cast_slice::<[f32; 16], u8>(&self.joint_shadow);
+        let next_bytes = bytemuck::cast_slice::<[f32; 16], u8>(joints);
+        let plan =
+            instance_upload::plan_upload(prev_bytes, next_bytes, stride, MERGE_GAP, MAX_RANGES);
+
+        for run in &plan.ranges {
+            let start = run.start as usize * stride;
+            let end = run.end as usize * stride;
+            self.queue.write_buffer(
+                &self.joint_buffer,
+                run.start as u64 * stride as u64,
+                &next_bytes[start..end],
+            );
+        }
+
+        self.joint_upload = InstanceUploadStats {
+            ranges: plan.range_count(),
+            recorded: plan.recorded,
+            skipped: plan.skipped,
+            bytes: plan.bytes,
+            full_bytes: joints.len() as u64 * stride as u64,
+            full: plan.full,
+            resets: 0,
+        };
+
+        self.joint_shadow.clear();
+        self.joint_shadow.extend_from_slice(joints);
     }
 
     /// 取网格材质自身的 alpha（无材质 / 无贴图时按 1.0 处理）。

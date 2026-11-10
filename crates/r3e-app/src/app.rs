@@ -1034,6 +1034,25 @@ impl EngineApp {
             upload.full,
             upload.resets
         );
+        // 关节矩阵上传探针（扩展三十二）：静止姿势下 `跳过` 应接近矩阵总数、
+        // `写` 趋近 0 KiB；`全量 true` 出现在首帧与蒙皮实例数变化的那一帧。
+        // 关节缓冲容量固定不换代，所以这里没有「换代」字段。
+        let joints = stats.joint_upload;
+        let joint_saved = if joints.full_bytes == 0 {
+            0.0
+        } else {
+            100.0 - joints.bytes as f64 / joints.full_bytes as f64 * 100.0
+        };
+        log::info!(
+            "[{tag}] 关节矩阵上传：脏段 {} / 写 {} 个 / 跳过 {} 个 / {:.1} KiB（全量 {:.1} KiB，省 {:.1}%）/ 全量 {}",
+            joints.ranges,
+            joints.recorded,
+            joints.skipped,
+            joints.bytes as f64 / 1024.0,
+            joints.full_bytes as f64 / 1024.0,
+            joint_saved,
+            joints.full
+        );
         // 遮挡剔除探针（扩展二十二）：`启用` 是「真的在判」（场景开关 + 金字塔就绪），
         // 刚开的第一帧金字塔还在读回路上，所以会先有一段 `启用 false` 的过渡期。
         // `读回` 只在取到新深度的那一帧为 true（默认每 4 帧一次）。
