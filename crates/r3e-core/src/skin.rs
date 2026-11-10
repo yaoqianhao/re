@@ -97,6 +97,18 @@ pub struct SkinInstance {
     pub bindings: Vec<SkinBinding>,
     /// 每帧求解出的蒙皮矩阵，顺序与 `bindings` 一致，也是顶点的关节下标空间。
     pub joint_matrices: Vec<Mat4>,
+    /// 骨骼树顶点（关节链的共同根），作为「相对变换」的基准节点。
+    ///
+    /// 真实导入路径里网格节点是**独立根**（继承实例变换 `X` 但不在骨架树下），
+    /// 骨骼节点挂在资产实例根下，两者没有 NodeId 意义上的公共祖先。于是改以
+    /// 骨骼树顶点为基准：沿局部链求出 `anchor⁻¹ · joint`，再乘常量
+    /// [`Self::frame_local`] 的逆回到网格局部空间。
+    pub frame_anchor: Option<NodeId>,
+    /// 网格节点相对 [`Self::frame_anchor`] 的变换，**绑定时算一次即固定**。
+    ///
+    /// 它是常量，所以整体刚体运动（`X` 变化但骨骼不动）不会让它变动，
+    /// 关节矩阵的位级稳定性因此不受实例变换影响。
+    pub frame_local: Mat4,
 }
 
 impl SkinInstance {
@@ -106,7 +118,17 @@ impl SkinInstance {
             mesh_node,
             bindings: Vec::new(),
             joint_matrices: Vec::new(),
+            frame_anchor: None,
+            frame_local: Mat4::IDENTITY,
         }
+    }
+
+    /// 固定「相对基准」：`frame_local = anchor_world⁻¹ * mesh_world`。
+    ///
+    /// 必须在**静止姿态**调用（与 [`Self::add_joint`] 同一时刻），之后不再重算。
+    pub fn bind_frame(&mut self, anchor: NodeId, anchor_world: Mat4, mesh_world: Mat4) {
+        self.frame_anchor = Some(anchor);
+        self.frame_local = anchor_world.inverse() * mesh_world;
     }
 
     /// 追加一条关节绑定。
@@ -154,6 +176,23 @@ impl SkinInstance {
         for b in &self.bindings {
             let now = world_of(b.node).unwrap_or(Mat4::IDENTITY);
             self.joint_matrices.push(inv_model * now * b.inverse_bind);
+        }
+    }
+
+    /// 用「关节相对网格节点」的变换填装本帧关节矩阵。
+    ///
+    /// 与 [`Self::solve`] 的区别：入参 `rels[i]` 已经是网格局部空间的关节变换
+    /// （`mesh_world⁻¹ * joint_world`），于是求解里不再出现资产实例变换 `X`。
+    /// `X` 非单位阵时它会让 `X⁻¹ · X` 在浮点上留下末位抖动，位级比较（脏段上传）
+    /// 会把「整体旋转到底、骨骼没动」误判成全脏；沿局部链求相对变换可消掉这段抖动。
+    ///
+    /// 长度必须覆盖 `joint_count()`；调用方对无法建立相对链的关节自行回退到
+    /// `mesh_world⁻¹ * joint_world`（见 `Scene::update_skinning`）。
+    pub fn solve_from_relative(&mut self, rels: &[Mat4]) {
+        self.joint_matrices.clear();
+        self.joint_matrices.reserve(self.bindings.len());
+        for (b, rel) in self.bindings.iter().zip(rels.iter()) {
+            self.joint_matrices.push(*rel * b.inverse_bind);
         }
     }
 

@@ -2787,7 +2787,19 @@ fn bind_asset_skins(
                 .map(|n| n.name.clone())
                 .unwrap_or_default()
         );
-        scene.add_skin(inst);
+        let skin_index = scene.add_skin(inst);
+        // 扩展三十三：以静止姿态固定「骨骼树顶点 → 网格节点」的常量基准，
+        // 之后整体刚体运动不再让关节矩阵产生浮点伪脏。
+        if !scene.align_skin_frame(skin_index) {
+            log::warn!(
+                "蒙皮 `{}` 未能固定相对基准（骨骼树顶点缺失），关节矩阵回退世界矩阵路径",
+                scene
+                    .skins
+                    .get(skin_index)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default()
+            );
+        }
     }
 }
 
