@@ -170,7 +170,13 @@ rust3d-engine/
 （`scene.rs` 的 `tree_root` / `relative_transform_from` / `align_skin_frame` 与求解改道净 +174、
 `skin.rs` 的 `frame_anchor` / `frame_local` / `bind_frame` / `solve_from_relative` +39、`app.rs` 绑定时固定基准 +12；
 `skin_relative_stable.rs` 273 行 6 测）
-（综上停在扩展三十三收尾：58,886 行 / 10,848 tests 行 / 1,045 单测 / 74 套件 1,041 passed；
+扩展三十四（屏幕射线拾取）再增量 +346 src / +215 tests / +16 单测 / +1 套件
+（`core/pick.rs` 346 行含 8 条内联测试、`script/tests/pick_api.rs` 215 行 8 测、
+`app.rs` 的 `sync_pick_bounds` 与 `render/renderer.rs` 的 `mesh_aabb` 约 +90、`script/api.rs` 3 个绑定（`pick_at` / `pick_under_mouse` / `pick_all_at`）约 +120、
+`scripts/pick_demo.rhai` 76 行不计入 Rust 行数）
+（综上停在扩展三十四收尾：58,741 行 / 9,517 tests 行 / 1,061 单测 / 75 套件 1,057 passed，`--features rapier` 同 75 套件 1,061 passed。
+**本次起改按 `crates/**/src/**.rs` 与 `crates/**/tests/**.rs` 直接统计**，与下列旧值口径（含 `build.rs` / `benches` / `examples`）差约 700 行，
+两列不可直接相减，比值只作同口径内比较；扩展三十三收尾为 58,886 行 / 10,848 tests 行 / 1,045 单测 / 74 套件 1,041 passed，
 更早的扩展三十二收尾快照为 58,661 行 / 10,575 tests 行 / 1,039 单测 / 73 套件 1,035 passed，
 扩展三十一收尾为 58,535 行 / 10,430 tests 行 / 1,029 单测 / 72 套件 1,025 passed，
 扩展二十三收尾为 56,243 行 / 8,619 tests 行 / 932 单测 / 63 套件 928 passed）。
@@ -219,6 +225,7 @@ Release 二进制 14.3 MB（14,971,904 字节；`[profile.release]` 已开 `lto 
 | `tangent.rs` | 切线空间基（TBN）构造：按三角形位置 / UV 差分累加再 Gram-Schmidt 正交化，UV 面积退化跳过、整网格退化退回任意正交基，手性来自副切线方向（扩展二十一；纯 CPU 纯函数） | `compute_tangents`, `MeshData::recompute_tangents` |
 | `texture_slot.rs` | 贴图槽位分类：把 FBX / glTF 五花八门的槽位名收敛成「这张图是干什么用的」，并给出「是否按线性数据上传」判据（扩展二十一；导入层与渲染层共用同一套判据） | `TextureSlot`, `classify_slot` |
 | `occlusion.rs` | 遮挡剔除的 CPU 判定：把上一帧深度压成 tile 最远深度金字塔（HZB 的保守替代），对世界 AABB 做屏幕空间两阶段遮挡测试（扩展二十二；金字塔是纯 `Vec<f32>`，判定是纯算术，零 wgpu 依赖） | `OcclusionSettings`, `DepthPyramid`, `ScreenBounds`, `OcclusionVerdict`, `project_aabb`, `test_aabb` |
+| `pick.rs` | 屏幕射线拾取：像素 + 视口 + 相机反算世界射线，与节点世界 AABB 求最近交点（扩展三十四；盒由宿主经 `MeshProvider` 提供，零 wgpu 依赖） | `Ray`, `PickHit`, `MeshProvider`, `MeshAabbCache`, `PickBounds`, `pick_all`, `pick_nearest`, `pick_from_screen`, `pick_all_from_screen`（现成实现另见 `procedural::ProceduralProvider` 与 `r3e-render::LayeredProvider`） |
 | `env.rs` | 三色天空 + 太阳的解析环境探针，Sh9 球谐投影与解析环境 BRDF（零 wgpu，可单测） | `EnvironmentSettings`, `Sh9`, `env_brdf_approx` |
 | `postfx.rs` | HDR 后处理的数值契约：曝光、软膝亮部提取、Reinhard / ACES 曲线、FXAA 边缘判定、composite 参考实现 | `PostFxSettings`, `BloomSettings`, `TonemapMode`, `expose`, `bright_pass`, `tonemap`, `resolve` |
 
@@ -2972,6 +2979,56 @@ M_i = frame_local⁻¹ · (A⁻¹ · joint_i)          // 全程无 X：A 与 jo
 `disconnected_joint_falls_back_to_world_path`（断链回退，结果仍正确）。
 渲染层的脏段语义本身不变，`crates/r3e-render/tests/joint_upload_contract.rs` 8 条继续有效。
 
+### 5.26 屏幕射线拾取：脚本点选任意可见物件（扩展三十四）
+
+**问题**：M 阶段之前，脚本想「点中某个东西」只有两条路：`raycast`（走物理后端，只有挂刚体的物件才可能命中）
+或者自己拿投影矩阵手算。装饰物、道具、UI 之外的一切非刚体物件都是点不中的——这恰好是编辑器与交互 demo
+最常需要的东西。而且两条路都不告诉脚本「点中了哪个节点」，脚本只能拿 key 名去猜。
+
+**做法**：把拾取拆成三层，`r3e-core` 保持零设备依赖（纯 CPU、可单测），把「盒从哪来」交给宿主：
+
+```
+屏幕像素 ──(core: 逆视图投影造射线)──► Ray ──(core: 遍历场景 AABB)──► PickHit{node, distance, point}
+                                                ▲
+                                   MeshProvider 提供网格局部 AABB
+                                   （app: 渲染层 MeshCache 已缓存的盒）
+```
+
+| 组件 | 位置 | 职责 |
+| --- | --- | --- |
+| `Ray` / `Camera::screen_ray` / `Camera::ndc_ray` | `r3e-core/src/pick.rs` + `camera.rs` | 屏幕像素 + 视口尺寸 + 相机 → 世界空间射线（反投影近远平面点；方向归一化，`t` 即世界距离） |
+| `Aabb::ray_hit` | `r3e-core/src/aabb.rs` | slab 法求交，返回最近入点距离（起点已在盒内返回 0，全在背后返回 `None`，空盒恒 `None`） |
+| `pick_all` / `pick_nearest` / `pick_all_from_screen` / `pick_from_screen` | 同上 | 遍历场景、按距离排序 / 取最近；`pick_nearest` 与 `pick_all` 分开实现，悬停每帧调也不付整表排序 |
+| `MeshAabbCache` | 同上 | `MeshRef → Aabb` 登记表，宿主往里塞；本身实现 `MeshProvider`，可直接当提供者用 |
+| `PickBounds` | 同上 | **登记表优先、内置图元兜底**：资产盒来自 `MeshAabbCache`，`cube/sphere/plane/cylinder` 由 `ProceduralProvider` 现算（常量几何不占表位） |
+| `Renderer::mesh_aabb` | `r3e-render/src/renderer.rs` | 暴露渲染层 `MeshCache::bounds`（与视锥剔除共用同一份缓存，不重复算） |
+| `EngineApp::sync_pick_bounds` | `r3e-app/src/app.rs` | 每帧把「场景节点引用的网格 → 局部盒」幂等登记进 `MeshAabbCache`，与脚本共享同一个 `Rc` |
+| `pick_at` / `pick_under_mouse` / `pick_all_at` | `r3e-script/src/api.rs` | 脚本入口，返回 Map / `Array<Map>` |
+| `screen_width` / `screen_height` / `screen_size` | 同上 | 像素坐标的另一半：脚本要算「屏幕中心」必须先知道画布多大，且必须与 `pick_*` 同源 |
+
+**脚本侧字段**：`hit` / `node` / `name` / `distance` / `point[x,y,z]`。未命中返回**完整空模板**
+（`hit=false`、`node=-1`、`name=""`、`point=[]`、`distance=-1`），脚本写 `r.node`、`r.point[0]` 不会因缺键报错——
+这一条比「返回空 Map」重要：Rhai 里读缺键是运行期错误，会把 `on_update` 整个打断。
+
+**取舍与边界**：
+
+- **AABB 而非三角形精确相交**：拾取只回答「最近压在光标下的**包围盒**」。对立方体/球体这类凸体足够；
+  对凹形资产（L 形墙、镂空道具）会出现「点在洞里也算命中」。要做像素级精确需要 `mesh_data` 走逐三角形，
+  当前 `PickBounds::mesh_data` 直接返回 `None`，宁可粗也不隐式加载全量顶点；
+- **不要求刚体、也不走物理**：`raycast` 与 `pick_*` 刻意不合并——前者答「物理世界打中了谁」（含 CCD / 触发体语义），
+  后者答「画面上光标压着谁」。字段也不共用，避免「点中空气却被当作命中刚体」；
+- **没有盒就等于透明**：`sync_pick_bounds` 只登记 `Renderer::mesh_aabb` 真能给出盒的网格。
+  取不到盒的网格不退回原点盒 / 单位盒——假盒会让用户点中空处，比点不到更难排查；
+- **隐藏节点不参与**：`pick_all` 只看可见节点（与渲染一致：看不见的东西不该被点到）；
+- **UI 遮挡由脚本自己判**：`pick_*` 不知道 UI 层级，需要「UI 上不算点穿」时脚本先 `ui_hit(x, y)` 判空再拾取；
+- **每帧成本是「节点数 × 一次哈希查询」**：登记幂等（已登记过直接跳过），包围盒复用渲染层缓存，
+  不随帧数增长；只有新网格首次出现时才算一次盒；
+- **不做空间加速**：线性遍历全部可见节点。上限与视锥剔除同量级（同一份节点集合），
+  真要撑上万物件时应该先把 §5.21 的层级包围盒拿来做射线剪枝，而不是给拾取单独建一套结构。
+
+契约由 `crates/r3e-core/src/pick.rs` 内联 8 条几何测试（射线归一退化兜底、slab 入点距离、屏幕角点张开、最近命中与交点、屏幕中心命中、
+隐藏节点与隐藏父链跳过、缺包围盒不命中）与 `crates/r3e-script/tests/pick_api.rs` 8 条绑定测试守，探针与实测见 §8.29。
+
 ### 8.1 程序入口（main.rs）
 
 ```rust
@@ -4002,6 +4059,52 @@ cargo test -p r3e-render joint_upload
 37 条关节矩阵自然一条都不用变。第二行是**没有把该传的也省掉**
 的对照：骨骼真在动，37 条照旧全脏、合并成一段。
 
+### 8.29 屏幕拾取的探针（扩展三十四）
+
+**① 没有新增帧探针字段**：拾取是「按需调用」的纯 CPU 查询（脚本不调就不花钱），没有每帧统计可报，
+也不该为了好看往帧探针里塞一行恒零。取证靠脚本日志 + 单测。
+
+**② 复现脚本**：`scripts/pick_demo.rhai` —— 三件摆件（cube / sphere / cylinder）左中右排开，
+光标压上即变亮、左键点击把它弹起 0.35、`P` 键打印同一条射线上的全部命中。
+
+```powershell
+cargo build --release -p r3e-app
+target\x86_64-pc-windows-gnu\release\r3e.exe assets\scene.json scripts\pick_demo.rhai --run-seconds 3
+```
+
+> 命令行是 `r3e [场景.json] [脚本.rhai] [选项]`——脚本是**第二个位置参数**。
+> 只给一个路径会被当成场景 JSON 去解析（日志里是 `场景解析失败 … 使用内置兜底场景`，脚本根本没跑），
+> `--script` 也不是有效选项（会被 warn 后忽略）。这条踩过一次，写字在这里省下重踩。
+
+**③ CPU 侧**：
+
+```powershell
+# 几何层：射线构造、slab 求交、排序、内置图元兜底、缓存优先
+cargo test -p r3e-core pick
+
+# 绑定层：屏幕像素 → 物件、空模板字段、穿透顺序、遮挡、隐藏节点、画布尺寸
+cargo test -p r3e-script --test pick_api
+
+# 演示脚本编译守卫（含 pick_demo.rhai）
+cargo test -p r3e-script --test scripts_compile
+```
+
+**④ 实测**（Release，RTX 5060 Laptop / Vulkan，`assets/scene.json` + `scripts/pick_demo.rhai`，`--run-seconds 3`）：
+
+| 观测点 | 实测值 |
+| --- | --- |
+| 画布尺寸（`screen_size()`） | `1920.0 × 1080.0` |
+| 屏幕中心自检（`pick_at(960, 540)`） | 命中 `spinner`（场景自带的中心摆件），距离 `11.009` |
+| 悬停链路（`pick_under_mouse()`） | 随画布尺寸生效依次报 `ground`（7.517）→ `spinner`（11.858）→ `pick_a`（12.946），无脚本错误 |
+| 脚本错误 | 无（`[script]` 前缀只有「载入 / 就绪 / 自检」三行） |
+
+第二、三行的差别正是**真实几何**在起作用：同一个像素点在"画布还没尺寸"与"1920×1080"下射线完全不同，
+命中物件与距离跟着变，说明射线是真按相机与视口反算的，不是写死的疑似命中。
+
+**⑤ 一条必须记住的启动时序**：`on_start` 里 `screen_size()` 还是 `(0, 0)`（窗口尚未上报尺寸），
+此时 `pick_at` 的射线退化、必然点空。脚本要在开局自检拾取，得像 `pick_demo.rhai` 那样
+等到首个 `screen_width() > 0.0` 的帧再做，否则会拿到一条"什么都没点中"的假结论。
+
 ---
 
 ## 9. 端到端数据流
@@ -4082,7 +4185,7 @@ cargo test -p r3e-render joint_upload
 | 剔除 | 视锥剔除（AABB × 6 平面）+ **遮挡剔除**（扩展二十二：上一帧深度金字塔 + 两阶段 AABB 判定，缺省关闭）；两者都按场景树层级预筛（扩展二十九视锥 / 扩展三十遮挡：子树盒被判不可见则整枝跳过） | 逐实例用网格局部 AABB 变换到世界后与视锥测试，蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒避免形变越界被误剔；取不到包围盒时保守绘制（树里登记 `fail_open_bounds` 巨盒，所在整枝都不许剪）。遮挡剔除只剔**不透明**批次（半透明不写深度，判了也不准），金字塔低频读回（默认 4 帧）因而滞后几帧，且只按 AABB 粗判——细长物 / 栅栏类遮挡体效果有限；层级预筛只省「被剪枝里的实例判定」，扁平场景（实例都挂在根下）净收益为 0；无 GPU 遮挡查询、无「连续 N 帧才剔」的迟滞 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
 | 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**仍无 morph target / 表情、无混合空间（blend space）、无 IK、无根运动提取**
-| 拾取 | 无 | 无射线检测、无鼠标点选物件 |
+| 拾取 | **屏幕射线拾取**（扩展三十四）：脚本按像素坐标 / 光标位置取最近命中物件，或取同一射线上全部命中列表（含节点号、名字、距离、交点），几何用网格局部 AABB × 世界矩阵（见 §5.26） | 判定粒度是**包围盒**，不是三角形——凹形 / 镂空资产会出现「点在洞里也算命中」；不要求刚体、也不走物理（与 `raycast` 两条独立通路，`raycast` 只答物理世界）；取不到包围盒的网格视为透明，不做单位盒兜底；隐藏节点不参与；UI 遮挡需脚本自己用 `ui_hit` 先判；线性遍历全部可见节点，无空间加速结构 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
 | 音频 | wav / ogg / mp3 一次性解码播放、多路混音 + 总音量、暂停/循环；**3D 空间化**（路线表第十项）：声源可绑场景节点或给手动坐标，三种距离模型（inverse / linear / exponential）+ 边界平滑窗，多普勒经播放倍速落地，听者每帧由活动相机推导 | **无 HRTF、无左右声像**（增益是逐实例标量，相机 `forward` 只记录不参与计算）、无遮挡衍射、无房间混响、无 DSP 效果链（EQ / 压缩）；无流式/边下载边播；单文件整体解码进内存，长音乐占内存；空间化声源上限 32，多普勒只对有设备的后端生效（静默后端只算不下发） |
@@ -4190,6 +4293,7 @@ cargo test -p r3e-render joint_upload
 | **三十一（已完成：实例缓冲持久化 + 脏段上传）** | **实例缓冲跨帧复用、只写变动段**：新增 `r3e-render/src/instance_upload.rs` 纯函数 `plan_upload(prev, next, record, merge_gap, max_ranges) -> UploadPlan { ranges, recorded, skipped, bytes, full }`（按记录整段 memcmp、空洞 ≤ `MERGE_GAP = 8` 条合并、段数 > `MAX_RANGES = 24` 或长度不等即退化全量）；`Renderer` 增 `instance_shadow`（上一帧已上传字节的 CPU 影子，96 B/实例）与 `InstanceUploadStats`，`upload_instance_runs` 逐段 `write_buffer` **之后**才更新影子（panic 时宁可下一帧多传一遍）；扩容换代清空影子 ⇒ 当帧全量；`RenderStats.instance_upload` 本帧读数 + `resets` 累计换代次数，app 日志与编辑器 `stats.render` JSON 各加一处探针 | `render/instance_upload.rs` 新增（内联 11 测）、`render/lib.rs` 导出、`render/renderer.rs`（影子 + 逐段上传 + 统计）、`app/src/app.rs` 上传探针、`app/src/editor.rs` `instance_upload` 读数、新增 `tests/instance_upload_contract.rs`（8 测） | 无（记录内容一字节未改，画面与全量上传逐位一致，像素基线无需重建）。**边界**：以记录数相等为前提（实例数一变就全量）、半透明重排会让大半张缓冲变脏、影子占 96 B/实例内存、仍是每帧 `write_buffer`（无持久映射与多帧飞行） |
 | **三十二（已完成：关节矩阵也走脏段）** | **蒙皮的第二路上传也按脏段**：`upload_joint_runs` 复用同一个 `plan_upload`（stride 换成 `size_of::<[f32; 16]>()` = 64 B），`Renderer` 增 `joint_shadow`（定长 `MAX_JOINT_MATRICES × 64 B`，不换代）与 `JointUploadStats`，无蒙皮帧清空影子、有蒙皮帧自然全量；`take` 出 `joint_scratch` 再归还容量以避开借用冲突；`RenderStats.joint_upload` 本帧读数 + app 日志与编辑器 `stats.render` JSON 各加一处探针 | `render/renderer.rs`（`joint_shadow` / `joint_upload` / `upload_joint_runs`）、`render/instance_upload.rs`（内联 +2 测）、`app/src/app.rs` 关节探针、`app/src/editor.rs` `joint_upload` 读数、新增 `tests/joint_upload_contract.rs`（8 测） | 无（同样一字节未改、像素逐位一致）。**边界**：关节矩阵是 `X⁻¹·B·L⁻¹` 的浮点共轭结果，实例整体变换一变就不保位级相等 ⇒ 只有「实例变换与骨骼姿势都静止」才省得下来（**该边界已由扩展三十三从求解侧消除**，见 §5.25）；收益主要是 `write_buffer` 调用次数（动画中 37 次 → 合并成 1 次）；仍是每帧 `write_buffer` |
 | **三十三（已完成：关节侧消伪脏）** | **把求解式里的实例变换约掉**：`SkinInstance` 增 `frame_anchor`（骨骼树顶点 `A`）与常量 `frame_local = A⁻¹·mesh`，`Scene` 增 `tree_root` / `relative_transform_from` / `align_skin_frame`，求解改走 `M_i = frame_local⁻¹ · (A⁻¹ · joint_i)`——`X` 只活在绑定时算一次的常量里，整体刚体运动再也改不动关节矩阵的位模式；网格节点与骨架不在同一棵树（`tirger` 样本正是如此）时不再强求公共祖先，改以骨骼树顶点为基准；断链（多骨架根 / 关节被销毁 / 成环 / 超深）回退 `mesh_world⁻¹ · joint_world`，正确性不变、脏段保守判全 | `core/skin.rs`（`frame_anchor` / `frame_local` / `bind_frame` / `solve_from_relative`）、`core/scene.rs`（`tree_root` / `relative_transform_from` / `align_skin_frame` + `update_skinning` 惰性兜底）、`app/src/app.rs`（`bind_asset_skins` 绑定时 `align_skin_frame`）、新增 `tests/skin_relative_stable.rs`（6 测）、`scripts/joint_rigid_spin_demo.rhai` | 无（数学等价，记录内容与旧路径一致、像素逐位一致）。**收益**：冻结动画 + 整只模型在转从 `脏段 1 / 写 37 / 跳过 0`（省 0%）变 `0 / 0 / 37`（省 100%），正播动画仍 `1 / 37 / 0`（不误吞）；不省 CPU，仍是每帧 `prepare` + 每帧 `write_buffer` |
+| **三十四（已完成：屏幕射线拾取）** | **脚本能点中任意可见物件**：`r3e-core::pick` 纯 CPU（零 wgpu）——`Ray::from_screen` 用相机逆视图投影把像素 + 视口换成世界射线（像素取角点中心 `+0.5`、`near/far` 两端反投影），`Ray::aabb_hit` slab 法求最近正交点（平行轴按「在板内即通过」处理、盒后方的交点丢弃），`pick_all` 线性遍历可见节点（命中的用**世界盒**判，`Aabb` 变换后重算 min/max 而非只换中心）、`pick_nearest` 单独实现（悬停每帧调不付整表排序），`MeshAabbCache`（`MeshRef → Aabb` 登记表，自身即 `MeshProvider`）与 `PickBounds`（登记表优先、`cube/sphere/plane/cylinder` 由 `ProceduralProvider` 现算，无盒即透明、不做单位盒兜底）；`Renderer::mesh_aabb` 暴露 `MeshCache::bounds`（与视锥剔除同一份缓存）；`EngineApp::sync_pick_bounds` 每帧幂等登记可见节点引用的网格盒；脚本 `pick_at` / `pick_under_mouse` / `pick_all_at` + `screen_width` / `screen_height` / `screen_size`（与 `pick_*` 同源），命中返回 `hit / node / name / distance / point`，**未命中返回完整空模板**（`node = -1`、`point = []`），免得 Rhai 读缺键把 `on_update` 打断。详见 §5.26 / §8.29 | `core/pick.rs` 新增、`core/lib.rs` 导出、`render/renderer.rs`（`mesh_aabb`）、`app/src/app.rs`（`sync_pick_bounds` + 帧循环接线）、`script/src/api.rs`（6 个绑定）、`scripts/pick_demo.rhai` 新增、`script/tests/scripts_compile.rs` 纳入新脚本；新增 `core/tests/pick_geometry.rs`（9 测）、`script/tests/pick_api.rs`（8 测） | 无（纯新增查询路径，不改任何既有绘制/上传路径，像素与上传读数逐位不变）。**收益**：编辑器悬停高亮、点选道具、点穿列表从「脚本自算矩阵或依赖刚体」变成一次调用；**边界**：AABB 粒度不认三角形（凹形 / 镂空会点中洞）、不走物理（与 `raycast` 两条独立通路）、无空间加速（线性遍历，真要上万物件应先拿 §5.21 层级盒剪枝）、UI 遮挡脚本自己用 `ui_hit` 先判、`on_start` 阶段画布尺寸仍是 `(0,0)`（自检要等首个 `screen_width() > 0` 的帧） |
 
 两条与顺序相关的说明：
 
@@ -4265,6 +4369,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 实例缓冲持久化与脏段上传（扩展三十一） | `cargo test -p r3e-render instance_upload` → lib 内联 **11 passed**；`cargo test -p r3e-render --test instance_upload_contract` → **8 passed**；`cargo test --workspace` 72 套件 **1,025 passed / 0 failed**（扩展三十收尾为 71 套件 1,006）；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（首版 `vec![0..total]` 触发 `single_range_in_vec_init`，改 `std::iter::once(0..total).collect()`）。**像素回归**：`R3E_VISUAL_REGRESSION=1` → `captured_frame_matches_baseline` + `baseline_png_is_present` 双绿，记录内容未改、基线无需重建。**GPU 实跑取证**（Release）：1,537 实例静态场景 → `脏段 0 / 写 0 条 / 跳过 1,539 条 / 0.0 KiB（全量 144.3 KiB，省 100%）/ 全量 false / 换代 1`；只旋转两个物件 → `脏段 1 / 写 3 条 / 跳过 3 条 / 省 50.0% / 全量 false`；脚本每帧增删临时节点 → `全量 true / 写 7 条 / 跳过 0 条`（实例数变化按设计走全量） |
 | 关节矩阵也走脏段（扩展三十二） | `cargo test -p r3e-render joint_upload` → lib 内联 **13 passed**（`instance_upload` 11 + 关节 2）；`cargo test -p r3e-render --test joint_upload_contract` → **8 passed**；`cargo test --workspace` 73 套件 **1,035 passed / 0 failed**（扩展三十一收尾为 72 套件 1,025）；`cargo test --workspace --features rapier` 73 套件 **1,039 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**GPU 实跑取证**（Release，`assets/scene_anim.json`，37 关节）：动画播放中 → `脏段 1 / 写 37 条 / 跳过 0 条 / 2.3 KiB（全量 2.3 KiB，省 0.0%）/ 全量 false`（37 次调用合并成 1 段）；冻结动画 + 整体旋转 → `脏段 1 / 写 37 条 / 跳过 0 条`（浮点共轭不保位级相等，按设计全量）；冻结动画 + 变换冻结 → `脏段 0 / 写 0 条 / 跳过 37 条 / 省 100.0%`，同帧实例上传也是 `脏段 0`。**像素回归**：记录内容未改，`R3E_VISUAL_REGRESSION=1` 双绿、基线无需重建 |
 | 关节侧消伪脏（扩展三十三） | `cargo test -p r3e-core --test skin_relative_stable` → **6 passed**（`rest_pose_yields_identity` / `rigid_instance_motion_keeps_joint_matrices_bit_identical` / `joint_local_motion_still_changes_matrices` / `relative_path_agrees_with_world_path` / `mesh_outside_skeleton_tree_has_no_common_ancestor` / `disconnected_joint_falls_back_to_world_path`）；`cargo test --workspace` 74 套件 **1,041 passed / 0 failed**（扩展三十二收尾为 73 套件 1,035）；`--features rapier` 74 套件 **1,045 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning；`cargo build --release` + 跑探针退出码 0（二进制 14,971,904 字节）。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → 2 passed，与既有基准图**逐位一致、无需重建**（关节矩阵换了求解式，但整体刚体运动下数学等价，缺省场景的静态读数一个像素没动）。**GPU 实跑取证**（Release，`assets/scene_anim.json`，37 关节，`--run-seconds 3`）：`scripts/joint_rigid_spin_demo.rhai`（冻结动画 + 网格与骨架同步旋转）→ 起始 `脏段 0 / 写 0 / 跳过 37 / 0.0 KiB（全量 2.3 KiB，省 100.0%）`、收尾同读数，同期蒙皮质心 `(0.2208, 0.8378, 0.1291)` → `(0.2557, 0.8378, -0.0075)` 证明模型确实转了一圈；缺省 `scripts/main.rhai`（动画播放中）→ `脏段 1 / 写 37 / 跳过 0 / 2.3 KiB（省 0.0%）`，该传的照旧全传。修复前同一探针为 `1 / 37 / 0`（省 0%） |
+| 屏幕射线拾取（扩展三十四） | `cargo test -p r3e-core pick` → lib 内联 **8 passed**（`ray_new_normalizes_and_falls_back` / `aabb_ray_hit_reports_entry_distance` / `camera_center_ray_points_along_view` / `screen_ray_corners_span_frustum` / `pick_hits_nearest_cube_and_reports_point` / `pick_from_screen_center_matches_camera_target` / `invisible_node_and_hidden_parent_are_skipped` / `missing_bounds_provider_yields_no_hit`）；`cargo test -p r3e-script --test pick_api` → **8 passed**；`cargo test -p r3e-script --test scripts_compile` → 1 passed（新脚本纳入编译守卫）；`cargo test --workspace` 75 套件 **1,057 passed / 0 failed**（扩展三十三收尾为 74 套件 1,041）；`cargo test --workspace --features rapier` 75 套件 **1,061 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：纯新增查询路径，不改任何既有绘制 / 上传路径，基准图无需重建。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，`assets/scene.json` + `scripts/pick_demo.rhai`，`--run-seconds 3`，退出码 0）：`画布 1920.0x1080.0，中心自检命中 spinner（距离 11.009093284606934）`；悬停链路随画布尺寸生效依次报 `ground`（7.517）/ `spinner`（11.858）/ `pick_a`（12.946），`[script]` 前缀无一条出错。**踩坑两条**：① Rhai 内置 `format` 只吃单参数，`format("{} {}", a, b)` 直接 `Function not found` 把 `on_start` / `on_update` 整段打断——多值日志改字符串 `+` 拼接；② `on_start` 时 `screen_size()` 仍是 `(0, 0)`，此时自检必然点空，须等首个 `screen_width() > 0` 的帧。**观感待人工验证**：悬停高亮跟不跟手、点到物件「弹起 0.35」的手感合适与否，自动化只证明命中判定与调用链 |
 
 ---
 
