@@ -146,7 +146,7 @@ rust3d-engine/
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
 | r3e-core | 18,734 | 3,187 | 410 | `scene.rs` / `anim_blend.rs` / `scene_stack.rs` / `scene_schema.rs` / `material.rs` / `env.rs` / `envmap.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `text.rs` / `glyph_atlas.rs` / `ui.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` |
-| r3e-render | 8,589 | 2,313 | 171 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-render | 8,595 | 2,346 | 172 | `renderer.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,227 | 585 | 59 | `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
@@ -154,17 +154,18 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 6,893 | 231 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now`）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **57,471** | **9,853** | **988** | **约 5.7 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 69 个套件 / 984 passed / 0 failed** |
+| **合计** | **57,477** | **9,886** | **989** | **约 5.7 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 69 个套件 / 985 passed / 0 failed** |
 
 行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,310 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算
+着色器（1,310 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
+扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测
 （此前停在扩展二十三收尾快照：56,243 行 / 8,619 tests 行 / 932 单测 / 63 套件 928 passed；
 本次重算并入扩展二十四~二十七的全部新增：层级剔除、着色器法线兜底、实例分桶契约等测试文件 + WGSL 13 行）。
 单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
-`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 984。
+`backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 985。
 
-Release 二进制 14.3 MB（14,950,400 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
+Release 二进制 14.3 MB（14,949,888 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
 
 ### 3.3 质量门（每次改动后必过）
@@ -172,8 +173,8 @@ Release 二进制 14.3 MB（14,950,400 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 984 passed / 0 failed（69 个套件；较扩展二十六收尾的 978 增 6，全部来自扩展二十七的 `instance_buckets_contract`：分桶重构 4 条 + 半透明段不丢桶 2 条） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 988 passed / 0 failed（默认特性 + `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 985 passed / 0 failed（69 个套件；较扩展二十七收尾的 984 增 1，来自 `instance_buckets_contract::node_enters_only_its_own_segment`：扩展二十八把「两段各收全量」钉死） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 989 passed / 0 failed（默认特性 + `ccd_penetration.rs` 整文件 3 条 + `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -2587,16 +2588,45 @@ if length(raw_normal) > 1e-20 {
 只有严格模式报红。修法是把键判重挪回段列表、桶键补上段标志；改完本机 RTX 5060 严格模式
 （`R3E_VISUAL_STRICT=1`）原基线逐位通过，无需重建基准图。
 
+**⑥ 段归属下沉到节点（扩展二十八）**：⑤ 修的是「桶登记不上」，但**实例仍然两段都进**——
+`if !occluded { buckets.entry((key.0, key.1, false)) }` 之后紧跟着无条件的
+`buckets.entry((key.0, key.1, true))`。批次键 `(网格, 材质)` 不含透明度、段内收的是「所有匹配该键的节点」，
+于是同一份几何被两段各收一次。
+
+这在 `visual_regression` 夹具里没暴露：玻璃 `glass_panel` 与实心 `cube` 共用 `(cube, None)` 键，
+不透明段把玻璃当实心画了一遍（不透明管线 `blend = ALPHA_BLENDING` + `depth_write = true`，
+于是那次绘制**本身就完成了混合**并写下了深度），半透明段再画时 `depth_compare = Less` 判等失败被丢弃。
+两次绘制只有一次生效，所以像素逐位正确 —— 靠绘制顺序碰巧对，不是语义对。两块玻璃一旦互相重叠，
+生效顺序就从「场景序」变成需要「`back_to_front`」，画面立刻出错。
+
+扩展二十八把入桶改成按节点自身透明性分支：
+
+```rust
+if transparent {
+    // 半透明物件不写深度，金字塔里没有它的贡献，因此永不被遮挡剔除
+    buckets.entry((key.0, key.1, true)).or_default().push(slot);
+} else if !occluded {
+    buckets.entry((key.0, key.1, false)).or_default().push(slot);
+}
+```
+
+于是「段」不再是事后按首次出现判定的属性，而是**节点自己的属性**：一份几何只画一次，
+不透明物件不进半透明段、玻璃不进不透明段、玻璃也不吃遮挡剔除。
+
+**像素**：夹具场景逐位不变（`R3E_VISUAL_STRICT=1` 原基线通过，无需重建）——因为上面那条「碰巧生效」
+的路径消失后，玻璃改由半透明段按 `back_to_front` 绘制，单块不重叠玻璃的混合结果与原路径一致。
+**探针**（`visual_regression` 夹具，改前 / 改后）：主通道实例 **10 → 7**、draw call 5 不变；
+半透明段透明实例 **3 → 2**。少的 3 个正是重复份——玻璃 2 个挤在不透明段、实心 `cube` 1 个挤在半透明段。
+
 **已知边界**
 
 - **仍是单线程 CPU、仍是每帧重建**：省掉的是重复过滤，不是「每帧从零收集」本身；上万实例该走持久化实例缓冲
   （见 README §7 已知边界），这条重构不改变那个结论；
 - **HashMap 每帧重新分配**：`buckets` 与 `mesh_alphas` 都是局部变量，没有跨帧复用（要做需要把它们提成
   `Renderer` 字段并 `clear()`，代价是可读性）；实测收益在键数上百的场景，键只有个位数时两者差别在噪声里；
-- **同键跨两段 = 画两遍**：批次键是 `(网格, 材质)`，不含透明度；段内收集又是「所有匹配该键的节点」
-  （与扩展十九以来的旧实现相同）。于是同一个网格若既有不透明物件又有半透明物件，不透明段会把玻璃物件
-  也当不透明画一遍、半透明段会把实心物件当半透明画一遍。基线图里本来就有这份重复，本次不动它
-  （改它 = 像素变，须重建基准）；正确做法是把「节点透明性」并进批次键，留作后续扩展项；
+- **批次粒度仍是「网格 × 物件级材质」**：段已并入桶键，但同一段内仍把「同网格同材质的多个节点」压进一次
+  实例化绘制。要让不透明与半透明真正各走各的批次序列，键里还得带段（已带）；再细就只能拆到逐节点，代价是
+  draw call 暴涨，不做；
 - **段标志是判重的一部分**：`opaque_keys` / `transparent_keys` 各自维护，桶键带第三位段标志。
   任何「把两张表合成一张」或「用桶判重」的写法都会让某一整段静默丢桶（见 §5.20 ⑤）。
 
@@ -3693,6 +3723,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 音频出声（M1） | **待人工验证**：按 J 触发 `blip`、K 暂停/续、L 停/重起 `ambience`、M 切总音量；音量是否合适、循环接缝是否可闻需人耳判定（自动化只能断言调用链与状态机） |
 | 世界法线矩阵奇异保护（扩展二十六） | `cargo test -p r3e-core --test normal_matrix_safe` → 9 passed；`cargo test -p r3e-render --test normal_guard_shader` → 3 passed；`cargo test --workspace` 68 套件 **978 passed / 0 failed**（扩展二十五收尾为 966），`--features rapier` 68 套件 **982 passed / 0 failed**（原 970）；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：缺省场景不含 0 缩放，着色器正常路径算式未变（只多读一次长度），基线无需重建。**退化路径取证**：`scale` 某轴设 0 后 `--run-seconds 3` 实跑，画面由整片刷黑变为正常着色（朝上的平光），收尾探针与编辑器快照的 `world_normal` 全部分量有限、无 `NaN` / `inf`；CPU 侧同类断言见 `normal_matrix_safe` 的场景集成用例 |
 | 主通道实例收集单次遍历（扩展二十七） | `cargo test -p r3e-render --test instance_buckets_contract` → 6 passed；`cargo test --workspace` 69 套件 **984 passed / 0 failed**（扩展二十六收尾为 68 套件 978）；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：收集顺序、`groups` 区间、`caster_bounds` / `caster_nodes` 与旧实现逐个相同，缺省场景 draw call / 实例数 / 像素全不变，基线无需重建。**严格模式（本机 RTX 5060 实测）**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → `captured_frame_matches_baseline ... ok`，与既有基准图逐位一致；修复前同一命令 558 坏点（0.24%，阈值 0.1%）失败，差异区 x290-332 / y137-157 正是玻璃面板。**`--features rapier`**：69 套件 **988 passed / 0 failed**（`r3e-app` 首次链接报 `anon.*.llvm.*` 未定义符号，`cargo clean -p r3e-app -p r3e-render` 后复跑全绿）。 |
+| 段归属下沉到节点（扩展二十八） | `cargo test -p r3e-render --test instance_buckets_contract` → 7 passed（新增 `node_enters_only_its_own_segment`）；`cargo test --workspace` 69 套件 **985 passed / 0 failed**（扩展二十七收尾为 984）；`--features rapier` **989 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings`（含 `--features rapier`）0 warning；`cargo build --release` + `r3e.exe --run-seconds 2` 退出码 0（二进制 14,949,888 字节）。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → `captured_frame_matches_baseline ... ok`，与既有基准图**逐位一致、无需重建** —— 旧的「两段全收」之所以像素也对，是因为不透明段那次绘制自己做完了混合并写了深度、半透明段重画被 `depth_compare = Less` 判等丢弃，只有一次生效；去掉重复份后玻璃改由半透明段按 `back_to_front` 画，单块不重叠玻璃结果相同。**探针取证（改前 → 改后）**：`visual_regression` 夹具主通道实例 **10 → 7**、半透明段透明实例 **3 → 2**、draw call 5 不变；`--run-seconds 2` 缺省场景主通道实例 8 / 透明实例 0（缺省场景无半透明物件）。 |
 
 ---
 
