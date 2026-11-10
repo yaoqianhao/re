@@ -1730,6 +1730,15 @@ impl Renderer {
         self.size.0 as f32 / self.size.1.max(1) as f32
     }
 
+    /// 网格局部包围盒（几何空间），供宿主做屏幕射线拾取（扩展三十四）。
+    ///
+    /// 和视锥剔除共用 `MeshCache` 的那份缓存：剔除已经算过一次的盒子，
+    /// 拾取不会重新扫顶点。`None` 表示提供者不带包围盒数据 —— 调用方应把这
+    /// 个网格当作「不可拾取」，而不是退回原点或空盒（否则会点中不存在的体积）。
+    pub fn mesh_aabb(&mut self, key: MeshRef) -> Option<Aabb> {
+        self.mesh_cache.bounds(key)
+    }
+
     /// 环境探针的累计球谐投影次数。连续帧之间不该增长（缓存命中），
     /// 供集成测试与遥测确认「没有每帧重算」。
     pub fn environment_builds(&self) -> u64 {

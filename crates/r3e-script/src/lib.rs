@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use r3e_audio::Audio;
-use r3e_core::{InputState, Scene, SceneCommand, SceneStack, UiInteraction};
+use r3e_core::{InputState, MeshAabbCache, Scene, SceneCommand, SceneStack, UiInteraction};
 use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
@@ -37,6 +37,11 @@ pub struct ScriptHost {
     scene_stack: Rc<RefCell<SceneStack>>,
     /// 场景命令槽（扩展十八 B）：脚本申请，宿主每帧取走执行。
     scene_cmd: Rc<RefCell<Option<SceneCommand>>>,
+    /// 网格包围盒表（扩展三十四）：`app` 每帧填充、脚本 `pick_at` 只读。
+    ///
+    /// 与 `ui_interaction` 同一模式——两边共用同一个 `Rc`，宿主不需要「通知」脚本，
+    /// 因为根本没有副本可以不同步。
+    pick_bounds: Rc<RefCell<MeshAabbCache>>,
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: Option<PathBuf>,
@@ -76,6 +81,8 @@ impl ScriptHost {
         // 之后再换 `Rc` 不会影响已注册的绑定（与 `ui_interaction` 同一约束）。
         let scene_stack = Rc::new(RefCell::new(SceneStack::new()));
         let scene_cmd: Rc<RefCell<Option<SceneCommand>>> = Rc::new(RefCell::new(None));
+        // 包围盒表同样在这里建好：绑定闭包捕获的是这个 `Rc`，之后换表不会生效。
+        let pick_bounds = Rc::new(RefCell::new(MeshAabbCache::new()));
         let ctx = api::ScriptContext {
             scene: scene.clone(),
             physics: physics.clone(),
@@ -87,6 +94,7 @@ impl ScriptHost {
             ui_interaction: ui_interaction.clone(),
             scene_stack: scene_stack.clone(),
             scene_cmd: scene_cmd.clone(),
+            pick_bounds: pick_bounds.clone(),
         };
 
         let mut engine = Engine::new();
@@ -103,6 +111,7 @@ impl ScriptHost {
             ui_interaction,
             scene_stack,
             scene_cmd,
+            pick_bounds,
             ast: None,
             scope: Scope::new(),
             script_path: None,
@@ -212,6 +221,15 @@ impl ScriptHost {
     /// 场景栈句柄（扩展十八 B）。宿主拿它压栈 / 回退，脚本侧只读同一个栈。
     pub fn scene_stack_handle(&self) -> Rc<RefCell<SceneStack>> {
         self.scene_stack.clone()
+    }
+
+    /// 网格包围盒表的共享句柄（扩展三十四）。
+    ///
+    /// `app` 每帧把「场景里引用到的网格 → 局部盒」登记进来，脚本的 `pick_at` /
+    /// `pick_under_mouse` / `pick_all_at` 读的就是这张表。宿主只需要在网格第一次
+    /// 出现时登记一次（渲染层的盒子本身有缓存），不是每帧全量重算。
+    pub fn pick_bounds_handle(&self) -> Rc<RefCell<MeshAabbCache>> {
+        self.pick_bounds.clone()
     }
 
     /// 取走脚本申请的场景命令（每帧一次；没有则返回 `None`）。

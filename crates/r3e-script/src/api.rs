@@ -17,9 +17,9 @@ use r3e_core::ui::{
     UiUpsert, UiValue, MAX_UI_ELEMENTS,
 };
 use r3e_core::{
-    plan_local_shadows, BoneMask, EnvironmentMapSettings, InputState, KeyCode, LayerMode,
-    LocalLight, MeshRef, NodeId, ObjectDesc, Scene, SceneCommand, SceneStack, ScreenText,
-    TextAlign,
+    pick_all_from_screen, pick_from_screen, plan_local_shadows, BoneMask, EnvironmentMapSettings,
+    InputState, KeyCode, LayerMode, LocalLight, MeshAabbCache, MeshRef, NodeId, ObjectDesc,
+    PickBounds, PickHit, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
 };
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -60,6 +60,12 @@ pub struct ScriptContext {
     /// 一个槽只放一条命令：满了就拒绝（`scene_switch` 等返回 `false`），这样脚本在
     /// `on_update` 里每帧无脑调用也不会把队列堆成无限长的待办。
     pub scene_cmd: Rc<RefCell<Option<SceneCommand>>>,
+    /// 网格包围盒表（扩展三十四）：`app` 每帧把「场景里实际引用到的网格」登记进来，
+    /// 脚本的 `pick_at` 用它把屏幕射线换成命中物件。
+    ///
+    /// 与 `ui_interaction` 同样是两边共用的 `Rc`：宿主负责填充，脚本只读。
+    /// 表里查不到的网格一律当「不可拾取」——绝不退回原点盒，否则会点中空气。
+    pub pick_bounds: Rc<RefCell<MeshAabbCache>>,
 }
 
 /// UI 写入的「不能静默失败」账本：只记最后一次原因 + 累计次数。
@@ -164,6 +170,39 @@ fn hit_map(hit: Option<(NodeId, BodyHandle, f32, Vec3, Vec3, bool)>) -> Map {
 
 fn ray_hit_map(hit: Option<RayHit>) -> Map {
     hit_map(hit.map(|h| (h.node, h.handle, h.distance, h.point, h.normal, false)))
+}
+
+/// 拾取结果的空模板（字段名与命中版完全一致，理由同 [`empty_query_map`]）。
+///
+/// 与物理 `raycast` 的字段是**并存**的两套：`raycast` 走物理后端、只有挂了刚体的物件
+/// 才可能命中；`pick_at` 走渲染几何、任何有包围盒的可见物件都能点到。二者刻意不合并，
+/// 否则「点到装饰物」和「点到刚体」会混成一个让人猜不透的接口。
+fn empty_pick_map() -> Map {
+    let mut m = Map::new();
+    m.insert("hit".into(), Dynamic::from(false));
+    m.insert("node".into(), Dynamic::from(-1_i64));
+    m.insert("name".into(), Dynamic::from(String::new()));
+    m.insert("distance".into(), Dynamic::from(-1.0_f64));
+    m.insert("point".into(), Dynamic::from(Array::new()));
+    m
+}
+
+/// 拾取命中 → 脚本 Map（`pick_at` / `pick_under_mouse` / `pick_all_at` 共用）。
+fn pick_map(scene: &Scene, hit: Option<PickHit>) -> Map {
+    let Some(hit) = hit else {
+        return empty_pick_map();
+    };
+    let mut m = Map::new();
+    m.insert("hit".into(), Dynamic::from(true));
+    m.insert("node".into(), Dynamic::from(hit.node as i64));
+    let name = scene
+        .get(hit.node)
+        .map(|n| n.name.clone())
+        .unwrap_or_default();
+    m.insert("name".into(), Dynamic::from(name));
+    m.insert("distance".into(), Dynamic::from(hit.distance as f64));
+    m.insert("point".into(), Dynamic::from(vec3_array(hit.point)));
+    m
 }
 
 fn shape_cast_map(hit: Option<ShapeCastHit>) -> Map {
@@ -2816,6 +2855,69 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         hit_test_key(&scene.ui, ui.screen(), f32_of(x), f32_of(y))
             .map(str::to_string)
             .unwrap_or_default()
+    });
+
+    // ---------- 3D 屏幕射线拾取（扩展三十四） ----------
+    //
+    // 这三个入口是「脚本自己就能做交互」的关键：以前点选只能靠 `raycast`（要挂刚体）或
+    // 手算投影矩阵，现在屏幕坐标直接换成物件。屏幕尺寸取 `app` 最近一帧送进
+    // `UiInteraction` 的那份，所以和画面完全对齐，不是猜的窗口大小。
+
+    // 脚本要自己做像素级交互（拾取 / 自绘 HUD / 判边界）就得知道画布多大。
+    // 这三个读的与 `pick_*` 是同一份尺寸，运行中改窗口大小会跟着变。
+    let c = ctx.clone();
+    engine.register_fn("screen_width", move || -> f64 {
+        c.ui_interaction.borrow().screen().0 as f64
+    });
+    let c = ctx.clone();
+    engine.register_fn("screen_height", move || -> f64 {
+        c.ui_interaction.borrow().screen().1 as f64
+    });
+    let c = ctx.clone();
+    engine.register_fn("screen_size", move || -> Array {
+        let (w, h) = c.ui_interaction.borrow().screen();
+        vec![Dynamic::from(w as f64), Dynamic::from(h as f64)]
+    });
+
+    // 屏幕像素 → 最近命中的可见物件（渲染几何 AABB，不要求刚体）。
+    let c = ctx.clone();
+    engine.register_fn("pick_at", move |x: f64, y: f64| -> Map {
+        let screen = c.ui_interaction.borrow().screen();
+        let scene = c.scene.borrow();
+        let bounds = c.pick_bounds.borrow();
+        let provider = PickBounds::new(&bounds);
+        let hit = pick_from_screen(&scene, &provider, f32_of(x), f32_of(y), screen.0, screen.1);
+        pick_map(&scene, hit)
+    });
+
+    // 鼠标当前位置的同一件事（少写两次 `mouse_x()`）。
+    let c = ctx.clone();
+    engine.register_fn("pick_under_mouse", move || -> Map {
+        let (mx, my) = {
+            let input = c.input.borrow();
+            (input.mouse_x, input.mouse_y)
+        };
+        let screen = c.ui_interaction.borrow().screen();
+        let scene = c.scene.borrow();
+        let bounds = c.pick_bounds.borrow();
+        let provider = PickBounds::new(&bounds);
+        let hit = pick_from_screen(&scene, &provider, mx, my, screen.0, screen.1);
+        pick_map(&scene, hit)
+    });
+
+    // 同一条射线上**所有**命中的物件，按距离升序（穿透式点选 / 处理遮挡里的目标）。
+    // 每项字段与 `pick_at` 完全一致，脚本用同一套取值代码即可。
+    let c = ctx.clone();
+    engine.register_fn("pick_all_at", move |x: f64, y: f64| -> Array {
+        let screen = c.ui_interaction.borrow().screen();
+        let scene = c.scene.borrow();
+        let bounds = c.pick_bounds.borrow();
+        let provider = PickBounds::new(&bounds);
+        let hits =
+            pick_all_from_screen(&scene, &provider, f32_of(x), f32_of(y), screen.0, screen.1);
+        hits.into_iter()
+            .map(|hit| Dynamic::from(pick_map(&scene, Some(hit))))
+            .collect()
     });
 
     // 本帧的 UI 层级顺序里，某个 key 是否存在（脚本常用来先判存在再读事件）。

@@ -19,8 +19,8 @@ use r3e_core::input::{
 };
 use r3e_core::mesh::TextureImage;
 use r3e_core::{
-    AnimDecl, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene, SceneArchive,
-    SceneCommand, SceneStack, SkinInstance, StackEntry, UiInteraction,
+    AnimDecl, MeshAabbCache, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene,
+    SceneArchive, SceneCommand, SceneStack, SkinInstance, StackEntry, UiInteraction,
 };
 use r3e_editor::RpcServer;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
@@ -239,6 +239,11 @@ pub struct EngineApp {
     /// 在帧首做，脚本与 RPC 只能往命令槽里放一条意图。栈里每层存"离开时的样子"
     /// （源文本 + 运行时快照），所以切走再切回来不必重跑整局。
     scene_stack: Rc<RefCell<SceneStack>>,
+    /// 网格包围盒表（扩展三十四）：与脚本宿主共享同一份 `Rc`。
+    ///
+    /// 同样是**宿主独占写**：每帧把场景里实际引用到的网格登记进来，脚本的 `pick_at`
+    /// 只读。渲染层的盒子有缓存，所以「登记」这一步是查表而不是扫顶点。
+    pick_bounds: Rc<RefCell<MeshAabbCache>>,
 
     last_frame: Instant,
     last_watch: Instant,
@@ -384,6 +389,10 @@ impl EngineApp {
 
         // 场景栈与脚本宿主共用同一份状态：脚本只读层名，写只发生在宿主侧。
         let scene_stack = scripts.scene_stack_handle();
+
+        // 包围盒表（扩展三十四）：宿主每帧填充，脚本 `pick_at` 读同一个 `Rc`。
+        let pick_bounds = scripts.pick_bounds_handle();
+
         {
             // 起始场景就是第 0 层：这样 `scene_back()` 在"还没切过"时有确定的语义
             // （没有更早的层 → 拒绝），而不是"栈为空"这种要和 0 层区分开的特例。
@@ -495,6 +504,7 @@ impl EngineApp {
             cursor_valid: false,
             ui_interaction,
             scene_stack,
+            pick_bounds,
             last_frame: now,
             last_watch: now,
             time: 0.0,
@@ -695,6 +705,10 @@ impl EngineApp {
         //    这样脚本 on_update 读到的就是本帧事件，相机也据此决定要不要吃这次拖动。
         //    放在暂停判断之外：暂停时点 UI（按钮切换状态）仍然要有反馈。
         self.update_ui_interaction();
+
+        // 0b) 拾取包围盒表（扩展三十四）：脚本下次 `pick_at` 之前必须已经有本帧网格的盒子。
+        //     放在暂停判断之外——暂停时点选物件是常用操作（选中、查看），不该等恢复。
+        self.sync_pick_bounds();
 
         if !self.paused {
             self.time += dt as f64;
@@ -1579,6 +1593,41 @@ impl EngineApp {
                 (s.width as f32, s.height as f32)
             })
             .unwrap_or((0.0, 0.0))
+    }
+
+    /// 把「场景里引用到的网格 → 局部盒」登记进脚本拾取表（扩展三十四）。
+    ///
+    /// 幂等：已登记过的网格直接跳过，所以每帧成本是「节点数 × 一次 HashMap 查询」，
+    /// 不是「每帧重算包围盒」。盒子本身来自渲染层 `MeshCache`（视锥剔除早已算过并缓存）。
+    ///
+    /// 取不到盒子的网格既不算错、也不登记：它在拾取里就是"透明"的。这里刻意不退回
+    /// 原点盒或单位盒——假盒会让用户点中空处，比点不到更难排查。
+    fn sync_pick_bounds(&mut self) {
+        // 先收集键，避免持有 `scene` 借用时再去可变借用 `renderer`。
+        let keys: Vec<MeshRef> = {
+            let scene = self.scene.borrow();
+            let mut keys = Vec::new();
+            for node in scene.iter() {
+                // 隐藏节点这一帧不登记也行：它本来就不该被点到，等它可见了自然补上。
+                if !node.visible {
+                    continue;
+                }
+                keys.push(node.mesh);
+            }
+            keys
+        };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let mut table = self.pick_bounds.borrow_mut();
+        for key in keys {
+            if table.contains(key) {
+                continue;
+            }
+            if let Some(aabb) = renderer.mesh_aabb(key) {
+                table.insert(key, aabb);
+            }
+        }
     }
 
     /// 本帧 UI 交互推进：把光标位置与左键边沿交给 core 的状态机。

@@ -1,4 +1,4 @@
-//! r3e-core —— 引擎内核：数学、变换、场景图与生命周期。
+﻿//! r3e-core —— 引擎内核：数学、变换、场景图与生命周期。
 //!
 //! 该 crate 不依赖任何图形 API，可被渲染层、物理层、脚本层同时复用。
 
@@ -17,6 +17,7 @@ pub mod material;
 pub mod mesh;
 pub mod node;
 pub mod occlusion;
+pub mod pick;
 pub mod postfx;
 pub mod procedural;
 pub mod scene;
@@ -84,6 +85,10 @@ pub use occlusion::{
     OcclusionVerdict, ScreenBounds, DEFAULT_DEPTH_BIAS, DEFAULT_MARGIN_PX, DEFAULT_MAX_TILES,
     DEFAULT_TILE_SIZE, MAX_DEPTH_BIAS, MAX_MARGIN_PX, MAX_MAX_TILES, MAX_PYRAMID_LEVELS,
     MAX_TILE_SIZE, MIN_MAX_TILES, MIN_TILE_SIZE,
+};
+pub use pick::{
+    pick_all, pick_all_from_screen, pick_from_screen, pick_nearest, MeshAabbCache, PickBounds,
+    PickHit, Ray,
 };
 pub use postfx::{
     bright_pass, expose, exposure_scale, fxaa_edge_visible, luminance, resolve, tonemap,

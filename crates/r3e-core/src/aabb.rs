@@ -140,6 +140,49 @@ impl Aabb {
         out
     }
 
+    /// 射线与盒体的最近进入距离（扩展三十四：屏幕射线拾取用）。
+    ///
+    /// 语义（slab 法，逐轴求进入 / 离开参数后取交集）：
+    ///
+    /// * 起点在盒内：返回 `0.0` —— 最近的「命中」就是起点本身，不是负的后退距离；
+    /// * 盒体整体在射线后方（`tmax < 0`）：`None`；
+    /// * 某轴方向分量为 0：该轴退化成「起点是否落在 [min, max] 内」的区间测试，
+    ///   不做除法，因此不会产生 `inf * 0 = NaN`；
+    /// * 返回值单位：`dir` 归一化时即世界距离（[`crate::pick::Ray::new`] 保证这一点）。
+    ///
+    /// 空盒（`min > max`）直接 `None`：空盒没有体积，不该被点选。
+    pub fn ray_hit(&self, origin: Vec3, dir: Vec3) -> Option<f32> {
+        if self.is_empty() {
+            return None;
+        }
+        // 起点之前的段一律不计：tmin 从 0 起算，于是「已在盒内」自然得到 0。
+        let mut tmin = 0.0_f32;
+        let mut tmax = f32::INFINITY;
+        for axis in 0..3 {
+            let o = origin[axis];
+            let d = dir[axis];
+            let (lo, hi) = (self.min[axis], self.max[axis]);
+            if d.abs() <= 1e-12 {
+                // 与slab 平行：只有起点本来就夹在该轴区间内才可能相交
+                if o < lo || o > hi {
+                    return None;
+                }
+                continue;
+            }
+            let inv = 1.0 / d;
+            let t0 = (lo - o) * inv;
+            let t1 = (hi - o) * inv;
+            // 方向为负时 t0/t1 会互换，按分量取小/大即可，无需分支判方向
+            let (enter, leave) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+            tmin = tmin.max(enter);
+            tmax = tmax.min(leave);
+            if tmin > tmax {
+                return None;
+            }
+        }
+        (tmax >= 0.0).then_some(tmin)
+    }
+
     pub fn to_tuple(self) -> (Vec3, Vec3) {
         (self.min, self.max)
     }
