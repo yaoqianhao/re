@@ -9,7 +9,9 @@
 //! 3. 键登记按**段列表**判重，不能拿桶是否已存在当判据；
 //! 4. 桶键带「段」标志：同一 (网格, 材质) 组合可能同时落在不透明段与半透明段，
 //!    两段必须各自成桶；
-//! 5. 剔除计数（视锥 / 缺包围盒）与半透明顺序没有被顺手删掉。
+//! 5. 剔除计数（视锥 / 缺包围盒）与半透明顺序没有被顺手删掉；
+//! 6. 节点只进自己那一段的桶（扩展二十八）：批次键不含透明度，两段都收「所有匹配该键
+//!    的节点」，会把同一份几何画两遍。
 //!
 //! 第 3、4 条是拿像素回归换来的教训：把「键是否首次出现」判在 `buckets` 上时，
 //! 同一个网格的玻璃物件（alpha < 1）与不透明物件共用一键，半透明段的键登记不上，
@@ -126,5 +128,36 @@ fn cull_stats_and_transparent_order_survive() {
     assert!(
         body.contains("transparency::back_to_front(&depths)"),
         "半透明组内由远及近排序丢失"
+    );
+}
+
+/// 节点只进自己那一段的桶：不透明物件不进半透明段，玻璃不进不透明段。
+///
+/// 批次键是 `(网格, 材质)`，不含透明度；段内收的是「所有匹配该键的节点」。
+/// 于是同一个网格既被不透明物件、又被玻璃物件引用时，两段各收全量 —— 一份几何
+/// 两次绘制。以前这条错误被「不透明段写了深度、半透明段 depth-Less 判等失败」
+/// 挡住，看起来像素正确，其实是靠绘制顺序碰巧；一旦玻璃互相重叠就会露出来。
+#[test]
+fn node_enters_only_its_own_segment() {
+    let body = prepare_instances_body();
+    let pushes: Vec<&str> = body
+        .lines()
+        .filter(|l| l.contains("buckets.entry(") && l.contains(".push(slot)"))
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        2,
+        "入桶语句应恰好两条（不透明段一条、半透明段一条），实际 {} 条",
+        pushes.len()
+    );
+    for line in pushes {
+        assert!(
+            line.starts_with("                "),
+            "入桶语句必须落在段分支内部（缩进 16 空格），无条件执行就是两段全收：{line}"
+        );
+    }
+    assert!(
+        body.contains("if transparent {") && body.contains("} else if !occluded {"),
+        "段分支必须是「透明 → 半透明桶；不透明且未被遮挡 → 不透明桶」"
     );
 }

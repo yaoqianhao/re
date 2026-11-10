@@ -2896,10 +2896,16 @@ impl Renderer {
                 node: node.id,
                 depth,
             });
-            if !occluded {
+            // 扩展二十八：实例**只进自己那一段**的桶。段归属由节点自身的透明性决定，
+            // 不再"两段各来一份"。批次键是 (网格, 材质)，不含透明度，段内又收"所有匹配
+            // 该键的节点"，于是同一个网格若既有不透明物件又有玻璃物件，不透明段会把玻璃
+            // 也当不透明画一遍、半透明段会把实心物件当玻璃再画一遍 —— 一份几何，两次绘制。
+            if transparent {
+                // 半透明物件不写深度，金字塔里没有它的贡献，因此永不被遮挡剔除
+                buckets.entry((key.0, key.1, true)).or_default().push(slot);
+            } else if !occluded {
                 buckets.entry((key.0, key.1, false)).or_default().push(slot);
             }
-            buckets.entry((key.0, key.1, true)).or_default().push(slot);
         }
 
         // 摊平：不透明批次先入组，半透明批次攒到最后统一排序
