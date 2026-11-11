@@ -38,6 +38,16 @@ use crate::NodeId;
 /// 需要更多就分批切换权重，而不是加宽缓冲（加宽会让每个实例的顶点属性涨 16 字节）。
 pub const MAX_MORPH_TARGETS: usize = 4;
 
+/// 「不属于任何互斥组」的哨兵值（扩展三十八）。
+///
+/// `MorphInstance::exclusive` 里每个形状一格：等于该哨兵表示它独立叠加（与扩展
+/// 三十七前的行为一致），否则**同号即互斥**。取 `u8::MAX` 而不是 0 是为了让
+/// 「全 0 初始化的缓冲」不会把四个形状意外并进同一个组。
+pub const NO_EXCLUSIVE_GROUP: u8 = u8::MAX;
+
+/// 一个互斥组最多容纳的形状数 = 每实例的形状上限。
+pub const MAX_EXCLUSIVE_GROUP_MEMBERS: usize = MAX_MORPH_TARGETS;
+
 /// 形变表里**每顶点**占用的 `f32` 个数（扩展三十七把 6 抬到 9）。
 ///
 /// 布局：`[0..3) = Δ位置 xyz`、`[3..6) = Δ法线 xyz`、`[6..9) = Δ切线 xyz`。
@@ -415,6 +425,15 @@ pub struct MorphInstance {
     pub weights: [f32; MAX_MORPH_TARGETS],
     /// 该网格实际存在的形状数；权重只需前 `target_count` 个。
     pub target_count: usize,
+    /// 扩展三十八：每个形状所属的互斥组编号（[`NO_EXCLUSIVE_GROUP`] = 独立）。
+    ///
+    /// 同号的形状在一组里「抢同一块形变预算」：一组内**正值之和超过 1** 时按比例
+    /// 压回 1（见 [`MorphInstance::normalized_weights`]）。典型用法是把
+    /// 「张嘴 / 闭嘴」「睁眼 / 闭眼」这类语义相反的形状放进同一组 —— 否则两个 1.0
+    /// 叠起来会把顶点推过位移两倍处，脸会当场翻面。
+    ///
+    /// 组只存在于**实例**侧：同一份形状集，敌人和主角可以配不同的互斥关系。
+    pub exclusive: [u8; MAX_MORPH_TARGETS],
 }
 
 impl MorphInstance {
@@ -423,7 +442,111 @@ impl MorphInstance {
             mesh_node,
             weights: [0.0; MAX_MORPH_TARGETS],
             target_count: target_count.min(MAX_MORPH_TARGETS),
+            // 默认全部独立：不调用 `set_exclusive_group` 时行为与扩展三十七逐位相同
+            exclusive: [NO_EXCLUSIVE_GROUP; MAX_MORPH_TARGETS],
         }
+    }
+
+    /// 把一个形状归入某个互斥组（`group = None` 表示退出组、回到独立叠加）。
+    ///
+    /// 组号 0..=[`NO_EXCLUSIVE_GROUP`]-1 可用 —— 哨兵值本身不能当组号，
+    /// 否则「独立」与「0 号组」就分不开了。越界下标 / 非法组号一律拒绝并
+    /// 返回 `false`（不改动任何状态）。
+    pub fn set_exclusive_group(&mut self, index: usize, group: Option<u8>) -> bool {
+        if index >= self.target_count.min(MAX_MORPH_TARGETS) {
+            return false;
+        }
+        match group {
+            None => self.exclusive[index] = NO_EXCLUSIVE_GROUP,
+            Some(group) if group != NO_EXCLUSIVE_GROUP => self.exclusive[index] = group,
+            Some(_) => return false,
+        }
+        true
+    }
+
+    /// 某个形状当前所属的互斥组（独立时返回 `None`）。
+    pub fn exclusive_group_of(&self, index: usize) -> Option<u8> {
+        if index >= self.target_count.min(MAX_MORPH_TARGETS) {
+            return None;
+        }
+        let group = self.exclusive[index];
+        (group != NO_EXCLUSIVE_GROUP).then_some(group)
+    }
+
+    /// 清空全部互斥关系（回到「四个形状各自独立」的默认状态）。权重不动。
+    pub fn clear_exclusive_groups(&mut self) {
+        self.exclusive = [NO_EXCLUSIVE_GROUP; MAX_MORPH_TARGETS];
+    }
+
+    /// 该形状集里目前有多少个**互斥组**（`> 0` 说明归一化有事可做）。
+    pub fn exclusive_group_count(&self) -> usize {
+        let count = self.target_count.min(MAX_MORPH_TARGETS);
+        let mut seen: Vec<u8> = Vec::new();
+        for index in 0..count {
+            let group = self.exclusive[index];
+            if group != NO_EXCLUSIVE_GROUP && !seen.contains(&group) {
+                seen.push(group);
+            }
+        }
+        seen.len()
+    }
+
+    /// 扩展三十八：把权重按互斥组归一化后的副本，仍带一点「是否真的压过」的读数。
+    ///
+    /// 规则（逐组独立执行，组之间互不影响）：
+    ///
+    /// * 组内**正值之和 > 1** 时，把组内正值等比缩放到和恰好为 1；
+    /// * 和 ≤ 1 时原样返回（「半张嘴」这类部分权重不该被抬到满值）；
+    /// * 负权重不参与求和、也不被缩放 —— 形变允许反向（`w < 0`），把它算进预算
+    ///   会让「闭眼 -0.5 + 睁眼 +1.0」互相抵消掉本该生效的位移；
+    /// * 独立形状（[`NO_EXCLUSIVE_GROUP`]）与 `target_count` 之外的槽位原样保留；
+    /// * 非有限权重原样保留（由调用方按「非法 → 当 0 处理」的既有口径收口，
+    ///   这一层不替它做决定，否则 NaN 会被偷偷改成 0 而掩盖脚本错误）。
+    ///
+    /// 返回值第二项是「本次真的缩放过」：渲染层用它做零变化验收 —— 没有任何互斥组
+    /// 超预算时，进实例缓冲的权重与场景里的原值逐位相同。
+    ///
+    /// 这是**纯函数**：`&self` 进、新数组出，场景侧权重不被改动，脚本读回的值仍是
+    /// 自己写进去的那个（否则「写 1 读回 0.5」会让所有调参脚本当场懵）。
+    pub fn normalized_weights(&self) -> ([f32; MAX_MORPH_TARGETS], bool) {
+        let mut weights = self.weights;
+        let count = self.target_count.min(MAX_MORPH_TARGETS);
+        let mut handled = [false; MAX_MORPH_TARGETS];
+        let mut scaled = false;
+        for index in 0..count {
+            let group = self.exclusive[index];
+            if group == NO_EXCLUSIVE_GROUP || handled[index] {
+                continue;
+            }
+            // 先把同组成员挑出来：`count ≤ 4`，线性扫比建表便宜
+            let mut members = [0usize; MAX_EXCLUSIVE_GROUP_MEMBERS];
+            let mut members_len = 0usize;
+            let mut sum = 0.0f32;
+            for (other, slot) in self.exclusive.iter().enumerate().take(count).skip(index) {
+                if *slot != group {
+                    continue;
+                }
+                members[members_len] = other;
+                members_len += 1;
+                handled[other] = true;
+                let weight = self.weights[other];
+                if weight.is_finite() && weight > 0.0 {
+                    sum += weight;
+                }
+            }
+            // 只有超预算才动：否则「其余形状各 0.3、和 0.9」会被无端抬到 1.0
+            if sum > 1.0 {
+                let inverse = 1.0 / sum;
+                for member in members.iter().take(members_len) {
+                    let weight = self.weights[*member];
+                    if weight.is_finite() && weight > 0.0 {
+                        weights[*member] = weight * inverse;
+                    }
+                }
+                scaled = true;
+            }
+        }
+        (weights, scaled)
     }
 
     /// 设置一个形状的权重。越界 / 非有限值一律拒绝并返回 `false`（不改动任何状态）。
@@ -682,6 +805,149 @@ mod tests {
         instance.reset();
         assert!(!instance.is_active());
         assert_eq!(instance.weights, [0.0; MAX_MORPH_TARGETS]);
+    }
+
+    /// 扩展三十八（契约一）：没设组时一切照旧 —— 归一化是纯拷贝、不缩放。
+    ///
+    /// 这条是「零变化验收」的 CPU 侧锚点：老场景不调 `set_exclusive_group`，
+    /// 进实例缓冲的权重就必须与场景里的原值逐位相同。
+    #[test]
+    fn default_instance_has_no_exclusive_group() {
+        let mut instance = MorphInstance::new(7, 3);
+        assert_eq!(instance.exclusive, [NO_EXCLUSIVE_GROUP; MAX_MORPH_TARGETS]);
+        assert_eq!(instance.exclusive_group_count(), 0);
+        assert_eq!(instance.exclusive_group_of(0), None);
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, 1.0);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(!scaled, "没有组就不该缩放过");
+        assert_eq!(weights, instance.weights, "权重必须逐位相同");
+    }
+
+    /// 扩展三十八（契约二）：同组正值之和超 1 时按比例压回 1，组外形状不受影响。
+    #[test]
+    fn exclusive_group_caps_sum_to_one() {
+        let mut instance = MorphInstance::new(7, 3);
+        assert!(instance.set_exclusive_group(0, Some(0)));
+        assert!(instance.set_exclusive_group(1, Some(0)));
+        assert_eq!(instance.exclusive_group_count(), 1, "0 与 1 是同一组");
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, 1.0);
+        instance.set_weight(2, 1.0);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(scaled);
+        assert!((weights[0] - 0.5).abs() < 1e-6, "组内各占一半: {weights:?}");
+        assert!((weights[1] - 0.5).abs() < 1e-6, "{weights:?}");
+        assert_eq!(weights[2], 1.0, "组外形状不该被牵连");
+        // 组内和必须恰好是 1：这是「两个表情互相顶」的数学表述
+        assert!((weights[0] + weights[1] - 1.0).abs() < 1e-6);
+    }
+
+    /// 扩展三十八（契约三）：组内和 ≤ 1 时原样保留 —— 部分权重不该被抬到满值。
+    #[test]
+    fn exclusive_group_leaves_partial_weights_alone() {
+        let mut instance = MorphInstance::new(7, 2);
+        assert!(instance.set_exclusive_group(0, Some(4)));
+        assert!(instance.set_exclusive_group(1, Some(4)));
+        instance.set_weight(0, 0.3);
+        instance.set_weight(1, 0.3);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(!scaled, "0.6 ≤ 1，不该缩放");
+        assert_eq!(weights, [0.3, 0.3, 0.0, 0.0]);
+    }
+
+    /// 扩展三十八（契约四）：负权重不占预算、也不被缩放。
+    ///
+    /// 「闭眼 -0.5 + 睁眼 +1.0」是同组的常见写法：若把 -0.5 算进和，本该生效的
+    /// +1.0 会被压成 +0.67，正向位移白丢三分之一。
+    #[test]
+    fn negative_weight_stays_out_of_budget() {
+        let mut instance = MorphInstance::new(7, 2);
+        assert!(instance.set_exclusive_group(0, Some(0)));
+        assert!(instance.set_exclusive_group(1, Some(0)));
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, -0.5);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(!scaled, "正值和 1.0 不超预算，不该缩放");
+        assert_eq!(weights[0], 1.0);
+        assert_eq!(weights[1], -0.5, "反向系数必须原样保留");
+
+        // 超预算时负值依然不动（只缩正值），和恒等于 1
+        instance.set_weight(0, 3.0);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(scaled);
+        assert!((weights[0] - 1.0).abs() < 1e-6);
+        assert_eq!(weights[1], -0.5);
+    }
+
+    /// 扩展三十八（契约五）：`normalized_weights` 是纯函数，不改场景侧权重。
+    #[test]
+    fn normalized_weights_is_pure() {
+        let mut instance = MorphInstance::new(7, 2);
+        assert!(instance.set_exclusive_group(0, Some(1)));
+        assert!(instance.set_exclusive_group(1, Some(1)));
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, 1.0);
+        let (weights, _) = instance.normalized_weights();
+        assert_eq!(weights[0], 0.5);
+        assert_eq!(
+            instance.weights,
+            [1.0, 1.0, 0.0, 0.0],
+            "脚本读回的权重必须还是自己写进去的那个值"
+        );
+    }
+
+    /// 扩展三十八（契约六）：组号校验 —— 哨兵值不能当组号，越界下标被拒。
+    #[test]
+    fn exclusive_group_rejects_sentinel_and_bad_index() {
+        let mut instance = MorphInstance::new(7, 2);
+        assert!(
+            !instance.set_exclusive_group(0, Some(NO_EXCLUSIVE_GROUP)),
+            "哨兵值是「独立」的编码，不能再当成 0xFF 号组"
+        );
+        assert!(
+            !instance.set_exclusive_group(2, Some(0)),
+            "超出 target_count"
+        );
+        assert!(instance.set_exclusive_group(0, Some(3)));
+        assert_eq!(instance.exclusive_group_of(0), Some(3));
+        assert!(instance.set_exclusive_group(0, None), "退组");
+        assert_eq!(instance.exclusive_group_of(0), None);
+        assert_eq!(instance.exclusive_group_of(1), None);
+    }
+
+    /// 扩展三十八（契约七）：归一化后的权重喂给 CPU 求解，位移正好折半。
+    ///
+    /// 这条把「互斥」从权重算术接到真实几何上：两个同组形状权重 1.0 + 1.0
+    /// 若不归一化，顶点会被推到位移的两倍处；归一化后应等于只开一个。
+    #[test]
+    fn normalized_weights_halve_displacement_in_apply() {
+        let mesh = triangle();
+        // 两个同向形状：各自把顶点 1 沿 +x 推 1
+        let set = MorphSet::new(vec![
+            MorphTarget::new("a", vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0; 3]]),
+            MorphTarget::new("b", vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0; 3]]),
+        ]);
+        let mut instance = MorphInstance::new(0, 2);
+        assert!(instance.set_exclusive_group(0, Some(0)));
+        assert!(instance.set_exclusive_group(1, Some(0)));
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, 1.0);
+
+        // 顶点 1 起点 x = 1.0：两个形状各推 1 → 3.0；归一化后只推 1 → 2.0
+        let raw = set.apply(&mesh, &instance.weights);
+        assert!(
+            (raw.vertices[1].position[0] - 3.0).abs() < 1e-6,
+            "未归一化时应叠加到两倍位移: {:?}",
+            raw.vertices[1].position
+        );
+        let (weights, _) = instance.normalized_weights();
+        let capped = set.apply(&mesh, &weights);
+        assert!(
+            (capped.vertices[1].position[0] - 2.0).abs() < 1e-6,
+            "归一化后应等于只开一个形状: {:?}",
+            capped.vertices[1].position
+        );
     }
 
     /// `MAX_MORPH_TARGETS` 之外的多余形状不上传、不参与求解。

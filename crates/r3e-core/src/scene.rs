@@ -11,7 +11,7 @@ use crate::anim_blend::{
     MAX_ANIM_LAYERS,
 };
 use crate::light::{self, LocalLight};
-use crate::morph::MorphInstance;
+use crate::morph::{MorphInstance, NO_EXCLUSIVE_GROUP};
 use crate::text::ScreenText;
 use crate::ui::UiElement;
 
@@ -867,6 +867,45 @@ impl Scene {
     pub fn morph_target_count(&self, name: &str) -> Option<usize> {
         let node = self.find_id(name)?;
         self.morph_of(node).map(|m| m.target_count)
+    }
+
+    /// 扩展三十八：把物件名的第 `index` 个形状划进互斥组 / 从组里取出。
+    ///
+    /// 同一组内的形状本帧权重之和超过 1 时，渲染层会等比压回 1 —— 用来表达
+    /// 「张嘴和闭嘴不能同时 100%」这类表情互斥。`group` 传
+    /// [`NO_EXCLUSIVE_GROUP`] 表示取出。返回是否找到绑定且下标合法。
+    pub fn set_morph_exclusive_by_name(&mut self, name: &str, index: usize, group: u8) -> bool {
+        let Some(node) = self.find_id(name) else {
+            return false;
+        };
+        let slot = if group == NO_EXCLUSIVE_GROUP {
+            None
+        } else {
+            Some(group)
+        };
+        match self.morphs.iter_mut().find(|m| m.mesh_node == node) {
+            Some(morph) => morph.set_exclusive_group(index, slot),
+            None => false,
+        }
+    }
+
+    /// 扩展三十八：读某个形状所在的互斥组；没有绑定 / 下标越界返回 `None`。
+    pub fn morph_exclusive_by_name(&self, name: &str, index: usize) -> Option<u8> {
+        let node = self.find_id(name)?;
+        self.morph_of(node)?.exclusive_group_of(index)
+    }
+
+    /// 扩展三十八：读归一化之后的权重（脚本可据此断言「被压回 1」）。
+    ///
+    /// 与渲染层剔除用的是**同一个纯函数**，因此脚本里看到的数就是进缓冲的数。
+    pub fn morph_normalized_weight_by_name(&self, name: &str, index: usize) -> Option<f32> {
+        let node = self.find_id(name)?;
+        let morph = self.morph_of(node)?;
+        if index >= morph.target_count {
+            return None;
+        }
+        let (weights, _) = morph.normalized_weights();
+        weights.get(index).copied()
     }
 
     /// 丢弃指向已删除节点的形变绑定（与 `prune_skins` 同策）。
@@ -2711,5 +2750,82 @@ mod save_tests {
         assert!(parent.children.contains(&child.id), "父节点应列出子节点");
         // 世界矩阵是算出来的，不是写出来的
         assert!((child.world.w_axis.y - 1.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod morph_exclusive_tests {
+    use super::*;
+
+    /// 扩展三十八：场景侧只负责「把组号落到实例上」，归一化本身是纯函数，
+    /// 这里断言的是**读到的东西**与**传给渲染层的东西**一致。
+    #[test]
+    fn scene_carries_exclusive_groups_to_the_instance() {
+        let mut scene = Scene::new();
+        scene
+            .spawn(ObjectDesc {
+                name: "face".to_string(),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+        assert!(scene.bind_morph_by_name("face", 2));
+        assert!(scene.set_morph_weight_by_name("face", 0, 1.0));
+        assert!(scene.set_morph_weight_by_name("face", 1, 1.0));
+
+        // 没设组时：两个形状各自独立，归一化后仍是 1.0 / 1.0
+        assert_eq!(scene.morph_exclusive_by_name("face", 0), None);
+        assert!((scene.morph_normalized_weight_by_name("face", 0).unwrap() - 1.0).abs() < 1e-6);
+
+        // 同一组：组内和 2.0 被等比压回 1.0，各得 0.5
+        assert!(scene.set_morph_exclusive_by_name("face", 0, 0));
+        assert!(scene.set_morph_exclusive_by_name("face", 1, 0));
+        assert_eq!(scene.morph_exclusive_by_name("face", 0), Some(0));
+        let a = scene.morph_normalized_weight_by_name("face", 0).unwrap();
+        let b = scene.morph_normalized_weight_by_name("face", 1).unwrap();
+        assert!((a - 0.5).abs() < 1e-6, "实际 {a}");
+        assert!((b - 0.5).abs() < 1e-6, "实际 {b}");
+        // 场景原权重要原样留着，脚本调参会读自己写进去的值
+        assert_eq!(scene.morph_weight_by_name("face", 0), Some(1.0));
+
+        // 哨兵值 = 取出该形状，取出后回到互不影响
+        assert!(scene.set_morph_exclusive_by_name("face", 1, NO_EXCLUSIVE_GROUP));
+        assert_eq!(scene.morph_exclusive_by_name("face", 1), None);
+        assert!((scene.morph_normalized_weight_by_name("face", 1).unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn exclusive_api_rejects_unknown_names_and_bad_index() {
+        let mut scene = Scene::new();
+        scene
+            .spawn(ObjectDesc {
+                name: "face".to_string(),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+        // 没有绑定时一律拒绝
+        assert!(!scene.set_morph_exclusive_by_name("face", 0, 0));
+        assert_eq!(scene.morph_exclusive_by_name("face", 0), None);
+        assert_eq!(scene.morph_normalized_weight_by_name("face", 0), None);
+        assert!(!scene.set_morph_exclusive_by_name("nobody", 0, 0));
+
+        assert!(scene.bind_morph_by_name("face", 2));
+        // 超出 target_count 的下标：写不进、读不到
+        assert!(!scene.set_morph_exclusive_by_name("face", 5, 0));
+        assert_eq!(scene.morph_exclusive_by_name("face", 5), None);
+        assert_eq!(scene.morph_normalized_weight_by_name("face", 5), None);
+    }
+
+    /// 履历：`target_count = 0` 的网格不建绑定，互斥组自然也无处可落。
+    #[test]
+    fn bind_morph_rejects_zero_targets() {
+        let mut scene = Scene::new();
+        scene
+            .spawn(ObjectDesc {
+                name: "block".to_string(),
+                ..Default::default()
+            })
+            .expect("spawn 应成功");
+        assert!(!scene.bind_morph_by_name("block", 0));
+        assert!(!scene.set_morph_exclusive_by_name("block", 0, 0));
     }
 }

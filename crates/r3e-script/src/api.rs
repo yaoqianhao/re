@@ -20,6 +20,7 @@ use r3e_core::{
     pick_all_from_screen, pick_from_screen, plan_local_shadows, BoneMask, EnvironmentMapSettings,
     InputState, KeyCode, LayerMode, LocalLight, MeshAabbCache, MeshRef, NodeId, ObjectDesc,
     PickBounds, PickHit, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
+    NO_EXCLUSIVE_GROUP,
 };
 use r3e_physics::{
     BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
@@ -681,6 +682,60 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .and_then(|node| s.morph_of(node))
             .map(|m| m.is_active())
             .unwrap_or(false)
+    });
+
+    // ---------------- 表情互斥（扩展三十八） ----------------
+    //
+    // 把若干形状划进同一个组，组内权重和超过 1 时渲染层等比压回 1。
+    // 脚本里 group 写 -1 即「取出该形状」（对应 `NO_EXCLUSIVE_GROUP` 哨兵）。
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "morph_exclusive",
+        move |name: &str, index: i64, group: i64| -> bool {
+            if index < 0 || group < -1 || group > u8::MAX as i64 {
+                return false;
+            }
+            let slot = if group < 0 {
+                NO_EXCLUSIVE_GROUP
+            } else {
+                group as u8
+            };
+            c.scene
+                .borrow_mut()
+                .set_morph_exclusive_by_name(name, index as usize, slot)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("morph_group", move |name: &str, index: i64| -> i64 {
+        if index < 0 {
+            return -1;
+        }
+        match c
+            .scene
+            .borrow()
+            .morph_exclusive_by_name(name, index as usize)
+        {
+            Some(group) => group as i64,
+            None => -1,
+        }
+    });
+
+    // 归一化后的权重：与渲染层剔除吃的是同一份数，可直接断言「被压回 1」
+    let c = ctx.clone();
+    engine.register_fn("morph_norm", move |name: &str, index: i64| -> f64 {
+        if index < 0 {
+            return -1.0;
+        }
+        match c
+            .scene
+            .borrow()
+            .morph_normalized_weight_by_name(name, index as usize)
+        {
+            Some(w) => w as f64,
+            None => -1.0,
+        }
     });
 
     let c = ctx.clone();

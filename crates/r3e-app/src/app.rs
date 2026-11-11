@@ -675,13 +675,16 @@ impl EngineApp {
                     .map(|r| r.stats())
                     .map(|s| {
                         format!(
-                            " | draws={} instances={} culled={} cull_unknown={} morph={}/{}f",
+                            " | draws={} instances={} culled={} cull_unknown={} \
+                             morph={}/{}f norm={} inflate={:.3}",
                             s.draw_calls,
                             s.instances,
                             s.culled,
                             s.cull_unknown,
                             s.morph_instances,
-                            s.morph_floats
+                            s.morph_floats,
+                            s.morph_normalized,
+                            s.morph_cull_inflate
                         )
                     })
                     .unwrap_or_default();

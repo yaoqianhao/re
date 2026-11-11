@@ -444,6 +444,12 @@ pub struct MeshMorph {
     /// 蒙皮可以按比例外扩（[`SKIN_CULL_MARGIN`]），形变不行：位移量是资产说了算的绝对值，
     /// 与网格尺寸无关（一个 0.1 m 的眼球可以有 0.05 m 的表情位移）。
     pub max_displacement: f32,
+    /// 扩展三十八：**逐形状**的峰值位移长度（下标即形状下标，未用的槽位为 0）。
+    ///
+    /// `max_displacement` 是这份数组的最大值（网格级粗界），剔除时用它更省；
+    /// 细算用逐形状表 —— 一个脸只有「眨眼」位移 0.02、「张嘴」位移 0.15 时，
+    /// 拿粗界去乘眨眼权重会把包围盒白白撑大七倍，遮挡剔除随之失效。
+    pub max_displacements: [f32; r3e_core::MAX_MORPH_TARGETS],
 }
 
 impl MeshMorph {
@@ -452,6 +458,9 @@ impl MeshMorph {
     /// `peak_weight` 取当前各形状权重的绝对值最大值 —— 权重**不做 clamp**（夸张表情
     /// 可以写 2.0，反向表情可以写负值），所以外扩量必须按当前值算，不能写死 1.0。
     /// `scale` 取实例世界矩阵三条轴的缩放模长最大值（非等比缩放下要按最大那条算）。
+    ///
+    /// 这是**网格级粗界**（按最长的那个形状算）：不知道实例权重分布时用它。
+    /// 知道权重时优先用 [`MeshMorph::cull_inflate_weights`]。
     pub fn cull_inflate(&self, peak_weight: f32, scale: f32) -> f32 {
         // 取绝对值：位移方向可能与 +Z 相反，但盒要往两边撑一样多。
         let peak_weight = peak_weight.abs();
@@ -464,6 +473,47 @@ impl MeshMorph {
             return 0.0;
         }
         self.max_displacement * peak_weight * scale
+    }
+
+    /// 扩展三十八：按**逐实例权重**算外扩量（世界单位）。
+    ///
+    /// `Σ |w_t| × displacement_t × scale`：小权重的高位移形状不再连累整个包围盒，
+    /// 「只眨一下眼」的实例只外扩眨眼那点量。权重与位移都是绝对值参与 —— 反向
+    /// 形变同样会把顶点推出静止盒，方向不影响「推多远」。
+    ///
+    /// 非有限权重按 0 处理（与着色器「非法权重当 0」的口径一致），累计超界时也
+    /// 只返回有限值：剔除余量宁可偏大，绝不允许 NaN 把整个视锥判定污染成「全剔除」。
+    pub fn cull_inflate_weights(
+        &self,
+        weights: &[f32; r3e_core::MAX_MORPH_TARGETS],
+        scale: f32,
+    ) -> f32 {
+        if !scale.is_finite() || scale <= 0.0 {
+            return 0.0;
+        }
+        let mut total = 0.0f32;
+        for (index, weight) in weights
+            .iter()
+            .enumerate()
+            .take(self.max_displacements.len())
+        {
+            if index as u32 >= self.count {
+                break;
+            }
+            let displacement = self.max_displacements[index];
+            if !weight.is_finite() || !displacement.is_finite() || displacement <= 0.0 {
+                continue;
+            }
+            total += weight.abs() * displacement;
+        }
+        let inflate = total * scale;
+        if inflate.is_finite() {
+            inflate.max(0.0)
+        } else {
+            // 权重夸张到把 f32 顶炸：一律外扩到无穷（fail-open，宁多画不少画）。
+            // 绝不能退成 0 —— 那会让「本该被外扩的实例」按静止盒判定而被误剔除。
+            f32::MAX
+        }
     }
 }
 
@@ -661,20 +711,21 @@ impl MeshCache {
         self.morph_version = self.morph_version.wrapping_add(1);
         // 剔除余量要在登记期一次算定：每帧遍历全部顶点不划算，而增量是静态的。
         // 位置增量的模长最大值 × 权重峰值 × 世界缩放 = 顶点可能跑出静止 AABB 的距离。
-        let max_displacement = data
-            .morph
-            .targets
-            .iter()
-            .take(count)
-            .flat_map(|target| target.positions.iter())
-            .fold(0.0f32, |acc, delta| {
+        // 扩展三十八：**逐形状**各算一份 —— 权重按形状给，余量也该按形状给。
+        let mut max_displacements = [0.0f32; r3e_core::MAX_MORPH_TARGETS];
+        for (slot, target) in data.morph.targets.iter().take(count).enumerate() {
+            max_displacements[slot] = target.positions.iter().fold(0.0f32, |acc, delta| {
                 acc.max((delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt())
             });
+        }
+        // 网格级粗界 = 逐形状表的最大值（供不知道权重的调用方用，口径与扩展三十七一致）
+        let max_displacement = max_displacements.iter().copied().fold(0.0f32, f32::max);
         Some(MeshMorph {
             base,
             stride: stride as u32,
             count: count as u32,
             max_displacement,
+            max_displacements,
         })
     }
 
@@ -968,6 +1019,14 @@ pub struct RenderStats {
     /// 本帧带形变且权重非零的实例数（着色器 `morph_offset` 真正被执行的实例）。
     /// 0 = 所有实例都没设权重 / 网格没有形状，顶点路径与扩展三十五逐位相同。
     pub morph_instances: u32,
+    /// 扩展三十八：其中**互斥组超出预算、权重被按比例归一化**的实例数。
+    /// 0 = 场景没配互斥组（或配了但组内和 ≤ 1），进缓冲的权重与场景原值逐位相同。
+    /// 逐帧非零说明有表情在「抢预算」—— 排查「表情叠在一起脸翻面」看这一个数。
+    pub morph_normalized: u32,
+    /// 扩展三十八：本帧逐形状剔除余量的合计（世界单位）。
+    /// 与扩展三十六的「峰值权重 × 最长位移」口径相比只会更小，
+    /// 差额即「逐形状余量」省下来的包围盒膨胀量。
+    pub morph_cull_inflate: f32,
 }
 
 /// 扩展三十五：块拷贝的目标缓冲。
@@ -1439,6 +1498,11 @@ struct InstancePlan {
     /// 扩展三十六：本帧真正被形变的实例数（网格带形状 + 权重非零）。
     /// 进 `RenderStats::morph_instances`；0 表示顶点路径与扩展三十五逐位相同。
     morph_instances: u32,
+    /// 扩展三十八：其中互斥组超预算、权重被归一化过的实例数
+    /// （进 `RenderStats::morph_normalized`）。
+    morph_normalized: u32,
+    /// 扩展三十八：本帧逐形状剔除余量合计（进 `RenderStats::morph_cull_inflate`）。
+    morph_cull_inflate: f32,
 }
 
 /// 一次阴影提交的实例区间：`(groups 下标, 实例缓冲区间)`。
@@ -2402,6 +2466,9 @@ impl Renderer {
         let (culled, cull_unknown) = (plan.culled, plan.cull_unknown);
         // 扩展三十六：形变计数在上传前定型，这里先取出来（plan 后面会按字段消费）
         let morph_instances = plan.morph_instances;
+        // 扩展三十八：互斥归一化的实例数与逐形状剔除余量合计
+        let (morph_normalized, morph_cull_inflate) =
+            (plan.morph_normalized, plan.morph_cull_inflate);
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         // 扩展二十四：多带一份「每级保留哪些实例」的掩码
@@ -2597,6 +2664,9 @@ impl Renderer {
                 morph_uploads: self.morph_uploads,
                 // 扩展三十六：真正参与形变的实例数（权重非零且网格带形状）
                 morph_instances,
+                // 扩展三十八：其中权重被互斥组归一化过的数量，以及本帧余量合计
+                morph_normalized,
+                morph_cull_inflate,
             };
         }
 
@@ -3453,6 +3523,11 @@ impl Renderer {
         let mut staged_all: Vec<StagedInstance> = Vec::new();
         // 扩展三十六：本帧被形变的实例数（网格带形状 + 权重非零）
         let mut morph_instances = 0u32;
+        // 扩展三十八：其中**互斥组超预算、权重被归一化过**的实例数。
+        // 0 = 场景没配互斥组（或配了但没超预算），进缓冲的权重与场景原值逐位相同。
+        let mut morph_normalized = 0u32;
+        // 扩展三十八：本帧逐形状剔除余量合计（世界单位），进 `RenderStats`
+        let mut morph_cull_inflate = 0.0f32;
 
         // 一个待摊平实例：实例数据 + 阴影用包围盒 + 归属节点 + 半透明排序深度
         struct StagedInstance {
@@ -3494,6 +3569,13 @@ impl Renderer {
             key: (MeshRef, Option<SurfaceKey>),
             world_matrix: Mat4,
             color: Vec4,
+            /// 扩展三十八：本帧该实例**实际生效**的形变权重（已按互斥组归一化）。
+            ///
+            /// 第一遍就定下来，第二遍直接搬进实例缓冲 —— 保证「剔除用的权重」与
+            /// 「着色器吃到的权重」是同一份，否则互斥归一化会让两者的包围盒对不上。
+            morph_weights: [f32; r3e_core::MAX_MORPH_TARGETS],
+            /// 该网格的形变登记（无形状为 `None`），第二遍填进 `InstanceRaw`。
+            morph: Option<MeshMorph>,
         }
 
         // 扩展二十九：视锥剔除从「逐实例判定」升级成「按子树预筛」，复用扩展二十五
@@ -3522,6 +3604,21 @@ impl Renderer {
                 continue;
             }
             let key = (node.mesh, node.material.map(SurfaceKey::new));
+            // 扩展三十八：形变权重每帧只在这里定一次 —— 互斥归一化出的是**副本**，
+            // 场景里的权重保持不变（脚本写 1.0 读回还是 1.0，只有着色器吃到 0.5）。
+            let (morph, morph_weights, morph_scaled) = {
+                let registered = self.mesh_cache.morph_of(node.mesh);
+                match scene.morph_of(node.id) {
+                    Some(instance) => {
+                        let (weights, scaled) = instance.normalized_weights();
+                        (registered, weights, scaled)
+                    }
+                    None => (registered, [0.0; r3e_core::MAX_MORPH_TARGETS], false),
+                }
+            };
+            if morph_scaled && morph.is_some_and(|m| m.count > 0) {
+                morph_normalized += 1;
+            }
             let world_bounds = match self.mesh_cache.bounds(node.mesh) {
                 Some(local) => {
                     // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
@@ -3531,23 +3628,21 @@ impl Renderer {
                     } else {
                         world
                     };
-                    // 扩展三十六：形变同理，但外扩量是绝对值 —— 位置增量的模长 × 当前
-                    // 权重峰值 × 实例最大轴向缩放。权重为 0（不播放表情）时外扩为 0，
-                    // 不吃任何额外代价；表情越夸张盒越大，屏幕上就不会「笑着消失」。
-                    let world = match (self.mesh_cache.morph_of(node.mesh), scene.morph_of(node.id))
-                    {
-                        (Some(morph), Some(instance)) if morph.max_displacement > 0.0 => {
-                            let peak = instance.weights.iter().fold(0.0f32, |acc, w| {
-                                if w.is_finite() {
-                                    acc.max(w.abs())
-                                } else {
-                                    acc
-                                }
-                            });
-                            match peak {
-                                0.0 => world,
-                                _ => world
-                                    .inflate(morph.cull_inflate(peak, max_axis_scale(&node.world))),
+                    // 扩展三十六 / 三十八：形变同理，但外扩量是绝对值 —— 逐形状
+                    // 「位移模长 × 该形状权重（取绝对值）」求和 × 实例最大轴向缩放。
+                    // 权重为 0（不播放表情）时外扩为 0，不吃任何额外代价；表情越夸张
+                    // 盒越大，屏幕上就不会「笑着消失」。逐形状求和比扩展三十六的
+                    // 「最长位移 × 峰值权重」更紧：只有眨眼在动时，盒不会被张嘴的
+                    // 15 cm 位移连累撑大七倍。
+                    let world = match morph {
+                        Some(morph) if morph.max_displacement > 0.0 => {
+                            let inflate = morph
+                                .cull_inflate_weights(&morph_weights, max_axis_scale(&node.world));
+                            if inflate > 0.0 {
+                                morph_cull_inflate += inflate;
+                                world.inflate(inflate)
+                            } else {
+                                world
                             }
                         }
                         _ => world,
@@ -3582,6 +3677,8 @@ impl Renderer {
                 key,
                 world_matrix: node.world,
                 color: node.color,
+                morph_weights,
+                morph,
             });
         }
 
@@ -3705,13 +3802,13 @@ impl Renderer {
                 }
                 _ => 0,
             };
-            let morph = self.mesh_cache.morph_of(key.0);
+            // 扩展三十八：权重在第一遍就已按互斥组归一化好，这里只做搬运 ——
+            // 剔除用的盒与着色器吃到的权重必须是同一份，否则「两个表情各 1.0」
+            // 的实例会按两倍位移外扩，盒大一圈、遮挡剔除白白失效。
+            let morph = item.morph;
+            let morph_weights = item.morph_weights;
             // 扩展三十六：只有「网格真有形状」且「实例至少有非零权重」时才计入，
             // 否则着色器不会进形变分支，顶点输出与扩展三十五逐位相同。
-            let morph_weights = match scene.morph_of(item.id) {
-                Some(m) => m.weights,
-                None => [0.0; 4],
-            };
             if morph.is_some_and(|m| m.count > 0) && morph_weights.iter().any(|w| *w != 0.0) {
                 morph_instances += 1;
             }
@@ -3874,6 +3971,8 @@ impl Renderer {
                 cull_pruned,
                 cull_branch_pruned,
                 morph_instances,
+                morph_normalized,
+                morph_cull_inflate,
             };
         }
 
@@ -3921,6 +4020,8 @@ impl Renderer {
             cull_pruned,
             cull_branch_pruned,
             morph_instances,
+            morph_normalized,
+            morph_cull_inflate,
         }
     }
 
@@ -5026,6 +5127,7 @@ mod morph_table_tests {
             stride: 18,
             count: 1,
             max_displacement: 2.0,
+            max_displacements: [2.0, 0.0, 0.0, 0.0],
         };
         assert_eq!(morph.cull_inflate(0.0, 1.0), 0.0, "权重 0 不外扩");
         assert_eq!(morph.cull_inflate(1.0, 1.0), 2.0);
@@ -5038,5 +5140,86 @@ mod morph_table_tests {
             "实例放大 3 倍，位移也放大"
         );
         assert_eq!(morph.cull_inflate(1.0, 0.0), 0.0, "零缩放实例不外扩");
+    }
+
+    /// 扩展三十八：登记期要同时算出**逐形状**峰值位移，网格级粗界取其最大。
+    #[test]
+    fn register_morph_keeps_per_target_displacements() {
+        let mut cache = MeshCache::new();
+        let verts = vec![r3e_core::Vertex::default(); 3];
+        // 形状 0 是「眨眼」：位移 0.02；形状 1 是「张嘴」：位移 0.15
+        let blink = MorphTarget::new("blink", vec![[0.02, 0.0, 0.0]; 3]);
+        let jaw = MorphTarget::new("jaw", vec![[0.0, 0.15, 0.0]; 3]);
+        let data = MeshData::new(verts, vec![0, 1, 2]).with_morph(MorphSet::new(vec![blink, jaw]));
+
+        let morph = cache.register_morph(&data).expect("合法形状应登记");
+        assert_eq!(morph.count, 2);
+        assert!((morph.max_displacements[0] - 0.02).abs() < 1e-6);
+        assert!((morph.max_displacements[1] - 0.15).abs() < 1e-6);
+        assert_eq!(morph.max_displacements[2], 0.0, "未用槽位必须是 0");
+        assert!(
+            (morph.max_displacement - 0.15).abs() < 1e-6,
+            "粗界 = 逐形状表最大值"
+        );
+    }
+
+    /// 扩展三十八：逐形状余量只算「真的在动的形状」。
+    ///
+    /// 只眨眼时余量必须等于眨眼那么点，而不是被张嘴的 0.15 连坐 —— 这正是
+    /// 扩展三十六「最长位移 × 峰值权重」的粗界浪费掉的那部分包围盒。
+    #[test]
+    fn cull_inflate_weights_only_counts_active_targets() {
+        let morph = MeshMorph {
+            base: 0,
+            stride: 36,
+            count: 2,
+            max_displacement: 0.15,
+            max_displacements: [0.02, 0.15, 0.0, 0.0],
+        };
+        // 只眨眼：余量 0.02，粗界口径会算成 0.15（大 7.5 倍）
+        let only_blink = morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], 1.0);
+        assert!((only_blink - 0.02).abs() < 1e-6, "实际 {only_blink}");
+        assert!(
+            (morph.cull_inflate(1.0, 1.0) - 0.15).abs() < 1e-6,
+            "粗界仍是 0.15"
+        );
+        // 两个一起动 = 各自贡献之和（互斥归一化后通常落在 1.0 预算内）
+        let both = morph.cull_inflate_weights(&[0.5, 0.5, 0.0, 0.0], 1.0);
+        assert!((both - 0.085).abs() < 1e-6, "实际 {both}");
+        // 负权重按绝对值计：反向形变同样把顶点推出静止盒
+        let negative = morph.cull_inflate_weights(&[-1.0, 0.0, 0.0, 0.0], 1.0);
+        assert!((negative - 0.02).abs() < 1e-6);
+        // 缩放线性放大、零权重严格为 0
+        assert!((morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], 3.0) - 0.06).abs() < 1e-6);
+        assert_eq!(morph.cull_inflate_weights(&[0.0; 4], 1.0), 0.0);
+        assert_eq!(morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], 0.0), 0.0);
+        // NaN 权重 / NaN 缩放按 0 处理，绝不让 NaN 泄进包围盒
+        assert_eq!(
+            morph.cull_inflate_weights(&[f32::NAN, 0.0, 0.0, 0.0], 1.0),
+            0.0
+        );
+        assert_eq!(
+            morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], f32::NAN),
+            0.0
+        );
+        // 溢出时 fail-open 到无穷：宁可多画，不能把本该可见的实例剔除掉
+        assert_eq!(
+            morph.cull_inflate_weights(&[f32::MAX, f32::MAX, 0.0, 0.0], f32::MAX),
+            f32::MAX
+        );
+    }
+
+    /// 扩展三十八：`count` 之外的槽位即使写了权重也不参与余量计算。
+    #[test]
+    fn cull_inflate_weights_ignores_slots_beyond_count() {
+        let morph = MeshMorph {
+            base: 0,
+            stride: 18,
+            count: 1,
+            max_displacement: 0.5,
+            max_displacements: [0.5, 9.0, 0.0, 0.0],
+        };
+        let inflate = morph.cull_inflate_weights(&[0.0, 1.0, 0.0, 0.0], 1.0);
+        assert_eq!(inflate, 0.0, "第二个槽位不在 count 内，不该产生余量");
     }
 }

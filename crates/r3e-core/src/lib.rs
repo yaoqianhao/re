@@ -80,7 +80,10 @@ pub use material::{
 pub use mesh::{
     MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex, DEFAULT_TANGENT,
 };
-pub use morph::{MorphInstance, MorphIssue, MorphSet, MorphTarget, MAX_MORPH_TARGETS};
+pub use morph::{
+    MorphInstance, MorphIssue, MorphSet, MorphTarget, MAX_EXCLUSIVE_GROUP_MEMBERS,
+    MAX_MORPH_TARGETS, NO_EXCLUSIVE_GROUP,
+};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use occlusion::{
     plan_occlusion, project_aabb, test_aabb, DepthPyramid, OcclusionCullPlan, OcclusionSettings,
