@@ -154,9 +154,9 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **58,886** | **10,848** | **1,045** | **约 5.9 万行 Rust + 1,310 行 WGSL；`cargo test --workspace` 74 个套件 / 1,041 passed / 0 failed** |
+| **合计** | **61,423** | **11,622** | **1,099** | **约 6.1 万行 Rust + 1,382 行 WGSL；`cargo test --workspace --all-features` 77 个套件 / 1,099 passed / 0 failed** |
 
-行数口径：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
+行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,310 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
 扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测，
 扩展二十九（主通道视锥剔除层级化）再增量 +241 src / +387 tests / +14 单测 / +2 套件，
@@ -174,6 +174,13 @@ rust3d-engine/
 （`core/pick.rs` 346 行含 8 条内联测试、`script/tests/pick_api.rs` 215 行 8 测、
 `app.rs` 的 `sync_pick_bounds` 与 `render/renderer.rs` 的 `mesh_aabb` 约 +90、`script/api.rs` 3 个绑定（`pick_at` / `pick_under_mouse` / `pick_all_at`）约 +120、
 `scripts/pick_demo.rhai` 76 行不计入 Rust 行数），
+扩展三十六（morph target 形变）再增量 +2,537 src / +774 tests / +54 单测 / +3 套件
+（口径 = `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 直接统计：core +1,171 src 含 `morph.rs` 532 行、
+render +1,226 src 含 `renderer.rs` 的 `morph_table` / `MeshMorph` / `cull_inflate` 与 `shader.wgsl` 的 `morph_offset`、
+app +246 src 含 `attach_morph_bindings`、script +182 src 含 6 个 `morph_*` 绑定、asset `gltf_import.rs` 读 `targets`；
+新套件 `morph_deform`（app，243 行 2 测）与 `gltf_morph_import`（asset，263 行 2 测），
+收尾实测 **61,423 src / 11,622 tests / 1,099 单测 / 77 套件 1,099 passed / 0 failed**，
+`--features rapier` 同 77 套件 1,099 passed），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
 （`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
@@ -196,8 +203,8 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,069 passed / 0 failed（75 个套件；较扩展三十四收尾的 1,057 增 12：`upload_staging.rs` 内联 12 条） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,073 passed / 0 failed（75 个套件；默认特性 1,069 + 只在 rapier 下参与的 4 条）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,099 passed / 0 failed（77 个套件；较扩展三十五收尾的 1,069 增 30：core `morph.rs` 内联 10、render 形变表 6 + 实例布局 2、asset 导入 2、app 自动绑定 1 + 夹具 2 等；新增两个套件 `morph_deform` / `gltf_morph_import`） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,099 passed / 0 failed（77 个套件；上一轮为默认特性 1,069 + 只在 rapier 下参与的 4 条，本轮两次均为 1,099——GPU 视觉用例在无 `R3E_VISUAL_REGRESSION` 时被计为 passed，故两次同数）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -230,6 +237,7 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | `texture_slot.rs` | 贴图槽位分类：把 FBX / glTF 五花八门的槽位名收敛成「这张图是干什么用的」，并给出「是否按线性数据上传」判据（扩展二十一；导入层与渲染层共用同一套判据） | `TextureSlot`, `classify_slot` |
 | `occlusion.rs` | 遮挡剔除的 CPU 判定：把上一帧深度压成 tile 最远深度金字塔（HZB 的保守替代），对世界 AABB 做屏幕空间两阶段遮挡测试（扩展二十二；金字塔是纯 `Vec<f32>`，判定是纯算术，零 wgpu 依赖） | `OcclusionSettings`, `DepthPyramid`, `ScreenBounds`, `OcclusionVerdict`, `project_aabb`, `test_aabb` |
 | `pick.rs` | 屏幕射线拾取：像素 + 视口 + 相机反算世界射线，与节点世界 AABB 求最近交点（扩展三十四；盒由宿主经 `MeshProvider` 提供，零 wgpu 依赖） | `Ray`, `PickHit`, `MeshProvider`, `MeshAabbCache`, `PickBounds`, `pick_all`, `pick_nearest`, `pick_from_screen`, `pick_all_from_screen`（现成实现另见 `procedural::ProceduralProvider` 与 `r3e-render::LayeredProvider`） |
+| `morph.rs` | 形变（morph target）的数据与参数：形状增量表、每实例权重、与 WGSL 同公式的 CPU 参考实现（扩展三十六；纯 CPU 零 wgpu） | `MorphTarget`, `MorphSet`, `MorphInstance`, `MAX_MORPH_TARGETS`, `apply`, `vertex_at` |
 | `env.rs` | 三色天空 + 太阳的解析环境探针，Sh9 球谐投影与解析环境 BRDF（零 wgpu，可单测） | `EnvironmentSettings`, `Sh9`, `env_brdf_approx` |
 | `postfx.rs` | HDR 后处理的数值契约：曝光、软膝亮部提取、Reinhard / ACES 曲线、FXAA 边缘判定、composite 参考实现 | `PostFxSettings`, `BloomSettings`, `TonemapMode`, `expose`, `bright_pass`, `tonemap`, `resolve` |
 
@@ -642,7 +650,8 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 
 **已知边界**（写进 11.1 的「不做」清单）：
 
-- 无 morph target（表情 / 口型），层只作用于骨骼 TRS。
+- 层只作用于骨骼 TRS：形变（morph target）自扩展三十六独立成一条顶点路径（§4.20 / §5.28），
+  但**权重不随片段曲线走**，表情切换得脚本自己插值。
 - 无 IK / 无脚部对齐：走路滑不滑仍由片段与移动速度的匹配程度决定。
 - `additive` 的参考帧不可指定（固定首帧），做「相对某个关键姿势的增量」需要扩接口。
 - 层只能在末尾追加 / 按名删除，不能调整顺序；顺序即叠加顺序。
@@ -1076,6 +1085,39 @@ SSAO、快照一路扩散，表现是一整片区域随机刷黑或噪点，而�
   这一条守的是 core 契约、脚本与编辑器快照；
 - **父链带 shear** 时退化分支是近似（见 ②）；正常路径不受影响。
 
+### 4.20 形变（morph target）在核心侧的契约（扩展三十六）
+
+**要解决的不是蒙皮那类问题**。蒙皮改的是"顶点跟着骨骼转"——一个刚体变换；而表情、口型、面部微调这类形变
+**不是刚体变换**：它描述的是"同一个顶点在绑定姿态上的一个小位移"。用关节去凑就要给每个表情加一根骨，
+权重调起来是玄学。业界做法是**形状增量**（morph target / blend shape）：网格自带几份"顶点位移向量表"，
+实例只携带一组权重，顶点位置 = 原位置 + Σ 权重ᵢ × 增量ᵢ。
+
+core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这条线）：
+
+| 类型 / 函数 | 职责 |
+| --- | --- |
+| `MorphTarget` | 单个形状：`name` + 逐顶点位置增量 + 可选逐顶点法线增量；`new` 定顶点数，`with_normals` 补法线（长度不符即拒），`scale` 统一缩放（导入层做 cm→m 换算用） |
+| `MorphSet` | 一个网格上的**全部**形状，顺序即脚本的权重下标；`validate` / `validate_against(vertices)` 校验长度与非有限值，`flatten_limited(limit)` 把前 `limit` 个形状压成 `[pos3, nrm3] × 顶点 × N` 的连续 `Vec<f32>` 供上传 |
+| `MAX_MORPH_TARGETS = 4` | 每实例只有一个 `vec4` 权重的硬上限：超出的形状**既不扁平化也不参与求解**（不是截断数据，是不入表） |
+| `MorphInstance` | 每实例元数据：`mesh_node` / `target_count` / `weights: [f32; 4]`；`set_weight` 拒越界下标与非有限权重，`is_active` 供渲染层判断是否值得带形变 |
+| `apply` / `vertex_at` | **CPU 参考实现**：与 `shader.wgsl` 的 `morph_offset` 逐式对应（权重×增量线性累加、法线累加后**不**归一化），用于对拍与离线烘焙 |
+
+`MeshData` 加 `morph: MorphSet` 字段；`bake_transform` 把形变增量与顶点一起烘焙时，位置只乘 3×3 线性部分、
+法线走法线矩阵——增量是**方向量**，不吃平移。`Scene` 侧与 `skins` 并列新增 `morphs: Vec<MorphInstance>` 与
+`add_morph` / `morph_of` / `set_morph_weight` / `set_morph_weight_by_name` / `reset_morph` /
+`bind_morph_by_name` / `morph_weight_by_name` / `morph_target_count`。
+
+**为什么权重是逐实例、形状数据是逐网格**：形状是资产属性（一整套顶点增量，运行时改不了），权重是运行时状态
+（表情做到几成）。这个切分让"同一个网格的 N 个实例"共享显存里的同一份增量，各自只带 4 个 float 权重。
+
+**边界**：
+
+- 上限 4 个形状 / 实例（恰好一个 `vec4`），**多于 4 个的形状静默不入表**——`MorphSet` 里仍然保留着，
+  CPU 的 `apply` 也只算前 4 个，两侧口径一致，不会出现"CPU 说变了、GPU 没变"；
+- 权重**不夹 0..1、不做归一化**：允许负权重做反向形状，也允许 >1 的夸张表情；非有限值直接拒；
+- 只支持位置与法线增量，**不支持切线 / UV 形变**（切线由 UV 参数化推出，形变不改变参数化）；
+- `apply` 是 O(顶点 × 形状) 的 CPU 路径，只用于对拍与离线烘焙，运行时一律走 GPU（见 §5.28）。
+
 ## 5. 渲染层：r3e-render
 
 ### 5.1 GPU 数据布局
@@ -1096,20 +1138,22 @@ SSAO、快照一路扩散，表现是一整片区域随机刷黑或噪点，而�
 （`vertex_layout_carries_skinning` 查 stride 72 与 location 序列 `[0,1,2,3,4,11]`，
 `vertex_layout_carries_tangent` 查偏移 56 且 `offset + 16 == stride`），改布局时先看它们。
 
-**实例格式 `InstanceRaw`（stride 96 字节，`step_mode = Instance`）**
+**实例格式 `InstanceRaw`（stride 112 字节，`step_mode = Instance`）**
 
 | 字段 | 类型 | location | 说明 |
 | --- | --- | --- | --- |
 | `model` | `[[f32; 4]; 4]` | 5,6,7,8 | 世界矩阵，按 4 个 vec4 列传入 |
 | `color` | `[f32; 4]` | 9 | 线性空间 RGBA |
-| `joint_base` | `u32` | 10 | 蒙皮关节矩阵表在本帧 storage buffer 中的起点；非蒙皮填 0 |
+| `instance_meta` | `[u32; 4]` | 10 | `(joint_base, morph_base, morph_stride, morph_count)`：蒙皮关节矩阵表在本帧 storage buffer 中的起点（非蒙皮填 0）+ 形变增量在全局形变表里的起点 / 每形状步长 / 形状数（无形变时后三项全 0）。前身是单值的 `joint_base`，扩展三十六扩成 `u32x4` |
+| `morph_weights` | `[f32; 4]` | 12 | 各形状权重（扩展三十六）；`morph_count` 之外的分量无意义 |
 
 之所以把模型矩阵放进实例缓冲而不是 uniform：这样**整个场景一次上传、按网格分组一次绘制**，不随物件数量增加 draw call。`step_mode = Instance` 让每个实例读同一份顶点但不同矩阵。
 
 **实例缓冲是持久的，上传按脏段**（扩展三十一）：`instance_buffer` 按 2 倍扩容跨帧复用，另有
 `instance_shadow: Vec<InstanceRaw>` 保存**上一帧真正写进 GPU 的那批字节**；每帧只把与影子不同的记录按连续
-区间 `write_buffer` 上去（§5.23）。所以「实例格式」这一层没有任何变化——96 B/实例、`step_mode = Instance`
-都不动，变的只是「什么时候写、写多少」：稳态静态场景一帧写 0 字节。
+区间 `write_buffer` 上去（§5.23）。所以「实例格式」与上传策略是**正交**的两件事：扩展三十一把记录定在 96 B，
+扩展三十六又加到 **112 B**（多一个元数据 `vec4` + 一个权重 `vec4`，§5.28），`plan_upload` / `upload_staging`
+只按 `size_of::<InstanceRaw>()` 取步长、代码一行没改；变的只是「什么时候写、写多少」：稳态静态场景一帧写 0 字节。
 
 ### 5.2 程序化网格
 
@@ -2267,6 +2311,20 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `anim_layer_info(实例, 层)` | 整层快照（模式 / 权重 / 有效权重 / 遮罩 / 片段与归一权重 / 时间 / 速度 / 循环 / 播放中） |
 | `anim_layer_weight(实例, 层)` / `anim_layer_clips(实例, 层)` | 有效权重（含过渡）/ 层内片段名列表 |
 
+**形变（扩展三十六）**
+
+| API | 作用 |
+| --- | --- |
+| `morph_bind(node, count)` | 手动给节点登记形状数。**一般不需要**：app 在场景就位与热重载后会按网格的 `MorphSet` 自动登记（形状数是网格属性，脚本数不准） |
+| `morph_set(node, index, weight)` | 设第 `index` 个形状的权重（`index` 取 0..3） |
+| `morph_weight(node, index)` | 读回权重 |
+| `morph_count(node)` | 读该节点的形状数 |
+| `morph_active(node)` | 有没有任意形状权重非 0（脚本据此决定要不要每帧刷） |
+| `morph_reset(node)` | 全部权重归零（回到绑定姿态） |
+
+脚本只碰权重，不碰形状数据——形状来自资产（`MorphSet::names` 是形状名），脚本按**下标**操作，
+所以没有"按名字设权重"的 API。
+
 **场景切换与存档（扩展十八 B）**
 
 这一组函数全是**申请**而不是**执行**：参数被塞进宿主的单槽，由 `EngineApp` 在**帧首**统一落地
@@ -2852,7 +2910,7 @@ pub struct OcclusionCullPlan {
 | `record` | 单条记录字节数（`size_of::<InstanceRaw>()` = 96） |
 | `merge_gap` | 相邻脏区之间允许的空洞记录数（`MERGE_GAP = 8`） |
 | `max_ranges` | 单帧脏段上限（`MAX_RANGES = 24`），超了退化为全量 |
-| `UploadPlan.ranges` | 连续**记录下标**区间，升序、互不重叠（渲染器乘 96 换算成字节偏移） |
+| `UploadPlan.ranges` | 连续**记录下标**区间，升序、互不重叠（渲染器按 `size_of::<InstanceRaw>()` 换算成字节偏移，扩展三十六后是 112） |
 | `recorded` / `skipped` | 本次写入 / 跳过的记录数，两者之和恒等于记录总数 |
 | `bytes` / `full` | 本次实际字节数 / 是否退化成「从 0 开始整张一段」 |
 
@@ -2871,7 +2929,7 @@ pub struct OcclusionCullPlan {
 
 **边界**：
 
-- 影子是 96 B/实例的**额外 CPU 内存**（一万实例 ≈ 938 KiB），每帧还要做一次 O(实例数) 的 memcmp——
+- 影子是 112 B/实例的**额外 CPU 内存**（一万实例 ≈ 1.07 MiB），每帧还要做一次 O(实例数) 的 memcmp——
   省的是带宽，CPU 侧仍有比较成本；
 - **半透明批次按深度重排**：相机一动，`back_to_front` 的顺序整体变化，脏区连成一大片、退化成接近全量。
   省得最多的是「不透明为主 + 静态或缓慢变化」的场景；
@@ -2883,11 +2941,11 @@ pub struct OcclusionCullPlan {
 - 记录内容一个字节都没改，所以画面与全量上传**逐位一致**，像素基线不需要重建。
 
 契约由 `crates/r3e-render/tests/instance_upload_contract.rs`（8 条）与 `instance_upload.rs` 内联（11 条）守：
-`defaults_report_nothing_uploaded` / `instance_record_stride_is_ninety_six_bytes` /
+`defaults_report_nothing_uploaded` / `instance_record_stride_is_one_hundred_twelve_bytes` /
 `one_moving_instance_uploads_one_range` / `static_frame_uploads_zero_bytes` /
 `instance_count_change_forces_full_upload` / `renderer_uploads_through_dirty_runs` /
 `buffer_rebuild_clears_shadow` / `stats_are_self_consistent`；内联侧另钉住空洞合并边界、段数超限退化、
-位级差异算脏、96 B 记录对齐。
+位级差异算脏、记录对齐（内联用例用 96 B 记录验证通用性——`plan_upload` 不看具体步长，扩到 112 B 也不用改它）。
 
 ### 5.24 关节矩阵也走脏段（扩展三十二）
 
@@ -3106,6 +3164,79 @@ render_to_view
 契约由 `upload_staging.rs` 内联 12 条测试守（段内字节逐位搬运、96 B 记录偏移、多段顺序与 `src_offset` 累加、
 超容量不截断、`slot_bytes` 下限与对齐、`slot_fit` 三分支、`saved_calls` 口径、环未提交不推进、
 三槽回绕、零槽钳制），探针与实测见 §8.30。
+
+**扩展三十六的形式增广**：形变权重复用的是**同一条实例记录**，所以不需要第三路上传路径——`pack_runs` 只是
+每条记录从 96 B 变 112 B，一帧一次写 + 逐段飞行原样生效；权重不变的角色连这多出来的 16 B 都不会进暂存环
+（memcmp 判等即跳）。形状增量本身是**网格级**数据，在网格上传时一次性进全局表（§5.28），不参与每帧上传。
+
+### 5.28 全局形变表与每实例元数据指针（扩展三十六）
+
+**问题**：形变增量是"逐顶点常量"，与权重无关。若按常见写法给每个带形状的网格配一个 storage buffer
+或一个 bind group，场景里有几个带表情的角色就有几个绑定——bind group 本身就是难扩的稀缺资源；
+更亏的是同一份网格被实例化十次时，增量会白存十份。
+
+**做法**：`MeshCache` 维护**一块跨网格共享**的 `morph_table: Vec<f32>`（容量上限
+`MAX_MORPH_TABLE_FLOATS = 1 << 18` 个 `f32`，即 1 MiB），网格上传时把它校验过的前 `MAX_MORPH_TARGETS`
+个形状扁平化后**追加**进表，并把 `base / stride / count` 回写进该网格的 `MeshMorph`。渲染时每个实例只携带
+这 3 个整数 + 一个 `vec4` 权重，着色器自己用 `base + (形状·顶点数 + 顶点) × 6` 算出偏移。
+
+| 组件 | 位置 | 职责 |
+| --- | --- | --- |
+| `MeshMorph` | `render/renderer.rs` | 每网格元数据：`base`（本网格增量在表里的起始下标）/ `stride`（= 顶点数 × 6）/ `count`（有效形状数，≤ 4）/ `peak`（各形状位置增量里最长的那条，供剔除外扩） |
+| `MeshCache::register_morph` | 同上 | `ensure` 上传网格时调用：校验 → 取前 4 个形状 → `flatten_limited` → 追加进 `morph_table` → 回写 `base/stride/count`；表余量不足则**该网格按无形变处理**并 warn（绝不写半截数据） |
+| `MeshCache::morph_version` | 同上 | 表内容的版本号，追加 / 换代即 +1；`upload_morph_table` 只在它变化时重写，静止场景 0 次 |
+| `upload_morph_table` | 同上 | 表缓冲容量按上限固定分配，表变长时整表重写；网格换代（换场景 / 热重载）时清表 + 版本自增，让所有网格重新登记 |
+| `cull_inflate` | 同上 | 包围盒外扩量 = `peak × 最大权重 × 各轴缩放最大值`；权重 0 时严格为 0（不放表情不吃额外代价）——否则形变把顶点推出 AABB 后会被视锥 / 遮挡剔除误剔 |
+| `instance_meta`（location 10） | `render/mesh.rs` | `[u32; 4]` = `(joint_base, morph_base, morph_stride, morph_count)`；原先单值的 `joint_base` 扩成这个 `u32x4` |
+| `morph_weights`（location 12） | 同上 | `[f32; 4]`，各形状权重；`count` 之外的分量无意义（填 0） |
+| `group(2) binding(1)` | `shader.wgsl` | `var<storage, read> morph_table: array<f32>`，和关节表（`binding(0)`）**同一个 bind group**，只是多一个 binding |
+| `RenderStats.morph_instances` / `morph_floats` | 同上 | 本帧带形变的实例数 / 表当前 float 长度，探针见 §8.31 |
+
+实例记录因此从 **96 B 变 112 B**（`model` 64 + `color` 16 + `instance_meta` 16 + `morph_weights` 16）。
+`plan_upload` / `upload_staging` 的 `record` 参数自动跟着走，脏段语义、暂存环打包、扩容策略全部不变。
+顶点着色器侧只多一处分支：
+
+```wgsl
+// instance_meta.w = morph_count，0 表示该实例没有形状
+if in.instance_meta.w != 0u {
+    let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
+    local_position += shape.position;
+    local_normal  += shape.normal;
+}
+// 之后才是蒙皮：形变在模型空间做，蒙皮把模型空间顶点搬到骨骼空间
+```
+
+**阴影通道同样叠形变**：深度 pass 的 `ShadowVsIn` 也带 `location 10 / 12`，调同一个 `morph_offset`——否则角色
+做表情时，实体形变了而影子还停在绑定姿态。表数据是共用的，所以阴影侧零额外上传。
+
+**三条必须遵守的不变量**：
+
+1. **顺序：先形变、后蒙皮**。增量是绑定姿态下的模型空间位移，glTF / FBX 的 blend shape 与 skin 也是这个次序；
+   若先蒙皮再叠增量，增量会被骨骼矩阵二次旋转，表情会跟着骨骼朝向"跑偏"。
+2. **表只 append；网格换代必须重建整表**。`base` 是**绝对下标**，网格缓存换代后旧下标全部失效，
+   所以换代时清表 + `morph_version` 自增、让所有网格重新登记；否则新网格的增量会写进旧网格的区段，画面直接错位。
+3. **权重走实例缓冲，不走 uniform**。权重是逐实例状态，放进 `InstanceRaw` 后天然享受扩展三十一的脏段上传——
+   表情不变的静止角色**每帧 0 B 差异**，只有真在做表情的实例才有 16 B 记录变化。
+
+**取舍与边界**：
+
+- **共享表 = 常驻显存**：所有带形状网格的增量一直躺在表里（上限 1 MiB），引擎目前没有网格卸载路径，
+  这份显存只增不减；换场景靠整表重建回收；
+- **1 MiB 能装多少**：`(1 << 18) / (6 × 4) ≈ 10,922` 个顶点 × 4 形状。超了不是截断形状，而是**整个网格退回无形变**
+  （宁可不动，也不做半截形变）；
+- **不能逐实例换形状集**：同一网格的所有实例共享同一段表与同一个 `count`，脚本只能调权重，
+  没法给某个实例换一套形状数据；
+- **切线不参与形变**：`local_tangent` 原样保留，强形变下法线贴图的方向会有偏差（业界常规取舍，需知情）；
+- **CPU 不再求解**：扩展三十六之后形变完全由顶点着色器完成，CPU 只算权重与剔除外扩；
+- **像素不变量**：`count == 0` 的实例整段分支跳过，顶点坐标与扩展三十五**逐位相同**，所以像素基线无需重建。
+
+契约由三处守：`render/renderer.rs` 的 `morph_table_tests`（`target_count_is_capped_at_max` /
+`table_capacity_falls_back_to_no_morph` / `swapping_library_clears_table_and_bumps_version` /
+`mismatched_length_is_rejected_without_touching_table` / `max_displacement_is_the_longest_position_delta` /
+`cull_inflate_follows_weight_peak_and_scale`）、`render/mesh.rs` 的布局用例
+（`instance_layout_carries_morph_weights` / `plain_instance_has_no_morph`，锁 stride 112 与 location 12 的偏移）、
+`core/morph.rs` 的内联用例（与 WGSL 同公式对拍、越界权重拒绝、`flatten_limited` 截取）。
+真机取证见 §8.31。
 
 ### 8.1 程序入口（main.rs）
 
@@ -4218,7 +4349,7 @@ target\x86_64-pc-windows-gnu\release\r3e.exe assets\scene.json scripts\staging_d
 **③ CPU 侧**：
 
 ```powershell
-# 打包契约：逐段字节一致、源连续 / 目标绝对、空区间、超预算不截断、96 B 记录对齐、槽位轮转
+# 打包契约：逐段字节一致、源连续 / 目标绝对、空区间、超预算不截断、记录对齐（任一步长，现为 112 B）、槽位轮转
 cargo test -p r3e-render upload_staging
 ```
 
@@ -4246,6 +4377,46 @@ cargo test -p r3e-render upload_staging
 （`plan_upload`）踩过一次，本轮又踩一次；正解是走具名构造 `fn one(run: Range<u32>) -> [Range<u32>; 1]`。
 
 ---
+
+### 8.31 形变探针（扩展三十六）
+
+截图那条日志在实例统计末尾追加一节：
+
+```
+[capture] 第 4 帧截图完成: {...} | draws=1 instances=1 culled=0 cull_unknown=0 morph=1/24f
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `morph=<实例数>/<表长>f` | 前半是 `morph_instances`：本帧**真正带形变**的实例数（网格在表里、`count != 0`、权重非全 0）；后半是 `morph_floats`：全局形变表当前长度，单位是 **float 个数**，不是字节 |
+
+读法：
+
+- **`morph=0/Nf`（N 不为 0）**：形状数据已在显存，但没有实例走形变分支——这正是"不动表情的角色不吃额外顶点开销"的证据；
+- **`morph=0/0f`**：表是空的。要么网格本来没有形状、要么整网格因容量不足降级（这条 `app` 侧另有 warn）、
+  要么形状被 `MAX_MORPH_TARGETS` 之外的处理丢掉；
+- **表长恒等于 `Σ(网格形状数 × 该网格顶点数 × 6)`**（只算前 4 个形状、只算已上传的网格）：
+  夹具是 1 形状 × 4 顶点 × 6 = **24**，与实测 `24f` 一致；数字对不上先查展开后的顶点数，不是三角形数 × 3 就完事。
+
+真机实测（RTX 5060 Laptop / Vulkan，夹具 `crates/r3e-app/tests/fixtures/morph_deform`
+= 一个四边形 / 4 顶点 / 2 三角形 / 1 个形状，640×360，第 4 帧截图）：
+
+| 权重 | `morph` | 截图字节 | 与权重 0 的像素差异 |
+| --- | --- | --- | --- |
+| 0.0 | `0/24f` | 5,387 B | —（基准） |
+| 1.0 | `1/24f` | 9,549 B | **31,735 像素 / 13.77%** |
+
+同一批截图复算出来的包围盒（"画了东西"的像素范围，阈值通道差 > 6）：权重 0 是
+`x∈[221,418], y∈[81,278]`（39,204 像素），权重 1 变 `x∈[122,418], y∈[0,278]`（58,783 像素）——**左边界左移 99 像素、
+上边界顶到画面外**，与夹具里左侧两个顶点 `(-2, 1.8, 0)` 的增量方向一致。
+
+自动绑定也在日志里留痕（不需要脚本填形状数）：`形变 \`Face\`：绑 1 个形状，权重初值全 0（脚本用 morph_set 调）` 与
+`形变绑定已登记: 1 个网格`。取证命令 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test morph_deform`，rc 0
+（2026-11-11，RTX 5060 Laptop / Vulkan）。
+
+"方向对不对"由测试自己断言，不靠肉眼：形变把顶点往 −x 拉，包围盒左边界必须外扩（`morph_deform.rs` 的第三条断言）；
+只断言"有差异"的话，一个把权重错接到别的形状上的实现也能过。CPU 与 GPU 的一致性靠
+`core::morph::apply_matches_linear_blend`——同一组权重、同一公式，两边差一位就是公式抄错了。
 
 ## 9. 端到端数据流
 
@@ -4324,7 +4495,7 @@ cargo test -p r3e-render upload_staging
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
 | 剔除 | 视锥剔除（AABB × 6 平面）+ **遮挡剔除**（扩展二十二：上一帧深度金字塔 + 两阶段 AABB 判定，缺省关闭）；两者都按场景树层级预筛（扩展二十九视锥 / 扩展三十遮挡：子树盒被判不可见则整枝跳过） | 逐实例用网格局部 AABB 变换到世界后与视锥测试，蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒避免形变越界被误剔；取不到包围盒时保守绘制（树里登记 `fail_open_bounds` 巨盒，所在整枝都不许剪）。遮挡剔除只剔**不透明**批次（半透明不写深度，判了也不准），金字塔低频读回（默认 4 帧）因而滞后几帧，且只按 AABB 粗判——细长物 / 栅栏类遮挡体效果有限；层级预筛只省「被剪枝里的实例判定」，扁平场景（实例都挂在根下）净收益为 0；无 GPU 遮挡查询、无「连续 N 帧才剔」的迟滞 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**仍无 morph target / 表情、无混合空间（blend space）、无 IK、无根运动提取**
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**形变（扩展三十六：blend shape）只支持位置 / 法线增量、每实例上限 4 个形状、无逐实例形状集切换**（§4.20 / §5.28）；**仍无混合空间（blend space）、无 IK、无根运动提取**
 | 拾取 | **屏幕射线拾取**（扩展三十四）：脚本按像素坐标 / 光标位置取最近命中物件，或取同一射线上全部命中列表（含节点号、名字、距离、交点），几何用网格局部 AABB × 世界矩阵（见 §5.26） | 判定粒度是**包围盒**，不是三角形——凹形 / 镂空资产会出现「点在洞里也算命中」；不要求刚体、也不走物理（与 `raycast` 两条独立通路，`raycast` 只答物理世界）；取不到包围盒的网格视为透明，不做单位盒兜底；隐藏节点不参与；UI 遮挡需脚本自己用 `ui_hit` 先判；线性遍历全部可见节点，无空间加速结构 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
@@ -4334,11 +4505,11 @@ cargo test -p r3e-render upload_staging
 ### 11.2 性能特征
 
 - **Draw call**：≤ 4（实际使用的网格种类数），与物件数无关。
-- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（96 B/物件）组装，
+- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（112 B/物件）组装，
   外加一次 O(实例数) 的 memcmp（脏段比较）与若干次 `write_buffer`（只传脏段）；
   视锥测试前先查 `MeshCache::bounds`（哈希，`MeshRef` 为键），不重扫顶点、不走 `dyn`。
   蒙皮实例额外做一次关节矩阵求解（O(关节数)）、一次关节矩阵 memcmp 与第二路 `write_buffer`。
-- **上传带宽**（扩展三十一 / 三十二起两路都按脏段计）：实例侧最坏仍是 实例数 × 96 B/帧，稳态静态场景为 **0 B/帧**；
+- **上传带宽**（扩展三十一 / 三十二起两路都按脏段计）：实例侧最坏仍是 实例数 × 112 B/帧，稳态静态场景为 **0 B/帧**；
   1,537 实例场景实测稳态 `脏段 0 / 写 0 条 / 跳过 1,539 条`，只转两个物件时 `脏段 1 / 写 3 条`（省 50%）。
   关节侧（64 B/关节）同样只在变化时才传：完全静止的蒙皮 `脏段 0 / 写 0 条`（0 B/帧），
   正在播动画时 37 条连续全脏 → 合并成 **1 段 2.3 KiB**（字节数不变，`write_buffer` 调用从 37 次降到 1 次）。
@@ -4358,9 +4529,14 @@ cargo test -p r3e-render upload_staging
   上传是一次性 `6 × mip_levels` 次 `write_texture`（缺省 36 次，约 1 MiB f16 数据）。
   **每帧开销为零**：探针配置不变时 `sync_env_probe` 在比较后直接返回，镜头 / 物件数都不影响它；
   唯一的偶发尖峰是「换探针」那一帧重建整批材质 bind group。
+- **形变开销**（扩展三十六）：形状增量在**网格上传时**一次性进全局表（上限 1 MiB），每帧零表上传；
+  每帧只多 16 B/实例的权重，而且这 16 B 落在实例记录里，权重不变就连这 16 B 也不进脏段；
+  顶点侧多一次 `morph_count != 0` 判断（无形状的实例直接跳过，**像素与扩展三十五逐位相同**），
+  带形状的实例多 4 次乘加 / 顶点 / 形状。阴影通道共用同一批顶点数据，不额外上传。
+  容量换算与取舍见 §5.28；
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配，
-  且换代当帧强制全量上传（`instance_shadow` 清空，`resets` 累计 +1）。影子缓冲本身是 96 B/实例的
-  CPU 内存（1,537 实例 ≈ 144 KiB），随扩容同步增长。关节影子（`joint_shadow`）是定长
+  且换代当帧强制全量上传（`instance_shadow` 清空，`resets` 累计 +1）。影子缓冲本身是 112 B/实例的
+  CPU 内存（1,537 实例 ≈ 168 KiB），随扩容同步增长。关节影子（`joint_shadow`）是定长
   `MAX_JOINT_MATRICES × 64 B`，不存在扩容与换代，只在「无蒙皮帧」被清空。
 - **阴影通道成本**：单级时顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
   开启 N 级级联则为 N 倍（每级一次全场景深度 pass）。主通道每片元多 9 次 `textureSampleCompare`
@@ -4387,6 +4563,11 @@ cargo test -p r3e-render upload_staging
 5. **级联遮挡体的 GPU 代理预筛**：扩展二十四按 AABB 裁掉级外遮挡体、扩展二十五把判定改成
    按场景树的层级剔除（§4.18 / §5.18，扁平场景净收益为 0，组装场景实测约三成）。进一步可把判定
    搬到 GPU：级联层级包围盒做成实例化球/盒代理 + 硬件裁剪，或跨帧复用上一帧的掩码。
+6. **形变的三条延伸**（扩展三十六刚落地，见 §4.20 / §5.28）：现在是「每实例 4 个形状、一个 `vec4` 权重、
+   位置 + 法线两条通道、同网格的实例共享同一段表」。可加固处：① **多组 `vec4` 权重**让形状数随组数线性扩
+   （表侧是常量，成本只在顶点多几次乘加）；② **补切线 / UV 增量通道**——切线目前由 UV 参数化推出，
+   强形变下法线贴图方向会偏；③ **逐实例形状掩码**（现在 `count` 是网格级，同网格所有实例共享同一套形状）
+   与表情间的**互斥归一化**（一说话嘴型互斥，纯线性叠加会互相顶，需要脚本层或 core 侧的归一化策略）。
 
 ---
 
@@ -4438,6 +4619,7 @@ cargo test -p r3e-render upload_staging
 | **三十三（已完成：关节侧消伪脏）** | **把求解式里的实例变换约掉**：`SkinInstance` 增 `frame_anchor`（骨骼树顶点 `A`）与常量 `frame_local = A⁻¹·mesh`，`Scene` 增 `tree_root` / `relative_transform_from` / `align_skin_frame`，求解改走 `M_i = frame_local⁻¹ · (A⁻¹ · joint_i)`——`X` 只活在绑定时算一次的常量里，整体刚体运动再也改不动关节矩阵的位模式；网格节点与骨架不在同一棵树（`tirger` 样本正是如此）时不再强求公共祖先，改以骨骼树顶点为基准；断链（多骨架根 / 关节被销毁 / 成环 / 超深）回退 `mesh_world⁻¹ · joint_world`，正确性不变、脏段保守判全 | `core/skin.rs`（`frame_anchor` / `frame_local` / `bind_frame` / `solve_from_relative`）、`core/scene.rs`（`tree_root` / `relative_transform_from` / `align_skin_frame` + `update_skinning` 惰性兜底）、`app/src/app.rs`（`bind_asset_skins` 绑定时 `align_skin_frame`）、新增 `tests/skin_relative_stable.rs`（6 测）、`scripts/joint_rigid_spin_demo.rhai` | 无（数学等价，记录内容与旧路径一致、像素逐位一致）。**收益**：冻结动画 + 整只模型在转从 `脏段 1 / 写 37 / 跳过 0`（省 0%）变 `0 / 0 / 37`（省 100%），正播动画仍 `1 / 37 / 0`（不误吞）；不省 CPU，仍是每帧 `prepare` + 每帧 `write_buffer` |
 | **三十四（已完成：屏幕射线拾取）** | **脚本能点中任意可见物件**：`r3e-core::pick` 纯 CPU（零 wgpu）——`Ray::from_screen` 用相机逆视图投影把像素 + 视口换成世界射线（像素取角点中心 `+0.5`、`near/far` 两端反投影），`Ray::aabb_hit` slab 法求最近正交点（平行轴按「在板内即通过」处理、盒后方的交点丢弃），`pick_all` 线性遍历可见节点（命中的用**世界盒**判，`Aabb` 变换后重算 min/max 而非只换中心）、`pick_nearest` 单独实现（悬停每帧调不付整表排序），`MeshAabbCache`（`MeshRef → Aabb` 登记表，自身即 `MeshProvider`）与 `PickBounds`（登记表优先、`cube/sphere/plane/cylinder` 由 `ProceduralProvider` 现算，无盒即透明、不做单位盒兜底）；`Renderer::mesh_aabb` 暴露 `MeshCache::bounds`（与视锥剔除同一份缓存）；`EngineApp::sync_pick_bounds` 每帧幂等登记可见节点引用的网格盒；脚本 `pick_at` / `pick_under_mouse` / `pick_all_at` + `screen_width` / `screen_height` / `screen_size`（与 `pick_*` 同源），命中返回 `hit / node / name / distance / point`，**未命中返回完整空模板**（`node = -1`、`point = []`），免得 Rhai 读缺键把 `on_update` 打断。详见 §5.26 / §8.29 | `core/pick.rs` 新增、`core/lib.rs` 导出、`render/renderer.rs`（`mesh_aabb`）、`app/src/app.rs`（`sync_pick_bounds` + 帧循环接线）、`script/src/api.rs`（6 个绑定）、`scripts/pick_demo.rhai` 新增、`script/tests/scripts_compile.rs` 纳入新脚本；新增 `core/tests/pick_geometry.rs`（9 测）、`script/tests/pick_api.rs`（8 测） | 无（纯新增查询路径，不改任何既有绘制/上传路径，像素与上传读数逐位不变）。**收益**：编辑器悬停高亮、点选道具、点穿列表从「脚本自算矩阵或依赖刚体」变成一次调用；**边界**：AABB 粒度不认三角形（凹形 / 镂空会点中洞）、不走物理（与 `raycast` 两条独立通路）、无空间加速（线性遍历，真要上万物件应先拿 §5.21 层级盒剪枝）、UI 遮挡脚本自己用 `ui_hit` 先判、`on_start` 阶段画布尺寸仍是 `(0,0)`（自检要等首个 `screen_width() > 0` 的帧） |
 | **三十五（已完成：暂存环 + 多帧飞行）** | **把一帧里的 N 次 `write_buffer` 收成一次**：新增 `r3e-render/src/upload_staging.rs` 纯 CPU 契约（`pack_runs` 按 `stride` 把脏段拷成一块连续字节并给出逐段 `StagedCopy{dst_offset, src_offset, size}`、装不下返回 `over_budget` 不截断；`slot_bytes` / `slot_fit` 按 256 B 上取整、下限 `STAGING_MIN_BYTES = 64 KiB`、上限 `STAGING_MAX_BYTES = 8 MiB`；`SlotRing` 只在已提交时 `advance`，深度 `STAGING_SLOTS = 3`；`saved_calls(段数, 写入数)` 定口径）；`Renderer` 增 `UploadStaging`（`stage` 打包 + 容量按需成长 / `flush` 本帧唯一一次 `write_buffer` / `record` 逐段 `copy_buffer_to_buffer` 后轮转 / `drop_pending` 换代时丢弃 / `commit_shadows` 提交后对齐影子）+ `StagingStats`（`enabled` / `slots` / `capacity` / `frames` / `writes` / `copies` / `bytes` / `saves` / `rebuilds` / `fallbacks`），实例与关节两路**共用同一个槽**，`R3E_UPLOAD_STAGING=0` 可关闭回逐段直传。**关键不变量**：影子推迟到 `queue.submit` 之后才落盘（`copy_buffer_to_buffer` 提交才生效，提前刷影子会在未提交帧上永久漏传）、`record` 末尾才推进槽位、目标缓冲换代前 `drop_pending`。详见 §5.27 / §8.30 | 后台取证：`render/upload_staging.rs` 新增（内联 12 测）、`render/lib.rs` 导出、`render/renderer.rs`（`UploadStaging` + 两条上传路径接入 + 提交后 `commit_shadows` + 三个换代点的 `drop_pending`）、`app/src/app.rs` 帧探针、`app/src/editor.rs` `stats.render.upload_staging` | 无（`pack_runs` 只做搬运，字节与脏段判定逐位不变；GPU 实跑第 40 帧截图在开关开 / 关两种模式下 **sha256 完全相同** 195cb1ed…，像素基线无需重建）。**实测收益**：40 实例 / 每帧 4 段脏区 → 695 帧共 `写 695 次 / 拷贝 2,777 条 / 省写 2,082 次`（平均 4 段 1 写）；37 关节动画场景 `写 702 / 拷贝 703 / 省写 1`（`plan_upload` 已先把 37 个矩阵并成 1 段，这一层**收益为 0**，不虚构）。**边界**：wgpu 没有持久映射顶点缓冲（拷贝源必须 unmapped），所以是"一帧一次写 + 环形槽飞行"而非长期 map；多一次 CPU memcpy；> 8 MiB 一律退化逐段（`fallbacks`）；不减少 draw call、不省带宽、不省 `plan_upload` 的 memcmp |
+| **三十六（已完成：morph target 形变）** | **全局形变表 + 每实例元数据指针**：`r3e-core::morph` 纯 CPU 契约（`MorphTarget` 存逐顶点位置 / 法线增量、`MorphSet` 存一个网格的全部形状 + `validate_against` 校验 + `flatten_limited` 扁平化、`MorphInstance` 存每实例 `(mesh_node, target_count, weights)`、`MAX_MORPH_TARGETS = 4`、`apply` / `vertex_at` 与 WGSL 同公式供对拍）；`MeshData` 加 `morph` 字段、`bake_transform` 对增量只走线性 / 法线矩阵；`Scene` 增 `morphs` 与 `add_morph` / `set_morph_weight(_by_name)` / `reset_morph` / `bind_morph_by_name`；渲染器 `MeshCache` 维护**跨网格共享**的 `morph_table`（上限 1 MiB，`version` 变了才重写），网格上传时 append 并把 `base / stride / count / peak` 回写进 `MeshMorph`，`cull_inflate` 按峰值权重外扩包围盒；`InstanceRaw` 的 `joint_base` 扩成 `u32x4` 元数据（location 10）并加 `morph_weights`（location 12），**stride 96 → 112**；`shader.wgsl` 的 `group(2) binding(1)` 只读 storage，`vs_main` **先叠加形变增量、再做蒙皮**；app 按网格 `MorphSet` 自动登记绑定（场景就位与热重载后各补一次），脚本只 `morph_set(name, i, w)` | `core/morph.rs`（新）+ `core/mesh.rs` / `scene.rs` / `skin.rs`；`render/renderer.rs` / `mesh.rs` / `shader.wgsl`；`script/api.rs`（6 个 `morph_*`）；`app/app.rs`（自动绑定）；`asset/gltf_import.rs`（读 `targets`） | 无（场景 JSON 不变；权重缺省全 0 ⇒ 像素与扩展三十五逐位相同） |
 
 两条与顺序相关的说明：
 
@@ -4515,6 +4697,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 关节侧消伪脏（扩展三十三） | `cargo test -p r3e-core --test skin_relative_stable` → **6 passed**（`rest_pose_yields_identity` / `rigid_instance_motion_keeps_joint_matrices_bit_identical` / `joint_local_motion_still_changes_matrices` / `relative_path_agrees_with_world_path` / `mesh_outside_skeleton_tree_has_no_common_ancestor` / `disconnected_joint_falls_back_to_world_path`）；`cargo test --workspace` 74 套件 **1,041 passed / 0 failed**（扩展三十二收尾为 73 套件 1,035）；`--features rapier` 74 套件 **1,045 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning；`cargo build --release` + 跑探针退出码 0（二进制 14,971,904 字节）。**像素回归**：`R3E_VISUAL_REGRESSION=1 R3E_VISUAL_STRICT=1` → 2 passed，与既有基准图**逐位一致、无需重建**（关节矩阵换了求解式，但整体刚体运动下数学等价，缺省场景的静态读数一个像素没动）。**GPU 实跑取证**（Release，`assets/scene_anim.json`，37 关节，`--run-seconds 3`）：`scripts/joint_rigid_spin_demo.rhai`（冻结动画 + 网格与骨架同步旋转）→ 起始 `脏段 0 / 写 0 / 跳过 37 / 0.0 KiB（全量 2.3 KiB，省 100.0%）`、收尾同读数，同期蒙皮质心 `(0.2208, 0.8378, 0.1291)` → `(0.2557, 0.8378, -0.0075)` 证明模型确实转了一圈；缺省 `scripts/main.rhai`（动画播放中）→ `脏段 1 / 写 37 / 跳过 0 / 2.3 KiB（省 0.0%）`，该传的照旧全传。修复前同一探针为 `1 / 37 / 0`（省 0%） |
 | 屏幕射线拾取（扩展三十四） | `cargo test -p r3e-core pick` → lib 内联 **8 passed**（`ray_new_normalizes_and_falls_back` / `aabb_ray_hit_reports_entry_distance` / `camera_center_ray_points_along_view` / `screen_ray_corners_span_frustum` / `pick_hits_nearest_cube_and_reports_point` / `pick_from_screen_center_matches_camera_target` / `invisible_node_and_hidden_parent_are_skipped` / `missing_bounds_provider_yields_no_hit`）；`cargo test -p r3e-script --test pick_api` → **8 passed**；`cargo test -p r3e-script --test scripts_compile` → 1 passed（新脚本纳入编译守卫）；`cargo test --workspace` 75 套件 **1,057 passed / 0 failed**（扩展三十三收尾为 74 套件 1,041）；`cargo test --workspace --features rapier` 75 套件 **1,061 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：纯新增查询路径，不改任何既有绘制 / 上传路径，基准图无需重建。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，`assets/scene.json` + `scripts/pick_demo.rhai`，`--run-seconds 3`，退出码 0）：`画布 1920.0x1080.0，中心自检命中 spinner（距离 11.009093284606934）`；悬停链路随画布尺寸生效依次报 `ground`（7.517）/ `spinner`（11.858）/ `pick_a`（12.946），`[script]` 前缀无一条出错。**踩坑两条**：① Rhai 内置 `format` 只吃单参数，`format("{} {}", a, b)` 直接 `Function not found` 把 `on_start` / `on_update` 整段打断——多值日志改字符串 `+` 拼接；② `on_start` 时 `screen_size()` 仍是 `(0, 0)`，此时自检必然点空，须等首个 `screen_width() > 0` 的帧。**观感待人工验证**：悬停高亮跟不跟手、点到物件「弹起 0.35」的手感合适与否，自动化只证明命中判定与调用链 |
 | 上传暂存环（扩展三十五） | `cargo test -p r3e-render upload_staging` → lib 内联 **12 passed**；`cargo test --workspace` 75 套件 **1,069 passed / 0 failed**（扩展三十四收尾为 1,057）；`cargo test --workspace --features rapier` 75 套件 **1,073 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（本轮先被 `single_range_in_vec_init` 拦下，见 §8.30 ⑦）。**GPU 实跑**（RTX 5060 Laptop / Vulkan，Release）：`assets/scene.json` + `scripts/staging_demo.rhai`（40 实例 / 每帧 4 段脏区）→ 695 帧 `写 695 / 拷贝 2,777 / 省写 2,082`，即每帧 `write_buffer` 由 4 次降到 1 次；`R3E_UPLOAD_STAGING=0` 时探针报「关闭」且帧探针其余字段恒 0；两模式下 `--capture-frame 40` 截图 sha256 完全相同（195cb1ed…），`visual_regression` 严格模式 2 passed、基线未重建。`scene_anim.json`（37 关节）反例留档：`写 702 / 拷贝 703 / 省写 1`，`plan_upload` 已并段时该层收益为 0 |
+| 形变 morph target（扩展三十六） | `cargo test -p r3e-core morph --lib` → **10 passed**；`cargo test -p r3e-render morph --lib` → **9 passed**（`morph_table_tests` 6 + 实例布局 2 + 表长推导 1）；`cargo test -p r3e-asset --test gltf_morph_import` → **2 passed**；`$env:R3E_VISUAL_REGRESSION=1; cargo test -p r3e-app --test morph_deform` → **2 passed**，子进程日志 `morph=0/24f` → `morph=1/24f`、两帧差 **31,735 像素 / 13.77%**、包围盒左边界 221→122（左移 99 px）；`cargo test --workspace --all-features` 77 套件 **1,099 passed / 0 failed**（扩展三十五收尾为 1,069） |
 
 
 ---

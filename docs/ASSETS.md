@@ -54,7 +54,7 @@ AIGC:
 | 排除项 | 理由 |
 | --- | --- |
 | ~~骨骼蒙皮（skin / joint weights）~~ | 原计划排除，实际作为 P4 单独立项落地（见第 14 章）；主因是它需要独立的顶点属性、关节矩阵通道与绑定姿态口径 |
-| 形变目标（morph target / blend shape） | 同上，属于顶点级动画 |
+| ~~形变目标（morph target / blend shape）~~ | 原计划排除；**glTF 侧已作为扩展三十六落地**（见第 18.7 节与 ARCHITECTURE §4.20 / §5.28），FBX 的 blend shape 仍不导入 |
 | 动画混合 / 状态机 / 过渡 | 属动画系统，不属资产加载；先给「播一个 clip」 |
 | FBX 写出（导出） | 引擎只读 |
 | 非 FBX 格式（glTF / OBJ / USD） | 分层设计会留出扩展点，但本阶段只做通一条链路 |
@@ -673,7 +673,9 @@ P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画�
 - **双四元数蒙皮（DQS）**：现在是 LBS，关节大角度扭转时会有糖纸效应。
 - **GPU 侧蒙皮（compute skinning）**：关节矩阵在 CPU 求解后上传，顶点量大时可改 compute。
 - **动画混合 / 状态机**：cross-fade 与脚本状态机已在阶段三 C 落地（见第 16 章）；分层 mask、additive、相位对齐仍未做。
-- **表情 / morph target**：未支持。
+- **表情 / morph target**：glTF 已支持（扩展三十六：逐顶点位置 + 可选法线增量、每实例上限 4 个形状、权重不夹不归一化，见
+  ARCHITECTURE §4.20 / §5.28）；**FBX 的 blend shape 仍不导入**——`import_fbx` 里显式留空集，所以 FBX 模型的行为与
+  扩展三十五一致。
 
 ## 15. 阶段三 A（AABB + 视锥剔除 + 两个小尾巴）实施现状
 
@@ -920,6 +922,8 @@ MeshRef ──▶ LayeredProvider ──┬─▶ AssetLibrary（外部资产，
 ### 18.7 glb 已知限制（明示）
 
 - 不支持 **Draco / meshopt** 压缩几何、**KTX2 / basis** 压缩贴图（需预转普通 PNG/JPEG 或 glTF）；
-- 不支持 morph target（表情/形态键）、多套 UV、`KHR_materials_*` 扩展材质；
+- 不支持多套 UV、`KHR_materials_*` 扩展材质；morph target（形态键）自扩展三十六支持——读 `primitives[].targets` 的
+  `POSITION` 与可选 `NORMAL`，按声明顺序成为形状 0..n，超 4 个截断（`MAX_MORPH_TARGETS`），权重由场景 / 脚本给；
+- 形变只影响位置与法线两条通道（TANGENT 目标被忽略，切线仍由 UV 参数化推出）；
 - 动画走 glTF 采样器原始关键帧（不做贝塞尔重采样），与 FBX 的「ufbx 烘焙」路径在极端插值下可能有细微差异；
 - glTF 的右手 `-Z front` 会在导入时镜像到引擎 `+Z front`，并自动翻转绕序；镜像贴图 UV 不做额外翻转。
