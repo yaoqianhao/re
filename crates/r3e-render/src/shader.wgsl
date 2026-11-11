@@ -74,21 +74,28 @@ var t_env_cube: texture_cube<f32>;
 var<storage, read> u_joints: array<mat4x4<f32>>;
 
 // 扩展三十六：morph target（表情 / 口型）增量表。所有带形状的网格共用一块
-// storage buffer，每形状内按顶点紧密排列，每顶点 6 个 f32：
+// storage buffer，每形状内按顶点紧密排列，每顶点 9 个 f32（扩展三十七加了切线通道）：
 //
-//   [0..3) = 位置增量 xyz    [3..6) = 法线增量 xyz
+//   [0..3) = 位置增量 xyz    [3..6) = 法线增量 xyz    [6..9) = 切线增量 xyz
 //
 // 实例的 `instance_meta`（location 10）给出 `y = 起点（浮点下标）`、`z = 每形状浮点数`
-// （= 顶点数 × 6）、`w = 可用形状数`；顶点下标由 `@builtin(vertex_index)` 提供，
+// （= 顶点数 × 9）、`w = 可用形状数`；顶点下标由 `@builtin(vertex_index)` 提供，
 // 所以没有形状的实例（instance_meta.w = 0）一次循环都不进。
 @group(2) @binding(1)
 var<storage, read> morph_table: array<f32>;
 
-/// 形变结果：位置与法线增量（法线在乘完模型伴随矩阵后统一 normalize）。
+/// 形变结果：位置 / 法线 / 切线三组增量（法线在乘完模型伴随矩阵后统一 normalize）。
 struct MorphDelta {
     position: vec3<f32>,
     normal: vec3<f32>,
+    // 扩展三十七：切线增量。形状没给切线通道时这里是 0；
+    // 切线的手性 w 不受形变影响（形变不改变 UV 镜像关系）。
+    tangent: vec3<f32>,
 };
+
+/// 每顶点在形变表里占用的 f32 个数 —— 必须与 `r3e_core::morph::MORPH_VERTEX_FLOATS` 一致。
+/// 布局：+0..3 = Δ位置，+3..6 = Δ法线，+6..9 = Δ切线（三个通道恒占槽位，缺的补 0）。
+const MORPH_VERTEX_FLOATS: u32 = 9u;
 
 /// 按权重线性累加各形状增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
 ///
@@ -98,32 +105,37 @@ fn morph_offset(imeta: vec4<u32>, weights: vec4<f32>, vi: u32) -> MorphDelta {
     var delta: MorphDelta;
     delta.position = vec3<f32>(0.0);
     delta.normal = vec3<f32>(0.0);
+    delta.tangent = vec3<f32>(0.0);
     let count = min(imeta.w, 4u);
     // imeta.z = 0 表示该实例没有可用形状数据（未登记 / 校验未过），直接跳过
     if count == 0u || imeta.z == 0u {
         return delta;
     }
     // 顶点在该形状内的浮点起点
-    let head = imeta.y + vi * 6u;
+    let head = imeta.y + vi * MORPH_VERTEX_FLOATS;
     if weights.x != 0.0 {
         let at = head;
         delta.position += weights.x * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
         delta.normal += weights.x * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+        delta.tangent += weights.x * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
     }
     if count > 1u && weights.y != 0.0 {
         let at = head + imeta.z;
         delta.position += weights.y * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
         delta.normal += weights.y * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+        delta.tangent += weights.y * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
     }
     if count > 2u && weights.z != 0.0 {
         let at = head + imeta.z * 2u;
         delta.position += weights.z * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
         delta.normal += weights.z * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+        delta.tangent += weights.z * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
     }
     if count > 3u && weights.w != 0.0 {
         let at = head + imeta.z * 3u;
         delta.position += weights.w * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
         delta.normal += weights.w * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+        delta.tangent += weights.w * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
     }
     return delta;
 }
@@ -226,6 +238,9 @@ fn vs_main(in: VsIn) -> VsOut {
         let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
         local_position += shape.position;
         local_normal += shape.normal;
+        // 扩展三十七：切线同样参与形变。形状没给切线通道时这里是 0，
+        // 后面的正交化读到的仍是原切线，像素与扩展三十六逐位相同。
+        local_tangent += shape.tangent;
     }
 
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
@@ -238,7 +253,9 @@ fn vs_main(in: VsIn) -> VsOut {
             cross(skinned[0].xyz, skinned[1].xyz),
         );
         local_normal = skin_adjugate * local_normal;
-        local_tangent = skin_adjugate * in.tangent.xyz;
+        // 用累积后的 local_tangent 而不是 in.tangent.xyz —— 否则形变给出的切线增量
+        // 会在蒙皮这一步被悄悄丢掉（只有同时带形变与蒙皮的资产才会暴露）。
+        local_tangent = skin_adjugate * local_tangent;
     }
 
     let world = model * vec4<f32>(local_position, 1.0);

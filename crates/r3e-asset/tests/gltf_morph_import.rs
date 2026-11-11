@@ -2,7 +2,7 @@
 //!
 //! 夹具同样自己按规范拼 `.glb`，不依赖外部样本。一个单三角形网格挂两个形状：
 //! * 形状 0 只动位置；
-//! * 形状 1 同时带位置与法线增量。
+//! * 形状 1 同时带位置、法线与切线增量（切线通道是扩展三十七加的）。
 //!
 //! 同一个文件的第二个网格**不带** `targets`，用来锁死「没有形状的网格不会被凭空
 //! 造出一组零增量」。
@@ -11,7 +11,9 @@
 //! 1. `targets` 的顺序就是脚本权重下标（`morph_set(name, t, w)` 的 `t`）；
 //! 2. 增量必须跟着网格一起过换轴（glTF 的 `-Z front` → 引擎 `+Z front`，z 取反）；
 //! 3. `MeshAsset::to_mesh_data` 必须把形状带到运行时 `MeshData::morph` 上，
-//!    且长度自洽到能通过 `MorphSet::validate_against`。
+//!    且长度自洽到能通过 `MorphSet::validate_against`；
+//! 4. `TANGENT` 增量通道要与位置增量同源过换轴，且**只给部分形状**切线时
+//!    其余形状不得凭空长出切线通道（避免 flatten 时多算一段无意义数据）。
 
 use std::path::{Path, PathBuf};
 
@@ -51,6 +53,8 @@ fn write_morph_glb(dir: &Path) -> PathBuf {
     // 形状 1：三个顶点都沿 x 张开，并给一点法线增量（验证法线增量不归一化）。
     let shape1_pos: [[f32; 3]; 3] = [[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.25, 0.0]];
     let shape1_nrm: [[f32; 3]; 3] = [[0.0, 0.0, 0.25], [0.0, 0.0, 0.25], [0.0, 0.0, 0.25]];
+    // 形状 1 的切线增量：沿 z 抬一点（换轴后必须变 -0.5）+ 一个沿 x 的分量。
+    let shape1_tan: [[f32; 3]; 3] = [[0.0, 0.0, 0.5], [0.25, 0.0, 0.0], [0.0, 0.0, 0.0]];
 
     let mut bin: Vec<u8> = Vec::new();
     let (pos_off, pos_len) = push_f32(
@@ -75,6 +79,10 @@ fn write_morph_glb(dir: &Path) -> PathBuf {
         &mut bin,
         &shape1_nrm.iter().flatten().copied().collect::<Vec<_>>(),
     );
+    let (s1t_off, s1t_len) = push_f32(
+        &mut bin,
+        &shape1_tan.iter().flatten().copied().collect::<Vec<_>>(),
+    );
     while bin.len() % 4 != 0 {
         bin.push(0);
     }
@@ -98,7 +106,7 @@ fn write_morph_glb(dir: &Path) -> PathBuf {
           "indices": 2,
           "targets": [
             {{ "POSITION": 3 }},
-            {{ "POSITION": 4, "NORMAL": 5 }}
+            {{ "POSITION": 4, "NORMAL": 5, "TANGENT": 6 }}
           ]
         }}
       ]
@@ -117,7 +125,8 @@ fn write_morph_glb(dir: &Path) -> PathBuf {
     {{ "bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR" }},
     {{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3" }},
     {{ "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3" }},
-    {{ "bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC3" }}
+    {{ "bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC3" }},
+    {{ "bufferView": 6, "componentType": 5126, "count": 3, "type": "VEC3" }}
   ],
   "bufferViews": [
     {{ "buffer": 0, "byteOffset": {pos_off}, "byteLength": {pos_len} }},
@@ -125,7 +134,8 @@ fn write_morph_glb(dir: &Path) -> PathBuf {
     {{ "buffer": 0, "byteOffset": {idx_off}, "byteLength": {idx_len} }},
     {{ "buffer": 0, "byteOffset": {s0_off}, "byteLength": {s0_len} }},
     {{ "buffer": 0, "byteOffset": {s1p_off}, "byteLength": {s1p_len} }},
-    {{ "buffer": 0, "byteOffset": {s1n_off}, "byteLength": {s1n_len} }}
+    {{ "buffer": 0, "byteOffset": {s1n_off}, "byteLength": {s1n_len} }},
+    {{ "buffer": 0, "byteOffset": {s1t_off}, "byteLength": {s1t_len} }}
   ],
   "buffers": [{{ "byteLength": {bin_len} }}]
 }}"#
@@ -181,6 +191,10 @@ fn import_reads_morph_targets_in_order() {
         s0.positions[0]
     );
     assert!(s0.normals.is_empty(), "形状 0 没有法线增量");
+    assert!(
+        !s0.has_tangents(),
+        "形状 0 没给 TANGENT，不能凭空长出切线通道"
+    );
 
     // 形状 1：x 张开保持不变，法线增量只取反 z、**不归一化**（0.25 仍是 0.25）。
     let s1 = face.morph.get(1).expect("形状 1");
@@ -202,6 +216,24 @@ fn import_reads_morph_targets_in_order() {
         );
         assert!(n[0].abs() < 1e-6 && n[1].abs() < 1e-6, "{n:?}");
     }
+
+    // 切线通道（扩展三十七）：位置增量同源过换轴 ⇒ z 取反、x 不动。
+    assert!(s1.has_tangents(), "形状 1 应带上切线增量");
+    assert_eq!(s1.tangents.len(), 3, "切线增量按顶点数补齐");
+    assert!(
+        (s1.tangents[0][2] + 0.5).abs() < 1e-6,
+        "切线 z 增量未镜像: {:?}",
+        s1.tangents[0]
+    );
+    assert!(
+        (s1.tangents[1][0] - 0.25).abs() < 1e-6,
+        "切线 x 增量不该被改: {:?}",
+        s1.tangents[1]
+    );
+    assert!(
+        s1.tangents[2].iter().all(|c| c.abs() < 1e-6),
+        "零增量顶点应保持 0"
+    );
 
     // 没有 targets 的网格不该凭空多出形状。
     let plain = entry
@@ -238,7 +270,9 @@ fn morph_survives_to_mesh_data_and_validates() {
     for (from, to) in face.morph.targets.iter().zip(&data.morph.targets) {
         assert_eq!(from.positions, to.positions);
         assert_eq!(from.normals, to.normals);
+        assert_eq!(from.tangents, to.tangents, "切线增量也要原样搬到运行时");
     }
+    assert!(data.morph.targets[1].has_tangents(), "切线通道不能在出口丢");
 
     // 权重 0：CPU 版求值必须回到原始位置，证明「不动就是不动」。
     let zero = data.morph.apply(&data, &[0.0; r3e_core::MAX_MORPH_TARGETS]);
@@ -259,4 +293,14 @@ fn morph_survives_to_mesh_data_and_validates() {
         "{:?}",
         one.vertices[0].position
     );
+
+    // 权重 1 只开形状 1：切线 xyz 要吃到 -0.5 的 z 增量，手性 w 不动。
+    let tan_only = data.morph.apply(&data, &[0.0, 1.0, 0.0, 0.0]);
+    let tan_before = data.vertices[0].tangent;
+    let tan_after = tan_only.vertices[0].tangent;
+    assert!(
+        (tan_after[2] - (tan_before[2] - 0.5)).abs() < 1e-5,
+        "切线 z 未吃到形变增量: {tan_before:?} -> {tan_after:?}"
+    );
+    assert_eq!(tan_after[3], tan_before[3], "手性 w 不参与形变");
 }

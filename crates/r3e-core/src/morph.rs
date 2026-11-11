@@ -17,7 +17,12 @@
 //! ```text
 //! p' = p + Σ_t w_t · Δp_t
 //! n' = n + Σ_t w_t · Δn_t          （随后统一 normalize）
+//! T' = T + Σ_t w_t · ΔT_t          （xyz 累加、手性 w 不变，随后重新正交化）
 //! ```
+//!
+//! 切线增量（扩展三十七）是**可选**通道：形状可以不提供，此时该形状对切线的贡献为 0，
+//! 强形变下法线贴图仍按基础切线方向解算。提供时缓冲区每顶点固定留 3 个 f32 的槽位
+//! （见 [`MORPH_VERTEX_FLOATS`]），缺省形状补 0 —— 布局只有一种，着色器不需要分支。
 //!
 //! [`MorphSet::apply`] 是同一公式的 CPU 版，只用于**对拍与单测**：GPU 侧一旦写错，
 //! 这里能给出可断言的期望值，不需要读回像素。
@@ -33,6 +38,22 @@ use crate::NodeId;
 /// 需要更多就分批切换权重，而不是加宽缓冲（加宽会让每个实例的顶点属性涨 16 字节）。
 pub const MAX_MORPH_TARGETS: usize = 4;
 
+/// 形变表里**每顶点**占用的 `f32` 个数（扩展三十七把 6 抬到 9）。
+///
+/// 布局：`[0..3) = Δ位置 xyz`、`[3..6) = Δ法线 xyz`、`[6..9) = Δ切线 xyz`。
+///
+/// 三个通道**恒占槽位**，形状没给切线时那 3 个 f32 就是 0。这样着色器的下标算术
+/// 只有一种（`base + vertex * 9 + k`），不需要按形状切换布局 —— 代价是表变大 50%，
+/// 在 [`crate::MAX_MORPH_TARGETS`] 的前提下完全可接受（见 ARCHITECTURE §4.21 的容量表）。
+pub const MORPH_VERTEX_FLOATS: usize = 9;
+
+/// 位置增量在一顶点槽位内的起点。
+pub const MORPH_POSITION_OFFSET: usize = 0;
+/// 法线增量在一顶点槽位内的起点。
+pub const MORPH_NORMAL_OFFSET: usize = 3;
+/// 切线增量在一顶点槽位内的起点（扩展三十七）。
+pub const MORPH_TANGENT_OFFSET: usize = 6;
+
 /// 形变数据校验失败的原因。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MorphIssue {
@@ -44,6 +65,12 @@ pub enum MorphIssue {
     },
     /// 法线增量长度既不是 0（未提供）也不是顶点数。
     NormalCountMismatch {
+        target: usize,
+        expected: usize,
+        got: usize,
+    },
+    /// 切线增量长度既不是 0（未提供）也不是顶点数（扩展三十七）。
+    TangentCountMismatch {
         target: usize,
         expected: usize,
         got: usize,
@@ -71,6 +98,14 @@ impl fmt::Display for MorphIssue {
                 f,
                 "morph target #{target} 的法线增量有 {got} 个顶点，网格有 {expected} 个"
             ),
+            MorphIssue::TangentCountMismatch {
+                target,
+                expected,
+                got,
+            } => write!(
+                f,
+                "morph target #{target} 的切线增量有 {got} 个顶点，网格有 {expected} 个"
+            ),
             MorphIssue::NonFinite { target, vertex } => write!(
                 f,
                 "morph target #{target} 第 {vertex} 个顶点的增量不是有限数"
@@ -81,7 +116,7 @@ impl fmt::Display for MorphIssue {
 
 impl std::error::Error for MorphIssue {}
 
-/// 单个形变形状：每个顶点一组位置增量，可选一组法线增量。
+/// 单个形变形状：每个顶点一组位置增量，可选一组法线增量与一组切线增量。
 ///
 /// 增量是**相对基础网格的差**，不是绝对坐标 —— 所以它和顶点一一对应、长度必须等于
 /// 顶点数，但坐标空间与顶点相同（导入时随顶点一起过轴变换）。
@@ -93,6 +128,11 @@ pub struct MorphTarget {
     pub positions: Vec<[f32; 3]>,
     /// 每顶点法线增量；空表示该形状只动位置。
     pub normals: Vec<[f32; 3]>,
+    /// 每顶点切线增量（扩展三十七）；空表示该形状不动切线。
+    ///
+    /// 只存 xyz：地形变后切线的**手性 w 保持不变** —— 形变是局部拉伸，不翻面，
+    /// 手性只跟 UV 镜像有关，跟顶点位置无关。
+    pub tangents: Vec<[f32; 3]>,
 }
 
 impl MorphTarget {
@@ -102,12 +142,19 @@ impl MorphTarget {
             name: name.into(),
             positions,
             normals: Vec::new(),
+            tangents: Vec::new(),
         }
     }
 
     /// 补上法线增量（链式构造）。
     pub fn with_normals(mut self, normals: Vec<[f32; 3]>) -> Self {
         self.normals = normals;
+        self
+    }
+
+    /// 补上切线增量（链式构造，扩展三十七）。
+    pub fn with_tangents(mut self, tangents: Vec<[f32; 3]>) -> Self {
+        self.tangents = tangents;
         self
     }
 
@@ -119,6 +166,11 @@ impl MorphTarget {
         !self.normals.is_empty()
     }
 
+    /// 该形状是否带切线增量（扩展三十七）。
+    pub fn has_tangents(&self) -> bool {
+        !self.tangents.is_empty()
+    }
+
     /// 该形状是否全为 0（导入空形状时可以直接丢掉，省一段缓冲）。
     pub fn is_zero(&self) -> bool {
         self.positions
@@ -126,6 +178,10 @@ impl MorphTarget {
             .all(|d| d[0] == 0.0 && d[1] == 0.0 && d[2] == 0.0)
             && self
                 .normals
+                .iter()
+                .all(|d| d[0] == 0.0 && d[1] == 0.0 && d[2] == 0.0)
+            && self
+                .tangents
                 .iter()
                 .all(|d| d[0] == 0.0 && d[1] == 0.0 && d[2] == 0.0)
     }
@@ -140,6 +196,11 @@ impl MorphTarget {
         self.normals.get(vertex).copied().unwrap_or([0.0; 3])
     }
 
+    /// 按顶点下标取切线增量；未提供时返回 0（扩展三十七）。
+    pub fn tangent_at(&self, vertex: usize) -> [f32; 3] {
+        self.tangents.get(vertex).copied().unwrap_or([0.0; 3])
+    }
+
     /// 线性缩放一份增量（导入时烘焙轴变换 / 镜像用：线性部分作用在增量上）。
     pub fn scale(&mut self, factor: f32) {
         for d in &mut self.positions {
@@ -148,6 +209,11 @@ impl MorphTarget {
             }
         }
         for d in &mut self.normals {
+            for c in d.iter_mut() {
+                *c *= factor;
+            }
+        }
+        for d in &mut self.tangents {
             for c in d.iter_mut() {
                 *c *= factor;
             }
@@ -212,7 +278,32 @@ impl MorphSet {
                     got: target.normals.len(),
                 });
             }
+            if target.has_tangents() && target.tangents.len() != expected {
+                return Err(MorphIssue::TangentCountMismatch {
+                    target: index,
+                    expected,
+                    got: target.tangents.len(),
+                });
+            }
             for (vertex, d) in target.positions.iter().enumerate() {
+                if !d.iter().all(|c| c.is_finite()) {
+                    return Err(MorphIssue::NonFinite {
+                        target: index,
+                        vertex,
+                    });
+                }
+            }
+            // 法线 / 切线增量同样要过有限性检查：NaN 会顺着 normalize 的输入一路传到
+            // 光照结果，让整块几何出现黑斑或熄灭（位置有限不代表通道有限）。
+            for (vertex, d) in target.normals.iter().enumerate() {
+                if !d.iter().all(|c| c.is_finite()) {
+                    return Err(MorphIssue::NonFinite {
+                        target: index,
+                        vertex,
+                    });
+                }
+            }
+            for (vertex, d) in target.tangents.iter().enumerate() {
                 if !d.iter().all(|c| c.is_finite()) {
                     return Err(MorphIssue::NonFinite {
                         target: index,
@@ -224,11 +315,12 @@ impl MorphSet {
         Ok(())
     }
 
-    /// 扁平化成 GPU 表布局：每个形状内按顶点排列，每顶点 6 个 f32
-    /// （位置增量 xyz + 法线增量 xyz）。返回 `(数据, 每形状浮点数)`。
+    /// 扁平化成 GPU 表布局：每个形状内按顶点排列，每顶点 [`MORPH_VERTEX_FLOATS`] 个 f32
+    /// （位置 + 法线 + 切线三组增量 xyz，见 [`MORPH_POSITION_OFFSET`] 等偏移常量）。
+    /// 返回 `(数据, 每形状浮点数)`。
     ///
-    /// 位置与法线**交错**存是为了少一个 binding：着色器一次算出下标就能取齐两组，
-    /// 局部性也好（一次 cache line 覆盖同一顶点的两个增量）。
+    /// 三个通道**交错**存是为了少几个 binding：着色器一次算出下标就能取齐三组，
+    /// 局部性也好（一条 cache line 覆盖同一顶点的全部增量）。
     pub fn flatten(&self) -> (Vec<f32>, usize) {
         self.flatten_limited(self.targets.len())
     }
@@ -237,14 +329,15 @@ impl MorphSet {
     /// 每实例权重只有一个 `vec4`，多出来的形状传上去也没人读，白白占缓冲。
     pub fn flatten_limited(&self, limit: usize) -> (Vec<f32>, usize) {
         let vertices = self.vertex_count();
-        let stride = vertices * 6;
+        let stride = vertices * MORPH_VERTEX_FLOATS;
         let count = self.targets.len().min(limit);
         let mut out = Vec::with_capacity(count * stride);
         for target in self.targets.iter().take(count) {
             for v in 0..vertices {
                 let p = target.position_at(v);
                 let n = target.normal_at(v);
-                out.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2]]);
+                let t = target.tangent_at(v);
+                out.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], t[0], t[1], t[2]]);
             }
         }
         (out, stride)
@@ -252,7 +345,7 @@ impl MorphSet {
 
     /// CPU 侧求解（与 `shader.wgsl` 的 `morph_offset` 同一公式），只用于对拍与单测。
     ///
-    /// 权重按 `MAX_MORPH_TARGETS` 截断，非有限权重视为 0；法线累加后**不**归一化
+    /// 权重按 `MAX_MORPH_TARGETS` 截断，非有限权重视为 0；法线 / 切线累加后**不**归一化
     /// （着色器是在乘完模型伴随矩阵之后统一 normalize 的，这里保持中间值才可比）。
     pub fn apply(&self, mesh: &MeshData, weights: &[f32; MAX_MORPH_TARGETS]) -> MeshData {
         let mut out = mesh.clone();
@@ -265,9 +358,12 @@ impl MorphSet {
             for (vertex_index, vertex) in out.vertices.iter_mut().enumerate() {
                 let dp = target.position_at(vertex_index);
                 let dn = target.normal_at(vertex_index);
+                let dt = target.tangent_at(vertex_index);
                 for k in 0..3 {
                     vertex.position[k] += weight * dp[k];
                     vertex.normal[k] += weight * dn[k];
+                    // 切线只动 xyz，手性 w 保持不变（形变不改变 UV 镜像关系）。
+                    vertex.tangent[k] += weight * dt[k];
                 }
             }
         }
@@ -290,9 +386,11 @@ impl MorphSet {
             }
             let dp = target.position_at(vertex_index);
             let dn = target.normal_at(vertex_index);
+            let dt = target.tangent_at(vertex_index);
             for k in 0..3 {
                 v.position[k] += weight * dp[k];
                 v.normal[k] += weight * dn[k];
+                v.tangent[k] += weight * dt[k];
             }
         }
         v
@@ -473,15 +571,81 @@ mod tests {
         assert_eq!(out.vertices[1].position, mesh.vertices[1].position);
     }
 
-    /// 扁平化布局：每形状 `顶点数 × 6` 个浮点，位置在前、法线在后。
+    /// 扁平化布局：每形状 `顶点数 × MORPH_VERTEX_FLOATS` 个浮点，
+    /// 每顶点依次是位置 / 法线 / 切线三组增量。
     #[test]
-    fn flatten_interleaves_position_and_normal() {
+    fn flatten_interleaves_position_normal_and_tangent() {
+        let per_vertex = MORPH_VERTEX_FLOATS;
         let set = MorphSet::new(vec![smile()]);
         let (data, stride) = set.flatten();
-        assert_eq!(stride, 3 * 6);
-        assert_eq!(data.len(), 3 * 6);
-        // 顶点 1 的位置增量 (1,1,0)，法线增量全 0
-        assert_eq!(&data[6..12], &[1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(stride, 3 * per_vertex);
+        assert_eq!(data.len(), 3 * per_vertex);
+        // 顶点 1 的位置增量 (1,1,0)，法线增量全 0，切线增量全 0（smile 没给切线通道）
+        assert_eq!(
+            &data[per_vertex..per_vertex + 6],
+            &[1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        assert!(data[(per_vertex + 6)..(2 * per_vertex)]
+            .iter()
+            .all(|v| *v == 0.0));
+    }
+
+    /// 切线增量进扁平表的位置：顶点 2 的切线段落在 `2 * per_vertex + 6`。
+    #[test]
+    fn flatten_places_tangent_delta_after_normal() {
+        let mut target = MorphTarget::new("with_tan", vec![[0.0; 3]; 3]).with_tangents(vec![
+            [0.0; 3],
+            [0.0; 3],
+            [0.4, -0.2, 0.9],
+        ]);
+        target.normals = vec![[0.0; 3]; 3];
+        let set = MorphSet::new(vec![target]);
+        let (data, stride) = set.flatten();
+        let base = 2 * MORPH_VERTEX_FLOATS + 6;
+        assert_eq!(&data[base..base + 3], &[0.4, -0.2, 0.9]);
+        assert_eq!(stride, 3 * MORPH_VERTEX_FLOATS);
+    }
+
+    /// CPU 求解也要把切线增量乘权重累加进去，且不改动手性（第 4 分量）。
+    #[test]
+    fn apply_accumulates_tangent_like_position() {
+        let mesh = triangle();
+        let target = MorphTarget::new("tan", vec![[0.0; 3]; 3]).with_tangents(vec![
+            [0.0; 3],
+            [2.0, 0.0, 0.0],
+            [0.0; 3],
+        ]);
+        let set = MorphSet::new(vec![target]);
+        let out = set.apply(&mesh, &[0.5, 0.0, 0.0, 0.0]);
+        let before = mesh.vertices[1].tangent;
+        let after = out.vertices[1].tangent;
+        assert!(
+            (after[0] - (before[0] + 1.0)).abs() < 1e-6,
+            "切线 x 应加 2.0 × 0.5：{before:?} -> {after:?}"
+        );
+        assert_eq!(after[1..3], before[1..3], "无切线增量的分量不动");
+        assert_eq!(
+            out.vertices[1].tangent[3], mesh.vertices[1].tangent[3],
+            "手性不参与形变"
+        );
+        assert_eq!(
+            out.vertices[0].tangent, mesh.vertices[0].tangent,
+            "权重不影响零增量顶点"
+        );
+    }
+
+    /// 切线通道长度不对同样要拒绝：GPU 上按 stride 硬读，短了会越界。
+    #[test]
+    fn validate_checks_tangent_length() {
+        let target = MorphTarget::new("t", vec![[0.0; 3]; 3]).with_tangents(vec![[0.0; 3]; 2]);
+        match MorphSet::new(vec![target]).validate_against(3) {
+            Err(MorphIssue::TangentCountMismatch {
+                target,
+                expected,
+                got,
+            }) => assert_eq!((target, expected, got), (0, 3, 2)),
+            other => panic!("应报切线数不一致，实际 {other:?}"),
+        }
     }
 
     /// `flatten_limited` 只保留前 N 个形状，stride 仍是「单形状浮点数」。
@@ -492,12 +656,16 @@ mod tests {
             MorphTarget::new("b", vec![[0.0; 3]; 3]),
             MorphTarget::new("c", vec![[0.0; 3]; 3]),
         ]);
-        assert_eq!(set.flatten_limited(MAX_MORPH_TARGETS).0.len(), 3 * 3 * 6);
+        let per_shape = 3 * MORPH_VERTEX_FLOATS;
+        assert_eq!(
+            set.flatten_limited(MAX_MORPH_TARGETS).0.len(),
+            3 * per_shape
+        );
         let (data, stride) = set.flatten_limited(2);
-        assert_eq!(stride, 18, "stride 是单形状的浮点数，不随 limit 变");
-        assert_eq!(data.len(), 2 * 18);
+        assert_eq!(stride, per_shape, "stride 是单形状的浮点数，不随 limit 变");
+        assert_eq!(data.len(), 2 * per_shape);
         // 前两形状的内容与整体扁平化的前缀完全一致
-        assert_eq!(data, set.flatten().0[..2 * 18]);
+        assert_eq!(data, set.flatten().0[..2 * per_shape]);
     }
 
     /// 场景绑定：越界 index 与非有限权重都被拒绝，`reset` 清零。

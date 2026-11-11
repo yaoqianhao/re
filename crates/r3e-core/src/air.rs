@@ -415,6 +415,11 @@ pub mod normalize {
                 for d in &mut target.normals {
                     *d = (normal_matrix * Vec3::from(*d)).to_array();
                 }
+                // 扩展三十七：切线增量跟位置增量同源（都是沿 UV 切平面的几何方向），
+                // 走同一个线性矩阵；同样不归一化。
+                for d in &mut target.tangents {
+                    *d = (linear * Vec3::from(*d)).to_array();
+                }
             }
         }
     }

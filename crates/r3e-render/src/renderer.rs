@@ -422,16 +422,19 @@ pub struct GpuMesh {
 /// 一个网格在全局形变表（`MeshCache::morph_table`）里的登记信息。
 ///
 /// 表是**所有网格共用**的一块扁平 `f32` 数组，每形状内按顶点紧密排列、
-/// 每顶点 6 个 f32。实例缓冲只带这三个数，着色器就能自己算下标：
+/// 每顶点 [`MORPH_VERTEX_FLOATS`] 个 f32（位置 / 法线 / 切线三组增量，扩展三十七）。
+/// 实例缓冲只带这三个数，着色器就能自己算下标：
 ///
 /// ```text
-/// 顶点 v 的形状 t 位置增量 = table[base + t * stride + v * 6 .. +3]
+/// 顶点 v 的形状 t 位置增量 = table[base + t * stride + v * 9 .. +3]
+/// 顶点 v 的形状 t 法线增量 = 同上 +3 .. +3
+/// 顶点 v 的形状 t 切线增量 = 同上 +6 .. +3
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct MeshMorph {
     /// 表内起点（浮点下标）。
     pub base: u32,
-    /// 每个形状占多少浮点（= 顶点数 × 6）。
+    /// 每个形状占多少浮点（= 顶点数 × [`MORPH_VERTEX_FLOATS`]）。
     pub stride: u32,
     /// 可用形状数（≤ `MAX_MORPH_TARGETS`）。
     pub count: u32,
@@ -464,8 +467,12 @@ impl MeshMorph {
     }
 }
 
-/// 全局形变表的容量上限（浮点数）。1 MiB 的 storage buffer：
-/// 够放约 4.3 万个「四形状 × 单顶点」的极小网格，实际表情资产远低于此。
+/// 全局形变表的容量上限（浮点数）。1 MiB 的 storage buffer。
+///
+/// 每顶点占 [`MORPH_VERTEX_FLOATS`] = 9 个 f32，所以这张表够容纳
+/// **四个形状全部用满的 7,281 个顶点**（`1 << 18 / (4 × 9)`）。真实表情 / 口型资产
+/// 的形变顶点通常只有几百到几千个，够用；超了按「无形变」降级并告警（见
+/// [`MeshCache::register_morph`]）。
 /// 固定容量（不随内容增长重建）换取「绑定组只需建一次」。
 pub const MAX_MORPH_TABLE_FLOATS: usize = 1 << 18;
 
@@ -4876,7 +4883,7 @@ fn create_depth_target(
 #[cfg(test)]
 mod morph_table_tests {
     use super::*;
-    use r3e_core::morph::{MorphSet, MorphTarget};
+    use r3e_core::morph::{MorphSet, MorphTarget, MORPH_VERTEX_FLOATS};
 
     /// 造一个 `vertices` 个顶点的网格数据，挂 `targets` 个形状（形状增量全为 +1）。
     fn mesh_with(vertices: usize, targets: usize) -> MeshData {
@@ -4888,25 +4895,39 @@ mod morph_table_tests {
         MeshData::new(verts, indices).with_morph(MorphSet::new(shapes))
     }
 
-    /// 两个网格顺排：`base` 指向各自第一段，`stride` = 顶点数 × 6。
+    /// 两个网格顺排：`base` 指向各自第一段，`stride` = 顶点数 × 每顶点浮点数。
     #[test]
     fn bases_are_laid_out_back_to_back() {
+        let per_vertex = MORPH_VERTEX_FLOATS as u32;
         let mut cache = MeshCache::new();
         let a = cache
             .register_morph(&mesh_with(4, 1))
             .expect("四边形应可登记");
-        assert_eq!((a.base, a.stride, a.count), (0, 24, 1), "4 顶点 × 6 分量");
+        assert_eq!(
+            (a.base, a.stride, a.count),
+            (0, 4 * per_vertex, 1),
+            "4 顶点 × {per_vertex} 分量"
+        );
 
+        let stride_b = 3 * per_vertex;
         let b = cache
             .register_morph(&mesh_with(3, 2))
             .expect("三顶点应可登记");
-        assert_eq!((b.base, b.stride, b.count), (24, 18, 2), "接在 A 之后");
         assert_eq!(
-            cache.morph_table().len(),
-            24 + 36,
-            "两个形状各占 18 个 float"
+            (b.base, b.stride, b.count),
+            (4 * per_vertex, stride_b, 2),
+            "接在 A 之后"
         );
-        assert_eq!(cache.morph_table()[24], 1.0, "B 的第一段是 B 第一个形状");
+        assert_eq!(
+            cache.morph_table().len() as u32,
+            4 * per_vertex + 2 * stride_b,
+            "两个形状各占 3 顶点 × {per_vertex} 个 float"
+        );
+        assert_eq!(
+            cache.morph_table()[b.base as usize],
+            1.0,
+            "B 的第一段是 B 第一个形状"
+        );
         assert_eq!(cache.morph_version(), 2, "每次登记都让版本前进");
     }
 
@@ -4923,7 +4944,11 @@ mod morph_table_tests {
             cache.register_morph(&bad).is_none(),
             "长度不等必须被拒，否则 GPU 上会越界读"
         );
-        assert_eq!(cache.morph_table().len(), 24, "被拒的网格不进表");
+        assert_eq!(
+            cache.morph_table().len(),
+            4 * MORPH_VERTEX_FLOATS,
+            "被拒的网格不进表"
+        );
         assert_eq!(cache.morph_version(), 1, "被拒的网格不动版本号");
     }
 
@@ -4935,14 +4960,18 @@ mod morph_table_tests {
             .register_morph(&mesh_with(2, r3e_core::MAX_MORPH_TARGETS + 3))
             .expect("超量形状应被截断而不是整份拒绝");
         assert_eq!(morph.count as usize, r3e_core::MAX_MORPH_TARGETS);
-        assert_eq!(cache.morph_table().len(), 12 * r3e_core::MAX_MORPH_TARGETS);
+        assert_eq!(
+            cache.morph_table().len(),
+            2 * MORPH_VERTEX_FLOATS * r3e_core::MAX_MORPH_TARGETS
+        );
     }
 
     /// 表容量满了之后，新网格降级为「无形变」，已经在表里的网格不受影响。
     #[test]
     fn table_capacity_falls_back_to_no_morph() {
         let mut small = MeshCache::new();
-        small.morph_table = vec![0.0; MAX_MORPH_TABLE_FLOATS - 12];
+        // 差 2 顶点 × 每顶点浮点数 正好塞满最后一个双顶点网格
+        small.morph_table = vec![0.0; MAX_MORPH_TABLE_FLOATS - 2 * MORPH_VERTEX_FLOATS];
         assert!(small.register_morph(&mesh_with(2, 1)).is_some());
         assert_eq!(small.morph_table().len(), MAX_MORPH_TABLE_FLOATS);
         assert!(

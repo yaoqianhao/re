@@ -546,6 +546,8 @@ struct MorphChunk {
     count: usize,
     positions: Vec<Vec<[f32; 3]>>,
     normals: Vec<Vec<[f32; 3]>>,
+    /// 每形状一组切线增量（扩展三十七）；形状没给 TANGENT 时是空 vec。
+    tangents: Vec<Vec<[f32; 3]>>,
 }
 
 /// 把各 primitive 的增量拼成整网格的 [`MorphSet`]（扩展三十六）。
@@ -572,7 +574,9 @@ fn assemble_morph(
     for t in 0..count {
         let mut positions = vec![[0.0f32; 3]; vertex_count];
         let mut normals = vec![[0.0f32; 3]; vertex_count];
+        let mut tangents = vec![[0.0f32; 3]; vertex_count];
         let mut has_normals = false;
+        let mut has_tangents = false;
         for chunk in prim_morphs {
             if let Some(deltas) = chunk.positions.get(t) {
                 // 长度短于顶点数的坏资产按 0 补齐，绝不让越界写进缓冲。
@@ -588,10 +592,24 @@ fn assemble_morph(
                     }
                 }
             }
+            // 扩展三十七：切线增量同样按 primitive 范围搬进整网格形状。
+            // 只有**部分** primitive 给切线时，没给的那段保持 0 —— 与法线通道的
+            // 处理一致（缺通道 = 该段不贡献，而不是整个形状弃用）。
+            if let Some(deltas) = chunk.tangents.get(t) {
+                if !deltas.is_empty() {
+                    has_tangents = true;
+                    for (i, d) in deltas.iter().take(chunk.count).enumerate() {
+                        tangents[chunk.base as usize + i] = *d;
+                    }
+                }
+            }
         }
         let mut target = MorphTarget::new(format!("target{t}"), positions);
         if has_normals {
             target.normals = normals;
+        }
+        if has_tangents {
+            target.tangents = tangents;
         }
         targets.push(target);
     }
@@ -666,9 +684,13 @@ fn import_mesh<'a>(
         // 等全部顶点拼完后按整网格顶点范围对齐（见循环之后的组装）。
         let mut shape_positions: Vec<Vec<[f32; 3]>> = Vec::new();
         let mut shape_normals: Vec<Vec<[f32; 3]>> = Vec::new();
-        for (d_pos, d_nrm, _d_tan) in reader.read_morph_targets() {
+        let mut shape_tangents: Vec<Vec<[f32; 3]>> = Vec::new();
+        // 扩展三十七：第三个通道就是 TANGENT 增量（glTF 规范里是 VEC3，没有手性分量）。
+        // 只给了切线没给位置增量的形状在规范里没有意义，按「位置为空」丢掉整形状。
+        for (d_pos, d_nrm, d_tan) in reader.read_morph_targets() {
             shape_positions.push(d_pos.map(|it| it.collect::<Vec<_>>()).unwrap_or_default());
             shape_normals.push(d_nrm.map(|it| it.collect::<Vec<_>>()).unwrap_or_default());
+            shape_tangents.push(d_tan.map(|it| it.collect::<Vec<_>>()).unwrap_or_default());
         }
         if !shape_positions.is_empty() {
             prim_morphs.push(MorphChunk {
@@ -676,6 +698,7 @@ fn import_mesh<'a>(
                 count: positions.len(),
                 positions: shape_positions,
                 normals: shape_normals,
+                tangents: shape_tangents,
             });
         }
 
