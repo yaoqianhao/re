@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use r3e_core::anim::{AnimClip, AnimTrack};
 use r3e_core::mesh::{MaterialData, MeshData, MeshPartData, TextureImage, Vertex};
+use r3e_core::morph::MorphSet;
 use r3e_core::skin::{SkinData, SkinJoint};
 use r3e_core::texture_slot::{classify_slot, TextureSlot};
 use r3e_core::{Mat4, MeshRef, Vec3, Vec4};
@@ -193,6 +194,12 @@ pub struct MeshAsset {
     pub weights: Vec<[f32; 4]>,
     /// 该网格所用骨骼表在 `AssetEntry::skins` 中的下标（P4）；`None` 为静态网格。
     pub skin: Option<u32>,
+    /// 形变目标（扩展三十六）：glTF `mesh.primitives[].targets` 导入的形状增量。
+    ///
+    /// 增量的**基**就是本网格的 `positions` / `normals`（已换轴、已切线重算），
+    /// 所以这里存的是「相对已变换基」的差值，消费方不需要再做换轴。
+    /// FBX 与 AIR 两条路径暂不产出（`MorphSet::is_empty()`），补齐后此处无需改签名。
+    pub morph: MorphSet,
     /// 源文件侧的原始统计，便于和导入后的 AIR 交叉验证（与格式无关）。
     pub source_vertex_count: usize,
     pub source_face_count: usize,
@@ -263,6 +270,11 @@ impl MeshAsset {
             )
         };
         mesh.recompute_tangents();
+        // 形变目标（扩展三十六）：增量本就基于已换轴的基，直接整体搬运。
+        // 空集时不写，保持 `MeshData::morph` 的默认值不变（旧路径逐字节一致）。
+        if !self.morph.is_empty() {
+            mesh.morph = self.morph.clone();
+        }
         mesh
     }
 
@@ -1415,6 +1427,9 @@ fn extract_mesh(
             weights,
             // 真正下标由 import_fbx 在收集骨骼表时回填
             skin: skin_data.as_ref().map(|_| 0),
+            // FBX 的 blend shape 暂不导入（扩展三十六只打通 glTF 形状）：
+            // 空集即「没有形变」，渲染与脚本侧行为与扩展三十五一致。
+            morph: MorphSet::default(),
             node_local_matrix: world.to_cols_array_2d(),
             source_path: source_path.to_string(),
             source_vertex_count: mesh.num_vertices,

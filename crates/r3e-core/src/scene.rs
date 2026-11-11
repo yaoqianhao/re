@@ -11,6 +11,7 @@ use crate::anim_blend::{
     MAX_ANIM_LAYERS,
 };
 use crate::light::{self, LocalLight};
+use crate::morph::MorphInstance;
 use crate::text::ScreenText;
 use crate::ui::UiElement;
 
@@ -326,6 +327,10 @@ pub struct Scene {
     /// 场景内的蒙皮实例（P4 起）。每个带蒙皮的网格实例一条，每帧由
     /// `update_skinning` 求解关节矩阵，渲染层直接上传。
     pub skins: Vec<SkinInstance>,
+    /// 顶点形变绑定（扩展三十六）。每个带 morph target 的网格实例一条，
+    /// 记录各形状的当前权重；渲染层每帧直接把它写进实例缓冲，
+    /// 形变本身在顶点着色器里完成。顺序与 `skins` 无关。
+    pub morphs: Vec<MorphInstance>,
     /// 2D 屏幕空间文本（M1 文字渲染）。渲染层每帧据此重新排版，是文本的唯一真源。
     /// 顺序即绘制顺序（后画的盖住先画的）。
     pub texts: Vec<ScreenText>,
@@ -387,6 +392,7 @@ impl Scene {
             animations: Vec::new(),
             anim_clips: HashMap::new(),
             skins: Vec::new(),
+            morphs: Vec::new(),
             texts: Vec::new(),
             text_enabled: true,
             ui: Vec::new(),
@@ -602,6 +608,11 @@ impl Scene {
         {
             self.prune_skins();
         }
+
+        // 扩展三十六：形变绑定同样指向网格节点，一并剪掉
+        if !self.morphs.is_empty() && self.morphs.iter().any(|m| m.mesh_node == id) {
+            self.prune_morphs();
+        }
     }
 
     /// 清空所有物件（脚本热重载时用）。
@@ -611,6 +622,8 @@ impl Scene {
         self.name_index.clear();
         // 蒙皮实例全部指向已清空的节点，一并丢弃
         self.skins.clear();
+        // 形变绑定同理
+        self.morphs.clear();
     }
 
     // ---------- 查询 ----------
@@ -772,6 +785,97 @@ impl Scene {
     /// 按网格节点找蒙皮实例。
     pub fn skin_of(&self, mesh_node: NodeId) -> Option<&SkinInstance> {
         self.skins.iter().find(|s| s.mesh_node == mesh_node)
+    }
+
+    // ---------- 顶点形变（扩展三十六） ----------
+
+    /// 登记一条形变绑定（同一网格节点重复登记时覆盖旧权重），返回其下标。
+    ///
+    /// 渲染层每帧从 `Scene::morphs` 取权重写进实例缓冲，因此脚本改权重后
+    /// 下一帧就生效，不需要重建缓冲或重新上传网格。
+    pub fn add_morph(&mut self, morph: MorphInstance) -> usize {
+        if let Some(index) = self
+            .morphs
+            .iter()
+            .position(|m| m.mesh_node == morph.mesh_node)
+        {
+            self.morphs[index] = morph;
+            return index;
+        }
+        self.morphs.push(morph);
+        self.morphs.len() - 1
+    }
+
+    /// 按网格节点找形变绑定。
+    pub fn morph_of(&self, mesh_node: NodeId) -> Option<&MorphInstance> {
+        self.morphs.iter().find(|m| m.mesh_node == mesh_node)
+    }
+
+    /// 按网格节点改一处权重。节点没有绑定、下标越界或权重非有限值都返回 `false`。
+    pub fn set_morph_weight(&mut self, mesh_node: NodeId, index: usize, weight: f32) -> bool {
+        match self.morphs.iter_mut().find(|m| m.mesh_node == mesh_node) {
+            Some(morph) => morph.set_weight(index, weight),
+            None => false,
+        }
+    }
+
+    /// 按物件名改一处权重（脚本侧便利入口）。
+    pub fn set_morph_weight_by_name(&mut self, name: &str, index: usize, weight: f32) -> bool {
+        let Some(node) = self.find_id(name) else {
+            return false;
+        };
+        self.set_morph_weight(node, index, weight)
+    }
+
+    /// 把某个物件名下的全部形变权重清零。返回是否真的找到并清过。
+    pub fn reset_morph(&mut self, name: &str) -> bool {
+        let Some(node) = self.find_id(name) else {
+            return false;
+        };
+        match self.morphs.iter_mut().find(|m| m.mesh_node == node) {
+            Some(morph) => {
+                morph.reset();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 按物件名登记形变绑定（脚本侧便利入口）。
+    ///
+    /// `target_count` 是该网格实际存在的形状数，权重只对前这么多个分量有意义；
+    /// 传 0 表示「这个网格没有形状」，此时不建绑定、直接返回 `false`。
+    /// 已存在的绑定会被覆盖，权重回到全 0。
+    pub fn bind_morph_by_name(&mut self, name: &str, target_count: usize) -> bool {
+        let Some(node) = self.find_id(name) else {
+            return false;
+        };
+        if target_count == 0 {
+            return false;
+        }
+        self.add_morph(MorphInstance::new(node, target_count));
+        true
+    }
+
+    /// 按物件名读一处权重；没有绑定或下标越界时返回 `None`。
+    pub fn morph_weight_by_name(&self, name: &str, index: usize) -> Option<f32> {
+        let node = self.find_id(name)?;
+        self.morph_of(node)?.weight_of(index)
+    }
+
+    /// 按物件名的绑定形状数；没有绑定返回 `None`。
+    pub fn morph_target_count(&self, name: &str) -> Option<usize> {
+        let node = self.find_id(name)?;
+        self.morph_of(node).map(|m| m.target_count)
+    }
+
+    /// 丢弃指向已删除节点的形变绑定（与 `prune_skins` 同策）。
+    pub fn prune_morphs(&mut self) {
+        if self.morphs.is_empty() {
+            return;
+        }
+        self.morphs
+            .retain(|m| self.nodes.contains_key(&m.mesh_node));
     }
 
     /// 只沿局部链求 `anchor⁻¹ · joint`（不经过任何世界矩阵）。

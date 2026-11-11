@@ -54,7 +54,7 @@ impl UploadPlan {
 /// 比较上一帧影子与本次记录数组，算出需要上传的脏段。
 ///
 /// * `prev` / `next`：同一记录布局的原始字节视图，长度不等即视为没有可比基线；
-/// * `record`：单条记录的字节数（`std::mem::size_of::<InstanceRaw>()`，96）；
+/// * `record`：单条记录的字节数（`std::mem::size_of::<InstanceRaw>()`，112）；
 /// * 记录之间用整段切片比较（`memcmp` 语义），因此 NaN / `-0.0` 这类
 ///   位模式差异不会被误判成「没变」—— 位不同就算脏，宁多传不漏传。
 pub fn plan_upload(
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn ninety_six_byte_records_align_correctly() {
-        // 真实 InstanceRaw 是 96 字节：只有第 1 条的第 90 字节变了，也必须定位到第 1 条
+        // 真实 InstanceRaw 是 112 字节：只有第 1 条的第 90 字节变了，也必须定位到第 1 条
         let mut prev = vec![0u8; 96 * 3];
         let mut next = prev.clone();
         prev[96 + 90] = 0;

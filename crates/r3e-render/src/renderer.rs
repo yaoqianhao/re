@@ -40,6 +40,17 @@ pub const MSAA_SAMPLE_COUNT: u32 = 4;
 /// 蒙皮网格做视锥剔除时的包围盒外扩比例：动画形变会超出静止姿态的 AABB。
 const SKIN_CULL_MARGIN: f32 = 0.25;
 
+/// 世界矩阵三条轴的缩放模长最大值。
+///
+/// 形变外扩（扩展三十六）按它把「局部空间的位移」换算到世界空间。非等比缩放取最大值：
+/// 宁可盒算大一点多画一个物件，也不能因为某条轴缩放小就把它剔掉。
+fn max_axis_scale(world: &glam::Mat4) -> f32 {
+    let x = world.x_axis.truncate().length();
+    let y = world.y_axis.truncate().length();
+    let z = world.z_axis.truncate().length();
+    x.max(y).max(z)
+}
+
 /// 材质键：默认材质，或「某资产内第 N 个材质」，可再叠加「物件级 PBR 覆盖」。
 ///
 /// 渲染层只认这个键，具体材质参数通过 `MeshProvider::material` 取，
@@ -404,7 +415,59 @@ pub struct GpuMesh {
     /// 材质分区（P2 起）。至少一段；无材质信息时是整网格一段的 `Default`。
     /// 各段 `index_count` 之和即本网格的三角形索引总数。
     parts: Vec<GpuPart>,
+    /// 扩展三十六：该网格在全局形变表里的位置（无形状为 `None`）。
+    morph: Option<MeshMorph>,
 }
+
+/// 一个网格在全局形变表（`MeshCache::morph_table`）里的登记信息。
+///
+/// 表是**所有网格共用**的一块扁平 `f32` 数组，每形状内按顶点紧密排列、
+/// 每顶点 6 个 f32。实例缓冲只带这三个数，着色器就能自己算下标：
+///
+/// ```text
+/// 顶点 v 的形状 t 位置增量 = table[base + t * stride + v * 6 .. +3]
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct MeshMorph {
+    /// 表内起点（浮点下标）。
+    pub base: u32,
+    /// 每个形状占多少浮点（= 顶点数 × 6）。
+    pub stride: u32,
+    /// 可用形状数（≤ `MAX_MORPH_TARGETS`）。
+    pub count: u32,
+    /// 权重推到 1.0 时任意顶点的**最大位移长度**（详见 [`MeshMorph::cull_inflate`]）。
+    ///
+    /// 视锥 / 遮挡剔除用的是静止姿态 AABB，而形变会把顶点推到盒外——和蒙皮同一个坑。
+    /// 蒙皮可以按比例外扩（[`SKIN_CULL_MARGIN`]），形变不行：位移量是资产说了算的绝对值，
+    /// 与网格尺寸无关（一个 0.1 m 的眼球可以有 0.05 m 的表情位移）。
+    pub max_displacement: f32,
+}
+
+impl MeshMorph {
+    /// 剔除前要给世界包围盒外扩多少（世界单位）。
+    ///
+    /// `peak_weight` 取当前各形状权重的绝对值最大值 —— 权重**不做 clamp**（夸张表情
+    /// 可以写 2.0，反向表情可以写负值），所以外扩量必须按当前值算，不能写死 1.0。
+    /// `scale` 取实例世界矩阵三条轴的缩放模长最大值（非等比缩放下要按最大那条算）。
+    pub fn cull_inflate(&self, peak_weight: f32, scale: f32) -> f32 {
+        // 取绝对值：位移方向可能与 +Z 相反，但盒要往两边撑一样多。
+        let peak_weight = peak_weight.abs();
+        if !self.max_displacement.is_finite()
+            || !scale.is_finite()
+            || self.max_displacement <= 0.0
+            || peak_weight <= 0.0
+            || scale <= 0.0
+        {
+            return 0.0;
+        }
+        self.max_displacement * peak_weight * scale
+    }
+}
+
+/// 全局形变表的容量上限（浮点数）。1 MiB 的 storage buffer：
+/// 够放约 4.3 万个「四形状 × 单顶点」的极小网格，实际表情资产远低于此。
+/// 固定容量（不随内容增长重建）换取「绑定组只需建一次」。
+pub const MAX_MORPH_TABLE_FLOATS: usize = 1 << 18;
 
 /// GPU 侧的一个材质分区。
 #[derive(Debug, Clone, Copy)]
@@ -484,6 +547,14 @@ pub struct MeshCache {
     provider: Arc<dyn MeshProvider>,
     /// 已注入的资产层（`None` 表示尚未加载任何外部资产）。
     assets: Option<Arc<dyn MeshProvider>>,
+    /// 扩展三十六：全局形变增量表，所有带 morph 的网格共用。
+    ///
+    /// 只在这里累积、不清段：`ensure` 每次上传新网格时把它的形状追加到尾部，
+    /// 各网格的 `MeshMorph.base` 因此保持稳定；`set_library` 整表清空并 `bump` 版本，
+    /// 渲染层看到版本变化就重传一次（表只有几百 KiB，重传远比维护脏段便宜）。
+    morph_table: Vec<f32>,
+    /// 表内容的版本号。渲染层拿它和「已传上 GPU 的版本」比，不等才重传。
+    morph_version: u64,
 }
 
 impl Default for MeshCache {
@@ -500,6 +571,8 @@ impl MeshCache {
             bounds: HashMap::new(),
             provider: Arc::new(ProceduralProvider::new()),
             assets: None,
+            morph_table: Vec::new(),
+            morph_version: 0,
         }
     }
 
@@ -526,6 +599,76 @@ impl MeshCache {
         // 代价只是几个内置图元的顶点数据重传（微秒级），换来零来源分支。
         self.meshes.clear();
         self.bounds.clear();
+        // 扩展三十六：形变表同样整表作废 —— 旧 `MeshMorph.base` 指向的增量
+        // 属于被丢弃的资产，继续留着只会让新网格读到别人的形状。
+        self.morph_table.clear();
+        self.morph_version = self.morph_version.wrapping_add(1);
+    }
+
+    /// 全局形变增量表（扁平 `f32`，布局见 [`MeshMorph`]）。
+    pub fn morph_table(&self) -> &[f32] {
+        &self.morph_table
+    }
+
+    /// 表内容版本号：变化即代表 GPU 侧那份副本已过期。
+    pub fn morph_version(&self) -> u64 {
+        self.morph_version
+    }
+
+    /// 某网格的形变登记（无形状 / 校验未过时为 `None`）。
+    pub fn morph_of(&self, key: MeshRef) -> Option<MeshMorph> {
+        self.meshes.get(&key).and_then(|mesh| mesh.morph)
+    }
+
+    /// 把网格的形状追加进全局表，返回登记信息。
+    ///
+    /// 三道闸门，任何一道不过都按「没有形变」处理（绝不让错长度 / 非有限的增量
+    /// 进缓冲 —— GPU 上越界读是未定义行为，不是 panic）：
+    ///
+    /// 1. `validate_against(网格顶点数)` —— 长度不等或含 NaN；
+    /// 2. 只取前 `MAX_MORPH_TARGETS` 个形状（每实例只有一个 `vec4` 权重）；
+    /// 3. 表容量上限（[`MAX_MORPH_TABLE_FLOATS`]）。
+    fn register_morph(&mut self, data: &MeshData) -> Option<MeshMorph> {
+        if data.morph.is_empty() {
+            return None;
+        }
+        if let Err(issue) = data.morph.validate_against(data.vertices.len()) {
+            log::warn!("网格形变数据不可用（{issue}），按无形变处理");
+            return None;
+        }
+        let count = data.morph.len().min(r3e_core::MAX_MORPH_TARGETS);
+        let (flat, stride) = data.morph.flatten_limited(count);
+        if stride == 0 || flat.is_empty() {
+            return None;
+        }
+        if self.morph_table.len() + flat.len() > MAX_MORPH_TABLE_FLOATS {
+            log::warn!(
+                "形变表已满（{} + {} > {MAX_MORPH_TABLE_FLOATS}），该网格按无形变处理",
+                self.morph_table.len(),
+                flat.len()
+            );
+            return None;
+        }
+        let base = self.morph_table.len() as u32;
+        self.morph_table.extend_from_slice(&flat);
+        self.morph_version = self.morph_version.wrapping_add(1);
+        // 剔除余量要在登记期一次算定：每帧遍历全部顶点不划算，而增量是静态的。
+        // 位置增量的模长最大值 × 权重峰值 × 世界缩放 = 顶点可能跑出静止 AABB 的距离。
+        let max_displacement = data
+            .morph
+            .targets
+            .iter()
+            .take(count)
+            .flat_map(|target| target.positions.iter())
+            .fold(0.0f32, |acc, delta| {
+                acc.max((delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt())
+            });
+        Some(MeshMorph {
+            base,
+            stride: stride as u32,
+            count: count as u32,
+            max_displacement,
+        })
     }
 
     /// 当前的数据来源（分层后的组合提供者）。材质 / 贴图也经它取。
@@ -621,7 +764,12 @@ impl MeshCache {
             })
             .collect();
 
-        let gpu = upload_mesh(device, queue, &data, parts);
+        let gpu = {
+            let mut gpu = upload_mesh(device, queue, &data, parts);
+            // 扩展三十六：形状增量进全局表（校验不过 / 表满时返回 None）
+            gpu.morph = self.register_morph(&data);
+            gpu
+        };
         log::debug!(
             "网格已上传 GPU: {key:?} — {} 顶点 / {} 三角",
             data.vertices.len(),
@@ -805,6 +953,14 @@ pub struct RenderStats {
     /// 扩展三十五：暂存环（持久暂存 + 多帧飞行）的读数。脏段数据先打包进
     /// 一块 CPU 暂存区、一帧只调一次 `write_buffer`，再由编码器按段块拷贝。
     pub upload_staging: StagingStats,
+    /// 扩展三十六：本帧形变表规模（浮点数）。0 = 场景里没有带形状的网格。
+    pub morph_floats: u64,
+    /// 扩展三十六：累计整表重传次数。稳态下应停止增长 —— 逐帧增长说明
+    /// `MeshCache` 在每帧重传网格（版本号被无意义地推进）。
+    pub morph_uploads: u64,
+    /// 本帧带形变且权重非零的实例数（着色器 `morph_offset` 真正被执行的实例）。
+    /// 0 = 所有实例都没设权重 / 网格没有形状，顶点路径与扩展三十五逐位相同。
+    pub morph_instances: u32,
 }
 
 /// 扩展三十五：块拷贝的目标缓冲。
@@ -1116,6 +1272,16 @@ pub struct Renderer {
     /// `MAX_JOINT_MATRICES` 个 mat4，约 256 KiB）。
     joint_buffer: wgpu::Buffer,
     joint_bind_group: wgpu::BindGroup,
+    /// 扩展三十六：全体网格共用的形变增量表（与关节同组，binding 1）。
+    /// 容量固定（[`MAX_MORPH_TABLE_FLOATS`]），内容随 `MeshCache::morph_version` 变化重写。
+    morph_buffer: wgpu::Buffer,
+    /// 已传上 GPU 的表版本。与缓存版本不等才重写 —— 静态场景下这里一帧零开销。
+    morph_uploaded_version: u64,
+    /// 重写中转：先拷进这里再 `write_buffer`，避免每次借用冲突与临时分配。
+    morph_scratch: Vec<f32>,
+    /// 形变表累计上传次数与当前规模，进 `RenderStats`。
+    morph_uploads: u64,
+    morph_floats: u64,
     /// 每帧收集的关节矩阵，扁平存 16 个 f32 / 矩阵，直接 memcpy 上传。
     joint_scratch: Vec<[f32; 16]>,
     /// 扩展三十二：**上一帧真正传上 GPU 的关节矩阵**的影子副本。
@@ -1263,6 +1429,9 @@ struct InstancePlan {
     cull_instance_tests: u32,
     cull_pruned: u32,
     cull_branch_pruned: u32,
+    /// 扩展三十六：本帧真正被形变的实例数（网格带形状 + 权重非零）。
+    /// 进 `RenderStats::morph_instances`；0 表示顶点路径与扩展三十五逐位相同。
+    morph_instances: u32,
 }
 
 /// 一次阴影提交的实例区间：`(groups 下标, 实例缓冲区间)`。
@@ -1410,19 +1579,32 @@ impl Renderer {
 
         let material_cache = MaterialCache::new(&device, &queue);
 
-        // P4：group(2) —— 关节矩阵 storage buffer，所有蒙皮实例共用一段连续槽位
+        // P4：group(2) —— 关节矩阵 storage buffer，所有蒙皮实例共用一段连续槽位。
+        // 扩展三十六：同一组里追加 binding(1) 的形变增量表，两条都是只读 storage。
         let joint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("r3e-joint-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let joint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1432,13 +1614,27 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        // 扩展三十六：形变增量表。容量固定 → 绑定组只建一次，内容变了就整表重写。
+        let morph_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("r3e-morph-buffer"),
+            size: (MAX_MORPH_TABLE_FLOATS * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let joint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("r3e-joint-bg"),
             layout: &joint_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: joint_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: joint_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: morph_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         // 阶段 D：group(3) —— 方向光阴影贴图。布局与纹理在管线之前建好，
@@ -1875,6 +2071,12 @@ impl Renderer {
             instance_upload_resets: 0,
             joint_buffer,
             joint_bind_group,
+            morph_buffer,
+            // 0 = 与空缓存同版本：首帧没有形变表可传，等第一个带 morph 的网格出现再传
+            morph_uploaded_version: 0,
+            morph_scratch: Vec::new(),
+            morph_uploads: 0,
+            morph_floats: 0,
             joint_scratch: Vec::new(),
             // 首帧没有关节影子：第一次有蒙皮时自然走全量
             joint_shadow: Vec::new(),
@@ -2185,10 +2387,14 @@ impl Renderer {
         self.occlusion.begin_frame(&self.device, occlusion_settings);
         // 扩展三十五：本帧暂存写入计数归零（`prepare_instances` 里攒包、`flush` 落槽）
         self.staging.begin_frame();
+        // 扩展三十六：形变表有变动（新网格带形状 / 换资产库）就整表重写一次
+        self.upload_morph_table();
         let plan = self.prepare_instances(scene);
         let groups = plan.groups;
         let transparent_start = plan.transparent_start;
         let (culled, cull_unknown) = (plan.culled, plan.cull_unknown);
+        // 扩展三十六：形变计数在上传前定型，这里先取出来（plan 后面会按字段消费）
+        let morph_instances = plan.morph_instances;
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         // 扩展二十四：多带一份「每级保留哪些实例」的掩码
@@ -2379,6 +2585,11 @@ impl Renderer {
                 joint_upload: self.joint_upload,
                 // 扩展三十五：暂存环（一帧一次写入 + 多帧飞行）的累计读数
                 upload_staging: self.staging.snapshot(),
+                // 扩展三十六：形变表规模与累计重传次数
+                morph_floats: self.morph_floats,
+                morph_uploads: self.morph_uploads,
+                // 扩展三十六：真正参与形变的实例数（权重非零且网格带形状）
+                morph_instances,
             };
         }
 
@@ -3233,6 +3444,8 @@ impl Renderer {
         let mut buckets: HashMap<(MeshRef, Option<SurfaceKey>, bool), Vec<u32>> = HashMap::new();
         // 全部待摊平实例，按场景迭代顺序；桶里只存下标，两段共享同一份实例数据
         let mut staged_all: Vec<StagedInstance> = Vec::new();
+        // 扩展三十六：本帧被形变的实例数（网格带形状 + 权重非零）
+        let mut morph_instances = 0u32;
 
         // 一个待摊平实例：实例数据 + 阴影用包围盒 + 归属节点 + 半透明排序深度
         struct StagedInstance {
@@ -3310,6 +3523,27 @@ impl Renderer {
                         world.inflate_relative(SKIN_CULL_MARGIN)
                     } else {
                         world
+                    };
+                    // 扩展三十六：形变同理，但外扩量是绝对值 —— 位置增量的模长 × 当前
+                    // 权重峰值 × 实例最大轴向缩放。权重为 0（不播放表情）时外扩为 0，
+                    // 不吃任何额外代价；表情越夸张盒越大，屏幕上就不会「笑着消失」。
+                    let world = match (self.mesh_cache.morph_of(node.mesh), scene.morph_of(node.id))
+                    {
+                        (Some(morph), Some(instance)) if morph.max_displacement > 0.0 => {
+                            let peak = instance.weights.iter().fold(0.0f32, |acc, w| {
+                                if w.is_finite() {
+                                    acc.max(w.abs())
+                                } else {
+                                    acc
+                                }
+                            });
+                            match peak {
+                                0.0 => world,
+                                _ => world
+                                    .inflate(morph.cull_inflate(peak, max_axis_scale(&node.world))),
+                            }
+                        }
+                        _ => world,
                     };
                     scene_bounds = Some(match scene_bounds {
                         Some(b) => b.union(&world),
@@ -3464,11 +3698,26 @@ impl Renderer {
                 }
                 _ => 0,
             };
+            let morph = self.mesh_cache.morph_of(key.0);
+            // 扩展三十六：只有「网格真有形状」且「实例至少有非零权重」时才计入，
+            // 否则着色器不会进形变分支，顶点输出与扩展三十五逐位相同。
+            let morph_weights = match scene.morph_of(item.id) {
+                Some(m) => m.weights,
+                None => [0.0; 4],
+            };
+            if morph.is_some_and(|m| m.count > 0) && morph_weights.iter().any(|w| *w != 0.0) {
+                morph_instances += 1;
+            }
             let instance = InstanceRaw {
                 model: item.world_matrix.to_cols_array_2d(),
                 color: color.to_array(),
                 joint_base,
-                _pad: [0; 3],
+                // 扩展三十六：形变登记（无形状时全 0，着色器看 morph_count = 0 直接跳过）
+                morph_base: morph.map_or(0, |m| m.base),
+                morph_stride: morph.map_or(0, |m| m.stride),
+                morph_count: morph.map_or(0, |m| m.count),
+                // 权重直接把场景里的四分量搬过来；场景没登记形变时全 0
+                morph_weights,
             };
             // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
             let depth =
@@ -3617,6 +3866,7 @@ impl Renderer {
                 cull_instance_tests,
                 cull_pruned,
                 cull_branch_pruned,
+                morph_instances,
             };
         }
 
@@ -3663,7 +3913,38 @@ impl Renderer {
             cull_instance_tests,
             cull_pruned,
             cull_branch_pruned,
+            morph_instances,
         }
+    }
+
+    /// 扩展三十六：把形变表推到 GPU（仅当缓存版本与已上传版本不一致）。
+    ///
+    /// 不做脏段：表只有「新增网格」时才变，而新增一次就是几百 KiB 的整段写 ——
+    /// 比维护影子副本 + 逐段比对更省。版本号相等时本函数退化为一次整数比较，
+    /// 静态场景下每帧零开销、零上传。
+    fn upload_morph_table(&mut self) {
+        let version = self.mesh_cache.morph_version();
+        if version == self.morph_uploaded_version {
+            return;
+        }
+        // 借用分两步：先把内容搬进自有中转，再拿中转去写缓冲
+        self.morph_scratch.clear();
+        self.morph_scratch
+            .extend_from_slice(self.mesh_cache.morph_table());
+        self.morph_floats = self.morph_scratch.len() as u64;
+        if !self.morph_scratch.is_empty() {
+            self.queue.write_buffer(
+                &self.morph_buffer,
+                0,
+                bytemuck::cast_slice(&self.morph_scratch),
+            );
+        }
+        self.morph_uploaded_version = version;
+        self.morph_uploads += 1;
+        log::debug!(
+            "形变表已上传（版本 {version}）：{} 个 float",
+            self.morph_scratch.len()
+        );
     }
 
     /// 扩展三十一：把本帧实例记录按脏段传上 GPU，并刷新影子副本。
@@ -3721,7 +4002,7 @@ impl Renderer {
 
     /// 扩展三十二：把本帧关节矩阵按脏段传上 GPU，并刷新影子副本。
     ///
-    /// 与实例路径共用同一套 `plan_upload`，只把「记录」从 `InstanceRaw`（96 B）
+    /// 与实例路径共用同一套 `plan_upload`，只把「记录」从 `InstanceRaw`（112 B）
     /// 换成 `mat4`（64 B）：空洞合并（`MERGE_GAP`）与段数上限（`MAX_RANGES`）
     /// 沿用同一个启发式，因为二者对 `write_buffer` 调用次数同样敏感。
     ///
@@ -3849,6 +4130,9 @@ fn upload_mesh(
         vertex_buffer,
         index_buffer,
         parts,
+        // 形变登记要往全局表里追加，只能由 `MeshCache::ensure` 在拿到 `&mut self`
+        // 之后填，`upload_mesh` 这个自由函数不认识缓存。
+        morph: None,
     }
 }
 
@@ -4587,4 +4871,143 @@ fn create_depth_target(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+#[cfg(test)]
+mod morph_table_tests {
+    use super::*;
+    use r3e_core::morph::{MorphSet, MorphTarget};
+
+    /// 造一个 `vertices` 个顶点的网格数据，挂 `targets` 个形状（形状增量全为 +1）。
+    fn mesh_with(vertices: usize, targets: usize) -> MeshData {
+        let verts = vec![r3e_core::Vertex::default(); vertices];
+        let indices: Vec<u32> = (0..vertices as u32).collect();
+        let shapes: Vec<MorphTarget> = (0..targets)
+            .map(|t| MorphTarget::new(format!("shape{t}"), vec![[1.0, 0.0, 0.0]; vertices]))
+            .collect();
+        MeshData::new(verts, indices).with_morph(MorphSet::new(shapes))
+    }
+
+    /// 两个网格顺排：`base` 指向各自第一段，`stride` = 顶点数 × 6。
+    #[test]
+    fn bases_are_laid_out_back_to_back() {
+        let mut cache = MeshCache::new();
+        let a = cache
+            .register_morph(&mesh_with(4, 1))
+            .expect("四边形应可登记");
+        assert_eq!((a.base, a.stride, a.count), (0, 24, 1), "4 顶点 × 6 分量");
+
+        let b = cache
+            .register_morph(&mesh_with(3, 2))
+            .expect("三顶点应可登记");
+        assert_eq!((b.base, b.stride, b.count), (24, 18, 2), "接在 A 之后");
+        assert_eq!(
+            cache.morph_table().len(),
+            24 + 36,
+            "两个形状各占 18 个 float"
+        );
+        assert_eq!(cache.morph_table()[24], 1.0, "B 的第一段是 B 第一个形状");
+        assert_eq!(cache.morph_version(), 2, "每次登记都让版本前进");
+    }
+
+    /// 增量长度与顶点数对不上时按无形变处理，表与版本都不许变。
+    #[test]
+    fn mismatched_length_is_rejected_without_touching_table() {
+        let mut cache = MeshCache::new();
+        let ok = mesh_with(4, 1);
+        cache.register_morph(&ok);
+
+        let mut bad = mesh_with(4, 1);
+        bad.morph = MorphSet::new(vec![MorphTarget::new("bad", vec![[1.0, 0.0, 0.0]; 3])]);
+        assert!(
+            cache.register_morph(&bad).is_none(),
+            "长度不等必须被拒，否则 GPU 上会越界读"
+        );
+        assert_eq!(cache.morph_table().len(), 24, "被拒的网格不进表");
+        assert_eq!(cache.morph_version(), 1, "被拒的网格不动版本号");
+    }
+
+    /// 形状数超上限只取前 `MAX_MORPH_TARGETS` 个：每实例只有一个 vec4 权重。
+    #[test]
+    fn target_count_is_capped_at_max() {
+        let mut cache = MeshCache::new();
+        let morph = cache
+            .register_morph(&mesh_with(2, r3e_core::MAX_MORPH_TARGETS + 3))
+            .expect("超量形状应被截断而不是整份拒绝");
+        assert_eq!(morph.count as usize, r3e_core::MAX_MORPH_TARGETS);
+        assert_eq!(cache.morph_table().len(), 12 * r3e_core::MAX_MORPH_TARGETS);
+    }
+
+    /// 表容量满了之后，新网格降级为「无形变」，已经在表里的网格不受影响。
+    #[test]
+    fn table_capacity_falls_back_to_no_morph() {
+        let mut small = MeshCache::new();
+        small.morph_table = vec![0.0; MAX_MORPH_TABLE_FLOATS - 12];
+        assert!(small.register_morph(&mesh_with(2, 1)).is_some());
+        assert_eq!(small.morph_table().len(), MAX_MORPH_TABLE_FLOATS);
+        assert!(
+            small.register_morph(&mesh_with(2, 1)).is_none(),
+            "再塞就超容量，必须按无形变处理"
+        );
+        assert_eq!(
+            small.morph_table().len(),
+            MAX_MORPH_TABLE_FLOATS,
+            "不许扩容"
+        );
+    }
+
+    /// 换资产库时整表作废：旧 `base` 指向的增量属于已丢弃的资产。
+    #[test]
+    fn swapping_library_clears_table_and_bumps_version() {
+        let mut cache = MeshCache::new();
+        cache.register_morph(&mesh_with(4, 1));
+        let before = cache.morph_version();
+
+        cache.set_library(Arc::new(r3e_core::ProceduralProvider::new()));
+        assert!(cache.morph_table().is_empty(), "旧增量必须清空");
+        assert_ne!(cache.morph_version(), before, "版本要变，让渲染层重传");
+    }
+
+    /// 剔除余量取「位置增量里最长的那个」，法线增量不参与 —— 它不影响几何边界。
+    #[test]
+    fn max_displacement_is_the_longest_position_delta() {
+        let mut cache = MeshCache::new();
+        let verts = vec![r3e_core::Vertex::default(); 3];
+        let mut shape = MorphTarget::new(
+            "jaw",
+            vec![[3.0, 4.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        );
+        // 法线增量故意写得比位置长：若被算进去，余量会虚高到 10
+        shape = shape.with_normals(vec![[0.0, 0.0, 10.0]; 3]);
+        let data = MeshData::new(verts, vec![0, 1, 2]).with_morph(MorphSet::new(vec![shape]));
+
+        let morph = cache.register_morph(&data).expect("合法形状应登记");
+        assert!(
+            (morph.max_displacement - 5.0).abs() < 1e-5,
+            "应为 (3,4,0) 的模长 5，实际 {}",
+            morph.max_displacement
+        );
+    }
+
+    /// 余量随权重峰值与缩放线性放大，权重 0 时严格为 0（不播放表情就不吃额外代价）。
+    #[test]
+    fn cull_inflate_follows_weight_peak_and_scale() {
+        let morph = MeshMorph {
+            base: 0,
+            stride: 18,
+            count: 1,
+            max_displacement: 2.0,
+        };
+        assert_eq!(morph.cull_inflate(0.0, 1.0), 0.0, "权重 0 不外扩");
+        assert_eq!(morph.cull_inflate(1.0, 1.0), 2.0);
+        // 权重不做 clamp：夸张表情写 2.0、反向表情写负值都要按绝对值算
+        assert_eq!(morph.cull_inflate(2.0, 1.0), 4.0);
+        assert_eq!(morph.cull_inflate(-2.0, 1.0), 4.0);
+        assert_eq!(
+            morph.cull_inflate(1.0, 3.0),
+            6.0,
+            "实例放大 3 倍，位移也放大"
+        );
+        assert_eq!(morph.cull_inflate(1.0, 0.0), 0.0, "零缩放实例不外扩");
+    }
 }

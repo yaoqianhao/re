@@ -6,7 +6,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
 
-use crate::{aabb::Aabb, AssetId, MeshRef};
+use crate::{aabb::Aabb, morph::MorphSet, AssetId, MeshRef};
 
 /// 缺省切线：`+X` 方向、手性 +1（表示「尚未按 UV 计算过切线」）。
 pub const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -117,11 +117,31 @@ impl Vertex {
 pub struct MeshData {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    /// 扩展三十六：顶点形变形状（表情 / 口型）。空表示该网格没有 morph 能力。
+    ///
+    /// 与 `vertices` 共享顶点下标空间，长度必须等于 `vertices.len()` ——
+    /// 渲染层上传前会按这个数校验，不通过就当没有形状（见 [`MorphSet::validate_against`]）。
+    pub morph: MorphSet,
 }
 
 impl MeshData {
     pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>) -> Self {
-        Self { vertices, indices }
+        Self {
+            vertices,
+            indices,
+            morph: MorphSet::default(),
+        }
+    }
+
+    /// 挂上一组形变形状（链式）。
+    pub fn with_morph(mut self, morph: MorphSet) -> Self {
+        self.morph = morph;
+        self
+    }
+
+    /// 是否带形变形状。
+    pub fn has_morph(&self) -> bool {
+        !self.morph.is_empty()
     }
 
     /// 由「位置 / 法线 / UV（可选）」三组平行数组拼装顶点。
@@ -139,7 +159,11 @@ impl MeshData {
             let uv = uvs.and_then(|u| u.get(i).copied()).unwrap_or([0.0, 0.0]);
             vertices.push(Vertex::new(*pos, *nrm, uv));
         }
-        Self { vertices, indices }
+        Self {
+            vertices,
+            indices,
+            morph: MorphSet::default(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -167,7 +191,11 @@ impl MeshData {
             let normal = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
             vertices.push(Vertex::skinned(*pos, normal, uv, j, w));
         }
-        Self { vertices, indices }
+        Self {
+            vertices,
+            indices,
+            morph: MorphSet::default(),
+        }
     }
 
     pub fn vertex_count(&self) -> usize {

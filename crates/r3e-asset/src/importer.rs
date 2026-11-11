@@ -265,6 +265,7 @@ mod tests {
             joints: vec![[0; 4]; 3],
             weights: vec![[0.0; 4]; 3],
             skin: None,
+            morph: r3e_core::morph::MorphSet::default(),
             source_vertex_count: 3,
             source_face_count: 1,
             source_triangle_count: 1,

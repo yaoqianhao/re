@@ -1,4 +1,4 @@
-﻿//! r3e-core —— 引擎内核：数学、变换、场景图与生命周期。
+//! r3e-core —— 引擎内核：数学、变换、场景图与生命周期。
 //!
 //! 该 crate 不依赖任何图形 API，可被渲染层、物理层、脚本层同时复用。
 
@@ -15,6 +15,7 @@ pub mod input;
 pub mod light;
 pub mod material;
 pub mod mesh;
+pub mod morph;
 pub mod node;
 pub mod occlusion;
 pub mod pick;
@@ -79,6 +80,7 @@ pub use material::{
 pub use mesh::{
     MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex, DEFAULT_TANGENT,
 };
+pub use morph::{MorphInstance, MorphIssue, MorphSet, MorphTarget, MAX_MORPH_TARGETS};
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use occlusion::{
     plan_occlusion, project_aabb, test_aabb, DepthPyramid, OcclusionCullPlan, OcclusionSettings,

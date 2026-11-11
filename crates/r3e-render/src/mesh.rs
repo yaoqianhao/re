@@ -31,7 +31,8 @@ pub fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// 单个实例的模型矩阵与颜色。作为第二个顶点缓冲（step_mode = Instance）上传。
+/// 单个实例的模型矩阵、颜色、蒙皮槽位与形变权重。作为第二个顶点缓冲
+/// （step_mode = Instance）上传，总长 112 字节。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceRaw {
@@ -40,18 +41,25 @@ pub struct InstanceRaw {
     /// 蒙皮关节矩阵在本帧 storage buffer 中的起始槽位；非蒙皮实例填 0
     /// （此时顶点权重全 0，着色器不会读该槽位，见 `shader.wgsl`）。
     pub joint_base: u32,
-    /// 填充，保持 16 字节对齐（InstanceRaw 总长 96 字节）。
-    pub _pad: [u32; 3],
+    /// 扩展三十六：本实例的形变数据在全局 morph table 中的起始下标（**浮点数**，不是顶点）。
+    pub morph_base: u32,
+    /// 每个形状占多少个浮点（= 顶点数 × 6：位置增量 xyz + 法线增量 xyz）。
+    pub morph_stride: u32,
+    /// 可用形状数，夹到 [`r3e_core::MAX_MORPH_TARGETS`]；0 表示不做形变。
+    pub morph_count: u32,
+    /// 各形状权重，与 `morph_count` 一起进 `morph_offset`。
+    pub morph_weights: [f32; 4],
 }
 
 impl InstanceRaw {
-    pub const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
         5 => Float32x4,
         6 => Float32x4,
         7 => Float32x4,
         8 => Float32x4,
         9 => Float32x4,
-        10 => Uint32
+        10 => Uint32x4,
+        12 => Float32x4
     ];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -59,6 +67,19 @@ impl InstanceRaw {
             array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &Self::ATTRIBUTES,
+        }
+    }
+
+    /// 没有形变的实例（绝大多数）。
+    pub fn plain(model: [[f32; 4]; 4], color: [f32; 4], joint_base: u32) -> Self {
+        Self {
+            model,
+            color,
+            joint_base,
+            morph_base: 0,
+            morph_stride: 0,
+            morph_count: 0,
+            morph_weights: [0.0; 4],
         }
     }
 }
@@ -124,11 +145,47 @@ mod tests {
             layout.array_stride as usize,
             std::mem::size_of::<InstanceRaw>()
         );
-        assert_eq!(layout.array_stride, 96);
-        assert_eq!(layout.attributes.len(), 6);
+        assert_eq!(layout.array_stride, 112);
+        assert_eq!(layout.attributes.len(), 7);
         assert_eq!(layout.attributes[5].shader_location, 10);
-        assert_eq!(layout.attributes[5].format, wgpu::VertexFormat::Uint32);
+        assert_eq!(layout.attributes[5].format, wgpu::VertexFormat::Uint32x4);
         assert_eq!(layout.attributes[5].offset, 80);
+    }
+
+    /// 扩展三十六：形变权重跟在实例元数据之后（location 12，offset 96），
+    /// 正好填满 stride，不留悬空字节；也不与顶点布局的 location 撞号。
+    #[test]
+    fn instance_layout_carries_morph_weights() {
+        let layout = InstanceRaw::layout();
+        let weights = layout
+            .attributes
+            .iter()
+            .find(|a| a.shader_location == 12)
+            .expect("形变权重属性缺失");
+        assert_eq!(weights.format, wgpu::VertexFormat::Float32x4);
+        assert_eq!(weights.offset, 96, "紧跟 meta（80 + 16）");
+        assert_eq!(weights.offset + 16, layout.array_stride);
+
+        let vertex_locs: Vec<u32> = VERTEX_ATTRIBUTES
+            .iter()
+            .map(|a| a.shader_location)
+            .collect();
+        assert!(
+            !vertex_locs.contains(&12),
+            "实例属性 location 12 不得被顶点属性占用"
+        );
+    }
+
+    /// `plain` 构造出的是「无蒙皮偏移 + 无形状」的中性实例，字段逐位可断言。
+    #[test]
+    fn plain_instance_has_no_morph() {
+        let raw = InstanceRaw::plain([[0.0; 4]; 4], [1.0; 4], 7);
+        assert_eq!(raw.joint_base, 7);
+        assert_eq!(
+            (raw.morph_base, raw.morph_stride, raw.morph_count),
+            (0, 0, 0)
+        );
+        assert_eq!(raw.morph_weights, [0.0; 4]);
     }
 
     /// 内置网格已迁到 core，但「不蒙皮」这一约定仍要在此守住：

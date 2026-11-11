@@ -1034,6 +1034,8 @@ fn convert_meshes(doc: &AirDoc) -> Vec<MeshAsset> {
             joints: mesh.joints.clone(),
             weights: mesh.weights.clone(),
             skin: mesh.skin,
+            // AIR v1 尚未定义形变目标字段：读取侧留空集，等 ai_ide 侧写出后再补。
+            morph: r3e_core::morph::MorphSet::default(),
             source_vertex_count: mesh.source_vertex_count as usize,
             source_face_count: mesh.source_face_count as usize,
             source_triangle_count: mesh.source_triangle_count as usize,

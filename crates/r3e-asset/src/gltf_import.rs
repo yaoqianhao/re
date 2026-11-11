@@ -10,8 +10,12 @@
 //!
 //! 已知限制（`docs/ASSETS.md` 同频）：
 //! * 不支持 Draco / meshopt 压缩、KTX2 / basis 贴图（需要额外解码器）；
-//! * 不支持 morph target、多套 UV（只用 TEXCOORD_0）；
+//! * 不支持多套 UV（只用 TEXCOORD_0）；
 //! * `.gltf` 的 base64 data URI 缓冲区不支持，请用 `.glb` 或外部 `.bin`。
+//!
+//! 形变（扩展三十六）：支持 `primitive.targets` 的位置 / 法线增量，导入后成为
+//! `MeshData::morph`；同一网格多个 primitive 的形状按 `targets` 下标合并，
+//! 只用前 `MAX_MORPH_TARGETS` 个（每实例权重只有一个 `vec4`）。切线增量忽略。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,6 +24,7 @@ use std::sync::Arc;
 use r3e_core::air::normalize::{self, Axes};
 use r3e_core::anim::{AnimClip, AnimKey, AnimTrack};
 use r3e_core::mesh::{MeshData, TextureImage, Vertex};
+use r3e_core::morph::{MorphSet, MorphTarget, MAX_MORPH_TARGETS};
 use r3e_core::skin::{SkinData, SkinJoint};
 use r3e_core::{AssetId, Mat4, Quat, Vec3};
 
@@ -532,6 +537,67 @@ fn mirror_matrix() -> Mat4 {
     ])
 }
 
+/// 一个 primitive 贡献的形变增量（扩展三十六）。
+///
+/// 顶点下标是**primitive 内的局部下标**，`base` 是它在整网格顶点数组里的起点，
+/// 组装时按下标搬进全局形状（不同 primitive 的形状数可以不同，缺的按 0 增量补齐）。
+struct MorphChunk {
+    base: u32,
+    count: usize,
+    positions: Vec<Vec<[f32; 3]>>,
+    normals: Vec<Vec<[f32; 3]>>,
+}
+
+/// 把各 primitive 的增量拼成整网格的 [`MorphSet`]（扩展三十六）。
+///
+/// 形状下标以 glTF 的 `targets` 顺序为准：脚本里 `morph_set(name, t, w)` 的 `t`
+/// 就是这里的下标，所以**不能跳过全零形状**（跳过会让后面的下标整体前移）。
+/// 超过 [`MAX_MORPH_TARGETS`] 的形状直接丢弃并告警 —— 每实例权重只有一个 `vec4`。
+fn assemble_morph(
+    prim_morphs: &[MorphChunk],
+    vertex_count: usize,
+    mesh_name: &str,
+) -> Option<MorphSet> {
+    let target_count = prim_morphs
+        .iter()
+        .map(|chunk| chunk.positions.len())
+        .max()?;
+    if target_count > MAX_MORPH_TARGETS {
+        log::warn!(
+            "glTF: 网格 `{mesh_name}` 有 {target_count} 个形变形状，只取前 {MAX_MORPH_TARGETS} 个",
+        );
+    }
+    let count = target_count.min(MAX_MORPH_TARGETS);
+    let mut targets = Vec::with_capacity(count);
+    for t in 0..count {
+        let mut positions = vec![[0.0f32; 3]; vertex_count];
+        let mut normals = vec![[0.0f32; 3]; vertex_count];
+        let mut has_normals = false;
+        for chunk in prim_morphs {
+            if let Some(deltas) = chunk.positions.get(t) {
+                // 长度短于顶点数的坏资产按 0 补齐，绝不让越界写进缓冲。
+                for (i, d) in deltas.iter().take(chunk.count).enumerate() {
+                    positions[chunk.base as usize + i] = *d;
+                }
+            }
+            if let Some(deltas) = chunk.normals.get(t) {
+                if !deltas.is_empty() {
+                    has_normals = true;
+                    for (i, d) in deltas.iter().take(chunk.count).enumerate() {
+                        normals[chunk.base as usize + i] = *d;
+                    }
+                }
+            }
+        }
+        let mut target = MorphTarget::new(format!("target{t}"), positions);
+        if has_normals {
+            target.normals = normals;
+        }
+        targets.push(target);
+    }
+    Some(MorphSet::new(targets))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn import_mesh<'a>(
     path: &Path,
@@ -545,6 +611,7 @@ fn import_mesh<'a>(
 ) -> Result<MeshAsset, AssetError> {
     let mut data = MeshData::default();
     let mut parts: Vec<MaterialPart> = Vec::new();
+    let mut prim_morphs: Vec<MorphChunk> = Vec::new();
     let mut skinned = false;
     let mut missing_normals = false;
     let mut missing_uv = false;
@@ -594,6 +661,24 @@ fn import_mesh<'a>(
         }
 
         let base = data.vertices.len() as u32;
+        // ---------- 扩展三十六：形变形状（morph target） ----------
+        // 每个 primitive 自带的增量只覆盖本 primitive 的顶点，先原样收下来，
+        // 等全部顶点拼完后按整网格顶点范围对齐（见循环之后的组装）。
+        let mut shape_positions: Vec<Vec<[f32; 3]>> = Vec::new();
+        let mut shape_normals: Vec<Vec<[f32; 3]>> = Vec::new();
+        for (d_pos, d_nrm, _d_tan) in reader.read_morph_targets() {
+            shape_positions.push(d_pos.map(|it| it.collect::<Vec<_>>()).unwrap_or_default());
+            shape_normals.push(d_nrm.map(|it| it.collect::<Vec<_>>()).unwrap_or_default());
+        }
+        if !shape_positions.is_empty() {
+            prim_morphs.push(MorphChunk {
+                base,
+                count: positions.len(),
+                positions: shape_positions,
+                normals: shape_normals,
+            });
+        }
+
         let has_skin = joints.is_some() && weights.is_some();
         skinned |= has_skin;
         for (i, pos) in positions.iter().enumerate() {
@@ -635,6 +720,21 @@ fn import_mesh<'a>(
                 mesh.name().unwrap_or("<unnamed>")
             ),
         ));
+    }
+
+    // 扩展三十六：形变形状必须在换轴 / 烘变换**之前**挂上 `data.morph`，
+    // 这样 `bake_transform` 才会把增量一起过一遍线性部分（见 `air::normalize`）。
+    if let Some(morph) = assemble_morph(
+        &prim_morphs,
+        data.vertices.len(),
+        mesh.name().unwrap_or("<unnamed>"),
+    ) {
+        log::debug!(
+            "glTF: 网格 `{}` 导入 {} 个形变形状",
+            mesh.name().unwrap_or("<unnamed>"),
+            morph.len()
+        );
+        data.morph = morph;
     }
 
     // 蒙皮网格的顶点按 glTF 规范处于「骨架空间」，忽略节点自身的变换；
@@ -706,6 +806,7 @@ fn import_mesh<'a>(
         joints: joints_out,
         weights: weights_out,
         skin: if skinned { skin } else { None },
+        morph: data.morph.clone(),
         source_vertex_count: data.vertices.len(),
         source_face_count: data.indices.len() / 3,
         source_triangle_count: data.indices.len() / 3,

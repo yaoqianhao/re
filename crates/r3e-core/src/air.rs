@@ -403,6 +403,20 @@ pub mod normalize {
         if m.determinant() < 0.0 {
             flip_winding(&mut mesh.indices);
         }
+        // 扩展三十六：morph 增量是「顶点差值」，平移对它无效，只走线性部分。
+        // 位置增量按线性矩阵变换；法线增量按法线矩阵变换但**不归一化**
+        // （它是差值不是方向，归一化会把「几乎不弯」的形状放大成整段位移）。
+        if mesh.has_morph() {
+            let linear = Mat3::from_mat4(m);
+            for target in &mut mesh.morph.targets {
+                for d in &mut target.positions {
+                    *d = (linear * Vec3::from(*d)).to_array();
+                }
+                for d in &mut target.normals {
+                    *d = (normal_matrix * Vec3::from(*d)).to_array();
+                }
+            }
+        }
     }
 
     fn normal_matrix(m: Mat4) -> Mat3 {

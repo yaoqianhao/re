@@ -619,6 +619,70 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
             .unwrap_or(false)
     });
 
+    // ---------------- 顶点形变（扩展三十六） ----------------
+    //
+    // 脚本侧只做「登记绑定 + 改权重」两件事：形变在顶点着色器里算，
+    // 权重变了下一帧就生效，不需要重建网格或重传缓冲。
+
+    let c = ctx.clone();
+    engine.register_fn("morph_bind", move |name: &str, target_count: i64| -> bool {
+        if target_count <= 0 {
+            return false;
+        }
+        c.scene
+            .borrow_mut()
+            .bind_morph_by_name(name, target_count as usize)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn(
+        "morph_set",
+        move |name: &str, index: i64, weight: f64| -> bool {
+            if index < 0 {
+                return false;
+            }
+            c.scene
+                .borrow_mut()
+                .set_morph_weight_by_name(name, index as usize, f32_of(weight))
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("morph_reset", move |name: &str| -> bool {
+        c.scene.borrow_mut().reset_morph(name)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("morph_weight", move |name: &str, index: i64| -> f64 {
+        if index < 0 {
+            return -1.0;
+        }
+        c.scene
+            .borrow()
+            .morph_weight_by_name(name, index as usize)
+            .map(|w| w as f64)
+            .unwrap_or(-1.0)
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("morph_count", move |name: &str| -> i64 {
+        c.scene
+            .borrow()
+            .morph_target_count(name)
+            .map(|n| n as i64)
+            .unwrap_or(-1)
+    });
+
+    // 权重是否全部为 0（渲染层据此跳过整段形变路径）。
+    let c = ctx.clone();
+    engine.register_fn("morph_active", move |name: &str| -> bool {
+        let s = c.scene.borrow();
+        s.find_id(name)
+            .and_then(|node| s.morph_of(node))
+            .map(|m| m.is_active())
+            .unwrap_or(false)
+    });
+
     let c = ctx.clone();
     engine.register_fn("anim_info", move |name: &str| -> String {
         let s = c.scene.borrow();

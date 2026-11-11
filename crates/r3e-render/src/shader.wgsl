@@ -73,6 +73,61 @@ var t_env_cube: texture_cube<f32>;
 @group(2) @binding(0)
 var<storage, read> u_joints: array<mat4x4<f32>>;
 
+// 扩展三十六：morph target（表情 / 口型）增量表。所有带形状的网格共用一块
+// storage buffer，每形状内按顶点紧密排列，每顶点 6 个 f32：
+//
+//   [0..3) = 位置增量 xyz    [3..6) = 法线增量 xyz
+//
+// 实例的 `instance_meta`（location 10）给出 `y = 起点（浮点下标）`、`z = 每形状浮点数`
+// （= 顶点数 × 6）、`w = 可用形状数`；顶点下标由 `@builtin(vertex_index)` 提供，
+// 所以没有形状的实例（instance_meta.w = 0）一次循环都不进。
+@group(2) @binding(1)
+var<storage, read> morph_table: array<f32>;
+
+/// 形变结果：位置与法线增量（法线在乘完模型伴随矩阵后统一 normalize）。
+struct MorphDelta {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+};
+
+/// 按权重线性累加各形状增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
+///
+/// 权重按 x/y/z/w 展开而不是 `weights[i]` —— WGSL 不允许用运行时值索引向量分量，
+/// 这也是 `skin_matrix` 采用同一写法的原因。形状数为 0 时整体零开销提前返回。
+fn morph_offset(imeta: vec4<u32>, weights: vec4<f32>, vi: u32) -> MorphDelta {
+    var delta: MorphDelta;
+    delta.position = vec3<f32>(0.0);
+    delta.normal = vec3<f32>(0.0);
+    let count = min(imeta.w, 4u);
+    // imeta.z = 0 表示该实例没有可用形状数据（未登记 / 校验未过），直接跳过
+    if count == 0u || imeta.z == 0u {
+        return delta;
+    }
+    // 顶点在该形状内的浮点起点
+    let head = imeta.y + vi * 6u;
+    if weights.x != 0.0 {
+        let at = head;
+        delta.position += weights.x * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
+        delta.normal += weights.x * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+    }
+    if count > 1u && weights.y != 0.0 {
+        let at = head + imeta.z;
+        delta.position += weights.y * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
+        delta.normal += weights.y * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+    }
+    if count > 2u && weights.z != 0.0 {
+        let at = head + imeta.z * 2u;
+        delta.position += weights.z * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
+        delta.normal += weights.z * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+    }
+    if count > 3u && weights.w != 0.0 {
+        let at = head + imeta.z * 3u;
+        delta.position += weights.w * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
+        delta.normal += weights.w * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+    }
+    return delta;
+}
+
 // 阶段 D / 扩展十六：方向光阴影贴图（正交深度**数组**，每级一层）。
 //   light_view_proj 按级下标存矩阵；split_ndc 存各级远端的相机裁剪空间 z
 //   params: x = 1/size（纹素尺寸），y = 深度比较偏移，z = 是否启用（0/1），
@@ -96,6 +151,8 @@ var shadow_sampler: sampler_comparison;
 var<uniform> u_shadow: Shadow;
 
 struct VsIn {
+    // 扩展三十六：morph 增量表按顶点下标取，所以顶点着色器需要它
+    @builtin(vertex_index) vertex_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     // M1 起顶点带 UV（uv 原点左上，v 已由资产层做 v' = 1 - v 翻转），
@@ -110,10 +167,13 @@ struct VsIn {
     @location(7) m2: vec4<f32>,
     @location(8) m3: vec4<f32>,
     @location(9) color: vec4<f32>,
-    @location(10) joint_base: u32,
+    // P4 + 扩展三十六：x = joint_base，y = morph_base，z = morph_stride，w = morph_count
+    @location(10) instance_meta: vec4<u32>,
     // 扩展二十一：切线 xyz + 手性 w（bitangent = cross(N, T) * w）。
     // 用 location 11 而不是 5：5..=10 属于实例属性，两者共用同一命名空间。
     @location(11) tangent: vec4<f32>,
+    // 扩展三十六：各形状权重（morph_count 之外的分量无意义）
+    @location(12) morph_weights: vec4<f32>,
 };
 
 struct VsOut {
@@ -158,16 +218,26 @@ fn vs_main(in: VsIn) -> VsOut {
     var local_position = in.position;
     var local_normal = in.normal;
     var local_tangent = in.tangent.xyz;
+
+    // 扩展三十六：先做形变，再做蒙皮（顺序与 core 侧文档一致）。
+    // 没有形状的实例 instance_meta.w = 0，整段被跳过 —— 顶点坐标与扩展三十五逐位相同，
+    // 像素基线与零差异要求因此不需要额外容忍度。
+    if in.instance_meta.w != 0u {
+        let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
+        local_position += shape.position;
+        local_normal += shape.normal;
+    }
+
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
-        let skinned = skin_matrix(in.joint_base, in.joints, in.weights);
-        local_position = (skinned * vec4<f32>(in.position, 1.0)).xyz;
+        let skinned = skin_matrix(in.instance_meta.x, in.joints, in.weights);
+        local_position = (skinned * vec4<f32>(local_position, 1.0)).xyz;
         // 蒙皮矩阵含非均匀缩放时法线要逆转置；这里用伴随矩阵近似，与下方模型矩阵一致
         let skin_adjugate = mat3x3<f32>(
             cross(skinned[1].xyz, skinned[2].xyz),
             cross(skinned[2].xyz, skinned[0].xyz),
             cross(skinned[0].xyz, skinned[1].xyz),
         );
-        local_normal = skin_adjugate * in.normal;
+        local_normal = skin_adjugate * local_normal;
         local_tangent = skin_adjugate * in.tangent.xyz;
     }
 
@@ -200,9 +270,10 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
-// 阶段 D：阴影通道只写深度。顶点变换与主通道一致（含线性混合蒙皮），
-// 因此形变后的蒙皮网格投出的影子跟随姿势。
+// 阶段 D：阴影通道只写深度。顶点变换与主通道一致（含线性混合蒙皮与 morph
+// 形变），因此形变后的网格投出的影子跟随姿势 —— 「张嘴时下巴的影子」也对得上。
 struct ShadowVsIn {
+    @builtin(vertex_index) vertex_index: u32,
     @location(0) position: vec3<f32>,
     @location(3) joints: vec4<u32>,
     @location(4) weights: vec4<f32>,
@@ -210,7 +281,8 @@ struct ShadowVsIn {
     @location(6) m1: vec4<f32>,
     @location(7) m2: vec4<f32>,
     @location(8) m3: vec4<f32>,
-    @location(10) joint_base: u32,
+    @location(10) instance_meta: vec4<u32>,
+    @location(12) morph_weights: vec4<f32>,
 };
 
 // 深度 pass 专用：只含光源正交矩阵，故意不复用阴影贴图那一组绑定，
@@ -453,10 +525,15 @@ fn local_lighting(
 @vertex
 fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
+    // 与主通道同序：先形变，再蒙皮（没有形状时整段跳过，结果逐位不变）
     var local_position = in.position;
+    if in.instance_meta.w != 0u {
+        let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
+        local_position += shape.position;
+    }
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
-        let skinned = skin_matrix(in.joint_base, in.joints, in.weights);
-        local_position = (skinned * vec4<f32>(in.position, 1.0)).xyz;
+        let skinned = skin_matrix(in.instance_meta.x, in.joints, in.weights);
+        local_position = (skinned * vec4<f32>(local_position, 1.0)).xyz;
     }
     return u_shadow_pass.light_view_proj * (model * vec4<f32>(local_position, 1.0));
 }

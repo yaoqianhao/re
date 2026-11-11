@@ -118,7 +118,7 @@ pub fn saved_calls(ranges: u64, writes: u64) -> u64 {
 /// 把 `ranges` 指定的记录段打进一块连续字节，并算出逐段拷贝指令。
 ///
 /// * `next`：本帧记录的原始字节视图（与 GPU 缓冲同布局）；
-/// * `stride`：单条记录字节数（`InstanceRaw` 96 / `mat4` 64）；
+/// * `stride`：单条记录字节数（`InstanceRaw` 112 / `mat4` 64）；
 /// * `ranges`：**记录下标**区间，来自 `instance_upload::plan_upload`；
 /// * `capacity`：当前槽容量，装不下就返回 `over_budget`，不做截断打包。
 ///
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn ninety_six_byte_records_map_to_exact_offsets() {
-        // 真实 InstanceRaw：第 2 条记录 → 目标偏移 2 * 96 = 192
+        // 真实 InstanceRaw：第 2 条记录 → 目标偏移 2 * 96 = 192（此处以 96 举例，真实步长 112）
         let mut next = vec![0u8; 96 * 4];
         next[96 * 2 + 3] = 0xAB;
         let pack = pack_runs(&next, 96, &one(2..3), STAGING_MIN_BYTES);

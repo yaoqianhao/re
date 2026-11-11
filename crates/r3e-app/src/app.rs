@@ -420,6 +420,18 @@ impl EngineApp {
             scene_mut.update_world_transforms();
         }
 
+        // 扩展三十六：带形变形状的资产网格统一登记绑定（含场景 `objects` 里
+        // `asset:...#n` 显式引用、不走 spawn 的那批）。形状数是网格的属性，
+        // 脚本数不出来，所以在这里一次定好；权重初值全 0，像素与无形变能力时逐位相同。
+        {
+            let library = assets.borrow().clone();
+            let mut scene_mut = scene.borrow_mut();
+            let bound = attach_morph_bindings(&mut scene_mut, &library);
+            if bound > 0 {
+                log::info!("形变绑定已登记: {bound} 个网格");
+            }
+        }
+
         // 场景热重载 / F5 会把场景重放成纯净 JSON，资产节点与动画实例需要补挂回去
         {
             let hook_nodes = asset_nodes.clone();
@@ -436,6 +448,8 @@ impl EngineApp {
                 if spawned > 0 {
                     log::info!("资产节点已随场景重建补挂: {spawned} 个");
                 }
+                // 重建出来的场景是纯净 JSON，形变绑定同样要补回（扩展三十六）
+                attach_morph_bindings(scene, &library);
             });
         }
 
@@ -661,8 +675,13 @@ impl EngineApp {
                     .map(|r| r.stats())
                     .map(|s| {
                         format!(
-                            " | draws={} instances={} culled={} cull_unknown={}",
-                            s.draw_calls, s.instances, s.culled, s.cull_unknown
+                            " | draws={} instances={} culled={} cull_unknown={} morph={}/{}f",
+                            s.draw_calls,
+                            s.instances,
+                            s.culled,
+                            s.cull_unknown,
+                            s.morph_instances,
+                            s.morph_floats
                         )
                     })
                     .unwrap_or_default();
@@ -2792,6 +2811,69 @@ fn spawn_asset_nodes(
     spawned
 }
 
+/// 扩展三十六：给「网格自带形变形状」的资产物件补登记形变绑定。
+///
+/// 形状数是网格的属性（glTF `primitive.targets` 的个数），脚本无法可靠地自己数 ——
+/// 让用户手写 `morph_bind(name, 2)` 早晚会写错并静默形变失败。所以场景就位后在这里
+/// 按网格数据统一登记，脚本只剩「调权重」一件事。已绑定的节点不重绑（热重载补挂会
+/// 重复进来），权重初值全 0，与没有形变能力时像素逐位相同。
+///
+/// 返回新登记的数量，供调用方决定要不要打日志。
+fn attach_morph_bindings(scene: &mut Scene, library: &r3e_asset::AssetLibrary) -> usize {
+    let bound = attach_morph_bindings_with(scene, |mesh| match mesh {
+        MeshRef::Asset { asset, mesh: index } => library
+            .get(asset)
+            .and_then(|entry| entry.meshes.get(index as usize))
+            .map(|mesh| mesh.morph.len())
+            .filter(|count| *count > 0),
+        // 内置图元不带形变形状；用通配分支保持「只认资产网格」这一条路径
+        _ => None,
+    });
+    if bound > 0 {
+        for node in scene.iter() {
+            if let Some(morph) = scene.morph_of(node.id) {
+                if morph.weights.iter().all(|w| *w == 0.0) && morph.target_count > 0 {
+                    log::info!(
+                        "形变 `{}`：绑 {} 个形状，权重初值全 0（脚本用 morph_set 调）",
+                        node.name,
+                        morph.target_count
+                    );
+                }
+            }
+        }
+    }
+    bound
+}
+
+/// [`attach_morph_bindings`] 的可测内核：形状数由调用方按网格给。
+///
+/// 与具体资产库解耦后，纯 CPU 就能断言「哪些节点被绑、重复调用不重绑、内置网格
+/// 不受影响」——这些是自动绑定最容易写错的地方，不该依赖显卡才能验证。
+fn attach_morph_bindings_with(
+    scene: &mut Scene,
+    morph_count_of: impl Fn(MeshRef) -> Option<usize>,
+) -> usize {
+    // 先收集再改：`scene.iter()` 与 `scene.add_morph` 不能同时借同一个 `Scene`
+    let candidates: Vec<(NodeId, MeshRef)> =
+        scene.iter().map(|node| (node.id, node.mesh)).collect();
+    let mut bound = 0usize;
+    for (id, mesh) in candidates {
+        if scene.morph_of(id).is_some() {
+            continue;
+        }
+        let Some(raw) = morph_count_of(mesh) else {
+            continue;
+        };
+        let count = raw.min(r3e_core::MAX_MORPH_TARGETS);
+        if count == 0 {
+            continue;
+        }
+        scene.add_morph(r3e_core::MorphInstance::new(id, count));
+        bound += 1;
+    }
+    bound
+}
+
 /// 一个资产实例建出来的骨架句柄：节点下标 → 场景节点，供蒙皮按 `node_index` 对齐。
 struct SkeletonSpawn {
     prefix: String,
@@ -3123,6 +3205,90 @@ fn spawn_asset_anim(
     );
     let _ = inst_name;
     Some(SkeletonSpawn { prefix, ids })
+}
+
+#[cfg(test)]
+mod morph_bind_tests {
+    use super::*;
+
+    fn scene_of(objects: &str) -> Scene {
+        let json = format!(
+            r#"{{
+              "name": "morph-bind-test",
+              "camera": {{ "position": [0.0, 0.0, 6.0], "target": [0.0, 0.0, 0.0], "fov": 55.0 }},
+              "light": {{ "direction": [-0.3, -0.6, -0.7], "color": [1.0, 1.0, 1.0],
+                         "intensity": 1.0, "ambient": [0.5, 0.5, 0.5] }},
+              "objects": {objects}
+            }}"#
+        );
+        Scene::from_json_str(&json).expect("最小场景应能解析")
+    }
+
+    /// 只有「引用了带形状资产」的节点才绑；无形状资产与内置网格一律跳过。
+    #[test]
+    fn attaches_morph_only_to_meshes_with_targets() {
+        let mut scene = scene_of(
+            r#"[
+              { "name": "Face", "mesh": "asset:face.glb#0" },
+              { "name": "Body", "mesh": "asset:body.glb#0" },
+              { "name": "Block" },
+              { "name": "FaceAgain", "mesh": "asset:face.glb#0" }
+            ]"#,
+        );
+        let face = scene.find_id("Face").expect("Face 存在");
+        let body = scene.find_id("Body").expect("Body 存在");
+        let block = scene.find_id("Block").expect("Block 存在");
+        // 只让 Face 引用的那份资产带形状，Body 的资产是「无形状网格」
+        let face_asset = scene
+            .iter()
+            .find(|node| node.id == face)
+            .and_then(|node| match node.mesh {
+                MeshRef::Asset { asset, .. } => Some(asset),
+                MeshRef::Builtin(_) => None,
+            })
+            .expect("Face 引用资产网格");
+
+        let bound = attach_morph_bindings_with(&mut scene, |mesh| match mesh {
+            MeshRef::Asset { asset, .. } if asset == face_asset => Some(3),
+            _ => None,
+        });
+
+        assert_eq!(bound, 2, "两个引用 face.glb#0 的节点各绑一次");
+        assert_eq!(scene.morph_of(face).map(|m| m.target_count), Some(3));
+        assert!(scene.morph_of(body).is_none(), "无形状的资产不绑");
+        assert!(scene.morph_of(block).is_none(), "内置网格不绑");
+    }
+
+    /// 重复调用（场景热重载）不能把脚本已经调过的权重冲回 0。
+    #[test]
+    fn rebinding_keeps_existing_weights() {
+        let mut scene = scene_of(r#"[ { "name": "Face", "mesh": "asset:face.glb#0" } ]"#);
+        let face = scene.find_id("Face").expect("Face 存在");
+        let count = |mesh| match mesh {
+            MeshRef::Asset { .. } => Some(2),
+            _ => None,
+        };
+
+        assert_eq!(attach_morph_bindings_with(&mut scene, count), 1);
+        assert!(scene.set_morph_weight(face, 1, 0.75), "已绑节点可写权重");
+
+        // 热重载后再走一遍：已绑定的节点跳过，权重保持
+        assert_eq!(attach_morph_bindings_with(&mut scene, count), 0);
+        let morph = scene.morph_of(face).expect("绑定仍在");
+        assert_eq!(morph.weights[1], 0.75);
+    }
+
+    /// 形状数超过引擎上限时按上限截断，不能让 `MorphInstance` 记出越界数量。
+    #[test]
+    fn target_count_is_clamped_to_engine_limit() {
+        let mut scene = scene_of(r#"[ { "name": "Face", "mesh": "asset:face.glb#0" } ]"#);
+        let face = scene.find_id("Face").expect("Face 存在");
+        attach_morph_bindings_with(&mut scene, |_| Some(64));
+        assert_eq!(
+            scene.morph_of(face).map(|m| m.target_count),
+            Some(r3e_core::MAX_MORPH_TARGETS)
+        );
+    }
 }
 
 #[cfg(test)]

@@ -40,11 +40,17 @@ fn defaults_report_nothing_uploaded() {
     assert_eq!(stats.instance_upload.skipped, 0);
 }
 
-/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 96 字节、且能整除
+/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 112 字节、且能整除
 /// 4 字节对齐要求。脏段换算用的是同一个 stride，这里把它钉住。
+///
+/// 扩展三十六加了形变（morph）三项 + 一组 `vec4` 权重，把记录从 96 撑到 112：
+/// `model` 64 + `color` 16 + `joint_base`/`morph_base`/`morph_stride`/`morph_count`
+/// 打包成 `Uint32x4`（16）+ `morph_weights` `vec4`（16）。结构体按 16 字节对齐，
+/// 所以是 112 而不是 108。**步长同时是平移量的语义**：任何一次字段增删都要
+/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12)`。
 #[test]
-fn instance_record_stride_is_ninety_six_bytes() {
-    assert_eq!(size_of::<InstanceRaw>(), 96);
+fn instance_record_stride_is_one_hundred_twelve_bytes() {
+    assert_eq!(size_of::<InstanceRaw>(), 112);
     assert_eq!(size_of::<InstanceRaw>() % 4, 0);
 }
 
