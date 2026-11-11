@@ -13,7 +13,7 @@ use std::mem::size_of;
 
 use r3e_render::instance_upload::{plan_upload, UploadPlan, MAX_RANGES, MERGE_GAP};
 use r3e_render::renderer::{InstanceUploadStats, RenderStats};
-use r3e_render::InstanceRaw;
+use r3e_render::{InstanceRaw, MORPH_WEIGHT_GROUPS};
 
 fn renderer_src() -> &'static str {
     include_str!("../src/renderer.rs")
@@ -40,17 +40,20 @@ fn defaults_report_nothing_uploaded() {
     assert_eq!(stats.instance_upload.skipped, 0);
 }
 
-/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 112 字节、且能整除
+/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 128 字节、且能整除
 /// 4 字节对齐要求。脏段换算用的是同一个 stride，这里把它钉住。
 ///
-/// 扩展三十六加了形变（morph）三项 + 一组 `vec4` 权重，把记录从 96 撑到 112：
+/// 扩展三十六加了形变（morph）三项 + 一组 `vec4` 权重，把记录从 96 撑到 112；
+/// 扩展三十九把权重从 1 组扩到 `MORPH_WEIGHT_GROUPS` 组（2 组 → 128 字节）：
 /// `model` 64 + `color` 16 + `joint_base`/`morph_base`/`morph_stride`/`morph_count`
-/// 打包成 `Uint32x4`（16）+ `morph_weights` `vec4`（16）。结构体按 16 字节对齐，
-/// 所以是 112 而不是 108。**步长同时是平移量的语义**：任何一次字段增删都要
-/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12)`。
+/// 打包成 `Uint32x4`（16）+ 每组权重 `vec4`（16）。结构体按 16 字节对齐，
+/// 所以是 128。**步长同时是平移量的语义**：任何一次字段增删都要
+/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12..14)`。
 #[test]
-fn instance_record_stride_is_one_hundred_twelve_bytes() {
-    assert_eq!(size_of::<InstanceRaw>(), 112);
+fn instance_record_stride_matches_weight_groups() {
+    let expected = 96 + 16 * MORPH_WEIGHT_GROUPS;
+    assert_eq!(size_of::<InstanceRaw>(), expected);
+    assert_eq!(size_of::<InstanceRaw>(), 128, "扩展三十九的 2 组权重");
     assert_eq!(size_of::<InstanceRaw>() % 4, 0);
 }
 

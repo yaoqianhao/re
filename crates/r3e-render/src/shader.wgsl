@@ -97,45 +97,65 @@ struct MorphDelta {
 /// 布局：+0..3 = Δ位置，+3..6 = Δ法线，+6..9 = Δ切线（三个通道恒占槽位，缺的补 0）。
 const MORPH_VERTEX_FLOATS: u32 = 9u;
 
+/// 单实例可同时生效的形状数 —— 必须与 `r3e_core::MAX_MORPH_TARGETS` 一致（扩展三十九：8）。
+///
+/// 权重按 `vec4` 分组进顶点属性，所以这个数恒等于组数 × 4；`tests/morph_shader_parity.rs`
+/// 会把这里与 Rust 常量逐字比对，改一处漏另一处会直接红。
+const MORPH_SHAPES: u32 = 8u;
+
+/// 累加单个形状的增量。`at` = 该形状在本顶点上的浮点起点，`w` = 权重。
+///
+/// 抽成函数是因为扩展三十九之后要累加 8 个形状 —— 每形状三行内联会写成 24 行，
+/// 且「哪个分量配哪个形状」的对应关系会散进缩进里看不见。
+fn morph_accumulate(delta: ptr<function, MorphDelta>, at: u32, w: f32) {
+    (*delta).position += w * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
+    (*delta).normal += w * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
+    (*delta).tangent += w * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
+}
+
 /// 按权重线性累加各形状增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
 ///
-/// 权重按 x/y/z/w 展开而不是 `weights[i]` —— WGSL 不允许用运行时值索引向量分量，
+/// 权重按 `vec4` 分组传进来：`w0` 是形状 0..4，`w1` 是形状 4..8（扩展三十九）。
+/// 分量逐个写而不是 `weights[i]` —— WGSL 不允许用运行时值索引向量分量，
 /// 这也是 `skin_matrix` 采用同一写法的原因。形状数为 0 时整体零开销提前返回。
-fn morph_offset(imeta: vec4<u32>, weights: vec4<f32>, vi: u32) -> MorphDelta {
+fn morph_offset(imeta: vec4<u32>, w0: vec4<f32>, w1: vec4<f32>, vi: u32) -> MorphDelta {
     var delta: MorphDelta;
     delta.position = vec3<f32>(0.0);
     delta.normal = vec3<f32>(0.0);
     delta.tangent = vec3<f32>(0.0);
-    let count = min(imeta.w, 4u);
+    let count = min(imeta.w, MORPH_SHAPES);
     // imeta.z = 0 表示该实例没有可用形状数据（未登记 / 校验未过），直接跳过
     if count == 0u || imeta.z == 0u {
         return delta;
     }
-    // 顶点在该形状内的浮点起点
+    // 顶点在该形状内的浮点起点；形状之间相隔一个 imeta.z
     let head = imeta.y + vi * MORPH_VERTEX_FLOATS;
-    if weights.x != 0.0 {
-        let at = head;
-        delta.position += weights.x * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
-        delta.normal += weights.x * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
-        delta.tangent += weights.x * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
+    let stride = imeta.z;
+    // 第 1 组（形状 0..4）
+    if w0.x != 0.0 {
+        morph_accumulate(&delta, head, w0.x);
     }
-    if count > 1u && weights.y != 0.0 {
-        let at = head + imeta.z;
-        delta.position += weights.y * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
-        delta.normal += weights.y * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
-        delta.tangent += weights.y * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
+    if count > 1u && w0.y != 0.0 {
+        morph_accumulate(&delta, head + stride, w0.y);
     }
-    if count > 2u && weights.z != 0.0 {
-        let at = head + imeta.z * 2u;
-        delta.position += weights.z * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
-        delta.normal += weights.z * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
-        delta.tangent += weights.z * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
+    if count > 2u && w0.z != 0.0 {
+        morph_accumulate(&delta, head + stride * 2u, w0.z);
     }
-    if count > 3u && weights.w != 0.0 {
-        let at = head + imeta.z * 3u;
-        delta.position += weights.w * vec3<f32>(morph_table[at], morph_table[at + 1u], morph_table[at + 2u]);
-        delta.normal += weights.w * vec3<f32>(morph_table[at + 3u], morph_table[at + 4u], morph_table[at + 5u]);
-        delta.tangent += weights.w * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
+    if count > 3u && w0.w != 0.0 {
+        morph_accumulate(&delta, head + stride * 3u, w0.w);
+    }
+    // 第 2 组（形状 4..8）
+    if count > 4u && w1.x != 0.0 {
+        morph_accumulate(&delta, head + stride * 4u, w1.x);
+    }
+    if count > 5u && w1.y != 0.0 {
+        morph_accumulate(&delta, head + stride * 5u, w1.y);
+    }
+    if count > 6u && w1.z != 0.0 {
+        morph_accumulate(&delta, head + stride * 6u, w1.z);
+    }
+    if count > 7u && w1.w != 0.0 {
+        morph_accumulate(&delta, head + stride * 7u, w1.w);
     }
     return delta;
 }
@@ -184,8 +204,10 @@ struct VsIn {
     // 扩展二十一：切线 xyz + 手性 w（bitangent = cross(N, T) * w）。
     // 用 location 11 而不是 5：5..=10 属于实例属性，两者共用同一命名空间。
     @location(11) tangent: vec4<f32>,
-    // 扩展三十六：各形状权重（morph_count 之外的分量无意义）
-    @location(12) morph_weights: vec4<f32>,
+    // 扩展三十六 / 三十九：各形状权重，每组一个 `vec4`
+    // （形状 g*4+i 取第 g 组的第 i 个分量；morph_count 之外的分量无意义）
+    @location(12) morph_w0: vec4<f32>,
+    @location(13) morph_w1: vec4<f32>,
 };
 
 struct VsOut {
@@ -235,7 +257,7 @@ fn vs_main(in: VsIn) -> VsOut {
     // 没有形状的实例 instance_meta.w = 0，整段被跳过 —— 顶点坐标与扩展三十五逐位相同，
     // 像素基线与零差异要求因此不需要额外容忍度。
     if in.instance_meta.w != 0u {
-        let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
+        let shape = morph_offset(in.instance_meta, in.morph_w0, in.morph_w1, in.vertex_index);
         local_position += shape.position;
         local_normal += shape.normal;
         // 扩展三十七：切线同样参与形变。形状没给切线通道时这里是 0，
@@ -299,7 +321,9 @@ struct ShadowVsIn {
     @location(7) m2: vec4<f32>,
     @location(8) m3: vec4<f32>,
     @location(10) instance_meta: vec4<u32>,
-    @location(12) morph_weights: vec4<f32>,
+    // 扩展三十九：形变权重两组，口径与主通道的 `VsIn` 完全一致
+    @location(12) morph_w0: vec4<f32>,
+    @location(13) morph_w1: vec4<f32>,
 };
 
 // 深度 pass 专用：只含光源正交矩阵，故意不复用阴影贴图那一组绑定，
@@ -545,7 +569,7 @@ fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
     // 与主通道同序：先形变，再蒙皮（没有形状时整段跳过，结果逐位不变）
     var local_position = in.position;
     if in.instance_meta.w != 0u {
-        let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
+        let shape = morph_offset(in.instance_meta, in.morph_w0, in.morph_w1, in.vertex_index);
         local_position += shape.position;
     }
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {

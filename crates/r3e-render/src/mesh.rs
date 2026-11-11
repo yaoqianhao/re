@@ -5,8 +5,18 @@
 //! 不再持有任何几何生成逻辑，因此也不存在按来源分支的第二条数据通道。
 
 use r3e_core::mesh::Vertex;
+pub use r3e_core::MORPH_WEIGHT_GROUPS;
 
 pub use r3e_core::mesh::{MeshData as CoreMeshData, Vertex as CoreVertex};
+
+/// 实例属性中形变权重的起始 location（扩展三十六取 12，扩展三十九再加一组 → 13）。
+pub const MORPH_WEIGHT_BASE_LOCATION: u32 = 12;
+
+/// 形变权重在实例缓冲里的字节偏移：`model(64) + color(16) + 元数据(16)`。
+///
+/// 扩展三十九把它提成常量，是因为权重从 1 组变成 N 组后，着色器侧的
+/// `@location(12 + 组号)` 与这里的偏移必须由同一个数推出来，两处手抄必错。
+pub const MORPH_WEIGHT_OFFSET: u32 = 96;
 
 /// 顶点属性：0 = position(f32x3)、1 = normal(f32x3)、2 = uv(f32x2)、
 /// 3 = joints(u16x4)、4 = weights(f32x4)（P4 蒙皮）、11 = tangent(f32x4)（扩展二十一）。
@@ -31,8 +41,26 @@ pub fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
+/// 把「扁平权重」切成按组排布的 `vec4`：第 `g` 组 = 形状 `g * 4 .. g * 4 + 4`。
+///
+/// 场景侧（`MorphInstance`）与剔除侧（`cull_inflate_weights`）都用扁平数组，
+/// 因为那边要按下标遍历形状、分成二维反而更绕；只有实例缓冲需要 `vec4` 分组
+/// （GPU 顶点属性的格式所限）。转换只在这一个函数里做，两侧口径不会分叉。
+pub fn group_morph_weights(
+    flat: &[f32; r3e_core::MAX_MORPH_TARGETS],
+) -> [[f32; 4]; MORPH_WEIGHT_GROUPS] {
+    let mut grouped = [[0.0f32; 4]; MORPH_WEIGHT_GROUPS];
+    for (group, chunk) in flat.chunks_exact(4).enumerate().take(MORPH_WEIGHT_GROUPS) {
+        grouped[group].copy_from_slice(chunk);
+    }
+    grouped
+}
+
 /// 单个实例的模型矩阵、颜色、蒙皮槽位与形变权重。作为第二个顶点缓冲
-/// （step_mode = Instance）上传，总长 112 字节。
+/// （step_mode = Instance）上传。
+///
+/// 总长 = `96 + 16 × MORPH_WEIGHT_GROUPS` 字节：扩展三十六的 1 组权重是 112，
+/// 扩展三十九的 2 组是 **128**。加一组的代价就是这 16 字节——形状数同时多 4 个。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceRaw {
@@ -43,23 +71,30 @@ pub struct InstanceRaw {
     pub joint_base: u32,
     /// 扩展三十六：本实例的形变数据在全局 morph table 中的起始下标（**浮点数**，不是顶点）。
     pub morph_base: u32,
-    /// 每个形状占多少个浮点（= 顶点数 × 6：位置增量 xyz + 法线增量 xyz）。
+    /// 每个形状占多少个浮点（= 顶点数 × 9：位置 / 法线 / 切线三组增量）。
     pub morph_stride: u32,
     /// 可用形状数，夹到 [`r3e_core::MAX_MORPH_TARGETS`]；0 表示不做形变。
     pub morph_count: u32,
-    /// 各形状权重，与 `morph_count` 一起进 `morph_offset`。
-    pub morph_weights: [f32; 4],
+    /// 各形状权重，按 `vec4` 分组：第 `g` 组的第 `i` 个分量 = 形状 `g * 4 + i`。
+    ///
+    /// 扩展三十九把它从 `[f32; 4]` 改成二维数组，形状上限随之 `4 → 8`。
+    pub morph_weights: [[f32; 4]; MORPH_WEIGHT_GROUPS],
 }
 
 impl InstanceRaw {
-    pub const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    /// 属性槽位：5..=8 = model 四行、9 = color、10 = 元数据、12 起每组权重一格。
+    ///
+    /// `vertex_attr_array!` 只吃字面量 location，所以组数无法在宏里循环展开 ——
+    /// 下面的 `assert!` 把「改组数必须同步改这里」钉住，避免静默少传一组权重。
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 6 + MORPH_WEIGHT_GROUPS] = wgpu::vertex_attr_array![
         5 => Float32x4,
         6 => Float32x4,
         7 => Float32x4,
         8 => Float32x4,
         9 => Float32x4,
         10 => Uint32x4,
-        12 => Float32x4
+        12 => Float32x4,
+        13 => Float32x4
     ];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -79,10 +114,16 @@ impl InstanceRaw {
             morph_base: 0,
             morph_stride: 0,
             morph_count: 0,
-            morph_weights: [0.0; 4],
+            morph_weights: [[0.0; 4]; MORPH_WEIGHT_GROUPS],
         }
     }
 }
+
+/// 权重组数与属性表必须同步：宏里写死了每个 location，改组数就得改上面那张表。
+const _: () = assert!(
+    MORPH_WEIGHT_GROUPS == 2,
+    "`InstanceRaw::ATTRIBUTES` 里权重属性是手写的，改 MORPH_WEIGHT_GROUPS 必须同步增删"
+);
 
 #[cfg(test)]
 mod tests {
@@ -145,35 +186,59 @@ mod tests {
             layout.array_stride as usize,
             std::mem::size_of::<InstanceRaw>()
         );
-        assert_eq!(layout.array_stride, 112);
-        assert_eq!(layout.attributes.len(), 7);
+        assert_eq!(
+            layout.array_stride,
+            96 + 16 * MORPH_WEIGHT_GROUPS as u64,
+            "model64 + color16 + meta16 + 每组权重 16 × 组数"
+        );
+        assert_eq!(layout.array_stride, 128, "扩展三十九的 2 组权重");
+        assert_eq!(layout.attributes.len(), 6 + MORPH_WEIGHT_GROUPS);
         assert_eq!(layout.attributes[5].shader_location, 10);
         assert_eq!(layout.attributes[5].format, wgpu::VertexFormat::Uint32x4);
         assert_eq!(layout.attributes[5].offset, 80);
     }
 
-    /// 扩展三十六：形变权重跟在实例元数据之后（location 12，offset 96），
-    /// 正好填满 stride，不留悬空字节；也不与顶点布局的 location 撞号。
+    /// 扩展三十六 / 三十九：形变权重跟在实例元数据之后（location 12 起，每组 16 字节），
+    /// 最后一组正好填满 stride，不留悬空字节；也不与顶点布局的 location 撞号。
     #[test]
     fn instance_layout_carries_morph_weights() {
         let layout = InstanceRaw::layout();
-        let weights = layout
+        for group in 0..MORPH_WEIGHT_GROUPS {
+            let location = MORPH_WEIGHT_BASE_LOCATION + group as u32;
+            let weights = layout
+                .attributes
+                .iter()
+                .find(|a| a.shader_location == location)
+                .unwrap_or_else(|| panic!("第 {group} 组形变权重属性缺失"));
+            assert_eq!(weights.format, wgpu::VertexFormat::Float32x4);
+            assert_eq!(
+                weights.offset,
+                MORPH_WEIGHT_OFFSET as u64 + 16 * group as u64,
+                "第 {group} 组紧跟上一组"
+            );
+        }
+        let last = layout
             .attributes
             .iter()
-            .find(|a| a.shader_location == 12)
-            .expect("形变权重属性缺失");
-        assert_eq!(weights.format, wgpu::VertexFormat::Float32x4);
-        assert_eq!(weights.offset, 96, "紧跟 meta（80 + 16）");
-        assert_eq!(weights.offset + 16, layout.array_stride);
+            .find(|a| a.shader_location == MORPH_WEIGHT_BASE_LOCATION + 1)
+            .expect("第 2 组权重");
+        assert_eq!(
+            last.offset + 16,
+            layout.array_stride,
+            "最后一组权重必须填满 stride"
+        );
 
         let vertex_locs: Vec<u32> = VERTEX_ATTRIBUTES
             .iter()
             .map(|a| a.shader_location)
             .collect();
-        assert!(
-            !vertex_locs.contains(&12),
-            "实例属性 location 12 不得被顶点属性占用"
-        );
+        for group in 0..MORPH_WEIGHT_GROUPS {
+            let location = MORPH_WEIGHT_BASE_LOCATION + group as u32;
+            assert!(
+                !vertex_locs.contains(&location),
+                "实例属性 location {location} 不得被顶点属性占用"
+            );
+        }
     }
 
     /// `plain` 构造出的是「无蒙皮偏移 + 无形状」的中性实例，字段逐位可断言。
@@ -185,7 +250,32 @@ mod tests {
             (raw.morph_base, raw.morph_stride, raw.morph_count),
             (0, 0, 0)
         );
-        assert_eq!(raw.morph_weights, [0.0; 4]);
+        assert_eq!(raw.morph_weights, [[0.0; 4]; MORPH_WEIGHT_GROUPS]);
+    }
+
+    /// 扩展三十九：扁平权重按序切成组 —— 形状 `g*4+i` 必须落在第 `g` 组第 `i` 分量，
+    /// 一旦切错组，GPU 侧「哪个分量配哪个形状」的映射就整体位移。
+    #[test]
+    fn group_morph_weights_slices_in_order() {
+        let mut flat = [0.0f32; r3e_core::MAX_MORPH_TARGETS];
+        for (i, w) in flat.iter_mut().enumerate() {
+            *w = i as f32 + 1.0;
+        }
+        let grouped = group_morph_weights(&flat);
+        for (group, lanes) in grouped.iter().enumerate() {
+            for (lane, got) in lanes.iter().enumerate() {
+                assert_eq!(
+                    *got,
+                    (group * 4 + lane) as f32 + 1.0,
+                    "第 {group} 组第 {lane} 分量"
+                );
+            }
+        }
+        // 全 0 输入必须原样全 0：没有形状的实例不该因为转换产生非零权重
+        assert_eq!(
+            group_morph_weights(&[0.0; r3e_core::MAX_MORPH_TARGETS]),
+            [[0.0; 4]; MORPH_WEIGHT_GROUPS]
+        );
     }
 
     /// 内置网格已迁到 core，但「不蒙皮」这一约定仍要在此守住：

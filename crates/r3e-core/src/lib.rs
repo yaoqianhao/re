@@ -82,7 +82,7 @@ pub use mesh::{
 };
 pub use morph::{
     MorphInstance, MorphIssue, MorphSet, MorphTarget, MAX_EXCLUSIVE_GROUP_MEMBERS,
-    MAX_MORPH_TARGETS, NO_EXCLUSIVE_GROUP,
+    MAX_MORPH_TARGETS, MORPH_WEIGHT_GROUPS, NO_EXCLUSIVE_GROUP,
 };
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use occlusion::{

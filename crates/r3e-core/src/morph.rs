@@ -32,17 +32,33 @@ use std::fmt;
 use crate::mesh::{MeshData, Vertex};
 use crate::NodeId;
 
-/// 单个实例可同时启用的形状数上限（权重一帧一个 `vec4` 传进顶点着色器）。
+/// 每实例携带的 `vec4` 权重组数（扩展三十九）。
 ///
-/// 表情 / 口型实际用量通常 2~4 个；超过该值的形状只能挤在同一格里 ——
-/// 需要更多就分批切换权重，而不是加宽缓冲（加宽会让每个实例的顶点属性涨 16 字节）。
-pub const MAX_MORPH_TARGETS: usize = 4;
+/// 权重按 `vec4` 一组进顶点属性：加一组，实例记录涨 16 字节，**可同时生效的形状数
+/// 就多 4 个**。与「加宽单个 `vec4`」（WGSL 里不存在这种类型）或「同一帧内分批切
+/// 权重」（帧内做不到）相比，这是唯一既线性又不损帧内表达能力的扩展方式。
+///
+/// 取 2 组的原因：表情 / 口型实际用量典型 3~6 个，8 个槽位能一次装下；再往上加组
+/// 的收益递减（顶点属性与形变表容量都要成倍摊薄），见 ARCHITECTURE §4.20 的容量表。
+pub const MORPH_WEIGHT_GROUPS: usize = 2;
+
+/// 单个实例可同时启用的形状数上限 = [`MORPH_WEIGHT_GROUPS`] 组 × 每组 4 个。
+///
+/// 扩展三十九把 4 抬成 8，**形状数随组数线性扩展**：`4 → 8` 只多付每实例 16 字节
+/// 顶点属性，着色器多几次乘加。着色器按下标 `g * 4 + 分量` 取权重，所以这个数
+/// 必须是 4 的倍数 —— 下面那条 `assert!` 把约束钉在编译期。
+pub const MAX_MORPH_TARGETS: usize = MORPH_WEIGHT_GROUPS * 4;
+
+const _: () = assert!(
+    MAX_MORPH_TARGETS == MORPH_WEIGHT_GROUPS * 4,
+    "每组 vec4 装 4 个形状，形状上限必须是组数的 4 倍"
+);
 
 /// 「不属于任何互斥组」的哨兵值（扩展三十八）。
 ///
 /// `MorphInstance::exclusive` 里每个形状一格：等于该哨兵表示它独立叠加（与扩展
 /// 三十七前的行为一致），否则**同号即互斥**。取 `u8::MAX` 而不是 0 是为了让
-/// 「全 0 初始化的缓冲」不会把四个形状意外并进同一个组。
+/// 「全 0 初始化的缓冲」不会把八个形状意外并进同一个组。
 pub const NO_EXCLUSIVE_GROUP: u8 = u8::MAX;
 
 /// 一个互斥组最多容纳的形状数 = 每实例的形状上限。
@@ -649,6 +665,16 @@ mod tests {
         }
     }
 
+    /// 把「第 1 组的 4 个权重」铺成立长 `MAX_MORPH_TARGETS` 的数组。
+    ///
+    /// 扩展三十九之后权重是 8 格，用例里写全 8 个字面量既吵、又会在再加组时集体失效，
+    /// 所以统一走这个 helper（第 2 组及以后默认 0）。
+    fn weights4(first_group: [f32; 4]) -> [f32; MAX_MORPH_TARGETS] {
+        let mut out = [0.0; MAX_MORPH_TARGETS];
+        out[..4].copy_from_slice(&first_group);
+        out
+    }
+
     /// 权重 0 与权重 1 的 CPU 求解：0 时逐位不变，1 时等于基础网格 + 增量。
     #[test]
     fn apply_matches_linear_blend() {
@@ -660,11 +686,11 @@ mod tests {
             assert_eq!(a.position, b.position);
         }
 
-        let full = set.apply(&mesh, &[1.0, 0.0, 0.0, 0.0]);
+        let full = set.apply(&mesh, &weights4([1.0, 0.0, 0.0, 0.0]));
         assert_eq!(full.vertices[1].position, [2.0, 1.0, 0.0]);
         assert_eq!(full.vertices[2].position, [0.0, 1.0, 0.0]);
 
-        let half = set.apply(&mesh, &[0.5, 0.0, 0.0, 0.0]);
+        let half = set.apply(&mesh, &weights4([0.5, 0.0, 0.0, 0.0]));
         assert_eq!(half.vertices[1].position, [1.5, 0.5, 0.0]);
     }
 
@@ -674,8 +700,8 @@ mod tests {
         let mesh = triangle();
         let shift = MorphTarget::new("shift", vec![[0.0; 3], [0.0; 3], [0.0, 0.0, 2.0]]);
         let set = MorphSet::new(vec![smile(), shift]);
-        let a = set.apply(&mesh, &[1.0, 1.0, 0.0, 0.0]);
-        let b = set.apply(&mesh, &[1.0, 0.5, 0.0, 0.0]);
+        let a = set.apply(&mesh, &weights4([1.0, 1.0, 0.0, 0.0]));
+        let b = set.apply(&mesh, &weights4([1.0, 0.5, 0.0, 0.0]));
         assert_eq!(a.vertices[1].position, [2.0, 1.0, 0.0]);
         assert_eq!(a.vertices[2].position, [0.0, 1.0, 2.0]);
         assert_eq!(b.vertices[2].position, [0.0, 1.0, 1.0]);
@@ -686,7 +712,7 @@ mod tests {
     fn non_finite_weight_is_ignored() {
         let mesh = triangle();
         let set = MorphSet::new(vec![smile()]);
-        let out = set.apply(&mesh, &[f32::INFINITY, 0.0, 0.0, 0.0]);
+        let out = set.apply(&mesh, &weights4([f32::INFINITY, 0.0, 0.0, 0.0]));
         assert!(out
             .vertices
             .iter()
@@ -739,7 +765,7 @@ mod tests {
             [0.0; 3],
         ]);
         let set = MorphSet::new(vec![target]);
-        let out = set.apply(&mesh, &[0.5, 0.0, 0.0, 0.0]);
+        let out = set.apply(&mesh, &weights4([0.5, 0.0, 0.0, 0.0]));
         let before = mesh.vertices[1].tangent;
         let after = out.vertices[1].tangent;
         assert!(
@@ -853,7 +879,9 @@ mod tests {
         instance.set_weight(1, 0.3);
         let (weights, scaled) = instance.normalized_weights();
         assert!(!scaled, "0.6 ≤ 1，不该缩放");
-        assert_eq!(weights, [0.3, 0.3, 0.0, 0.0]);
+        // 只断言前两格：组数扩了也不该改这条用例（扩展三十九）
+        assert_eq!(&weights[..2], &[0.3, 0.3]);
+        assert!(weights[2..].iter().all(|w| *w == 0.0), "其余槽位应保持 0");
     }
 
     /// 扩展三十八（契约四）：负权重不占预算、也不被缩放。
@@ -890,9 +918,10 @@ mod tests {
         instance.set_weight(1, 1.0);
         let (weights, _) = instance.normalized_weights();
         assert_eq!(weights[0], 0.5);
+        assert_eq!(weights[1], 0.5);
         assert_eq!(
-            instance.weights,
-            [1.0, 1.0, 0.0, 0.0],
+            &instance.weights[..2],
+            &[1.0, 1.0],
             "脚本读回的权重必须还是自己写进去的那个值"
         );
     }
@@ -961,5 +990,104 @@ mod tests {
         let set = MorphSet::new(targets);
         let out = set.apply(&mesh, &[0.0; MAX_MORPH_TARGETS]);
         assert_eq!(out.vertices[0].position, mesh.vertices[0].position);
+    }
+
+    // ---- 扩展三十九：多组 vec4 权重（形状数随组数线性扩展） ----
+
+    /// 扩展三十九（契约一）：形状上限 = 组数 × 4，且必须是 4 的倍数。
+    ///
+    /// 着色器按下标 `g * 4 + 分量` 取权重，组数一旦不是「每组 4 个」就会整体串位。
+    #[test]
+    fn target_limit_is_groups_times_four() {
+        assert_eq!(MORPH_WEIGHT_GROUPS, 2, "扩展三十九取 2 组 = 8 个形状");
+        assert_eq!(MAX_MORPH_TARGETS, MORPH_WEIGHT_GROUPS * 4);
+        assert_eq!(MAX_MORPH_TARGETS % 4, 0, "每组固定 4 个分量");
+        assert_eq!(MAX_EXCLUSIVE_GROUP_MEMBERS, MAX_MORPH_TARGETS);
+    }
+
+    /// 扩展三十九（契约二）：第 2 组（下标 ≥ 4）的形状与第 1 组一样参与求解。
+    ///
+    /// 扩组之前这些下标会被 `MAX_MORPH_TARGETS` 挡在门外；现在必须真的推动顶点，
+    /// 否则「形状数 > 4」就只是文档里的一句话。
+    #[test]
+    fn weights_beyond_first_group_deform_vertices() {
+        let mesh = triangle();
+        let last = MAX_MORPH_TARGETS - 1;
+        let mut targets: Vec<MorphTarget> = (0..MAX_MORPH_TARGETS)
+            .map(|_| MorphTarget::new("zero", vec![[0.0; 3]; 3]))
+            .collect();
+        // 最后一格（第 2 组的 w 分量）把顶点 1 沿 +y 推 2
+        targets[last] = MorphTarget::new("last", vec![[0.0; 3], [0.0, 2.0, 0.0], [0.0; 3]]);
+        let set = MorphSet::new(targets);
+
+        let mut weights = [0.0f32; MAX_MORPH_TARGETS];
+        weights[last] = 1.0;
+        let out = set.apply(&mesh, &weights);
+        assert!(
+            (out.vertices[1].position[1] - 2.0).abs() < 1e-6,
+            "第 2 组最后一格必须生效，实际 {:?}",
+            out.vertices[1].position
+        );
+        assert_eq!(out.vertices[0].position, [0.0, 0.0, 0.0], "零增量顶点不动");
+
+        // 半权重就是半位移：组的位置不影响线性叠加
+        weights[last] = 0.5;
+        let half = set.apply(&mesh, &weights);
+        assert!((half.vertices[1].position[1] - 1.0).abs() < 1e-6);
+    }
+
+    /// 扩展三十九（契约三）：互斥组能横跨权重组 —— 组号是场景概念，与 `vec4` 无关。
+    ///
+    /// 把「微笑（第 1 组）」和「撇嘴（第 2 组）」放进同一组后，两者各 1.0 仍要
+    /// 折半，否则「加组」会顺手拆掉扩展三十八的归一化。
+    #[test]
+    fn exclusive_group_spans_weight_groups() {
+        let last = MAX_MORPH_TARGETS - 1;
+        let mut instance = MorphInstance::new(0, MAX_MORPH_TARGETS);
+        assert!(instance.set_exclusive_group(0, Some(7)));
+        assert!(instance.set_exclusive_group(last, Some(7)));
+        assert_eq!(instance.exclusive_group_count(), 1, "跨组也是同一组");
+        instance.set_weight(0, 1.0);
+        instance.set_weight(last, 1.0);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(scaled);
+        assert!((weights[0] - 0.5).abs() < 1e-6, "{weights:?}");
+        assert!((weights[last] - 0.5).abs() < 1e-6, "{weights:?}");
+    }
+
+    /// 扩展三十九（契约四）：扁平化整表覆盖全部权重槽位 —— 第 8 个形状落在表尾。
+    ///
+    /// 表尾下标一旦算错，`morph_table` 读到的是下一顶点或越界（WGSL 不报错，
+    /// 只会画花），所以这里按偏移逐项钉住。
+    #[test]
+    fn flatten_covers_all_weight_slots() {
+        let per_shape = 3 * MORPH_VERTEX_FLOATS;
+        let targets: Vec<MorphTarget> = (0..MAX_MORPH_TARGETS)
+            .map(|i| {
+                // 每形状唯一值，方便按偏移验证顺序
+                MorphTarget::new(format!("t{i}"), vec![[i as f32; 3]; 3])
+            })
+            .collect();
+        let set = MorphSet::new(targets);
+        let (flat, stride) = set.flatten_limited(MAX_MORPH_TARGETS);
+        assert_eq!(stride, per_shape, "stride 仍是单形状的浮点数");
+        assert_eq!(flat.len(), MAX_MORPH_TARGETS * per_shape);
+        // 最后一个形状的第一顶点、位置 x 分量
+        let tail = (MAX_MORPH_TARGETS - 1) * per_shape;
+        assert_eq!(flat[tail], (MAX_MORPH_TARGETS - 1) as f32);
+        // 形状 4（第 2 组第 1 个）同样在表内，不是补零
+        assert_eq!(flat[4 * per_shape], 4.0);
+    }
+
+    /// 扩展三十九（契约五）：`MorphInstance` 能登记到上限，且越界一位立刻被拒。
+    #[test]
+    fn instance_accepts_full_weight_slots() {
+        let mut instance = MorphInstance::new(0, MAX_MORPH_TARGETS + 5);
+        assert_eq!(instance.target_count, MAX_MORPH_TARGETS, "登记数夹到上限");
+        let last = MAX_MORPH_TARGETS - 1;
+        assert!(instance.set_weight(last, 0.75), "最后一格可写");
+        assert_eq!(instance.weight_of(last), Some(0.75));
+        assert!(!instance.set_weight(MAX_MORPH_TARGETS, 1.0), "越界一格");
+        assert_eq!(instance.weight_of(MAX_MORPH_TARGETS), None);
     }
 }

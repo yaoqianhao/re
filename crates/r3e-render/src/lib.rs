@@ -21,7 +21,7 @@ pub use envprobe::{
     EnvProbeStats, CUBE_FACES, DUMMY_CUBE_FACE_SIZE, ENV_CUBE_BINDING,
 };
 pub use instance_upload::{plan_upload, UploadPlan, MAX_RANGES, MERGE_GAP};
-pub use mesh::{vertex_layout, InstanceRaw};
+pub use mesh::{group_morph_weights, vertex_layout, InstanceRaw, MORPH_WEIGHT_GROUPS};
 pub use occlusion::{
     OcclusionCuller, OcclusionStats, DEFAULT_READBACK_INTERVAL, MAX_READBACK_INTERVAL,
     MIN_READBACK_INTERVAL,

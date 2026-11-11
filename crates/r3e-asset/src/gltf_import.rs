@@ -15,7 +15,8 @@
 //!
 //! 形变（扩展三十六）：支持 `primitive.targets` 的位置 / 法线增量，导入后成为
 //! `MeshData::morph`；同一网格多个 primitive 的形状按 `targets` 下标合并，
-//! 只用前 `MAX_MORPH_TARGETS` 个（每实例权重只有一个 `vec4`）。切线增量忽略。
+//! 只用前 `MAX_MORPH_TARGETS` 个（每实例权重是 `MORPH_WEIGHT_GROUPS` 组 `vec4`，
+//! 扩展三十九后 2 组 = 8 个形状）。切线增量忽略。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -554,7 +555,8 @@ struct MorphChunk {
 ///
 /// 形状下标以 glTF 的 `targets` 顺序为准：脚本里 `morph_set(name, t, w)` 的 `t`
 /// 就是这里的下标，所以**不能跳过全零形状**（跳过会让后面的下标整体前移）。
-/// 超过 [`MAX_MORPH_TARGETS`] 的形状直接丢弃并告警 —— 每实例权重只有一个 `vec4`。
+/// 超过 [`MAX_MORPH_TARGETS`] 的形状直接丢弃并告警 —— 每实例权重只有 2 组 `vec4`
+/// （扩展三十九），第 9 个形状起没有分量可写。
 fn assemble_morph(
     prim_morphs: &[MorphChunk],
     vertex_count: usize,

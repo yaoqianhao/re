@@ -17,7 +17,7 @@ use winit::window::Window;
 
 use crate::envprobe::{self, EnvProbeSource, EnvProbeStats};
 use crate::instance_upload::{self, MAX_RANGES, MERGE_GAP};
-use crate::mesh::{vertex_layout, InstanceRaw};
+use crate::mesh::{self, vertex_layout, InstanceRaw};
 use crate::occlusion::{OcclusionCuller, OcclusionStats};
 use crate::pbr::{MaterialUniform, PbrMapFlags, SurfaceKey};
 use crate::postfx::{PostFxPass, PostFxStats};
@@ -683,7 +683,7 @@ impl MeshCache {
     /// 进缓冲 —— GPU 上越界读是未定义行为，不是 panic）：
     ///
     /// 1. `validate_against(网格顶点数)` —— 长度不等或含 NaN；
-    /// 2. 只取前 `MAX_MORPH_TARGETS` 个形状（每实例只有一个 `vec4` 权重）；
+    /// 2. 只取前 `MAX_MORPH_TARGETS` 个形状（每实例权重是 `MORPH_WEIGHT_GROUPS` 组 `vec4`）；
     /// 3. 表容量上限（[`MAX_MORPH_TABLE_FLOATS`]）。
     fn register_morph(&mut self, data: &MeshData) -> Option<MeshMorph> {
         if data.morph.is_empty() {
@@ -3820,8 +3820,8 @@ impl Renderer {
                 morph_base: morph.map_or(0, |m| m.base),
                 morph_stride: morph.map_or(0, |m| m.stride),
                 morph_count: morph.map_or(0, |m| m.count),
-                // 权重直接把场景里的四分量搬过来；场景没登记形变时全 0
-                morph_weights,
+                // 扩展三十九：扁平权重按 4 个一组切进 `vec4` 槽位；场景没登记形变时全 0
+                morph_weights: mesh::group_morph_weights(&morph_weights),
             };
             // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
             let depth =
@@ -5053,7 +5053,7 @@ mod morph_table_tests {
         assert_eq!(cache.morph_version(), 1, "被拒的网格不动版本号");
     }
 
-    /// 形状数超上限只取前 `MAX_MORPH_TARGETS` 个：每实例只有一个 vec4 权重。
+    /// 形状数超上限只取前 `MAX_MORPH_TARGETS` 个：每实例权重是 2 组 vec4（扩展三十九）。
     #[test]
     fn target_count_is_capped_at_max() {
         let mut cache = MeshCache::new();
@@ -5127,7 +5127,7 @@ mod morph_table_tests {
             stride: 18,
             count: 1,
             max_displacement: 2.0,
-            max_displacements: [2.0, 0.0, 0.0, 0.0],
+            max_displacements: [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         assert_eq!(morph.cull_inflate(0.0, 1.0), 0.0, "权重 0 不外扩");
         assert_eq!(morph.cull_inflate(1.0, 1.0), 2.0);
@@ -5174,37 +5174,50 @@ mod morph_table_tests {
             stride: 36,
             count: 2,
             max_displacement: 0.15,
-            max_displacements: [0.02, 0.15, 0.0, 0.0],
+            max_displacements: [0.02, 0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         // 只眨眼：余量 0.02，粗界口径会算成 0.15（大 7.5 倍）
-        let only_blink = morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], 1.0);
+        let only_blink = morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
         assert!((only_blink - 0.02).abs() < 1e-6, "实际 {only_blink}");
         assert!(
             (morph.cull_inflate(1.0, 1.0) - 0.15).abs() < 1e-6,
             "粗界仍是 0.15"
         );
         // 两个一起动 = 各自贡献之和（互斥归一化后通常落在 1.0 预算内）
-        let both = morph.cull_inflate_weights(&[0.5, 0.5, 0.0, 0.0], 1.0);
+        let both = morph.cull_inflate_weights(&[0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
         assert!((both - 0.085).abs() < 1e-6, "实际 {both}");
         // 负权重按绝对值计：反向形变同样把顶点推出静止盒
-        let negative = morph.cull_inflate_weights(&[-1.0, 0.0, 0.0, 0.0], 1.0);
+        let negative = morph.cull_inflate_weights(&[-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
         assert!((negative - 0.02).abs() < 1e-6);
         // 缩放线性放大、零权重严格为 0
-        assert!((morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], 3.0) - 0.06).abs() < 1e-6);
-        assert_eq!(morph.cull_inflate_weights(&[0.0; 4], 1.0), 0.0);
-        assert_eq!(morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], 0.0), 0.0);
-        // NaN 权重 / NaN 缩放按 0 处理，绝不让 NaN 泄进包围盒
+        assert!(
+            (morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3.0) - 0.06)
+                .abs()
+                < 1e-6
+        );
         assert_eq!(
-            morph.cull_inflate_weights(&[f32::NAN, 0.0, 0.0, 0.0], 1.0),
+            morph.cull_inflate_weights(&[0.0; r3e_core::MAX_MORPH_TARGETS], 1.0),
             0.0
         );
         assert_eq!(
-            morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0], f32::NAN),
+            morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.0),
+            0.0
+        );
+        // NaN 权重 / NaN 缩放按 0 处理，绝不让 NaN 泄进包围盒
+        assert_eq!(
+            morph.cull_inflate_weights(&[f32::NAN, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0),
+            0.0
+        );
+        assert_eq!(
+            morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], f32::NAN),
             0.0
         );
         // 溢出时 fail-open 到无穷：宁可多画，不能把本该可见的实例剔除掉
         assert_eq!(
-            morph.cull_inflate_weights(&[f32::MAX, f32::MAX, 0.0, 0.0], f32::MAX),
+            morph.cull_inflate_weights(
+                &[f32::MAX, f32::MAX, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                f32::MAX
+            ),
             f32::MAX
         );
     }
@@ -5217,9 +5230,37 @@ mod morph_table_tests {
             stride: 18,
             count: 1,
             max_displacement: 0.5,
-            max_displacements: [0.5, 9.0, 0.0, 0.0],
+            max_displacements: [0.5, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
-        let inflate = morph.cull_inflate_weights(&[0.0, 1.0, 0.0, 0.0], 1.0);
+        let inflate = morph.cull_inflate_weights(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
         assert_eq!(inflate, 0.0, "第二个槽位不在 count 内，不该产生余量");
+    }
+
+    /// 扩展三十九：剔除余量必须跟着「第 2 组」的形状走 —— 形状 4..8 只靠
+    /// `max_displacements[4..]` 与权重后 4 位说话；这一条断了，播第 5 个表情
+    /// 的实例会在屏幕上「笑着消失」（盒没撑大，被视锥当盒子外的物件剪掉）。
+    #[test]
+    fn cull_inflate_covers_second_weight_group() {
+        let morph = MeshMorph {
+            base: 0,
+            stride: 18,
+            count: 8,
+            max_displacement: 0.4,
+            max_displacements: [0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0],
+        };
+        // 只有形状 4（第 2 组第 1 分量）有位移，其余全 0
+        let inflate = morph.cull_inflate_weights(&[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 2.0);
+        assert!(
+            (inflate - 0.8).abs() < 1e-6,
+            "形状 4 全权重 × 缩放 2 应得 0.8，实际 {inflate}"
+        );
+        // 第 1 组全 0 时余量必须恰好为 0：扩组不能让「没播放的实例」白撑盒子
+        assert_eq!(
+            morph.cull_inflate_weights(&[0.0; r3e_core::MAX_MORPH_TARGETS], 2.0),
+            0.0
+        );
+        // 最后一个形状（下标 7）同理，防「循环少跑一格」
+        let last = morph.cull_inflate_weights(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 1.0);
+        assert_eq!(last, 0.0, "形状 7 没有登记位移，余量为 0");
     }
 }

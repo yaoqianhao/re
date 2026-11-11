@@ -1,6 +1,7 @@
 //! `shader.wgsl` 里形变（morph target）路径的静态校验：不开窗口、不建 GPU。
 //!
-//! 扩展三十七把**切线增量**接进形变表，四处最易单边漂移的约定各一条断言：
+//! 扩展三十七把**切线增量**接进形变表，扩展三十九把**权重从 1 组 `vec4` 扩到多组**
+//! （形状数 4 → 8），四处最易单边漂移的约定各一条断言：
 //!
 //! * `const MORPH_VERTEX_FLOATS` 必须等于 `r3e_core::morph::MORPH_VERTEX_FLOATS`
 //!   —— 两边不等时不会报错，只会让每顶点跨段串读（位置读到法线、切线读到下一个顶点）；
@@ -8,8 +9,12 @@
 //!   `+0 / +3 / +6` 的偏移必须对应；
 //! * 蒙皮段必须用**累积后的** `local_tangent`，退回 `in.tangent.xyz` 会静默吞掉切线增量；
 //! * 形变表仍是 `@group(2) @binding(1)` 的只读 storage，实例元数据没换 group。
+//!
+//! 扩展三十九再加三条：`MORPH_SHAPES` 与 `MAX_MORPH_TARGETS` 一致、第 2 组权重接到
+//! 形状 4..8、主通道与阴影通道都声明了两组权重属性。
 
-use r3e_core::morph::MORPH_VERTEX_FLOATS;
+use r3e_core::morph::{MAX_MORPH_TARGETS, MORPH_VERTEX_FLOATS};
+use r3e_core::MORPH_WEIGHT_GROUPS;
 
 const SHADER: &str = include_str!("../src/shader.wgsl");
 
@@ -88,10 +93,64 @@ fn morph_delta_field_order_matches_table_offsets() {
             "形状 0 的 {field} 增量应按 offset {offset} 读，找不到 `{read}`"
         );
         if offset > 0 {
-            let weight_read = format!("weights.x * vec3<f32>({read})");
+            let weight_read = format!("w * vec3<f32>({read})");
             assert!(
                 SHADER.contains(&weight_read),
                 "{field} 增量必须按权重累加，找不到 `{weight_read}`"
+            );
+        }
+    }
+}
+
+/// 扩展三十九：着色器侧的形状上限必须等于 core 的 `MAX_MORPH_TARGETS`（= 组数 × 4）。
+///
+/// 这条最危险：着色器写 4、core 写 8 时一切照常编译，只是第 5..8 个形状
+/// 静默不生效 —— 脚本设了权重、顶点却不动，没有任何报错。
+#[test]
+fn morph_shapes_matches_core_const() {
+    let needle = format!("const MORPH_SHAPES: u32 = {MAX_MORPH_TARGETS}u;");
+    assert!(
+        SHADER.contains(&needle),
+        "期望 `{needle}`（要同步改 r3e_core::MAX_MORPH_TARGETS 与本行）"
+    );
+    assert_eq!(
+        MAX_MORPH_TARGETS,
+        MORPH_WEIGHT_GROUPS * 4,
+        "形状数必须恰好填满每组 4 个分量的权重属性"
+    );
+}
+
+/// 第二组权重必须真的接到第 5..8 个形状上：`w1` 的第 i 个分量配 `stride * (4+i)`。
+///
+/// 少接一条会在「形状 5 的权重被读进形状 1」这类错位上静默出错 —— 形变看着像在动，
+/// 只是动的是另一张脸。
+#[test]
+fn second_weight_group_feeds_high_shapes() {
+    assert!(
+        SHADER.contains("w0: vec4<f32>, w1: vec4<f32>"),
+        "morph_offset 必须同时接收两组权重"
+    );
+    for (lane, shape) in [("x", 4), ("y", 5), ("z", 6), ("w", 7)] {
+        let expected = format!("morph_accumulate(&delta, head + stride * {shape}u, w1.{lane})");
+        assert!(
+            SHADER.contains(&expected),
+            "形状 {shape} 应由 w1.{lane} 驱动，找不到 `{expected}`"
+        );
+    }
+}
+
+/// 两个顶点入口都要带上两组权重属性（location 12 / 13）：漏一个的通道会拿到全 0
+/// 权重，该通道里的形变整体失效（阴影通道漏了就是「影子不动」）。
+#[test]
+fn both_vertex_stages_declare_two_weight_groups() {
+    for stage in ["VsIn", "ShadowVsIn"] {
+        let body = struct_body(stage);
+        for group in 0..MORPH_WEIGHT_GROUPS {
+            let location = 12 + group as u32;
+            let expected = format!("@location({location})");
+            assert!(
+                body.contains(&expected),
+                "{stage} 缺少第 {group} 组权重属性 `{expected}`"
             );
         }
     }
