@@ -1027,6 +1027,15 @@ pub struct RenderStats {
     /// 与扩展三十六的「峰值权重 × 最长位移」口径相比只会更小，
     /// 差额即「逐形状余量」省下来的包围盒膨胀量。
     pub morph_cull_inflate: f32,
+    /// 扩展四十：本帧被**逐实例形状掩码**整段摘掉形变的实例数。
+    /// 0 = 没有实例把形状集关空；非零时这些实例的顶点路径与无形变网格逐位相同
+    /// （不是「权重刚好为 0」，而是连 `morph_offset` 都不进）。
+    pub morph_masked: u32,
+    /// 扩展四十：被掩码挡在门外的非零权重槽合计 —— 本帧省下的乘加组数。
+    ///
+    /// 与 `morph_instances` 一起看：实例数不变而这里持续非零，说明掩码在
+    /// 「同一份网格的实例之间」真的分化了形状集（而不是全场景一刀切）。
+    pub morph_masked_shapes: u32,
 }
 
 /// 扩展三十五：块拷贝的目标缓冲。
@@ -1503,6 +1512,12 @@ struct InstancePlan {
     morph_normalized: u32,
     /// 扩展三十八：本帧逐形状剔除余量合计（进 `RenderStats::morph_cull_inflate`）。
     morph_cull_inflate: f32,
+    /// 扩展四十：被形状掩码整段摘掉形变的实例数（进 `RenderStats::morph_masked`）。
+    /// 这些实例的 `morph_count` 已写 0，顶点路径与无形变网格逐位相同。
+    morph_masked: u32,
+    /// 扩展四十：被掩码挡在门外的**非零权重槽**合计
+    /// （进 `RenderStats::morph_masked_shapes`）—— 本帧省下的形变乘加组数。
+    morph_masked_shapes: u32,
 }
 
 /// 一次阴影提交的实例区间：`(groups 下标, 实例缓冲区间)`。
@@ -1532,6 +1547,26 @@ struct ShadowPlan {
 
 /// 把掩码落成实例区间。
 ///
+/// 扩展四十：把实例掩码裁剪到「这份网格真有几个形状」。网格没登记形状时取 0。
+///
+/// 两个数都可能超界：`MorphInstance` 只知道场景绑定的 `target_count`，网格侧
+/// 登记的 `count` 是另一份（脚本写满 8 位、网格只有 3 个形状都很常见）。
+/// 不裁的话掩码会「亮着」而那些位对应的形变表段落根本不存在。
+fn clip_instance_mask(instance_mask: u32, registered: Option<u32>) -> u32 {
+    registered.map_or(0, |count| {
+        instance_mask & r3e_core::shape_mask_bits(count as usize)
+    })
+}
+
+/// 扩展四十：掩码是否把这个实例的形状集**整个**关掉。
+///
+/// 只有这条路径能真正省下开销：`morph_count` 写 0 后着色器在 `imeta.w == 0`
+/// 处提前返回。网格本来就没有形状（`count == 0`）不算「被掩码摘掉」——
+/// 那是「本来就没有」，统计里不该计进 `morph_masked`。
+fn mask_drops_all_shapes(mask: u32, registered_count: u32) -> bool {
+    mask == 0 && registered_count > 0
+}
+
 /// `mask = None` 表示不裁剪（局部光源阴影、或按级裁剪被关掉）：每个分组一段全量，
 /// 行为与扩展二十三逐字相同。`Some` 时按组切出保留的连续段。
 fn shadow_runs(groups: &[DrawGroup], mask: Option<&[bool]>) -> Vec<ShadowRun> {
@@ -2469,6 +2504,8 @@ impl Renderer {
         // 扩展三十八：互斥归一化的实例数与逐形状剔除余量合计
         let (morph_normalized, morph_cull_inflate) =
             (plan.morph_normalized, plan.morph_cull_inflate);
+        // 扩展四十：掩码摘掉形变的实例数，与因此省下的非零权重槽数
+        let (morph_masked, morph_masked_shapes) = (plan.morph_masked, plan.morph_masked_shapes);
         self.prepare_materials(&groups);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         // 扩展二十四：多带一份「每级保留哪些实例」的掩码
@@ -2667,6 +2704,8 @@ impl Renderer {
                 // 扩展三十八：其中权重被互斥组归一化过的数量，以及本帧余量合计
                 morph_normalized,
                 morph_cull_inflate,
+                morph_masked,
+                morph_masked_shapes,
             };
         }
 
@@ -3528,6 +3567,10 @@ impl Renderer {
         let mut morph_normalized = 0u32;
         // 扩展三十八：本帧逐形状剔除余量合计（世界单位），进 `RenderStats`
         let mut morph_cull_inflate = 0.0f32;
+        // 扩展四十：被逐实例形状掩码整段摘掉形变的实例数（`morph_count` 写 0 的那批）
+        let mut morph_masked = 0u32;
+        // 扩展四十：被掩码挡在门外的非零权重槽合计（省下的形变乘加组数）
+        let mut morph_masked_shapes = 0u32;
 
         // 一个待摊平实例：实例数据 + 阴影用包围盒 + 归属节点 + 半透明排序深度
         struct StagedInstance {
@@ -3576,6 +3619,9 @@ impl Renderer {
             morph_weights: [f32; r3e_core::MAX_MORPH_TARGETS],
             /// 该网格的形变登记（无形状为 `None`），第二遍填进 `InstanceRaw`。
             morph: Option<MeshMorph>,
+            /// 扩展四十：裁剪到「网格真有形状数」之后的逐实例形状掩码。
+            /// 与 `morph` 同生共死 —— `morph` 为 `None`（掩码清空/无登记）时这里是 0。
+            morph_mask: u32,
         }
 
         // 扩展二十九：视锥剔除从「逐实例判定」升级成「按子树预筛」，复用扩展二十五
@@ -3606,19 +3652,62 @@ impl Renderer {
             let key = (node.mesh, node.material.map(SurfaceKey::new));
             // 扩展三十八：形变权重每帧只在这里定一次 —— 互斥归一化出的是**副本**，
             // 场景里的权重保持不变（脚本写 1.0 读回还是 1.0，只有着色器吃到 0.5）。
-            let (morph, morph_weights, morph_scaled) = {
+            // 扩展四十：形状掩码也在这里一次定下来。归一层已经把掩码外的槽位清 0，
+            // 所以「剔除用的权重」与「着色器吃到的权重」仍然是同一份。
+            let (morph, morph_weights, morph_scaled, shape_mask, masked_slots) = {
                 let registered = self.mesh_cache.morph_of(node.mesh);
                 match scene.morph_of(node.id) {
                     Some(instance) => {
                         let (weights, scaled) = instance.normalized_weights();
-                        (registered, weights, scaled)
+                        // 掩码按「网格真有几个形状」裁剪：脚本里写满了 8 位，
+                        // 网格只有 3 个形状时高位本来也不参与，裁掉后比较更省心。
+                        let mask =
+                            clip_instance_mask(instance.shape_mask(), registered.map(|m| m.count));
+                        (
+                            registered,
+                            weights,
+                            scaled,
+                            Some(mask),
+                            // 网格没登记形状时没有形变表可省，这个读数只对
+                            // 「有表却被掩码挡住」的槽位有意义
+                            if registered.is_some() {
+                                instance.masked_nonzero_count()
+                            } else {
+                                0
+                            },
+                        )
                     }
-                    None => (registered, [0.0; r3e_core::MAX_MORPH_TARGETS], false),
+                    None => (
+                        registered,
+                        [0.0; r3e_core::MAX_MORPH_TARGETS],
+                        false,
+                        None,
+                        // 没有实例绑定时权重本来就是全 0，「被掩掉的槽」无从谈起
+                        0,
+                    ),
                 }
             };
             if morph_scaled && morph.is_some_and(|m| m.count > 0) {
                 morph_normalized += 1;
             }
+            // 扩展四十：掩码把形状集关空 → 这个实例整段摘掉形变。
+            //
+            // 这是掩码唯一的「硬」收益：`morph_count` 写 0 后着色器在
+            // `imeta.w == 0` 处直接返回，连 8 次权重比较都不做。权重置 0 做不到
+            // 这一点 —— 那是「算了再乘 0」。半掩的实例仍走完整路径（形状集是
+            // 动态索引的，跳着取反而更贵），收益体现在这一格权重被归一化清 0。
+            let morph = match (morph, shape_mask) {
+                (Some(m), Some(mask)) if mask_drops_all_shapes(mask, m.count) => {
+                    morph_masked += 1;
+                    morph_masked_shapes += masked_slots;
+                    None
+                }
+                (m, Some(_)) => {
+                    morph_masked_shapes += masked_slots;
+                    m
+                }
+                (m, None) => m,
+            };
             let world_bounds = match self.mesh_cache.bounds(node.mesh) {
                 Some(local) => {
                     // 蒙皮网格的形变会跑出静止姿态包围盒，按比例留余量再测
@@ -3679,6 +3768,7 @@ impl Renderer {
                 color: node.color,
                 morph_weights,
                 morph,
+                morph_mask: shape_mask.unwrap_or(0),
             });
         }
 
@@ -3822,6 +3912,10 @@ impl Renderer {
                 morph_count: morph.map_or(0, |m| m.count),
                 // 扩展三十九：扁平权重按 4 个一组切进 `vec4` 槽位；场景没登记形变时全 0
                 morph_weights: mesh::group_morph_weights(&morph_weights),
+                // 扩展四十：逐实例形状掩码。第一遍已按网格形状数裁剪，
+                // 且与 `morph_count == 0` 绑定 —— 掩码清空的实例这里一定是 0，
+                // 着色器读到 `imeta.w == 0` 就先短路，掩码位根本不会被查。
+                morph_mask: item.morph_mask,
             };
             // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
             let depth =
@@ -3973,6 +4067,8 @@ impl Renderer {
                 morph_instances,
                 morph_normalized,
                 morph_cull_inflate,
+                morph_masked,
+                morph_masked_shapes,
             };
         }
 
@@ -4022,6 +4118,8 @@ impl Renderer {
             morph_instances,
             morph_normalized,
             morph_cull_inflate,
+            morph_masked,
+            morph_masked_shapes,
         }
     }
 
@@ -5262,5 +5360,64 @@ mod morph_table_tests {
         // 最后一个形状（下标 7）同理，防「循环少跑一格」
         let last = morph.cull_inflate_weights(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 1.0);
         assert_eq!(last, 0.0, "形状 7 没有登记位移，余量为 0");
+    }
+}
+
+/// 扩展四十（逐实例形状掩码）的渲染侧合约：不开窗口、不建 GPU，只验掩码口径。
+#[cfg(test)]
+mod morph_mask_tests {
+    use super::*;
+
+    /// 契约一：掩码按「网格真有几个形状」裁剪，高位一律作废。
+    ///
+    /// 脚本把掩码写满（`morph_mask_set(node, 0xFFFF)`）而网格只有 3 个形状时，
+    /// 若不裁，「第 5 个形状启用中」会被记进统计，形变表那段却不存在 ——
+    /// 数字好看但实际读不到数据。
+    #[test]
+    fn mask_is_clipped_to_mesh_shape_count() {
+        assert_eq!(
+            clip_instance_mask(0b1111_1011, Some(3)),
+            0b011,
+            "只留低 3 位"
+        );
+        assert_eq!(clip_instance_mask(u32::MAX, Some(3)), 0b111);
+        assert_eq!(
+            clip_instance_mask(u32::MAX, Some(8)),
+            r3e_core::ALL_SHAPE_MASK,
+            "网格形状数到上限时等于全启用"
+        );
+        assert_eq!(
+            clip_instance_mask(0b101, Some(0)),
+            0,
+            "形状数为 0 的网格没有可用的位"
+        );
+    }
+
+    /// 契约二：网格根本没登记形状时掩码取 0。
+    ///
+    /// 这时实例缓冲里的 `morph_count` 本来就写 0，掩码写什么都不该让着色器
+    /// 以为「有形状可用」—— 非 0 掩码 + 0 形状数是着色器里最危险的组合。
+    #[test]
+    fn unregistered_mesh_forces_zero_mask() {
+        assert_eq!(clip_instance_mask(r3e_core::ALL_SHAPE_MASK, None), 0);
+        assert!(
+            !mask_drops_all_shapes(clip_instance_mask(u32::MAX, None), 0),
+            "没有形状的网格不算「被掩码摘掉」，否则统计里会虚高"
+        );
+    }
+
+    /// 契约三：只有掩码全关才算「整段摘掉形变」，半掩仍走完整路径。
+    ///
+    /// 形状集是动态索引的（`imeta.y + vi * z`），跳着取反而更贵，所以半掩
+    /// 的收益只体现在权重被归一化清 0，不计入 `morph_masked`。
+    #[test]
+    fn only_a_fully_closed_mask_drops_the_morph_path() {
+        assert!(mask_drops_all_shapes(0, 3));
+        assert!(!mask_drops_all_shapes(0b001, 3), "半掩仍走完整路径");
+        assert!(!mask_drops_all_shapes(0b111, 3));
+        assert!(
+            !mask_drops_all_shapes(0, 0),
+            "形状数为 0 不属于「被掩码摘掉」"
+        );
     }
 }

@@ -1,0 +1,49 @@
+{
+  "name": "morph-mask",
+  "background": [
+    0.02,
+    0.02,
+    0.03,
+    1.0
+  ],
+  "camera": {
+    "position": [
+      0.0,
+      0.0,
+      7.0
+    ],
+    "target": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "fov": 55.0
+  },
+  "light": {
+    "direction": [
+      -0.3,
+      -0.6,
+      -0.7
+    ],
+    "color": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "intensity": 1.6,
+    "ambient": [
+      0.5,
+      0.5,
+      0.55
+    ],
+    "shadow": {
+      "enabled": false
+    }
+  },
+  "assets": [
+    {
+      "path": "octa_face.glb"
+    }
+  ],
+  "objects": []
+}

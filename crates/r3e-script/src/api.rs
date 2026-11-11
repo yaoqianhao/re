@@ -738,6 +738,60 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         }
     });
 
+    // ---------------- 逐实例形状掩码（扩展四十） ----------------
+    //
+    // 同一个网格可以有十几个实例，各用一套形状子集：掩码第 i 位 = 形状 i 启用。
+    // 掩码关空的实例整段摘掉形变（`morph_count` 写 0），半掩的实例权重按掩码归零。
+
+    // 整块写掩码，返回裁剪到「网格形状数」之后的生效值；没有绑定返回 -1
+    let c = ctx.clone();
+    engine.register_fn("morph_mask_set", move |name: &str, mask: i64| -> i64 {
+        if !(0..=u32::MAX as i64).contains(&mask) {
+            return -1;
+        }
+        match c
+            .scene
+            .borrow_mut()
+            .set_morph_mask_by_name(name, mask as u32)
+        {
+            Some(effective) => effective as i64,
+            None => -1,
+        }
+    });
+
+    let c = ctx.clone();
+    engine.register_fn("morph_mask", move |name: &str| -> i64 {
+        match c.scene.borrow().morph_mask_by_name(name) {
+            Some(mask) => mask as i64,
+            None => -1,
+        }
+    });
+
+    // 单个形状开 / 关：脚本里写这个比算位运算直观
+    let c = ctx.clone();
+    engine.register_fn(
+        "morph_show",
+        move |name: &str, index: i64, enabled: bool| -> bool {
+            if index < 0 {
+                return false;
+            }
+            c.scene
+                .borrow_mut()
+                .set_morph_shape_enabled_by_name(name, index as usize, enabled)
+        },
+    );
+
+    let c = ctx.clone();
+    engine.register_fn("morph_visible", move |name: &str, index: i64| -> bool {
+        if index < 0 {
+            return false;
+        }
+        c.scene
+            .borrow()
+            .morph_shape_enabled_by_name(name, index as usize)
+            .unwrap_or(false)
+    });
+
     let c = ctx.clone();
     engine.register_fn("anim_info", move |name: &str| -> String {
         let s = c.scene.borrow();

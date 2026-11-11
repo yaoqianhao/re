@@ -676,7 +676,7 @@ impl EngineApp {
                     .map(|s| {
                         format!(
                             " | draws={} instances={} culled={} cull_unknown={} \
-                             morph={}/{}f norm={} inflate={:.3}",
+                             morph={}/{}f norm={} inflate={:.3} mask={}/{}",
                             s.draw_calls,
                             s.instances,
                             s.culled,
@@ -684,7 +684,9 @@ impl EngineApp {
                             s.morph_instances,
                             s.morph_floats,
                             s.morph_normalized,
-                            s.morph_cull_inflate
+                            s.morph_cull_inflate,
+                            s.morph_masked,
+                            s.morph_masked_shapes
                         )
                     })
                     .unwrap_or_default();

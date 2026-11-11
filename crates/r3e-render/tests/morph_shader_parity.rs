@@ -12,9 +12,15 @@
 //!
 //! 扩展三十九再加三条：`MORPH_SHAPES` 与 `MAX_MORPH_TARGETS` 一致、第 2 组权重接到
 //! 形状 4..8、主通道与阴影通道都声明了两组权重属性。
+//!
+//! 扩展四十（逐实例形状掩码）再加三条：`@location(14)` 在两个顶点入口都必须是
+//! `morph_mask: u32`、两处 `morph_offset` 调用都要把掩码传进去（漏传的通道形变
+//! 不受掩码约束，就是「影子还在笑、脸已经不笑了」）、掩码乘子必须是 0/1 取值
+//! （写错成 0..4 会直接把权重乘成倍率）。
 
 use r3e_core::morph::{MAX_MORPH_TARGETS, MORPH_VERTEX_FLOATS};
 use r3e_core::MORPH_WEIGHT_GROUPS;
+use r3e_render::mesh::{MORPH_MASK_LOCATION, MORPH_WEIGHT_BASE_LOCATION, MORPH_WEIGHT_OFFSET};
 
 const SHADER: &str = include_str!("../src/shader.wgsl");
 
@@ -126,12 +132,18 @@ fn morph_shapes_matches_core_const() {
 /// 只是动的是另一张脸。
 #[test]
 fn second_weight_group_feeds_high_shapes() {
-    assert!(
-        SHADER.contains("w0: vec4<f32>, w1: vec4<f32>"),
-        "morph_offset 必须同时接收两组权重"
-    );
+    // 扩展四十把签名拆成多行（多了 `mask` 参数），按单参数匹配而不是整行拼接
+    let signature = fn_body("morph_offset");
+    for group in ["w0", "w1"] {
+        let expected = format!("{group}: vec4<f32>");
+        assert!(
+            signature.contains(&expected),
+            "morph_offset 必须接收第 {group} 组权重（参数 `{expected}`）"
+        );
+    }
+    // 扩展四十起权重先过掩码乘子（`on1` = w1 × 掩码高 4 位），分量对应关系不变
     for (lane, shape) in [("x", 4), ("y", 5), ("z", 6), ("w", 7)] {
-        let expected = format!("morph_accumulate(&delta, head + stride * {shape}u, w1.{lane})");
+        let expected = format!("morph_accumulate(&delta, head + stride * {shape}u, on1.{lane})");
         assert!(
             SHADER.contains(&expected),
             "形状 {shape} 应由 w1.{lane} 驱动，找不到 `{expected}`"
@@ -201,5 +213,110 @@ fn morph_table_binding_is_group2_binding1() {
     assert!(
         before.contains("@group(2) @binding(1)"),
         "morph_table 的绑定位置变了，实际前置文本：{before}"
+    );
+}
+
+/// 扩展四十（契约一）：掩码属性必须同时出现在两个顶点入口，且类型是 `u32`。
+///
+/// location 取 `r3e_render::mesh::MORPH_MASK_LOCATION`（= 权重区之后），
+/// 与顶点缓冲布局共用同一个数 —— 手抄一个 14 在两边，改权重组数时会先红在这里。
+#[test]
+fn both_vertex_stages_declare_morph_mask() {
+    let location = MORPH_MASK_LOCATION;
+    assert_eq!(
+        location,
+        MORPH_WEIGHT_BASE_LOCATION + MORPH_WEIGHT_GROUPS as u32,
+        "掩码必须紧跟在最后一组权重之后，中间不留空位"
+    );
+    let expected = format!("@location({location}) morph_mask: u32");
+    for stage in ["VsIn", "ShadowVsIn"] {
+        let body = struct_body(stage);
+        assert!(
+            body.contains(&expected),
+            "{stage} 缺少掩码属性 `{expected}`"
+        );
+    }
+    // 顶点属性区没有被误占：0..=4 与 11 是顶点属性
+    assert!(location > 11, "掩码 location 与顶点切线（11）撞号");
+}
+
+/// 扩展四十（契约二）：两处 `morph_offset` 调用都要传掩码。
+///
+/// 阴影通道漏传时编译就会失败（少一个参数），但**传错位**不会 —— 比如把
+/// `in.morph_mask` 塞到 `vi` 的位置、把 `in.vertex_index` 塞到 mask 的位置，
+/// 类型恰好都是 `u32`，于是影子的形变按「顶点下标作掩码」跑，静默错位。
+#[test]
+fn both_stages_pass_mask_into_morph_offset() {
+    for stage in ["vs_main", "vs_shadow"] {
+        let body = fn_body(stage);
+        assert!(
+            body.contains("in.morph_mask"),
+            "{stage} 必须把实例掩码传给 morph_offset"
+        );
+        // 掩码紧跟两组权重之后、顶点下标之前
+        let mask_at = body.find("in.morph_mask").expect("上面已断言");
+        let vi_at = body
+            .find("in.vertex_index")
+            .unwrap_or_else(|| panic!("{stage} 没传 vertex_index"));
+        assert!(
+            mask_at < vi_at,
+            "{stage} 里掩码必须排在 vertex_index 之前（签名顺序 mask, vi）"
+        );
+    }
+}
+
+/// 扩展四十（契约三）：掩码乘子只产出 0 / 1，且两组权重要分别右移 0 / 4 位。
+///
+/// `select(0.0, 1.0, ...)` 逐位展开是「无分支」的写法：掩码是实例级数据，
+/// 同批次内每实例可能不同，用 `if` 会让 warp 内部发散。乘子若写成别的值
+/// （把权重当倍率放大），掩码就从「开关」变成了「增益」，与场景侧
+/// `MorphInstance::shape_mask()` 的语义（位 = 启用/停用）彻底对不上。
+#[test]
+fn mask_multiplier_is_binary_and_splits_groups() {
+    let body = fn_body("morph_mask_vec");
+    for bit in ["1u", "2u", "4u", "8u"] {
+        let expected = format!("(m & {bit}) != 0u");
+        assert!(
+            body.contains(&expected),
+            "morph_mask_vec 缺少位判断 `{expected}`"
+        );
+    }
+    assert_eq!(
+        body.matches("select(0.0, 1.0,").count(),
+        4,
+        "4 个分量各一个 0/1 选择，多一个少一个都会错位"
+    );
+    assert!(
+        !body.contains("f32(m)"),
+        "掩码不能直接当数值参与乘加，必须经 select 归一成 0/1"
+    );
+
+    let offset = fn_body("morph_offset");
+    assert!(
+        offset.contains("morph_mask_vec(mask, 0u)"),
+        "第 1 组（形状 0..4）按掩码低 4 位筛"
+    );
+    assert!(
+        offset.contains("morph_mask_vec(mask, 4u)"),
+        "第 2 组（形状 4..8）按掩码高 4 位筛"
+    );
+}
+
+/// 扩展四十（契约四）：掩码挪进实例缓冲后，权重区偏移不能跟着漂。
+///
+/// 掩码占**权重区之后**的 4 字节，不是塞进权重区里 —— 权重偏移一变，
+/// `@location(12)` 就读到别的字段上，整个形变会按脏权重跑。
+#[test]
+fn mask_offset_sits_after_the_weight_block() {
+    let mesh_src = include_str!("../src/mesh.rs");
+    assert!(
+        mesh_src.contains(
+            "MORPH_MASK_OFFSET: u32 = MORPH_WEIGHT_OFFSET + 16 * MORPH_WEIGHT_GROUPS as u32"
+        ),
+        "掩码偏移必须由权重偏移 + 组数推出，不能手抄绝对值"
+    );
+    assert_eq!(
+        MORPH_WEIGHT_OFFSET, 96,
+        "权重区起点 = model(64) + color(16) + 元数据(16)"
     );
 }

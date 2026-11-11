@@ -18,6 +18,15 @@ pub const MORPH_WEIGHT_BASE_LOCATION: u32 = 12;
 /// `@location(12 + 组号)` 与这里的偏移必须由同一个数推出来，两处手抄必错。
 pub const MORPH_WEIGHT_OFFSET: u32 = 96;
 
+/// 扩展四十：形状掩码的 location（跟在最后一组权重之后）与字节偏移。
+///
+/// 掩码占 4 字节，`InstanceRaw` 里没有别的 `u32` 能与它共用一个属性，
+/// 因此实例步长从 128 涨到 **132**。这 4 字节换的是「整组形状短路」：
+/// 一组形状全被掩码关掉时，着色器连 4 次权重比较都不做。
+pub const MORPH_MASK_LOCATION: u32 = MORPH_WEIGHT_BASE_LOCATION + MORPH_WEIGHT_GROUPS as u32;
+/// 掩码字节偏移：权重区之后（`96 + 16 × 组数`）。
+pub const MORPH_MASK_OFFSET: u32 = MORPH_WEIGHT_OFFSET + 16 * MORPH_WEIGHT_GROUPS as u32;
+
 /// 顶点属性：0 = position(f32x3)、1 = normal(f32x3)、2 = uv(f32x2)、
 /// 3 = joints(u16x4)、4 = weights(f32x4)（P4 蒙皮）、11 = tangent(f32x4)（扩展二十一）。
 ///
@@ -59,8 +68,9 @@ pub fn group_morph_weights(
 /// 单个实例的模型矩阵、颜色、蒙皮槽位与形变权重。作为第二个顶点缓冲
 /// （step_mode = Instance）上传。
 ///
-/// 总长 = `96 + 16 × MORPH_WEIGHT_GROUPS` 字节：扩展三十六的 1 组权重是 112，
-/// 扩展三十九的 2 组是 **128**。加一组的代价就是这 16 字节——形状数同时多 4 个。
+/// 总长 = `96 + 16 × MORPH_WEIGHT_GROUPS + 4` 字节：扩展三十六的 1 组权重是 112，
+/// 扩展三十九的 2 组是 **128**，扩展四十的形状掩码再加 4 → **132**。
+/// 加一组的代价就是这 16 字节——形状数同时多 4 个。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceRaw {
@@ -79,14 +89,20 @@ pub struct InstanceRaw {
     ///
     /// 扩展三十九把它从 `[f32; 4]` 改成二维数组，形状上限随之 `4 → 8`。
     pub morph_weights: [[f32; 4]; MORPH_WEIGHT_GROUPS],
+    /// 扩展四十：逐实例形状掩码，第 `i` 位 = 形状 `i` 启用。
+    ///
+    /// 与 `morph_count`（网格有几个形状）不同，这一位是**实例级**的取舍：
+    /// 同一个网格的十个实例可以各用一套形状子集。0 = 该实例整段摘掉形变。
+    pub morph_mask: u32,
 }
 
 impl InstanceRaw {
-    /// 属性槽位：5..=8 = model 四行、9 = color、10 = 元数据、12 起每组权重一格。
+    /// 属性槽位：5..=8 = model 四行、9 = color、10 = 元数据、12 起每组权重一格，
+    /// 最后 14 = 形状掩码（扩展四十）。
     ///
     /// `vertex_attr_array!` 只吃字面量 location，所以组数无法在宏里循环展开 ——
     /// 下面的 `assert!` 把「改组数必须同步改这里」钉住，避免静默少传一组权重。
-    pub const ATTRIBUTES: [wgpu::VertexAttribute; 6 + MORPH_WEIGHT_GROUPS] = wgpu::vertex_attr_array![
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 6 + MORPH_WEIGHT_GROUPS + 1] = wgpu::vertex_attr_array![
         5 => Float32x4,
         6 => Float32x4,
         7 => Float32x4,
@@ -94,7 +110,8 @@ impl InstanceRaw {
         9 => Float32x4,
         10 => Uint32x4,
         12 => Float32x4,
-        13 => Float32x4
+        13 => Float32x4,
+        14 => Uint32
     ];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -115,6 +132,7 @@ impl InstanceRaw {
             morph_stride: 0,
             morph_count: 0,
             morph_weights: [[0.0; 4]; MORPH_WEIGHT_GROUPS],
+            morph_mask: 0,
         }
     }
 }
@@ -188,18 +206,18 @@ mod tests {
         );
         assert_eq!(
             layout.array_stride,
-            96 + 16 * MORPH_WEIGHT_GROUPS as u64,
-            "model64 + color16 + meta16 + 每组权重 16 × 组数"
+            96 + 16 * MORPH_WEIGHT_GROUPS as u64 + 4,
+            "model64 + color16 + meta16 + 每组权重 16 × 组数 + 掩码 4"
         );
-        assert_eq!(layout.array_stride, 128, "扩展三十九的 2 组权重");
-        assert_eq!(layout.attributes.len(), 6 + MORPH_WEIGHT_GROUPS);
+        assert_eq!(layout.array_stride, 132, "扩展四十的 2 组权重 + 掩码");
+        assert_eq!(layout.attributes.len(), 6 + MORPH_WEIGHT_GROUPS + 1);
         assert_eq!(layout.attributes[5].shader_location, 10);
         assert_eq!(layout.attributes[5].format, wgpu::VertexFormat::Uint32x4);
         assert_eq!(layout.attributes[5].offset, 80);
     }
 
-    /// 扩展三十六 / 三十九：形变权重跟在实例元数据之后（location 12 起，每组 16 字节），
-    /// 最后一组正好填满 stride，不留悬空字节；也不与顶点布局的 location 撞号。
+    /// 扩展三十六 / 三十九 / 四十：形变权重跟在实例元数据之后（location 12 起，每组 16 字节），
+    /// 掩码独占最后一个属性；也不与顶点布局的 location 撞号。
     #[test]
     fn instance_layout_carries_morph_weights() {
         let layout = InstanceRaw::layout();
@@ -224,8 +242,8 @@ mod tests {
             .expect("第 2 组权重");
         assert_eq!(
             last.offset + 16,
-            layout.array_stride,
-            "最后一组权重必须填满 stride"
+            MORPH_MASK_OFFSET as u64,
+            "掩码必须紧跟在最后一组权重之后，中间不留空隙"
         );
 
         let vertex_locs: Vec<u32> = VERTEX_ATTRIBUTES
@@ -241,6 +259,42 @@ mod tests {
         }
     }
 
+    /// 扩展四十：掩码是独立的 `Uint32` 属性，位置在 stride 末尾、占满最后 4 字节。
+    ///
+    /// 错位的后果很隐蔽：`std::mem::size_of` 与布局各说各话时，`bytemuck::cast_slice`
+    /// 上传的字节数和管线读的步长对不上，表现为「隔一个实例错一次位」——
+    /// 屏幕上是一半模型飞走，不是报错。
+    #[test]
+    fn instance_layout_carries_morph_mask() {
+        let layout = InstanceRaw::layout();
+        let mask = layout
+            .attributes
+            .iter()
+            .find(|a| a.shader_location == MORPH_MASK_LOCATION)
+            .expect("形状掩码属性缺失");
+        assert_eq!(mask.format, wgpu::VertexFormat::Uint32);
+        assert_eq!(mask.offset, MORPH_MASK_OFFSET as u64);
+        assert_eq!(mask.offset, 128);
+        assert_eq!(
+            mask.offset + 4,
+            layout.array_stride,
+            "掩码必须填满 stride 末尾，不留悬空字节"
+        );
+        assert_eq!(
+            layout.array_stride as usize,
+            std::mem::size_of::<InstanceRaw>(),
+            "布局步长与结构体大小必须一致"
+        );
+        let vertex_locs: Vec<u32> = VERTEX_ATTRIBUTES
+            .iter()
+            .map(|a| a.shader_location)
+            .collect();
+        assert!(
+            !vertex_locs.contains(&MORPH_MASK_LOCATION),
+            "掩码 location 不得被顶点属性占用"
+        );
+    }
+
     /// `plain` 构造出的是「无蒙皮偏移 + 无形状」的中性实例，字段逐位可断言。
     #[test]
     fn plain_instance_has_no_morph() {
@@ -251,6 +305,7 @@ mod tests {
             (0, 0, 0)
         );
         assert_eq!(raw.morph_weights, [[0.0; 4]; MORPH_WEIGHT_GROUPS]);
+        assert_eq!(raw.morph_mask, 0, "plain 实例的掩码必须是 0（无形变）");
     }
 
     /// 扩展三十九：扁平权重按序切成组 —— 形状 `g*4+i` 必须落在第 `g` 组第 `i` 分量，

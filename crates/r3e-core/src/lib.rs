@@ -81,8 +81,8 @@ pub use mesh::{
     MaterialData, MeshData, MeshPartData, MeshProvider, TextureImage, Vertex, DEFAULT_TANGENT,
 };
 pub use morph::{
-    MorphInstance, MorphIssue, MorphSet, MorphTarget, MAX_EXCLUSIVE_GROUP_MEMBERS,
-    MAX_MORPH_TARGETS, MORPH_WEIGHT_GROUPS, NO_EXCLUSIVE_GROUP,
+    shape_mask_bits, MorphInstance, MorphIssue, MorphSet, MorphTarget, ALL_SHAPE_MASK,
+    MAX_EXCLUSIVE_GROUP_MEMBERS, MAX_MORPH_TARGETS, MORPH_WEIGHT_GROUPS, NO_EXCLUSIVE_GROUP,
 };
 pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
 pub use occlusion::{

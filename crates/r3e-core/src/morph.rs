@@ -64,6 +64,38 @@ pub const NO_EXCLUSIVE_GROUP: u8 = u8::MAX;
 /// 一个互斥组最多容纳的形状数 = 每实例的形状上限。
 pub const MAX_EXCLUSIVE_GROUP_MEMBERS: usize = MAX_MORPH_TARGETS;
 
+/// 「全部形状启用」的掩码（扩展四十）。
+///
+/// 第 `i` 位为 1 表示形状 `i` 在本实例启用；默认就是这个值，所以不碰掩码时
+/// 行为与扩展三十九逐位相同。形状上限是 8，掩码只用到低 8 位（0xFF）。
+pub const ALL_SHAPE_MASK: u32 = if MAX_MORPH_TARGETS >= 32 {
+    u32::MAX
+} else {
+    (1u32 << MAX_MORPH_TARGETS) - 1
+};
+
+/// 把掩码裁剪到「这个网格真有这么多形状」：`count` 位以上一律清零（扩展四十）。
+///
+/// 渲染层与单测共用同一份裁剪口径 —— 场景侧绑定的 `target_count` 与网格登记的
+/// 形状数可能不等（网格形状少于绑定数），直接用未裁剪的掩码会让「启用第 5 个
+/// 形状」在只有 3 个形状的网格上仍然亮着，形变表却读不到那段数据。
+///
+/// 同时夹到 [`MAX_MORPH_TARGETS`]：调用方传进来的可能是网格登记数（不受
+/// `target_count` 约束），不夹的话返回的掩码会比形状上限还宽 —— 自己写着
+/// 「生效 8 个」，着色器却只有 8 个槽位可查。
+pub const fn shape_mask_bits(count: usize) -> u32 {
+    let count = if count >= MAX_MORPH_TARGETS {
+        MAX_MORPH_TARGETS
+    } else {
+        count
+    };
+    if count >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << count) - 1
+    }
+}
+
 /// 形变表里**每顶点**占用的 `f32` 个数（扩展三十七把 6 抬到 9）。
 ///
 /// 布局：`[0..3) = Δ位置 xyz`、`[3..6) = Δ法线 xyz`、`[6..9) = Δ切线 xyz`。
@@ -450,6 +482,18 @@ pub struct MorphInstance {
     ///
     /// 组只存在于**实例**侧：同一份形状集，敌人和主角可以配不同的互斥关系。
     pub exclusive: [u8; MAX_MORPH_TARGETS],
+    /// 扩展四十：逐实例形状掩码 —— 第 `i` 位为 1 表示形状 `i` 在本实例启用。
+    ///
+    /// `target_count` 是**网格级**的（这份网格有几个形状），掩码是**实例级**的
+    /// （这个实例用哪几个）。同一份「人脸」网格上，主角可能只用「笑 / 眨眼」，
+    /// 路人群演只用「说话」——扩三十九之前只能把不用的权重全置 0，顶点照样
+    /// 进 `morph_offset` 走满 8 个分支；有掩码后渲染层能在**实例级**把形状集
+    /// 直接收缩到 0 个，那个实例的 `morph_count` 写 0，顶点路径与不带形变的
+    /// 网格逐位相同。
+    ///
+    /// 越界位在读写时按 `target_count` 与网格登记数裁剪（见 [`shape_mask_bits`]），
+    /// 默认 [`ALL_SHAPE_MASK`] 等价于扩展三十九的行为。
+    pub mask: u32,
 }
 
 impl MorphInstance {
@@ -460,7 +504,76 @@ impl MorphInstance {
             target_count: target_count.min(MAX_MORPH_TARGETS),
             // 默认全部独立：不调用 `set_exclusive_group` 时行为与扩展三十七逐位相同
             exclusive: [NO_EXCLUSIVE_GROUP; MAX_MORPH_TARGETS],
+            // 默认全部启用：不碰掩码时行为与扩展三十九逐位相同
+            mask: ALL_SHAPE_MASK,
         }
+    }
+
+    /// 本实例**生效**的形状掩码：已按 `target_count` 裁剪（扩展四十）。
+    ///
+    /// 越界位不会报错，只是不生效 —— 场景侧先绑 `target_count`、脚本后写掩码，
+    /// 顺序反过来时也不该让整个实例静默失效。
+    pub fn shape_mask(&self) -> u32 {
+        self.mask & shape_mask_bits(self.target_count.min(MAX_MORPH_TARGETS))
+    }
+
+    /// 整块替换掩码，返回裁剪后的生效值（扩展四十）。越界位被静默丢掉。
+    pub fn set_shape_mask(&mut self, mask: u32) -> u32 {
+        self.mask = mask;
+        self.shape_mask()
+    }
+
+    /// 开 / 关单个形状。越界下标拒绝并返回 `false`（不改动任何状态）。
+    pub fn set_shape_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        if index >= self.target_count.min(MAX_MORPH_TARGETS) {
+            return false;
+        }
+        let bit = 1u32 << index;
+        if enabled {
+            self.mask |= bit;
+        } else {
+            self.mask &= !bit;
+        }
+        true
+    }
+
+    /// 某个形状在本实例是否启用（越界返回 `None`）。
+    pub fn shape_enabled(&self, index: usize) -> Option<bool> {
+        if index >= self.target_count.min(MAX_MORPH_TARGETS) {
+            return None;
+        }
+        Some(self.shape_mask() & (1u32 << index) != 0)
+    }
+
+    /// 全部形状重新启用（掩码回到 [`ALL_SHAPE_MASK`]，权重不动）。
+    pub fn enable_all_shapes(&mut self) {
+        self.mask = ALL_SHAPE_MASK;
+    }
+
+    /// 全部形状停用（掩码归 0）：渲染层会把该实例的形变整段摘掉。
+    pub fn clear_shape_mask(&mut self) {
+        self.mask = 0;
+    }
+
+    /// 生效掩码里启用了几个形状（`popcount`）。
+    pub fn enabled_shape_count(&self) -> u32 {
+        self.shape_mask().count_ones()
+    }
+
+    /// 被掩码挡在外面、但权重仍非零的形状数（扩展四十的探针读数）。
+    ///
+    /// 这个数就是「本实例因为掩码省下的形变乘加组数」—— 权重非零却用不到的
+    /// 形状，扩三十九之前要进满分支，现在连槽都不占。
+    pub fn masked_nonzero_count(&self) -> u32 {
+        let on = self.shape_mask();
+        let count = self.target_count.min(MAX_MORPH_TARGETS);
+        let mut masked = 0;
+        for (index, weight) in self.weights.iter().enumerate().take(count) {
+            if on & (1u32 << index) == 0 && *weight != 0.0 && weight.is_finite() {
+                masked += 1;
+            }
+        }
+        masked
     }
 
     /// 把一个形状归入某个互斥组（`group = None` 表示退出组、回到独立叠加）。
@@ -519,6 +632,10 @@ impl MorphInstance {
     /// * 非有限权重原样保留（由调用方按「非法 → 当 0 处理」的既有口径收口，
     ///   这一层不替它做决定，否则 NaN 会被偷偷改成 0 而掩盖脚本错误）。
     ///
+    /// 扩展四十：**掩码外的形状先清零再归一化** —— 掩码是「这个实例不看这个形状」，
+    /// 它既不吃组预算、也不进实例缓冲。返回值就是渲染层要的那一份（剔除余量按它
+    /// 求和，屏幕上看到的位移也按它算），所以两者不会分叉。
+    ///
     /// 返回值第二项是「本次真的缩放过」：渲染层用它做零变化验收 —— 没有任何互斥组
     /// 超预算时，进实例缓冲的权重与场景里的原值逐位相同。
     ///
@@ -527,8 +644,15 @@ impl MorphInstance {
     pub fn normalized_weights(&self) -> ([f32; MAX_MORPH_TARGETS], bool) {
         let mut weights = self.weights;
         let count = self.target_count.min(MAX_MORPH_TARGETS);
+        // 扩展四十：掩码外的槽位先归零，后面的互斥求和自然忽略它们
+        let on = self.shape_mask();
         let mut handled = [false; MAX_MORPH_TARGETS];
         let mut scaled = false;
+        for (index, weight) in weights.iter_mut().enumerate() {
+            if on & (1u32 << index) == 0 {
+                *weight = 0.0;
+            }
+        }
         for index in 0..count {
             let group = self.exclusive[index];
             if group == NO_EXCLUSIVE_GROUP || handled[index] {
@@ -545,7 +669,7 @@ impl MorphInstance {
                 members[members_len] = other;
                 members_len += 1;
                 handled[other] = true;
-                let weight = self.weights[other];
+                let weight = weights[other];
                 if weight.is_finite() && weight > 0.0 {
                     sum += weight;
                 }
@@ -554,7 +678,7 @@ impl MorphInstance {
             if sum > 1.0 {
                 let inverse = 1.0 / sum;
                 for member in members.iter().take(members_len) {
-                    let weight = self.weights[*member];
+                    let weight = weights[*member];
                     if weight.is_finite() && weight > 0.0 {
                         weights[*member] = weight * inverse;
                     }
@@ -588,11 +712,17 @@ impl MorphInstance {
     }
 
     /// 是否有任何形状在起作用。全 0 时渲染层会跳过整条形变路径。
+    ///
+    /// 扩展四十：被掩码挡住的形状不算 —— 「权重非零但形状停用」的实例在渲染层
+    /// 是与「没有表情」同一个路径，这里也要给出同一个答案。
     pub fn is_active(&self) -> bool {
-        self.weights
-            .iter()
-            .take(self.target_count.min(MAX_MORPH_TARGETS))
-            .any(|w| *w != 0.0 && w.is_finite())
+        let on = self.shape_mask();
+        (0..self.target_count.min(MAX_MORPH_TARGETS)).any(|index| {
+            on & (1u32 << index) != 0 && {
+                let weight = self.weights[index];
+                weight != 0.0 && weight.is_finite()
+            }
+        })
     }
 }
 
@@ -1089,5 +1219,108 @@ mod tests {
         assert_eq!(instance.weight_of(last), Some(0.75));
         assert!(!instance.set_weight(MAX_MORPH_TARGETS, 1.0), "越界一格");
         assert_eq!(instance.weight_of(MAX_MORPH_TARGETS), None);
+    }
+
+    /// 扩展四十（契约一）：默认掩码 = 全部启用，与扩展三十九逐位兼容。
+    ///
+    /// 不碰掩码的场景必须完全不受影响 —— 这是「加能力不改画面」的底线。
+    #[test]
+    fn mask_default_keeps_every_shape_enabled() {
+        let instance = MorphInstance::new(0, 3);
+        assert_eq!(instance.mask, ALL_SHAPE_MASK);
+        assert_eq!(instance.enabled_shape_count(), 3, "只数到 target_count");
+        assert_eq!(instance.shape_mask(), 0b111, "越界位被裁掉");
+        assert_eq!(instance.masked_nonzero_count(), 0);
+        for index in 0..3 {
+            assert_eq!(instance.shape_enabled(index), Some(true));
+        }
+        assert_eq!(instance.shape_enabled(3), None, "越界不启用也不报错");
+    }
+
+    /// 扩展四十（契约二）：占比裁到位 —— 掩码写成 u32::MAX 也只生效前 `count` 位。
+    ///
+    /// `target_count` 与网格登记数可能不等（场景绑定数 > 网格形状数）。
+    /// 不裁的话「启用第 5 个形状」在只有 3 个形状的网格上仍然亮着，
+    /// 形变表却读不到那段数据 —— 静默读到下一个顶点的位移。
+    #[test]
+    fn mask_bits_are_clipped_to_target_count() {
+        assert_eq!(shape_mask_bits(0), 0);
+        assert_eq!(shape_mask_bits(3), 0b111);
+        assert_eq!(shape_mask_bits(MAX_MORPH_TARGETS), ALL_SHAPE_MASK);
+        assert_eq!(
+            shape_mask_bits(MAX_MORPH_TARGETS + 5),
+            ALL_SHAPE_MASK,
+            "超过上限也不越界"
+        );
+
+        let mut instance = MorphInstance::new(0, 3);
+        assert_eq!(instance.set_shape_mask(u32::MAX), 0b111);
+        assert_eq!(instance.enabled_shape_count(), 3);
+        assert!(!instance.set_shape_enabled(5, true), "越界下标直接拒");
+    }
+
+    /// 扩展四十（契约三）：掩码外的权重在归一化结果里先归零，且不参与互斥预算。
+    ///
+    /// 这是「掩码」与「权重置 0」在语义上的分界：置 0 是用户自己抹掉，
+    /// 掩码是渲染层抹掉 —— 后者不该让组内另一形状被无端抬到满值。
+    #[test]
+    fn mask_zeroes_weights_before_exclusive_budget() {
+        let mut instance = MorphInstance::new(0, 4);
+        // 形状 0、1 同组：各 1.0 时本应折半
+        assert!(instance.set_exclusive_group(0, Some(0)));
+        assert!(instance.set_exclusive_group(1, Some(0)));
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, 1.0);
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(scaled);
+        assert!((weights[0] - 0.5).abs() < 1e-6);
+
+        // 关掉形状 1 后，组里只剩形状 0 独自 1.0 —— 不超预算，原样保留
+        assert!(instance.set_shape_enabled(1, false));
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(!scaled, "被掩码挡住的形状不进预算");
+        assert!((weights[0] - 1.0).abs() < 1e-6, "{weights:?}");
+        assert_eq!(weights[1], 0.0, "掩码外的槽位归零");
+        assert_eq!(instance.weight_of(1), Some(1.0), "场景原值不动");
+    }
+
+    /// 扩展四十（契约四）：`is_active` 与 `masked_nonzero_count` 口径一致。
+    ///
+    /// 两者的答案必须相同 —— 渲染层用前者决定「整段摘掉形变」，
+    /// 探针用后者报「省了几个乘加组」，一个说有事一个说没事就会自相矛盾。
+    #[test]
+    fn masked_shapes_are_inactive_and_counted() {
+        let mut instance = MorphInstance::new(0, 4);
+        instance.set_weight(0, 1.0);
+        instance.set_weight(1, 0.5);
+        assert!(instance.is_active());
+        assert_eq!(instance.masked_nonzero_count(), 0, "全启用时没有被挡的");
+
+        instance.clear_shape_mask();
+        assert!(!instance.is_active(), "形状全关 = 没有形变在起作用");
+        assert_eq!(instance.masked_nonzero_count(), 2, "两个非零权重被挡");
+
+        instance.enable_all_shapes();
+        assert!(instance.is_active(), "重新打开就恢复");
+        assert_eq!(instance.masked_nonzero_count(), 0);
+    }
+
+    /// 扩展四十（契约五）：掩码全关时 `normalized_weights` 返回全 0 且不动原值。
+    ///
+    /// 渲染层据此把 `morph_count` 写 0，顶点路径与不带形变的网格逐位相同。
+    #[test]
+    fn cleared_mask_yields_zero_weights() {
+        let mut instance = MorphInstance::new(0, MAX_MORPH_TARGETS);
+        for index in 0..MAX_MORPH_TARGETS {
+            instance.set_weight(index, 1.0);
+        }
+        instance.clear_shape_mask();
+        let (weights, scaled) = instance.normalized_weights();
+        assert!(!scaled);
+        assert!(weights.iter().all(|w| *w == 0.0), "{weights:?}");
+        assert!(
+            instance.weights.iter().all(|w| *w == 1.0),
+            "纯函数：场景原值一份不动"
+        );
     }
 }

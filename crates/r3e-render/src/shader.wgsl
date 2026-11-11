@@ -113,12 +113,37 @@ fn morph_accumulate(delta: ptr<function, MorphDelta>, at: u32, w: f32) {
     (*delta).tangent += w * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
 }
 
+/// 扩展四十：把 4 位掩码展开成 `vec4<f32>` 的 0/1 乘子。
+///
+/// 用 `select` 而不是 4 个 `if`：掩码是**实例级**数据，同一批次里每个实例都可能
+/// 不同，分支会让 warp 内部发散；`select` 是逐分量取值，没有控制流。
+/// 展开后与权重相乘，掩码外的分量直接变 0 —— 下面的 `w != 0.0` 判断自然跳过。
+fn morph_mask_vec(mask: u32, shift: u32) -> vec4<f32> {
+    let m = mask >> shift;
+    return vec4<f32>(
+        select(0.0, 1.0, (m & 1u) != 0u),
+        select(0.0, 1.0, (m & 2u) != 0u),
+        select(0.0, 1.0, (m & 4u) != 0u),
+        select(0.0, 1.0, (m & 8u) != 0u),
+    );
+}
+
 /// 按权重线性累加各形状增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
 ///
 /// 权重按 `vec4` 分组传进来：`w0` 是形状 0..4，`w1` 是形状 4..8（扩展三十九）。
 /// 分量逐个写而不是 `weights[i]` —— WGSL 不允许用运行时值索引向量分量，
 /// 这也是 `skin_matrix` 采用同一写法的原因。形状数为 0 时整体零开销提前返回。
-fn morph_offset(imeta: vec4<u32>, w0: vec4<f32>, w1: vec4<f32>, vi: u32) -> MorphDelta {
+///
+/// 扩展四十：`mask` 是逐实例形状掩码，仅在这里参与运算 —— 掩码外的形状权重先乘 0，
+/// 后续「权重非零才累加」的判断就不会命中。掩码把全部形状关空的实例根本进不到这里：
+/// 渲染层把它的 `morph_count`（`imeta.w`）写成 0，在下面的提前返回处就出去了。
+fn morph_offset(
+    imeta: vec4<u32>,
+    w0: vec4<f32>,
+    w1: vec4<f32>,
+    mask: u32,
+    vi: u32,
+) -> MorphDelta {
     var delta: MorphDelta;
     delta.position = vec3<f32>(0.0);
     delta.normal = vec3<f32>(0.0);
@@ -131,31 +156,35 @@ fn morph_offset(imeta: vec4<u32>, w0: vec4<f32>, w1: vec4<f32>, vi: u32) -> Morp
     // 顶点在该形状内的浮点起点；形状之间相隔一个 imeta.z
     let head = imeta.y + vi * MORPH_VERTEX_FLOATS;
     let stride = imeta.z;
+    // 扩展四十：掩码外的分量先归零（乘子只有 0/1，权重原值不受影响）。
+    // 不能写 `let w0 = w0 * ...` —— WGSL 不允许局部名遮蔽同名参数。
+    let on0 = w0 * morph_mask_vec(mask, 0u);
+    let on1 = w1 * morph_mask_vec(mask, 4u);
     // 第 1 组（形状 0..4）
-    if w0.x != 0.0 {
-        morph_accumulate(&delta, head, w0.x);
+    if on0.x != 0.0 {
+        morph_accumulate(&delta, head, on0.x);
     }
-    if count > 1u && w0.y != 0.0 {
-        morph_accumulate(&delta, head + stride, w0.y);
+    if count > 1u && on0.y != 0.0 {
+        morph_accumulate(&delta, head + stride, on0.y);
     }
-    if count > 2u && w0.z != 0.0 {
-        morph_accumulate(&delta, head + stride * 2u, w0.z);
+    if count > 2u && on0.z != 0.0 {
+        morph_accumulate(&delta, head + stride * 2u, on0.z);
     }
-    if count > 3u && w0.w != 0.0 {
-        morph_accumulate(&delta, head + stride * 3u, w0.w);
+    if count > 3u && on0.w != 0.0 {
+        morph_accumulate(&delta, head + stride * 3u, on0.w);
     }
     // 第 2 组（形状 4..8）
-    if count > 4u && w1.x != 0.0 {
-        morph_accumulate(&delta, head + stride * 4u, w1.x);
+    if count > 4u && on1.x != 0.0 {
+        morph_accumulate(&delta, head + stride * 4u, on1.x);
     }
-    if count > 5u && w1.y != 0.0 {
-        morph_accumulate(&delta, head + stride * 5u, w1.y);
+    if count > 5u && on1.y != 0.0 {
+        morph_accumulate(&delta, head + stride * 5u, on1.y);
     }
-    if count > 6u && w1.z != 0.0 {
-        morph_accumulate(&delta, head + stride * 6u, w1.z);
+    if count > 6u && on1.z != 0.0 {
+        morph_accumulate(&delta, head + stride * 6u, on1.z);
     }
-    if count > 7u && w1.w != 0.0 {
-        morph_accumulate(&delta, head + stride * 7u, w1.w);
+    if count > 7u && on1.w != 0.0 {
+        morph_accumulate(&delta, head + stride * 7u, on1.w);
     }
     return delta;
 }
@@ -208,6 +237,8 @@ struct VsIn {
     // （形状 g*4+i 取第 g 组的第 i 个分量；morph_count 之外的分量无意义）
     @location(12) morph_w0: vec4<f32>,
     @location(13) morph_w1: vec4<f32>,
+    // 扩展四十：逐实例形状掩码，第 i 位 = 形状 i 启用（0 = 整段无形变）
+    @location(14) morph_mask: u32,
 };
 
 struct VsOut {
@@ -257,7 +288,13 @@ fn vs_main(in: VsIn) -> VsOut {
     // 没有形状的实例 instance_meta.w = 0，整段被跳过 —— 顶点坐标与扩展三十五逐位相同，
     // 像素基线与零差异要求因此不需要额外容忍度。
     if in.instance_meta.w != 0u {
-        let shape = morph_offset(in.instance_meta, in.morph_w0, in.morph_w1, in.vertex_index);
+        let shape = morph_offset(
+            in.instance_meta,
+            in.morph_w0,
+            in.morph_w1,
+            in.morph_mask,
+            in.vertex_index,
+        );
         local_position += shape.position;
         local_normal += shape.normal;
         // 扩展三十七：切线同样参与形变。形状没给切线通道时这里是 0，
@@ -324,6 +361,8 @@ struct ShadowVsIn {
     // 扩展三十九：形变权重两组，口径与主通道的 `VsIn` 完全一致
     @location(12) morph_w0: vec4<f32>,
     @location(13) morph_w1: vec4<f32>,
+    // 扩展四十：口径与主通道一致
+    @location(14) morph_mask: u32,
 };
 
 // 深度 pass 专用：只含光源正交矩阵，故意不复用阴影贴图那一组绑定，
@@ -569,7 +608,13 @@ fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
     // 与主通道同序：先形变，再蒙皮（没有形状时整段跳过，结果逐位不变）
     var local_position = in.position;
     if in.instance_meta.w != 0u {
-        let shape = morph_offset(in.instance_meta, in.morph_w0, in.morph_w1, in.vertex_index);
+        let shape = morph_offset(
+            in.instance_meta,
+            in.morph_w0,
+            in.morph_w1,
+            in.morph_mask,
+            in.vertex_index,
+        );
         local_position += shape.position;
     }
     if in.weights.x + in.weights.y + in.weights.z + in.weights.w > 0.0 {
