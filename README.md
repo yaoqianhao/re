@@ -323,6 +323,9 @@ $w.WriteLine('{"jsonrpc":"2.0","id":1,"method":"engine.info","params":{"token":"
 | `morph_active(name) -> bool` | 是否任意形状权重非 0（脚本据此决定要不要每帧刷） |
 | `morph_bind(name, count) -> bool` | 手动登记形状数。**一般不用**：形状数是网格属性，引擎在场景就位与热重载后按网格的 `MorphSet` 自动登记 |
 | `morph_count(name) -> int` / `morph_weight(name, index) -> float` | 读回形状数与权重（诊断用） |
+| `morph_exclusive(name, index, group) -> bool` | 把第 `index` 个形状挂进互斥组 `group`（扩展三十八，`group` 取 0..3；同组形状的正权重之和 > 1 时在**渲染层**等比压回 1，场景里存的值不变） |
+| `morph_group(name, index) -> int` | 读回该形状所在的互斥组，`-1` 表示没挂组 |
+| `morph_norm(name, index) -> float` | 读回**归一化之后**实际参与计算的权重（不挂组时与 `morph_weight` 相同） |
 
 ### 相机 / 光照 / 环境
 
@@ -1020,8 +1023,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 - **退化缩放（某轴 `scale` = 0）不再产 `NaN`**（扩展二十六）：世界法线矩阵改由 `r3e_core::world_normal_matrix` 给出——矩阵可逆时与原写法逐位相同，不可逆时退化为「逐列方向 × 缩放倒数」的有限兜底；主通道 `vs_main` 在 `normalize` 前另加一道长度判零，退化时退回 `+Y`。同时 `Transform::normal_matrix` 不再用 `scale.max(1e-6)` 把负缩放抹平，镜像物件的法线方向得以保留。代价与边界：缩放到 0 的物件本身仍是退化物体，拿到的是「最不坏的有限值」而不是有意义的几何；正常场景画面逐步（逐位）不变，像素基线无需重建。
 - 实例缓冲已持久化、上传按脏段（扩展三十一）：缓冲跨帧复用，另有 112 B/实例的 CPU 影子存上一帧真正传过的字节，每帧只把变了的记录按连续区间 `write_buffer`（空洞 ≤ 8 条合并、段数 > 24 退全量、实例数变化或扩容换代当帧全量）——1,537 实例静态场景实测 `脏段 0 / 写 0 / 跳过 1,539`（0 B/帧），只转两个物件时 3 条记录。实例收集本身是「一趟 `scene.iter()` + 按（网格, 材质, 段）分桶」（扩展二十七 / 二十八，节点只进自己那一段），省掉的是旧写法按「键数 × 节点数」的重复过滤与同键跨两段的重复绘制；视锥剔除自扩展二十九起按场景树整枝跳判，遮挡剔除自扩展三十起同样按场景树整枝跳判。**仍在的热点**：实例装配仍逐实例（掩码要一格对一格对齐缓冲）、每帧一次 O(实例数) 的 memcmp、半透明批次重排会把这层省下的带宽吃掉大半。关节矩阵自扩展三十二起也走同一个 `plan_upload`（stride 64 B）：完全静止的蒙皮 0 B/帧，动画播放中 37 条连续脏区合并成 1 段（`write_buffer` 调用 37 次 → 1 次）；自扩展三十三起求解改走「骨骼树顶点为基准的常量相对链」（不含实例变换 `X`），「骨骼不动、整只模型在转」也从全量变成 0 B/帧（浮点伪脏消除），断链时回退世界矩阵、保守判全。自扩展三十五起这些脏段不再直传：先拷进 3 槽暂存环、一帧只 `write_buffer` 一次，再逐段 `copy_buffer_to_buffer` 落位（40 实例 / 每帧 4 段实测 4 次写 → 1 次写，`R3E_UPLOAD_STAGING=0` 可关）。细节见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.23 / §5.24 / §5.25 / §5.27 / §8.26 / §8.27 / §8.28 / §8.30。
 - **形变（morph target，扩展三十六 + 三十七）**：位置 / 法线 / 切线三条增量通道（切线段自扩展三十七进表，每顶点 9 个 `f32`；UV 仍不参与形变）；
-  每实例上限 **4 个形状**（一个 `vec4` 权重），超出的形状静默不入表；权重不夹 0..1、不归一化（允许负权重做反向形状，
-  也允许 >1 的夸张表情）；**同网格的所有实例共享同一段形状数据**，不能逐实例换形状集。所有带形状网格的增量常驻一块
+  每实例上限 **4 个形状**（一个 `vec4` 权重），超出的形状静默不入表；权重不夹 0..1、默认不归一化（允许负权重做反向形状，
+  也允许 >1 的夸张表情）；**同网格的所有实例共享同一段形状数据**，不能逐实例换形状集；表情互斥由扩展三十八补上——
+  可给形状挂互斥组（`morph_exclusive`），同组正值之和 > 1 时渲染层等比压回 1（0.5 + 0.5 ≡ 只开一个），场景权重本身不改写。所有带形状网格的增量常驻一块
   上限 1 MiB 的全局表（每顶点 9 个 `f32` = 位置 3 + 法线 3 + 切线 3，1 MiB 约装 7,281 顶点 × 4 形状；
   切线进表后同容量能装的顶点数比扩展三十六少了 1/3），引擎目前没有网格卸载路径，这份显存只增不减（换场景靠整表重建回收）。
   权重缺省全 0，所以不带表情的场景像素与扩展三十五逐位相同；夹具无 `TANGENT` 目标时切线段全 0，画面与扩展三十六逐位相同。
@@ -1048,8 +1052,10 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 交叉淡入（`set_anim_clip_fade`，smoothstep 双片段加权，位置/缩放 lerp + 旋转 slerp）与脚本层状态机；
 分层混合树（遮罩 / 权重 / override 与 additive）由扩展十八 A 补上，见
 [§21 动画混合树](#21-动画混合树扩展十八-a)。
-形变（morph target / blend shape）由扩展三十六补上、扩展三十七把切线段并入同一张表：形状增量按网格上传进全局表，实例只带 4 个权重，
-顶点着色器里**先叠增量、再做蒙皮**（见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.28）。
+形变（morph target / blend shape）由扩展三十六补上、扩展三十七把切线段并入同一张表、扩展三十八补上互斥组归一化：形状增量按网格上传进全局表，
+实例只带 4 个权重（外加 4 个互斥组编号），顶点着色器里**先叠增量、再做蒙皮**（见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.28）。
+互斥归一化只在渲染层算副本：`prepare_instances` 第一遍把权重定稿，剔除外扩与着色器吃同一份，剔除余量按**逐形状**最大位移加权求和
+（`Σ|w_t|×d_t`），比扩展三十六用峰值权重一律按最大形状外扩更紧。
 尚未做：DQS、GPU skinning。
 
 ```bash
@@ -2721,7 +2727,7 @@ cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> 
 | `crates/r3e-script/tests/env_map_api.rs` | 4 | 8 个绑定写后读、六面不足 6 条返回值、非法强度被夹取、`clear` 后 `has_env_map` 为 false |
 | `crates/r3e-editor/tests/environment_map_rpc.rs` | 7 | `EnvironmentMapPatch` 补丁合并、非法字段不透传、快照回显与 `scene.set_environment` 互不干扰 |
 
-`cargo test --workspace` 现为 78 个套件 / 1,108 passed / 0 failed（`--features rapier` 同 78 套件 1,108 passed）。
+`cargo test --workspace` 现为 79 个套件 / 1,124 passed / 0 failed（`--features rapier` 同 79 套件 1,124 passed）。
 
 ### 27.7 已知边界
 
