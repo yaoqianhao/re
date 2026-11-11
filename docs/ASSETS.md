@@ -673,7 +673,7 @@ P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画�
 - **双四元数蒙皮（DQS）**：现在是 LBS，关节大角度扭转时会有糖纸效应。
 - **GPU 侧蒙皮（compute skinning）**：关节矩阵在 CPU 求解后上传，顶点量大时可改 compute。
 - **动画混合 / 状态机**：cross-fade 与脚本状态机已在阶段三 C 落地（见第 16 章）；分层 mask、additive、相位对齐仍未做。
-- **表情 / morph target**：glTF 已支持（扩展三十六 + 三十七：逐顶点位置 / 可选法线 / 可选切线增量、每实例上限 4 个形状、权重不夹、默认不归一化；
+- **表情 / morph target**：glTF 已支持（扩展三十六 + 三十七：逐顶点位置 / 可选法线 / 可选切线增量、扩展三十九把每实例上限抬到 8 个形状（两组 `vec4` 权重）、权重不夹、默认不归一化；
   表情互斥组由扩展三十八补上，组内权重之和 > 1 时在渲染层等比压回 1，见
   ARCHITECTURE §4.20 / §5.28）；**FBX 的 blend shape 仍不导入**——`import_fbx` 里显式留空集，所以 FBX 模型的行为与
   扩展三十五一致。**互斥组只来自场景 / 脚本配置，glTF 文件里没有这项信息**。
@@ -924,7 +924,7 @@ MeshRef ──▶ LayeredProvider ──┬─▶ AssetLibrary（外部资产，
 
 - 不支持 **Draco / meshopt** 压缩几何、**KTX2 / basis** 压缩贴图（需预转普通 PNG/JPEG 或 glTF）；
 - 不支持多套 UV、`KHR_materials_*` 扩展材质；morph target（形态键）自扩展三十六支持——读 `primitives[].targets` 的
-  `POSITION` 与可选 `NORMAL` / `TANGENT`（切线扩展三十七），按声明顺序成为形状 0..n，超 4 个截断（`MAX_MORPH_TARGETS`），权重由场景 / 脚本给；
+  `POSITION` 与可选 `NORMAL` / `TANGENT`（切线扩展三十七），按声明顺序成为形状 0..n，超 8 个截断（`MAX_MORPH_TARGETS` = `MORPH_WEIGHT_GROUPS × 4`），权重由场景 / 脚本给；
 - 形变影响位置 / 法线 / 切线三条通道；缺 `TANGENT` 目标的资产在表里对应 3 个 `f32` 恒 0（读出来加了个零向量，不改变画面）；
 - 动画走 glTF 采样器原始关键帧（不做贝塞尔重采样），与 FBX 的「ufbx 烘焙」路径在极端插值下可能有细微差异；
 - glTF 的右手 `-Z front` 会在导入时镜像到引擎 `+Z front`，并自动翻转绕序；镜像贴图 UV 不做额外翻转。
