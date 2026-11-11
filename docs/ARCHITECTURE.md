@@ -154,7 +154,7 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **61,423** | **11,622** | **1,099** | **约 6.1 万行 Rust + 1,382 行 WGSL；`cargo test --workspace --all-features` 77 个套件 / 1,099 passed / 0 failed** |
+| **合计** | **61,651** | **11,812** | **1,108** | **约 6.2 万行 Rust + 1,399 行 WGSL；`cargo test --workspace --all-features` 78 个套件 / 1,108 passed / 0 failed** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,310 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
@@ -181,6 +181,12 @@ app +246 src 含 `attach_morph_bindings`、script +182 src 含 6 个 `morph_*` �
 新套件 `morph_deform`（app，243 行 2 测）与 `gltf_morph_import`（asset，263 行 2 测），
 收尾实测 **61,423 src / 11,622 tests / 1,099 单测 / 77 套件 1,099 passed / 0 failed**，
 `--features rapier` 同 77 套件 1,099 passed），
+扩展三十七（形变切线通道）再增量 **+228 src / +190 tests / +9 单测 / +1 套件**
+（同一口径：`core/morph.rs` 的 `tangents` 通道与 3 条新用例、`core/air.rs` 的 `bake_transform` 切线分支 +5、
+`asset/gltf_import.rs` 读 `targets[].TANGENT` +25 与其夹具 +54、`render/renderer.rs` 与 `shader.wgsl` 改
+每顶点 9 个 `f32` 布局；新套件 `morph_shader_parity`（render，6 测，不开 GPU 直读 `shader.wgsl` 文本），
+收尾实测 **61,651 src / 11,812 tests / 1,108 单测 / 78 套件 1,108 passed / 0 failed**，
+`--features rapier` 同 78 套件 1,108 passed），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
 （`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
@@ -203,8 +209,8 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,099 passed / 0 failed（77 个套件；较扩展三十五收尾的 1,069 增 30：core `morph.rs` 内联 10、render 形变表 6 + 实例布局 2、asset 导入 2、app 自动绑定 1 + 夹具 2 等；新增两个套件 `morph_deform` / `gltf_morph_import`） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,099 passed / 0 failed（77 个套件；上一轮为默认特性 1,069 + 只在 rapier 下参与的 4 条，本轮两次均为 1,099——GPU 视觉用例在无 `R3E_VISUAL_REGRESSION` 时被计为 passed，故两次同数）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,108 passed / 0 failed（78 个套件；较扩展三十六收尾的 1,099 增 9：core `morph.rs` 切线 3、render `morph_shader_parity` 6；新增一个套件 `morph_shader_parity`） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,108 passed / 0 failed（78 个套件；本轮未启用 `rapier` 的物理用例时与默认特性同数——GPU 视觉用例在无 `R3E_VISUAL_REGRESSION` 时被计为 passed）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -1096,14 +1102,14 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 
 | 类型 / 函数 | 职责 |
 | --- | --- |
-| `MorphTarget` | 单个形状：`name` + 逐顶点位置增量 + 可选逐顶点法线增量；`new` 定顶点数，`with_normals` 补法线（长度不符即拒），`scale` 统一缩放（导入层做 cm→m 换算用） |
-| `MorphSet` | 一个网格上的**全部**形状，顺序即脚本的权重下标；`validate` / `validate_against(vertices)` 校验长度与非有限值，`flatten_limited(limit)` 把前 `limit` 个形状压成 `[pos3, nrm3] × 顶点 × N` 的连续 `Vec<f32>` 供上传 |
+| `MorphTarget` | 单个形状：`name` + 逐顶点位置增量 + 可选逐顶点法线增量 + 可选逐顶点切线增量（切线扩展三十七）；`new` 定顶点数，`with_normals` / `with_tangents` 补通道（长度不符即拒），`scale` 统一缩放（导入层做 cm→m 换算用） |
+| `MorphSet` | 一个网格上的**全部**形状，顺序即脚本的权重下标；`validate` / `validate_against(vertices)` 校验长度与非有限值，`flatten_limited(limit)` 把前 `limit` 个形状压成 `[pos3, nrm3, tan3] × 顶点 × N`（= 每顶点 9 个 `f32`）的连续 `Vec<f32>` 供上传 |
 | `MAX_MORPH_TARGETS = 4` | 每实例只有一个 `vec4` 权重的硬上限：超出的形状**既不扁平化也不参与求解**（不是截断数据，是不入表） |
 | `MorphInstance` | 每实例元数据：`mesh_node` / `target_count` / `weights: [f32; 4]`；`set_weight` 拒越界下标与非有限权重，`is_active` 供渲染层判断是否值得带形变 |
-| `apply` / `vertex_at` | **CPU 参考实现**：与 `shader.wgsl` 的 `morph_offset` 逐式对应（权重×增量线性累加、法线累加后**不**归一化），用于对拍与离线烘焙 |
+| `apply` / `vertex_at` | **CPU 参考实现**：与 `shader.wgsl` 的 `morph_offset` 逐式对应（权重×增量线性累加、法线累加后**不**归一化、切线同样线性累加且不归一化、手性 `w` 原样保留），用于对拍与离线烘焙 |
 
 `MeshData` 加 `morph: MorphSet` 字段；`bake_transform` 把形变增量与顶点一起烘焙时，位置只乘 3×3 线性部分、
-法线走法线矩阵——增量是**方向量**，不吃平移。`Scene` 侧与 `skins` 并列新增 `morphs: Vec<MorphInstance>` 与
+法线走法线矩阵、切线同样只走线性部分（不归一化，避免把形变给出的长度信息洗掉）——增量是**方向量**，不吃平移。`Scene` 侧与 `skins` 并列新增 `morphs: Vec<MorphInstance>` 与
 `add_morph` / `morph_of` / `set_morph_weight` / `set_morph_weight_by_name` / `reset_morph` /
 `bind_morph_by_name` / `morph_weight_by_name` / `morph_target_count`。
 
@@ -1115,8 +1121,17 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 - 上限 4 个形状 / 实例（恰好一个 `vec4`），**多于 4 个的形状静默不入表**——`MorphSet` 里仍然保留着，
   CPU 的 `apply` 也只算前 4 个，两侧口径一致，不会出现"CPU 说变了、GPU 没变"；
 - 权重**不夹 0..1、不做归一化**：允许负权重做反向形状，也允许 >1 的夸张表情；非有限值直接拒；
-- 只支持位置与法线增量，**不支持切线 / UV 形变**（切线由 UV 参数化推出，形变不改变参数化）；
+- 支持位置 / 法线 / 切线三条增量通道（切线自扩展三十七，见下），**不支持 UV 形变**（形变不改变参数化，所以 UV 也没有可动的独立自由度）；
 - `apply` 是 O(顶点 × 形状) 的 CPU 路径，只用于对拍与离线烘焙，运行时一律走 GPU（见 §5.28）。
+
+**扩展三十七补的切线通道**：切线是法线贴图 TBN 的基向量，之前形变只动位置与法线，强形变下（挤眼、张嘴）
+法线贴图的采样方向仍按绑定姿态的切线走，光照会偏。glTF 的 `targets[].TANGENT` 与位置 / 法线同一个机制，
+所以补法很短：`MorphTarget` 加 `tangents: Vec<[f32; 3]>`（缺通道时保持空，扁平化时按 0 填），
+`flatten` 每顶点从 6 个 `f32` 变 **9 个**（`MORPH_VERTEX_FLOATS = 9`），WGSL 侧 `MorphDelta` 多一个
+`tangent` 字段、`morph_offset` 多一条 `+6u / +7u / +8u` 的读，`vs_main` 里 `local_tangent += shape.tangent`
+**在蒙皮之前**完成（与法线同序）。不归一化是刻意的：形变给出的是「切线朝哪偏、偏多少」，
+归一化会把长度信息丢掉，反而让 `bitangent = cross(N, T) * w` 的尺度跟着漂。
+切线不单独算外扩余量——`cull_inflate` 仍按位置增量峰值走；切线只影响着色不影响顶点位置。
 
 ## 5. 渲染层：r3e-render
 
@@ -3169,7 +3184,7 @@ render_to_view
 每条记录从 96 B 变 112 B，一帧一次写 + 逐段飞行原样生效；权重不变的角色连这多出来的 16 B 都不会进暂存环
 （memcmp 判等即跳）。形状增量本身是**网格级**数据，在网格上传时一次性进全局表（§5.28），不参与每帧上传。
 
-### 5.28 全局形变表与每实例元数据指针（扩展三十六）
+### 5.28 全局形变表与每实例元数据指针（扩展三十六；切线通道扩展三十七）
 
 **问题**：形变增量是"逐顶点常量"，与权重无关。若按常见写法给每个带形状的网格配一个 storage buffer
 或一个 bind group，场景里有几个带表情的角色就有几个绑定——bind group 本身就是难扩的稀缺资源；
@@ -3178,11 +3193,15 @@ render_to_view
 **做法**：`MeshCache` 维护**一块跨网格共享**的 `morph_table: Vec<f32>`（容量上限
 `MAX_MORPH_TABLE_FLOATS = 1 << 18` 个 `f32`，即 1 MiB），网格上传时把它校验过的前 `MAX_MORPH_TARGETS`
 个形状扁平化后**追加**进表，并把 `base / stride / count` 回写进该网格的 `MeshMorph`。渲染时每个实例只携带
-这 3 个整数 + 一个 `vec4` 权重，着色器自己用 `base + (形状·顶点数 + 顶点) × 6` 算出偏移。
+这 3 个整数 + 一个 `vec4` 权重，着色器自己用 `base + (形状对应区段) + 顶点 × MORPH_VERTEX_FLOATS` 算出偏移。
+
+**表内布局**：每个顶点占 `MORPH_VERTEX_FLOATS = 9` 个 `f32` —— `[pos3, nrm3, tan3]`。扩展三十六时是 6 个
+（只位置 + 法线），扩展三十七把切线增量接在同一段后面：多一层 storage buffer 或第二块表都要动绑定组，
+而**同一次读、同一个 stride 里多 12 字节**是最便宜的做法（代价是整表容量利用率降 1/3，见下文取舍）。
 
 | 组件 | 位置 | 职责 |
 | --- | --- | --- |
-| `MeshMorph` | `render/renderer.rs` | 每网格元数据：`base`（本网格增量在表里的起始下标）/ `stride`（= 顶点数 × 6）/ `count`（有效形状数，≤ 4）/ `peak`（各形状位置增量里最长的那条，供剔除外扩） |
+| `MeshMorph` | `render/renderer.rs` | 每网格元数据：`base`（本网格增量在表里的起始下标）/ `stride`（= 顶点数 × `MORPH_VERTEX_FLOATS` = 顶点数 × 9）/ `count`（有效形状数，≤ 4）/ `peak`（各形状位置增量里最长的那条，供剔除外扩） |
 | `MeshCache::register_morph` | 同上 | `ensure` 上传网格时调用：校验 → 取前 4 个形状 → `flatten_limited` → 追加进 `morph_table` → 回写 `base/stride/count`；表余量不足则**该网格按无形变处理**并 warn（绝不写半截数据） |
 | `MeshCache::morph_version` | 同上 | 表内容的版本号，追加 / 换代即 +1；`upload_morph_table` 只在它变化时重写，静止场景 0 次 |
 | `upload_morph_table` | 同上 | 表缓冲容量按上限固定分配，表变长时整表重写；网格换代（换场景 / 热重载）时清表 + 版本自增，让所有网格重新登记 |
@@ -3202,6 +3221,7 @@ if in.instance_meta.w != 0u {
     let shape = morph_offset(in.instance_meta, in.morph_weights, in.vertex_index);
     local_position += shape.position;
     local_normal  += shape.normal;
+    local_tangent += shape.tangent;   // 扩展三十七：切线增量也要活到蒙皮之后
 }
 // 之后才是蒙皮：形变在模型空间做，蒙皮把模型空间顶点搬到骨骼空间
 ```
@@ -3222,11 +3242,14 @@ if in.instance_meta.w != 0u {
 
 - **共享表 = 常驻显存**：所有带形状网格的增量一直躺在表里（上限 1 MiB），引擎目前没有网格卸载路径，
   这份显存只增不减；换场景靠整表重建回收；
-- **1 MiB 能装多少**：`(1 << 18) / (6 × 4) ≈ 10,922` 个顶点 × 4 形状。超了不是截断形状，而是**整个网格退回无形变**
-  （宁可不动，也不做半截形变）；
+- **1 MiB 能装多少**：`(1 << 18) / (9 × 4) ≈ 7,281` 个顶点 × 4 形状（扩展三十七前是 `/(6 × 4) ≈ 10,922`）。
+  超了不是截断形状，而是**整个网格退回无形变**（宁可不动，也不做半截形变）；
 - **不能逐实例换形状集**：同一网格的所有实例共享同一段表与同一个 `count`，脚本只能调权重，
   没法给某个实例换一套形状数据；
-- **切线不参与形变**：`local_tangent` 原样保留，强形变下法线贴图的方向会有偏差（业界常规取舍，需知情）；
+- **切线增量自扩展三十七进表**：`[pos3, nrm3, tan3]` 每顶点 9 个 `f32`，代价是同容量能装的顶点数少 1/3；
+  缺 `TANGENT` 目标的资产在表里对应的 3 个 `f32` 恒为 0，读出来加了个 0 向量，**像素与扩展三十六逐位相同**
+  （实测截图 31,735 差异像素 / 13.77% 与改前一位不差）；
+- **UV 形变仍不支持**：形变不改变参数化，UV 没有独立自由度；
 - **CPU 不再求解**：扩展三十六之后形变完全由顶点着色器完成，CPU 只算权重与剔除外扩；
 - **像素不变量**：`count == 0` 的实例整段分支跳过，顶点坐标与扩展三十五**逐位相同**，所以像素基线无需重建。
 
@@ -3235,7 +3258,10 @@ if in.instance_meta.w != 0u {
 `mismatched_length_is_rejected_without_touching_table` / `max_displacement_is_the_longest_position_delta` /
 `cull_inflate_follows_weight_peak_and_scale`）、`render/mesh.rs` 的布局用例
 （`instance_layout_carries_morph_weights` / `plain_instance_has_no_morph`，锁 stride 112 与 location 12 的偏移）、
-`core/morph.rs` 的内联用例（与 WGSL 同公式对拍、越界权重拒绝、`flatten_limited` 截取）。
+`core/morph.rs` 的内联用例（与 WGSL 同公式对拍、越界权重拒绝、`flatten_limited` 截取、切线增量位置与累加）、
+`render/tests/morph_shader_parity.rs`（6 测，扩展三十七新增：不开 GPU 直读 `shader.wgsl` 文本，锁
+`const MORPH_VERTEX_FLOATS` 与 Rust 常量同值、`MorphDelta` 字段序与 `+0/+3/+6` 偏移对应、
+蒙皮用的是累积后的 `local_tangent`、`vs_shadow` 也调 `morph_offset`、表仍是 `group(2) @binding(1)`）。
 真机取证见 §8.31。
 
 ### 8.1 程序入口（main.rs）
@@ -4378,12 +4404,12 @@ cargo test -p r3e-render upload_staging
 
 ---
 
-### 8.31 形变探针（扩展三十六）
+### 8.31 形变探针（扩展三十六；表长口径含扩展三十七的切线段）
 
 截图那条日志在实例统计末尾追加一节：
 
 ```
-[capture] 第 4 帧截图完成: {...} | draws=1 instances=1 culled=0 cull_unknown=0 morph=1/24f
+[capture] 第 4 帧截图完成: {...} | draws=1 instances=1 culled=0 cull_unknown=0 morph=1/36f
 ```
 
 | 字段 | 含义 |
@@ -4395,20 +4421,26 @@ cargo test -p r3e-render upload_staging
 - **`morph=0/Nf`（N 不为 0）**：形状数据已在显存，但没有实例走形变分支——这正是"不动表情的角色不吃额外顶点开销"的证据；
 - **`morph=0/0f`**：表是空的。要么网格本来没有形状、要么整网格因容量不足降级（这条 `app` 侧另有 warn）、
   要么形状被 `MAX_MORPH_TARGETS` 之外的处理丢掉；
-- **表长恒等于 `Σ(网格形状数 × 该网格顶点数 × 6)`**（只算前 4 个形状、只算已上传的网格）：
-  夹具是 1 形状 × 4 顶点 × 6 = **24**，与实测 `24f` 一致；数字对不上先查展开后的顶点数，不是三角形数 × 3 就完事。
+- **表长恒等于 `Σ(网格形状数 × 该网格顶点数 × 9)`**（只算前 4 个形状、只算已上传的网格）：
+  夹具是 1 形状 × 4 顶点 × 9 = **36**，与实测 `36f` 一致；扩展三十六时这个乘数是 6（表长 24），
+  **`24f` 与 `36f` 的差别本身就是「切线段进表了」的判据**；数字对不上先查展开后的顶点数，不是三角形数 × 3 就完事。
 
 真机实测（RTX 5060 Laptop / Vulkan，夹具 `crates/r3e-app/tests/fixtures/morph_deform`
 = 一个四边形 / 4 顶点 / 2 三角形 / 1 个形状，640×360，第 4 帧截图）：
 
 | 权重 | `morph` | 截图字节 | 与权重 0 的像素差异 |
 | --- | --- | --- | --- |
-| 0.0 | `0/24f` | 5,387 B | —（基准） |
-| 1.0 | `1/24f` | 9,549 B | **31,735 像素 / 13.77%** |
+| 0.0 | `0/36f` | 5,387 B | —（基准） |
+| 1.0 | `1/36f` | 9,549 B | **31,735 像素 / 13.77%** |
 
 同一批截图复算出来的包围盒（"画了东西"的像素范围，阈值通道差 > 6）：权重 0 是
 `x∈[221,418], y∈[81,278]`（39,204 像素），权重 1 变 `x∈[122,418], y∈[0,278]`（58,783 像素）——**左边界左移 99 像素、
 上边界顶到画面外**，与夹具里左侧两个顶点 `(-2, 1.8, 0)` 的增量方向一致。
+
+**扩展三十七的验收口径是「零变化」**：夹具没有 `TANGENT` 目标（切线段全 0），所以表长从 `24f` 涨到 `36f`
+而**两帧截图字节数与差异像素一位未变**（5,387 / 9,549 B，31,735 像素 / 13.77%，包围盒仍 221→122）——
+这正是「切线通道接进去、但不该动的地方一个像素没动」的证据。切线真的非 0 时影响的只是 TBN 采样方向
+（光照），不影响顶点位置，所以它不会改变包围盒，也就不需要新的剔除余量。
 
 自动绑定也在日志里留痕（不需要脚本填形状数）：`形变 \`Face\`：绑 1 个形状，权重初值全 0（脚本用 morph_set 调）` 与
 `形变绑定已登记: 1 个网格`。取证命令 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test morph_deform`，rc 0
@@ -4417,6 +4449,8 @@ cargo test -p r3e-render upload_staging
 "方向对不对"由测试自己断言，不靠肉眼：形变把顶点往 −x 拉，包围盒左边界必须外扩（`morph_deform.rs` 的第三条断言）；
 只断言"有差异"的话，一个把权重错接到别的形状上的实现也能过。CPU 与 GPU 的一致性靠
 `core::morph::apply_matches_linear_blend`——同一组权重、同一公式，两边差一位就是公式抄错了。
+切线段的「表结构与 shader 是否对得上」不靠跑 GPU，靠 `morph_shader_parity` 直接读 `shader.wgsl` 文本断言
+（常量同值、字段序、偏移、蒙皮用累积后的 `local_tangent`）：这类单边改动不会编译失败，只会静默读错段。
 
 ## 9. 端到端数据流
 
@@ -4566,7 +4600,7 @@ cargo test -p r3e-render upload_staging
 6. **形变的三条延伸**（扩展三十六刚落地，见 §4.20 / §5.28）：现在是「每实例 4 个形状、一个 `vec4` 权重、
    位置 + 法线两条通道、同网格的实例共享同一段表」。可加固处：① **多组 `vec4` 权重**让形状数随组数线性扩
    （表侧是常量，成本只在顶点多几次乘加）；② **补切线 / UV 增量通道**——切线目前由 UV 参数化推出，
-   强形变下法线贴图方向会偏；③ **逐实例形状掩码**（现在 `count` 是网格级，同网格所有实例共享同一套形状）
+   ~~强形变下法线贴图方向会偏~~（**已由扩展三十七补上切线段消解**）；③ **逐实例形状掩码**（现在 `count` 是网格级，同网格所有实例共享同一套形状）
    与表情间的**互斥归一化**（一说话嘴型互斥，纯线性叠加会互相顶，需要脚本层或 core 侧的归一化策略）。
 
 ---
@@ -4620,6 +4654,7 @@ cargo test -p r3e-render upload_staging
 | **三十四（已完成：屏幕射线拾取）** | **脚本能点中任意可见物件**：`r3e-core::pick` 纯 CPU（零 wgpu）——`Ray::from_screen` 用相机逆视图投影把像素 + 视口换成世界射线（像素取角点中心 `+0.5`、`near/far` 两端反投影），`Ray::aabb_hit` slab 法求最近正交点（平行轴按「在板内即通过」处理、盒后方的交点丢弃），`pick_all` 线性遍历可见节点（命中的用**世界盒**判，`Aabb` 变换后重算 min/max 而非只换中心）、`pick_nearest` 单独实现（悬停每帧调不付整表排序），`MeshAabbCache`（`MeshRef → Aabb` 登记表，自身即 `MeshProvider`）与 `PickBounds`（登记表优先、`cube/sphere/plane/cylinder` 由 `ProceduralProvider` 现算，无盒即透明、不做单位盒兜底）；`Renderer::mesh_aabb` 暴露 `MeshCache::bounds`（与视锥剔除同一份缓存）；`EngineApp::sync_pick_bounds` 每帧幂等登记可见节点引用的网格盒；脚本 `pick_at` / `pick_under_mouse` / `pick_all_at` + `screen_width` / `screen_height` / `screen_size`（与 `pick_*` 同源），命中返回 `hit / node / name / distance / point`，**未命中返回完整空模板**（`node = -1`、`point = []`），免得 Rhai 读缺键把 `on_update` 打断。详见 §5.26 / §8.29 | `core/pick.rs` 新增、`core/lib.rs` 导出、`render/renderer.rs`（`mesh_aabb`）、`app/src/app.rs`（`sync_pick_bounds` + 帧循环接线）、`script/src/api.rs`（6 个绑定）、`scripts/pick_demo.rhai` 新增、`script/tests/scripts_compile.rs` 纳入新脚本；新增 `core/tests/pick_geometry.rs`（9 测）、`script/tests/pick_api.rs`（8 测） | 无（纯新增查询路径，不改任何既有绘制/上传路径，像素与上传读数逐位不变）。**收益**：编辑器悬停高亮、点选道具、点穿列表从「脚本自算矩阵或依赖刚体」变成一次调用；**边界**：AABB 粒度不认三角形（凹形 / 镂空会点中洞）、不走物理（与 `raycast` 两条独立通路）、无空间加速（线性遍历，真要上万物件应先拿 §5.21 层级盒剪枝）、UI 遮挡脚本自己用 `ui_hit` 先判、`on_start` 阶段画布尺寸仍是 `(0,0)`（自检要等首个 `screen_width() > 0` 的帧） |
 | **三十五（已完成：暂存环 + 多帧飞行）** | **把一帧里的 N 次 `write_buffer` 收成一次**：新增 `r3e-render/src/upload_staging.rs` 纯 CPU 契约（`pack_runs` 按 `stride` 把脏段拷成一块连续字节并给出逐段 `StagedCopy{dst_offset, src_offset, size}`、装不下返回 `over_budget` 不截断；`slot_bytes` / `slot_fit` 按 256 B 上取整、下限 `STAGING_MIN_BYTES = 64 KiB`、上限 `STAGING_MAX_BYTES = 8 MiB`；`SlotRing` 只在已提交时 `advance`，深度 `STAGING_SLOTS = 3`；`saved_calls(段数, 写入数)` 定口径）；`Renderer` 增 `UploadStaging`（`stage` 打包 + 容量按需成长 / `flush` 本帧唯一一次 `write_buffer` / `record` 逐段 `copy_buffer_to_buffer` 后轮转 / `drop_pending` 换代时丢弃 / `commit_shadows` 提交后对齐影子）+ `StagingStats`（`enabled` / `slots` / `capacity` / `frames` / `writes` / `copies` / `bytes` / `saves` / `rebuilds` / `fallbacks`），实例与关节两路**共用同一个槽**，`R3E_UPLOAD_STAGING=0` 可关闭回逐段直传。**关键不变量**：影子推迟到 `queue.submit` 之后才落盘（`copy_buffer_to_buffer` 提交才生效，提前刷影子会在未提交帧上永久漏传）、`record` 末尾才推进槽位、目标缓冲换代前 `drop_pending`。详见 §5.27 / §8.30 | 后台取证：`render/upload_staging.rs` 新增（内联 12 测）、`render/lib.rs` 导出、`render/renderer.rs`（`UploadStaging` + 两条上传路径接入 + 提交后 `commit_shadows` + 三个换代点的 `drop_pending`）、`app/src/app.rs` 帧探针、`app/src/editor.rs` `stats.render.upload_staging` | 无（`pack_runs` 只做搬运，字节与脏段判定逐位不变；GPU 实跑第 40 帧截图在开关开 / 关两种模式下 **sha256 完全相同** 195cb1ed…，像素基线无需重建）。**实测收益**：40 实例 / 每帧 4 段脏区 → 695 帧共 `写 695 次 / 拷贝 2,777 条 / 省写 2,082 次`（平均 4 段 1 写）；37 关节动画场景 `写 702 / 拷贝 703 / 省写 1`（`plan_upload` 已先把 37 个矩阵并成 1 段，这一层**收益为 0**，不虚构）。**边界**：wgpu 没有持久映射顶点缓冲（拷贝源必须 unmapped），所以是"一帧一次写 + 环形槽飞行"而非长期 map；多一次 CPU memcpy；> 8 MiB 一律退化逐段（`fallbacks`）；不减少 draw call、不省带宽、不省 `plan_upload` 的 memcmp |
 | **三十六（已完成：morph target 形变）** | **全局形变表 + 每实例元数据指针**：`r3e-core::morph` 纯 CPU 契约（`MorphTarget` 存逐顶点位置 / 法线增量、`MorphSet` 存一个网格的全部形状 + `validate_against` 校验 + `flatten_limited` 扁平化、`MorphInstance` 存每实例 `(mesh_node, target_count, weights)`、`MAX_MORPH_TARGETS = 4`、`apply` / `vertex_at` 与 WGSL 同公式供对拍）；`MeshData` 加 `morph` 字段、`bake_transform` 对增量只走线性 / 法线矩阵；`Scene` 增 `morphs` 与 `add_morph` / `set_morph_weight(_by_name)` / `reset_morph` / `bind_morph_by_name`；渲染器 `MeshCache` 维护**跨网格共享**的 `morph_table`（上限 1 MiB，`version` 变了才重写），网格上传时 append 并把 `base / stride / count / peak` 回写进 `MeshMorph`，`cull_inflate` 按峰值权重外扩包围盒；`InstanceRaw` 的 `joint_base` 扩成 `u32x4` 元数据（location 10）并加 `morph_weights`（location 12），**stride 96 → 112**；`shader.wgsl` 的 `group(2) binding(1)` 只读 storage，`vs_main` **先叠加形变增量、再做蒙皮**；app 按网格 `MorphSet` 自动登记绑定（场景就位与热重载后各补一次），脚本只 `morph_set(name, i, w)` | `core/morph.rs`（新）+ `core/mesh.rs` / `scene.rs` / `skin.rs`；`render/renderer.rs` / `mesh.rs` / `shader.wgsl`；`script/api.rs`（6 个 `morph_*`）；`app/app.rs`（自动绑定）；`asset/gltf_import.rs`（读 `targets`） | 无（场景 JSON 不变；权重缺省全 0 ⇒ 像素与扩展三十五逐位相同） |
+| **三十七（已完成：形变切线通道）** | **切线增量也走形变表**（扩展三十六只做了位置 + 法线，强形变下法线贴图的 TBN 仍按绑定姿态走）：`MorphTarget` 加 `tangents: Vec<[f32; 3]>` 与 `with_tangents`（长度不符即拒）、`has_tangents`；`flatten` / `flatten_limited` 每顶点从 6 个 `f32` 变 **9 个**（`MORPH_VERTEX_FLOATS = 9`，布局 `[pos3, nrm3, tan3]`），缺通道按 0 填；`bake_transform` 让切线增量与位置同走 3×3 线性部分（**不归一化**，保住形变给出的长度信息）；`apply` 与 WGSL `morph_offset` 同步累加 `delta.tangent`（`+6u / +7u / +8u`），`vs_main` 里 `local_tangent += shape.tangent` **在蒙皮之前**、蒙皮改用累积后的 `local_tangent`（阴影 pass 共用同一段逻辑）；glTF 导入读 `targets[].TANGENT` 并搬运到运行时 | `core/morph.rs` / `core/air.rs`；`asset/gltf_import.rs`（+`tests/gltf_morph_import.rs` 夹具）；`render/renderer.rs` / `render/shader.wgsl`；`render/tests/morph_shader_parity.rs`（新，6 测） | 无（夹具无 `TANGENT` 目标 ⇒ 切线段全 0；真机两帧截图 5,387 / 9,549 B、31,735 差异像素 / 13.77%、包围盒 221→122 **与扩展三十六逐位相同**，仅探针表长 `24f` → `36f`）。**代价**：同容量（1 MiB）能装的顶点数从约 10,922 降到约 7,281；**边界**：切线不参与剔除外扩、UV 形变仍不支持 |
 
 两条与顺序相关的说明：
 
@@ -4698,6 +4733,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 屏幕射线拾取（扩展三十四） | `cargo test -p r3e-core pick` → lib 内联 **8 passed**（`ray_new_normalizes_and_falls_back` / `aabb_ray_hit_reports_entry_distance` / `camera_center_ray_points_along_view` / `screen_ray_corners_span_frustum` / `pick_hits_nearest_cube_and_reports_point` / `pick_from_screen_center_matches_camera_target` / `invisible_node_and_hidden_parent_are_skipped` / `missing_bounds_provider_yields_no_hit`）；`cargo test -p r3e-script --test pick_api` → **8 passed**；`cargo test -p r3e-script --test scripts_compile` → 1 passed（新脚本纳入编译守卫）；`cargo test --workspace` 75 套件 **1,057 passed / 0 failed**（扩展三十三收尾为 74 套件 1,041）；`cargo test --workspace --features rapier` 75 套件 **1,061 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning。**像素回归**：纯新增查询路径，不改任何既有绘制 / 上传路径，基准图无需重建。**GPU 实跑取证**（Release，RTX 5060 Laptop / Vulkan，`assets/scene.json` + `scripts/pick_demo.rhai`，`--run-seconds 3`，退出码 0）：`画布 1920.0x1080.0，中心自检命中 spinner（距离 11.009093284606934）`；悬停链路随画布尺寸生效依次报 `ground`（7.517）/ `spinner`（11.858）/ `pick_a`（12.946），`[script]` 前缀无一条出错。**踩坑两条**：① Rhai 内置 `format` 只吃单参数，`format("{} {}", a, b)` 直接 `Function not found` 把 `on_start` / `on_update` 整段打断——多值日志改字符串 `+` 拼接；② `on_start` 时 `screen_size()` 仍是 `(0, 0)`，此时自检必然点空，须等首个 `screen_width() > 0` 的帧。**观感待人工验证**：悬停高亮跟不跟手、点到物件「弹起 0.35」的手感合适与否，自动化只证明命中判定与调用链 |
 | 上传暂存环（扩展三十五） | `cargo test -p r3e-render upload_staging` → lib 内联 **12 passed**；`cargo test --workspace` 75 套件 **1,069 passed / 0 failed**（扩展三十四收尾为 1,057）；`cargo test --workspace --features rapier` 75 套件 **1,073 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（本轮先被 `single_range_in_vec_init` 拦下，见 §8.30 ⑦）。**GPU 实跑**（RTX 5060 Laptop / Vulkan，Release）：`assets/scene.json` + `scripts/staging_demo.rhai`（40 实例 / 每帧 4 段脏区）→ 695 帧 `写 695 / 拷贝 2,777 / 省写 2,082`，即每帧 `write_buffer` 由 4 次降到 1 次；`R3E_UPLOAD_STAGING=0` 时探针报「关闭」且帧探针其余字段恒 0；两模式下 `--capture-frame 40` 截图 sha256 完全相同（195cb1ed…），`visual_regression` 严格模式 2 passed、基线未重建。`scene_anim.json`（37 关节）反例留档：`写 702 / 拷贝 703 / 省写 1`，`plan_upload` 已并段时该层收益为 0 |
 | 形变 morph target（扩展三十六） | `cargo test -p r3e-core morph --lib` → **10 passed**；`cargo test -p r3e-render morph --lib` → **9 passed**（`morph_table_tests` 6 + 实例布局 2 + 表长推导 1）；`cargo test -p r3e-asset --test gltf_morph_import` → **2 passed**；`$env:R3E_VISUAL_REGRESSION=1; cargo test -p r3e-app --test morph_deform` → **2 passed**，子进程日志 `morph=0/24f` → `morph=1/24f`、两帧差 **31,735 像素 / 13.77%**、包围盒左边界 221→122（左移 99 px）；`cargo test --workspace --all-features` 77 套件 **1,099 passed / 0 failed**（扩展三十五收尾为 1,069） |
+| 形变切线通道（扩展三十七） | `cargo test -p r3e-core --all-features morph` → **13 passed**（新增 `flatten_places_tangent_delta_after_normal` / `apply_accumulates_tangent_like_position` / `validate_checks_tangent_length`）；`cargo test -p r3e-render --all-features morph` → **9 passed**；`cargo test -p r3e-render --test morph_shader_parity` → **6 passed**（`per_vertex_floats_matches_core_const` / `morph_delta_field_order_matches_table_offsets` / `tangent_delta_survives_skinning` / `shadow_vertex_stage_also_applies_morph` / `morph_table_binding_is_group2_binding1` / `shader_still_parses_and_validates`）；`cargo test -p r3e-asset --test gltf_morph_import` → **2 passed**（夹具补 `TANGENT` 增量、断言换轴与出口搬运）；`$env:R3E_VISUAL_REGRESSION=1; cargo test -p r3e-app --test morph_deform` → **2 passed**，子进程日志 `morph=0/36f` → `morph=1/36f`（表长 24 → 36 = 每顶点 9 f32 生效），两帧差 **31,735 像素 / 13.77%**、包围盒左边界 221→122 **与扩展三十六完全相同**（切线段全 0 ⇒ 不该动的地方一位没动）；`cargo test --workspace --all-features` 78 套件 **1,108 passed / 0 failed**（扩展三十六收尾 77 套件 1,099），`--features rapier` 同 78 套件 1,108 passed；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning（首版被 3 处 `unnecessary_cast`（`usize` → `usize`）拦下） |
 
 
 ---

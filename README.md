@@ -1014,16 +1014,17 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 - 网格除四种程序化网格外，可加载外部 `.fbx`（含 base_color 贴图、材质因子、节点级 TRS 动画、
   骨骼蒙皮、交叉淡入与脚本状态机、分层遮罩混合，见 [§21 动画混合树](#21-动画混合树扩展十八-a)）；
   法线 / 粗糙度 / AO 贴图已支持（扩展二十一，见 [§25](#25-材质数据贴图法线--粗糙度--ao扩展二十一)），
-  morph target（表情 / 口型形变，blend shape）已支持（扩展三十六，见
+  morph target（表情 / 口型形变，blend shape）已支持（扩展三十六，切线通道扩展三十七，见
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §4.20 / §5.28），metallic 贴图仍不支持。
   用法与阶段现状见 [`docs/ASSETS.md`](docs/ASSETS.md)。
 - **退化缩放（某轴 `scale` = 0）不再产 `NaN`**（扩展二十六）：世界法线矩阵改由 `r3e_core::world_normal_matrix` 给出——矩阵可逆时与原写法逐位相同，不可逆时退化为「逐列方向 × 缩放倒数」的有限兜底；主通道 `vs_main` 在 `normalize` 前另加一道长度判零，退化时退回 `+Y`。同时 `Transform::normal_matrix` 不再用 `scale.max(1e-6)` 把负缩放抹平，镜像物件的法线方向得以保留。代价与边界：缩放到 0 的物件本身仍是退化物体，拿到的是「最不坏的有限值」而不是有意义的几何；正常场景画面逐步（逐位）不变，像素基线无需重建。
 - 实例缓冲已持久化、上传按脏段（扩展三十一）：缓冲跨帧复用，另有 112 B/实例的 CPU 影子存上一帧真正传过的字节，每帧只把变了的记录按连续区间 `write_buffer`（空洞 ≤ 8 条合并、段数 > 24 退全量、实例数变化或扩容换代当帧全量）——1,537 实例静态场景实测 `脏段 0 / 写 0 / 跳过 1,539`（0 B/帧），只转两个物件时 3 条记录。实例收集本身是「一趟 `scene.iter()` + 按（网格, 材质, 段）分桶」（扩展二十七 / 二十八，节点只进自己那一段），省掉的是旧写法按「键数 × 节点数」的重复过滤与同键跨两段的重复绘制；视锥剔除自扩展二十九起按场景树整枝跳判，遮挡剔除自扩展三十起同样按场景树整枝跳判。**仍在的热点**：实例装配仍逐实例（掩码要一格对一格对齐缓冲）、每帧一次 O(实例数) 的 memcmp、半透明批次重排会把这层省下的带宽吃掉大半。关节矩阵自扩展三十二起也走同一个 `plan_upload`（stride 64 B）：完全静止的蒙皮 0 B/帧，动画播放中 37 条连续脏区合并成 1 段（`write_buffer` 调用 37 次 → 1 次）；自扩展三十三起求解改走「骨骼树顶点为基准的常量相对链」（不含实例变换 `X`），「骨骼不动、整只模型在转」也从全量变成 0 B/帧（浮点伪脏消除），断链时回退世界矩阵、保守判全。自扩展三十五起这些脏段不再直传：先拷进 3 槽暂存环、一帧只 `write_buffer` 一次，再逐段 `copy_buffer_to_buffer` 落位（40 实例 / 每帧 4 段实测 4 次写 → 1 次写，`R3E_UPLOAD_STAGING=0` 可关）。细节见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.23 / §5.24 / §5.25 / §5.27 / §8.26 / §8.27 / §8.28 / §8.30。
-- **形变（morph target，扩展三十六）**：只有位置 + 法线两条增量通道（切线由 UV 参数化推出，强形变下法线贴图方向会偏）；
+- **形变（morph target，扩展三十六 + 三十七）**：位置 / 法线 / 切线三条增量通道（切线段自扩展三十七进表，每顶点 9 个 `f32`；UV 仍不参与形变）；
   每实例上限 **4 个形状**（一个 `vec4` 权重），超出的形状静默不入表；权重不夹 0..1、不归一化（允许负权重做反向形状，
   也允许 >1 的夸张表情）；**同网格的所有实例共享同一段形状数据**，不能逐实例换形状集。所有带形状网格的增量常驻一块
-  上限 1 MiB 的全局表，引擎目前没有网格卸载路径，这份显存只增不减（换场景靠整表重建回收）。权重缺省全 0，
-  所以不带表情的场景像素与扩展三十五逐位相同。
+  上限 1 MiB 的全局表（每顶点 9 个 `f32` = 位置 3 + 法线 3 + 切线 3，1 MiB 约装 7,281 顶点 × 4 形状；
+  切线进表后同容量能装的顶点数比扩展三十六少了 1/3），引擎目前没有网格卸载路径，这份显存只增不减（换场景靠整表重建回收）。
+  权重缺省全 0，所以不带表情的场景像素与扩展三十五逐位相同；夹具无 `TANGENT` 目标时切线段全 0，画面与扩展三十六逐位相同。
 - 脚本单线程同步执行，长循环会卡帧（Rhai 已限制操作数上限）。
 - 场景切换：**一个进程同一时刻只跑一个场景**。场景栈只是"来时的路"——每层存的是离开那一刻的
   **源文本 + 运行时快照**，不是后台还在跑的世界；切走的场景不会继续更新物理与动画。
@@ -1047,7 +1048,7 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 交叉淡入（`set_anim_clip_fade`，smoothstep 双片段加权，位置/缩放 lerp + 旋转 slerp）与脚本层状态机；
 分层混合树（遮罩 / 权重 / override 与 additive）由扩展十八 A 补上，见
 [§21 动画混合树](#21-动画混合树扩展十八-a)。
-形变（morph target / blend shape）由扩展三十六补上：形状增量按网格上传进全局表，实例只带 4 个权重，
+形变（morph target / blend shape）由扩展三十六补上、扩展三十七把切线段并入同一张表：形状增量按网格上传进全局表，实例只带 4 个权重，
 顶点着色器里**先叠增量、再做蒙皮**（见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.28）。
 尚未做：DQS、GPU skinning。
 
@@ -1331,7 +1332,7 @@ cargo run -- --asset D:\_probe_glb\samples\ironsword.glb
 与外部资产走**同一条**上传与绘制路径；`r3e-render/tests/architecture_guard.rs` 会在
 `cargo test` 时扫描源码，任何 `MeshRef::Builtin` 来源分支复活都会直接让测试失败。
 
-细节与 glb 已知限制（Draco / meshopt / KTX2 不支持；morph 自扩展三十六已支持）见
+细节与 glb 已知限制（Draco / meshopt / KTX2 不支持；morph 自扩展三十六、切线通道自扩展三十七已支持）见
 [`docs/ASSETS.md`](docs/ASSETS.md) 第 18 章。
 
 ---
@@ -2542,7 +2543,8 @@ cargo run -- assets\scene.json
 
 - **不读金属度贴图**：glTF 的 metallicRoughness 合并图只用了 G，B（金属度）仍是标量；
 - **只有一套 UV**（`uv0`），不支持 `KHR_texture_transform`，不做 UV 集选择；
-- **切线装配期一次算定**：蒙皮网格的切线跟法线同用伴随矩阵近似变换，极端形变下会有偏差；
+- **切线装配期一次算定**：蒙皮网格的切线跟法线同用伴随矩阵近似变换，极端蒙皮形变下仍有偏差（形变目标本身给出的切线增量
+  自扩展三十七起直接参与计算，不再回退到绑定姿态的切线方向）；
 - **数据贴图不生成 mipmap**：远距离采样会闪，未做各向异性过滤；
 - **没有脚本 API 与 RPC**：三张图只能由导入的模型自带，运行时换图需要改资产；
 - 法线贴图 `z` 下限 `0.05` 会削弱强凹凸的陡峭度，属于"防翻面优先"的取舍。
@@ -2719,7 +2721,7 @@ cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> 
 | `crates/r3e-script/tests/env_map_api.rs` | 4 | 8 个绑定写后读、六面不足 6 条返回值、非法强度被夹取、`clear` 后 `has_env_map` 为 false |
 | `crates/r3e-editor/tests/environment_map_rpc.rs` | 7 | `EnvironmentMapPatch` 补丁合并、非法字段不透传、快照回显与 `scene.set_environment` 互不干扰 |
 
-`cargo test --workspace` 现为 77 个套件 / 1,099 passed / 0 failed（`--features rapier` 同 77 套件 1,099 passed）。
+`cargo test --workspace` 现为 78 个套件 / 1,108 passed / 0 failed（`--features rapier` 同 78 套件 1,108 passed）。
 
 ### 27.7 已知边界
 
