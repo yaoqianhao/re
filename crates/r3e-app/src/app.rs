@@ -2304,6 +2304,8 @@ impl ApplicationHandler for EngineApp {
         match Renderer::new(window.clone()) {
             Ok(mut renderer) => {
                 log::info!("渲染器就绪: {}x{}", renderer.size().0, renderer.size().1);
+                // 扩展四十三：后端 / 特性协商结果一行入日志，真机验收直接抓这一行。
+                log::info!("{}", renderer.caps_line());
                 let library = self.assets.borrow().clone();
                 if !library.is_empty() {
                     renderer.set_asset_library(library.clone());
@@ -2333,6 +2335,11 @@ impl ApplicationHandler for EngineApp {
             }
             Err(e) => {
                 log::error!("渲染器初始化失败: {e}");
+                // 扩展四十三：钉了后端却起不来，不是「本机没显卡」（那种情况留给退出码 2 表示跳过），
+                // 而是「这台机器不满足矩阵要求」。给独立退出码 3，既不与跳过混淆，也绝不能被读成成功。
+                if r3e_render::gpu_caps::requested_backends().is_some() {
+                    std::process::exit(3);
+                }
                 event_loop.exit();
                 return;
             }

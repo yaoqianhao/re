@@ -13,21 +13,27 @@
 | job | runner | 管什么 | 状态口径 |
 | --- | --- | --- | --- |
 | `visual` | `windows-latest`（托管） | 基准图存在、可解码、尺寸恰为 640×360；禁止 CI 内重建基准图 | 永远必跑；基准图退化即红 |
-| `visual-gpu` | `[self-hosted, windows, gpu]`（自建） | 逐像素比 `capture_frame_640x360.png`，**拍不到图也红** | 变量 `R3E_GPU_RUNNER=true` 时跑；未配 runner 时显示 skipped |
+| `visual-gpu` | `[self-hosted, windows, gpu]`（自建） | 逐像素比 `capture_frame_640x360.png`，**拍不到图也红**；按后端拆两行（`vulkan` / `dx12`），**跑错后端也红** | 变量 `R3E_GPU_RUNNER=true` 时跑；未配 runner 时显示 skipped |
 
 `skipped` 不阻塞合并，但它在 PR 页面上是可见的一行——不会伪装成绿。这比"看起来绿其实空跑"诚实得多。
 
-## 2. 三个环境变量：谁是闸门，谁是保险
+## 2. 四个环境变量：谁是闸门，谁是保险，谁钉后端
 
 | 变量 | 取值 | 语义 | 谁设 |
 | --- | --- | --- | --- |
 | `R3E_VISUAL_REGRESSION` | `1` | **闸门**：不开就整条用例直接返回（打印原因，计 passed） | CI 两个 job 都开；本机手动开 |
 | `R3E_VISUAL_STRICT` | `1` | **保险**：开了之后，"跳过"与"闸门没开"都升级为 `panic`（红） | 只在 `visual-gpu` 里设 |
+| `WGPU_BACKEND` | `vulkan` / `dx12` | **钉后端**：矩阵每个 job 只许跑在自己的后端上。拿不到就 `Err`（进程退出码 3），测试再从引擎日志的 `backend=` 字段独立复核一遍 | `visual-gpu` 矩阵按行给；本机手动验证时给 |
 | `R3E_UPDATE_BASELINE` | `1` | 用当前画面覆盖基准图 | **只在开发者本机**；CI 里出现即 `exit 1` |
 
 口径很简单：**严格模式 = "我保证这台机器有 GPU，请把结果当真"。**
 于是显卡掉了、驱动崩了、窗口建不出来——全部算红，而不是算"这台机器不支持"。
 没有 `R3E_VISUAL_STRICT`，自建 runner 上的门和托管 runner 上一样是摆设。
+
+`WGPU_BACKEND` 解决的是另一个漏洞：**"要 dx12、实际跑在 vulkan"会伪装成绿**。
+两道校验缺一不可——进程内 `backend_matches` 管"引擎有没有照做"，日志里的 `backend=` 管
+"测试有没有看错"，只留一道都可能被一次回退悄悄绕过。名字写错（如 `WGPU_BACKEND=dx13`）也不会静默放行：
+`parse_backends` 把不认识的名字留在第二个返回值里，按要求了后端却一个都没匹配上处理。
 
 ## 3. 机器前置（自建 runner 上要装什么）
 
@@ -36,7 +42,7 @@
 | Git | 任意近期版本 | `actions/checkout` 依赖 |
 | rustup + 工具链 | 按仓库 `rust-toolchain.toml`（`stable-x86_64-pc-windows-gnu`） | CI 不指定版本，跟着仓库走，避免双版本漂移 |
 | MinGW-w64 | `x86_64-w64-mingw32-gcc` 在 `PATH` 里 | 本工程用 MinGW 链接；缺了在 `visual-gpu` 的环境自检步骤当场红 |
-| 显卡 | 一块能跑 Vulkan / DX12 的 GPU，驱动保持更新 | 基线是逐像素的，驱动换了大版本可能要重建基线 |
+| 显卡 | 一块能跑 Vulkan **和** DX12 的 GPU，驱动保持更新 | 矩阵两个后端都要真跑；基线是逐像素的，驱动换了大版本可能要重建基线 |
 | 会话类型 | **必须是交互式桌面会话**（见下节） | `wgpu` 要建真窗口，Session 0 的服务建不出来 |
 
 `visual-gpu` 的第一步是"环境自检"：打印显卡型号与驱动版本、检查 `cargo` 与 `x86_64-w64-mingw32-gcc`、
@@ -81,7 +87,7 @@ mkdir C:\actions-runner; cd C:\actions-runner
   再叠一层远端缓存只会增加不确定性和上传时间。
 - **定期清产物**：`crates/r3e-app/target/visual-regression/`、`_work/` 会缓慢长大，脏了手动删即可；
   `cargo clean` 不必须。
-- **这台机器是共享资源**：`timeout-minutes: 40` 是防它被别的活占着时把 PR 卡满 6 小时的兜底。
+- **这台机器是共享资源**：`timeout-minutes: 30` 是防它被别的活占着时把 PR 卡满 6 小时的兜底。
 
 ## 5. 打开开关
 
@@ -100,12 +106,22 @@ Value: true
 配置完至少做一次"故意变红"的验证，否则你只是又加了一个永远绿的 job：
 
 1. 随便改一处画面（例如把某材质基色改 0.02），提交到分支、开 PR；
-2. `visual-gpu` 应变红，`assert_png_matches` 的消息里带最坏点与坏点比例，
-   artifact `visual-gpu-artifacts` 里有实际图与差异图；
+2. `visual-gpu` 的**两行**应变红，`assert_png_matches` 的消息里带最坏点与坏点比例，
+   artifact `visual-gpu-vulkan-artifacts` / `visual-gpu-dx12-artifacts` 里各有实际图与差异图
+   （按后端分名，否则下载后分不清是哪条后端拍的）；
 3. 确认红了之后**回滚那处改动**，再确认它变绿。
 
 第二条对照实验：在自建 runner 上临时把 `R3E_VISUAL_STRICT` 去掉（改分支里的 `ci.yml`），
 把显卡驱动禁用或让窗口建不出来，应当看到"跳过 + passed"——这正好证明严格模式不是摆设。
+
+第三条对照实验（钉后端这道）：把某一行矩阵的 `backend` 临时改成这台机器没有的后端（例如只留核显时填 `dx12`
+而驱动不支持），或用 `WGPU_BACKEND=dx13` 这种错名字 —— 应当看到**进程退出码 3 + 用例红**，
+而不是"悄悄回退到 vulkan 后照旧通过"。真机上正常的两行日志长这样：
+`后端矩阵生效: 要求 vulkan / 实际 Vulkan`、`后端矩阵生效: 要求 dx12 / 实际 Dx12`。
+
+> 顺带一条实测口径（决定要不要按后端分基准）：本机 dx12 实际图与 vulkan 基准的**最大通道差为 1、
+> 超阈值（>2）像素 0 / 230,400**，所以现在两个后端共用一张基准图和同一套默认容差；哪天某一行真抖了，
+> 只放宽那一行的 `R3E_VISUAL_CHANNEL_DELTA` / `R3E_VISUAL_BAD_RATIO`，别改基准图。
 
 ## 7. 边界
 
@@ -114,5 +130,8 @@ Value: true
   并且这次提交要在 PR 里明说"基线因换 GPU 而重建"。
 - **自建 runner 是单点**：它离线 / 占用时 `visual-gpu` 会排队，不阻塞别的三道门。
   真到长期不可用，就把 `R3E_GPU_RUNNER` 删掉（回到 skipped），而不是让 PR 天天等。
-- **它不是安全边界**：PR 来自 fork 时，代码会在你的机器上跑。仓库是私有的前提下才可接受；
+- **矩阵里没有 gl，是刻意排除而非遗漏**：本工程的 SSAO 管线在 GL 后端会被 `wgpu` 直接判死
+  （`textureLoad` from depth textures 不被 GLSL 支持，`create_render_pipeline` 校验失败）。
+  那是后端能力缺失，不是"两个后端画出不同像素"，硬加进来只会得到一条永远红、没人看的 job。
+- **不是安全边界**：PR 来自 fork 时，代码会在你的机器上跑。仓库是私有的前提下才可接受；
   公开仓库请改用 `pull_request_target` 之外的隔离方案，别把带 GPU 的机器暴露给任意 PR。

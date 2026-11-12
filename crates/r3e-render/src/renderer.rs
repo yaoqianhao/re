@@ -16,6 +16,7 @@ use r3e_core::{
 use winit::window::Window;
 
 use crate::envprobe::{self, EnvProbeSource, EnvProbeStats};
+use crate::gpu_caps;
 use crate::instance_upload::{self, MAX_RANGES, MERGE_GAP};
 use crate::mesh::{self, vertex_layout, InstanceRaw};
 use crate::occlusion::{OcclusionCuller, OcclusionStats};
@@ -1299,9 +1300,26 @@ fn staging_enabled_from_env() -> bool {
     )
 }
 
+/// 扩展四十三：设备描述符。`required_features` 由 [`gpu_caps::FeatureReport`] 决定，
+/// 限制仍用 WebGPU 基线（`Limits::default()`），保证 WebGPU 与原生两条路同口径。
+fn device_descriptor(features: wgpu::Features) -> wgpu::DeviceDescriptor<'static> {
+    wgpu::DeviceDescriptor {
+        label: Some("r3e-device"),
+        required_features: features,
+        required_limits: wgpu::Limits::default(),
+        ..Default::default()
+    }
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// 扩展四十三：实际拿到的 adapter 信息（后端 / 名字 / 设备类型），供探针与验收读取。
+    adapter_info: wgpu::AdapterInfo,
+    /// 扩展四十三：**真正生效**的图形特性（= 申请 ∩ adapter 支持）。
+    device_features: wgpu::Features,
+    /// 扩展四十三：环境变量要求钉死的后端（`None` = 未指定 = 全开）。
+    requested_backends: Option<wgpu::Backends>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     size: (u32, u32),
@@ -1644,7 +1662,35 @@ impl Renderer {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // 扩展四十三：后端可钉死。不设 `WGPU_BACKEND` 时 `descriptor` 保持 wgpu 默认
+        // （编进来的后端全开），行为与扩展四十二逐位一致。
+        let requested = gpu_caps::requested_backends();
+        if let Some(req) = &requested {
+            if req.is_empty() {
+                log::warn!(
+                    "{} = `{}` 里的后端名一个都不认识，本次按默认后端集合运行",
+                    gpu_caps::BACKEND_ENV,
+                    req.source
+                );
+            } else if !req.unknown.is_empty() {
+                log::warn!(
+                    "{} 里有不认识的后端名 [{}]（已忽略，其余按 {} 执行）",
+                    gpu_caps::BACKEND_ENV,
+                    req.unknown.join(","),
+                    gpu_caps::describe_requested(Some(req.backends))
+                );
+            }
+        }
+        let requested_bits = requested
+            .as_ref()
+            .map(|req| req.backends)
+            .filter(|bits| !bits.is_empty());
+
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        if let Some(bits) = requested_bits {
+            descriptor.backends = bits;
+        }
+        let instance = wgpu::Instance::new(descriptor);
         let surface = instance
             .create_surface(Arc::clone(&window))
             .map_err(|e| format!("创建 surface 失败: {e}"))?;
@@ -1665,13 +1711,47 @@ impl Renderer {
             info.device_type
         );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("r3e-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            ..Default::default()
-        }))
-        .map_err(|e| format!("请求设备失败: {e}"))?;
+        // 扩展四十三：钉了后端就必须真的拿到。`request_adapter` 只会按位集过滤后
+        // 挑最合适的，它不会告诉你「我尽力了但只剩别的后端」—— 少了这道校验，
+        // CI 的 dx12 job 在只有 Vulkan 的机器上会跑完一片绿，等于什么都没验证。
+        if !gpu_caps::backend_matches(requested_bits, info.backend) {
+            return Err(format!(
+                "{} = `{}` 要求后端 {}，实际拿到的是 {}（{}）—— 该后端在本机不可用",
+                gpu_caps::BACKEND_ENV,
+                requested.as_ref().map(|r| r.source.as_str()).unwrap_or(""),
+                gpu_caps::describe_requested(requested_bits),
+                gpu_caps::backend_name(info.backend),
+                info.name
+            ));
+        }
+
+        // 扩展四十三：特性按需协商 —— 先取交集再申请，缺的记下来而不是整批失败。
+        let wanted_report = gpu_caps::FeatureReport::negotiate(adapter.features());
+        let (device, queue, effective_features) = match pollster::block_on(
+            adapter.request_device(&device_descriptor(wanted_report.enabled)),
+        ) {
+            Ok(pair) => (pair.0, pair.1, wanted_report.enabled),
+            Err(err) => {
+                // 走到这里说明「按需」这层判断被驱动打脸了：宁可退回空特性集起得来，
+                // 也不要为了两个调试特性让整个引擎打不开。
+                log::warn!("按需特性申请失败（{err}），退回空特性集重试");
+                let pair = pollster::block_on(
+                    adapter.request_device(&device_descriptor(wgpu::Features::empty())),
+                )
+                .map_err(|e| format!("请求设备失败: {e}"))?;
+                (pair.0, pair.1, wgpu::Features::empty())
+            }
+        };
+        let report = gpu_caps::FeatureReport {
+            enabled: effective_features,
+            missing: gpu_caps::wanted_features() & !effective_features,
+        };
+        log::info!(
+            "图形能力: 后端 {} / 要求 {} / 特性 {}",
+            gpu_caps::backend_name(info.backend),
+            gpu_caps::describe_requested(requested_bits),
+            report.summary()
+        );
 
         let caps = surface.get_capabilities(&adapter);
         let mut config = surface
@@ -2187,6 +2267,9 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            adapter_info: info,
+            device_features: effective_features,
+            requested_backends: requested_bits,
             surface,
             config,
             size: (width, height),
@@ -2372,6 +2455,40 @@ impl Renderer {
 
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// 扩展四十三：实际拿到的 adapter 信息（后端 / 名字 / 设备类型）。
+    pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        &self.adapter_info
+    }
+
+    /// 扩展四十三：实际生效的图形特性（已与 adapter 能力取过交集）。
+    pub fn device_features(&self) -> wgpu::Features {
+        self.device_features
+    }
+
+    /// 扩展四十三：环境变量要求钉死的后端位集（`None` = 未指定）。
+    pub fn requested_backends(&self) -> Option<wgpu::Backends> {
+        self.requested_backends
+    }
+
+    /// 扩展四十三：一行能力摘要，供启动日志与真机验收抓取。
+    ///
+    /// 形如 `backend=dx12 device=NVIDIA GeForce RTX 5060 Laptop GPU 特性
+    /// timestamp-query|polygon-mode-line / 缺 timestamp-in-encoders 要求 dx12`。
+    /// **缺特性不视为失败**：这些是可选能力，引擎在空特性集下也应有像素一致的结果。
+    pub fn caps_line(&self) -> String {
+        format!(
+            "backend={} device={} 特性 {} 要求 {}",
+            gpu_caps::backend_name(self.adapter_info.backend),
+            self.adapter_info.name,
+            gpu_caps::FeatureReport {
+                enabled: self.device_features,
+                missing: gpu_caps::wanted_features() & !self.device_features,
+            }
+            .summary(),
+            gpu_caps::describe_requested(self.requested_backends)
+        )
     }
 
     pub fn aspect(&self) -> f32 {

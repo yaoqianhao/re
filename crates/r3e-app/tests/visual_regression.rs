@@ -22,7 +22,11 @@
 //! * `R3E_VISUAL_REGRESSION=1`：打开本用例；
 //! * `R3E_UPDATE_BASELINE=1`：把本次截图写/覆盖成基准图（首次建档或有意更新画面时用）；
 //! * `R3E_VISUAL_CHANNEL_DELTA`：覆盖单通道容差（默认取库里的常量）；
-//! * `R3E_VISUAL_BAD_RATIO`：覆盖坏点比例上限（默认取库里的常量）。
+//! * `R3E_VISUAL_BAD_RATIO`：覆盖坏点比例上限（默认取库里的常量）；
+//! * `WGPU_BACKEND`：**扩展四十三**的矩阵开关。设了它（如 `vulkan` / `dx12`）就必须
+//!   真的跑在那个后端上，否则本次运行按失败处理：引擎侧由
+//!   `r3e_render::gpu_caps::backend_matches` 校验并以退出码 3 退出，本文件再把引擎日志里
+//!   的 `backend=` 字段独立复核一遍。两道一起，杜绝「要 dx12 却静默跑在 vulkan 上」的假绿。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -97,11 +101,19 @@ fn tolerance() -> Tolerance {
     Tolerance::new(channel_delta, bad_pixel_ratio).sanitized()
 }
 
-/// 起 `r3e` 进程拍一张图，返回 `Ok(路径)` / `Err(跳过原因)`。
+/// 一次截图运行的产物：截图路径 + 引擎的完整日志（stdout + stderr）。
+///
+/// 日志要留两用：矩阵 job 从里面抓 `backend=` 复核后端，失败时落盘到 artifacts 供排查。
+struct CaptureRun {
+    actual: PathBuf,
+    log: String,
+}
+
+/// 起 `r3e` 进程拍一张图，返回 `Ok(运行产物)` / `Err(跳过或失败原因)`。
 ///
 /// 用真实的二进制而不是把渲染器塞进测试进程：截图链路的入口就是命令行，
 /// 顺手把 `--window-size` / `--capture-frame` / `--capture-after` 三个参数也覆盖到。
-fn capture_actual_frame() -> Result<PathBuf, String> {
+fn capture_actual_frame() -> Result<CaptureRun, String> {
     let out_dir = artifacts_dir();
     std::fs::create_dir_all(&out_dir).map_err(|err| format!("建产物目录失败: {err}"))?;
     let actual = out_dir.join(format!(
@@ -112,7 +124,7 @@ fn capture_actual_frame() -> Result<PathBuf, String> {
 
     let root = repo_root();
     let fixture = fixture_dir();
-    let status = Command::new(env!("CARGO_BIN_EXE_r3e"))
+    let output = Command::new(env!("CARGO_BIN_EXE_r3e"))
         .current_dir(&root)
         .arg(fixture.join("scene.json"))
         .arg(fixture.join("static.rhai"))
@@ -122,19 +134,88 @@ fn capture_actual_frame() -> Result<PathBuf, String> {
         .arg(&actual)
         .arg("--capture-after")
         .arg(CAPTURE_AFTER_FRAME.to_string())
-        .status()
+        .output()
         .map_err(|err| format!("启动 r3e 失败: {err}"))?;
 
-    match status.code() {
+    let log = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 日志先落盘再看结论：失败路径最需要它，成功路径也不该白丢后端 / 特性协商那几行。
+    let log_path = out_dir.join("engine.log");
+    if let Err(err) = std::fs::write(&log_path, &log) {
+        eprintln!("引擎日志写盘失败（不影响结论）: {err}");
+    }
+
+    match output.status.code() {
         Some(0) => {}
         // 2 = 渲染器 / 截图链路不可用（无 GPU、窗口建不出来），按跳过处理
         Some(2) => return Err("渲染器不可用（无 GPU 或窗口创建失败），跳过".to_string()),
-        other => return Err(format!("r3e 异常退出: {other:?}")),
+        // 3 = 扩展四十三：要求了后端却没拿到。这既不是跳过也不是普通崩溃，必须带着日志报出来。
+        Some(3) => {
+            return Err(format!(
+                "要求后端未满足（WGPU_BACKEND={}）：\n{}",
+                requested_backend_spec().unwrap_or_else(|| "?".to_string()),
+                tail_lines(&log, 20)
+            ))
+        }
+        other => return Err(format!("r3e 异常退出: {other:?}\n{}", tail_lines(&log, 20))),
     }
     if !actual.is_file() {
         return Err(format!("进程退出 0 但没有落盘截图: {}", actual.display()));
     }
-    Ok(actual)
+    Ok(CaptureRun { actual, log })
+}
+
+/// `WGPU_BACKEND` 的取值（未设或空串时为 `None`）。
+fn requested_backend_spec() -> Option<String> {
+    std::env::var("WGPU_BACKEND")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// 日志尾部若干行：错误信息里贴全量日志没人看，贴尾巴才够定位。
+fn tail_lines(log: &str, count: usize) -> String {
+    let lines: Vec<&str> = log.lines().filter(|line| !line.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(count);
+    lines[start..].join("\n")
+}
+
+/// 从引擎日志里取 `backend=xxx` 的取值（扩展四十三 `Renderer::caps_line` 的首字段）。
+fn logged_backend(log: &str) -> Option<&str> {
+    log.split_whitespace()
+        .find_map(|token| token.strip_prefix("backend="))
+}
+
+/// 扩展四十三：设了 `WGPU_BACKEND` 就必须真的跑在那个后端上。
+///
+/// 引擎进程内已经校验过一次并以退出码 3 结束（那种情况在 [`capture_actual_frame`] 里已经红）；
+/// 这里从日志独立再核一遍，防止哪天进程内那道校验被改掉、矩阵却继续显示绿。
+fn assert_requested_backend(log: &str) {
+    let Some(spec) = requested_backend_spec() else {
+        return;
+    };
+    let (bits, unknown) = r3e_render::gpu_caps::parse_backends(&spec);
+    assert!(
+        unknown.is_empty(),
+        "WGPU_BACKEND=`{spec}` 里有不认识的后端名: {unknown:?}"
+    );
+    let actual = logged_backend(log).unwrap_or_else(|| {
+        panic!(
+            "引擎日志里没有 backend= 字段，无法确认后端矩阵是否生效。日志尾部:\n{}",
+            tail_lines(log, 20)
+        )
+    });
+    let actual = r3e_render::gpu_caps::backend_from_name(actual)
+        .unwrap_or_else(|| panic!("引擎日志里的后端名无法识别: {actual}"));
+    assert!(
+        r3e_render::gpu_caps::backend_matches(Some(bits), actual),
+        "要求后端 `{spec}`，实际渲染后端 {actual:?} —— 后端矩阵没生效，\
+         这一轮的像素结论不能用来代表 `{spec}`。"
+    );
+    eprintln!("后端矩阵生效: 要求 {spec} / 实际 {actual:?}");
 }
 
 #[test]
@@ -154,8 +235,8 @@ fn captured_frame_matches_baseline() {
         return;
     }
 
-    let actual = match capture_actual_frame() {
-        Ok(path) => path,
+    let run = match capture_actual_frame() {
+        Ok(run) => run,
         Err(reason) => {
             if strict {
                 // 严格模式 = 「我保证这台机器有 GPU，请把结果当真」。这时拍不到图不是环境限制，
@@ -169,6 +250,9 @@ fn captured_frame_matches_baseline() {
             return;
         }
     };
+    // 扩展四十三：先确认这一轮真跑在要求的后端上，再谈像素——顺序反了就会把后端没生效的图当结论。
+    assert_requested_backend(&run.log);
+    let actual = &run.actual;
 
     let baseline = baseline_path();
     let update = env_flag("R3E_UPDATE_BASELINE");
@@ -179,15 +263,15 @@ fn captured_frame_matches_baseline() {
             baseline.display()
         );
         std::fs::create_dir_all(baseline.parent().expect("基准图必有父目录")).expect("建基准目录");
-        std::fs::copy(&actual, &baseline).expect("写入基准图");
+        std::fs::copy(actual, &baseline).expect("写入基准图");
         eprintln!("已生成基准图: {}", baseline.display());
         return;
     }
 
-    let report = assert_png_matches(&baseline, &actual, tolerance(), artifacts_dir())
+    let report = assert_png_matches(&baseline, actual, tolerance(), artifacts_dir())
         .expect("基准图与实际图都应可读、且尺寸一致");
     if !report.passed() && update {
-        std::fs::copy(&actual, &baseline).expect("覆盖基准图");
+        std::fs::copy(actual, &baseline).expect("覆盖基准图");
         eprintln!("基准图已更新: {}", baseline.display());
         return;
     }

@@ -154,7 +154,7 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **63,765** | **13,254** | **1,170** | **约 6.4 万行 Rust + 1,512 行 WGSL（扩展四十二净减 9 行，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 83 个套件 / 1,170 passed / 0 failed** |
+| **合计** | **64,760** | **13,400** | **1,193** | **约 6.5 万行 Rust + 1,512 行 WGSL（扩展四十三未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 84 个套件 / 1,193 passed / 0 failed** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,512 行 WGSL，全在 `r3e-render`，按 `crates/**/src/**/*.wgsl` 实测）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
@@ -227,6 +227,14 @@ src 一栏为同口径重算的净值——扩展四十一自身只加了常量�
 `render/tests/morph_shader_parity.rs` 的四个新契约、`instance_upload_contract.rs` 步长 148 → 160；
 收尾实测 **63,765 src / 13,254 tests / 1,170 单测 / 83 套件 1,170 passed / 0 failed**，
 `--features rapier` 同 83 套件 1,170 passed），
+扩展四十三（后端矩阵 CI + 特性按需协商）再增量 **+995 src / +146 tests / +23 单测 / +1 套件 / 0 WGSL**
+（`render/gpu_caps.rs` 481 行 17 测 —— `BACKEND_ENV` / `parse_backends` / `requested_backends` / `backend_matches` /
+`FeatureReport::negotiate` / `caps_line` 的纯 CPU 契约；`render/tests/gpu_caps_contract.rs` 62 行 6 测；
+`render/renderer.rs` 的 `Instance::new` 钉后端、`request_device` 走协商、能力日志与 `caps_line() ~+90`；
+`app/app.rs` 打 `caps_line` 与退出码 3、`app/tests/visual_regression.rs` 改 `Command::output()` 收日志并先断言后端
+再比像素 ~+56；`lib.rs` 导出 +6，
+收尾实测 **64,760 src / 13,400 tests / 1,193 单测 / 84 套件 1,193 passed / 0 failed**，
+`--features rapier` 同 84 套件 1,193 passed），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
 （`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
@@ -249,13 +257,13 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,170 passed / 0 failed（83 个套件；较扩展四十一收尾的 1,163 增 7：core `morph.rs` 槽函数与容量 3、core `scene.rs` 槽门面 1、render `mesh.rs` 布局 / `shader.wgsl` 口径 2、`instance_upload_contract` 步长 1） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,170 passed / 0 failed（83 个套件；本轮 rapier 侧计数与默认特性相同——`ccd_penetration` 整文件 3 条与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events` 1 条在默认特性下走的是内置后端同义用例）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,189 passed / 0 failed（84 个套件；扩展四十三新增套件 `gpu_caps_contract` 6 测 + `r3e-render::gpu_caps` 17 条单测） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,193 passed / 0 failed（84 个套件；比默认特性多 4 条，来源是**只在该特性下编译**的 `ccd_penetration.rs`（文件级 `#![cfg(feature = "rapier")]`，3 测）与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`（1 测），默认特性下整条用例不参与计数）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
-| 像素漂移（CI 闸门，自建 GPU） | 同上 + `$env:R3E_VISUAL_STRICT = "1"` | `visual-gpu` job，`runs-on: [self-hosted, windows, gpu]`，变量 `R3E_GPU_RUNNER=true` 时启用。严格模式下**跳过即失败**：显卡掉、驱动崩、窗口建不出来都算红，不再伪装成"这台机器不支持"。配置见 `docs/CI_GPU_RUNNER.md` |
-| CI | `.github/workflows/ci.yml`（fmt / clippy / test / visual / visual-gpu，五个 job，全 Windows） | 每次 push、PR 自动跑，红则不合；`visual-gpu` 未配 runner 时显示 skipped（不阻塞合并，但可见） |
+| 像素漂移（CI 闸门，自建 GPU） | 同上 + `$env:R3E_VISUAL_STRICT = "1"`，可加 `$env:WGPU_BACKEND = "dx12"` 钉后端 | `visual-gpu` job，`runs-on: [self-hosted, windows, gpu]`，变量 `R3E_GPU_RUNNER=true` 时启用。严格模式下**跳过即失败**：显卡掉、驱动崩、窗口建不出来都算红，不再伪装成"这台机器不支持"。**扩展四十三起按后端拆矩阵**（`vulkan` + `dx12`，见 §5.30）：设了 `WGPU_BACKEND` 却没跑在那个后端上，引擎以退出码 3 结束、测试再复核日志里的 `backend=` 字段。配置见 `docs/CI_GPU_RUNNER.md` |
+| CI | `.github/workflows/ci.yml`（fmt / clippy / test / visual / visual-gpu，五个 job 名，其中 clippy / test / visual-gpu 各自带矩阵，全 Windows） | 每次 push、PR 自动跑，红则不合；`visual-gpu` 未配 runner 时显示 skipped（不阻塞合并，但可见） |
 
 静态检查仅保留三处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
 `too_many_arguments`（顶点装配入口参数天然是平行数组，`r3e-asset` 内两处）。
@@ -1293,11 +1301,11 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 `Renderer::new(window: Arc<Window>)`：
 
 ```
-1. wgpu::Instance::new(Descriptor::new_without_display_handle())
+1. wgpu::Instance::new(Descriptor::new_without_display_handle())   ← 扩展四十三：backends 取 WGPU_BACKEND（未设用默认集合）
 2. instance.create_surface(window.clone())         → wgpu::Surface<'static>
-3. instance.request_adapter(HighPerformance)        → 优先独显
+3. instance.request_adapter(HighPerformance)        → 优先独显；随后校验 backend_matches，不符即 Err（退出码 3）
 4. adapter.get_info() → 日志打印 GPU 名/后端/设备类型
-5. adapter.request_device(空 features, 默认 limits)
+5. adapter.request_device(协商出的 features, 默认 limits)   ← 扩展四十三：negotiate(wanted, adapter.features)
 6. surface.get_capabilities + get_default_config
 7. 若候选格式中存在 sRGB → 覆盖 config.format   ← 关键：否则画面发灰
 8. surface.configure
@@ -3468,6 +3476,79 @@ Vertex attribute location 16 must be less than limit 16
 `const { assert!(MORPH_SLOT_WORDS <= MORPH_SLOT_ATTR_WORDS) }` 会在编译期先红，逼着把序号搬去第二个 location。
 这是有意的：**上限增长必须先撞到显式的栏杆**，而不是静默丢形状。
 
+### 5.30 后端矩阵与特性按需协商（扩展四十三）
+
+以前整个工程对「跑在哪个图形后端上」是**不说话**的：`Instance` 用默认后端集合，`request_device` 申请空
+features，日志里那句后端名只是 `adapter.get_info()` 的副产品。这带来两个真问题：
+
+1. **CI 只验一条路径**：像素门只在本机 vulkan 上跑过，dx12 的着色器翻译与采样路径从没被像素级验过，
+   而「它没被测过」这件事在 CI 里看不出来；
+2. **能力申请写死为 `empty()`**：`timestamp-query`（GPU 计时）、`polygon-mode-line`（线框调试）驱动明明
+   支持却拿不到；反过来想用一个驱动不支持的 feature 又会在 `request_device` 里直接失败。
+
+`crates/r3e-render/src/gpu_caps.rs` 是这两件事的答案，公开面如下：
+
+| 项 | 作用 |
+| --- | --- |
+| `BACKEND_ENV = "WGPU_BACKEND"` | 唯一的环境变量名，取值与 wgpu 的后端名同义（`vulkan` / `dx12` / `metal` / `gl`，认 `vk`、`d3d12` 等别名，逗号或空白分隔，大小写不敏感） |
+| `parse_backends(spec)` | 解析成 `(Backends 位集, 不认识的名字列表)`。**不认识的**不静默丢，留在第二个返回值里由调用方决定怎么办 —— 静默丢会让 `WGPU_BACKEND=dx13` 退化成「没要求任何后端」从而永远绿 |
+| `requested_backends()` / `requested_backends_from(env)` | 从环境读并解析；`_from` 是纯函数版本，不改进程环境也能覆盖全部分支 |
+| `backend_matches(Some(bits), actual)` | 真源判定：实际拿到的 adapter 是否落在要求集合里。`None`（没设）恒真 —— 不设就该按驱动 / 系统的默认选 |
+| `backend_name` / `backend_from_name` | 名字与 `wgpu::Backend` 互为逆，日志与「与后端无关的断言」都用它 |
+| `FeatureReport { enabled, missing }` + `FeatureReport::negotiate(available)` | 按需协商：要什么 → 驱动有什么 → **交集**（`enabled` = 真写进 `required_features` 的，`missing` = 想要但没拿到的）。`missing` 只报告、不失败 |
+| `describe_features` / `describe_requested` | 一行日志口径，如 `timestamp-query|polygon-mode-line / 缺 polygon-mode-point` |
+
+于是初始化链路变成（对应 §5.3 的第 1 / 3 / 5 步）：
+
+```
+1'. Instance::new(Descriptor { backends: requested_backends().unwrap_or(默认集合), .. })
+3'. request_adapter → adapter.get_info()
+    └ 设了 WGPU_BACKEND 且 backend_matches 为假 → Err（不降级、不回退）
+5'. request_device(FeatureReport::negotiate(adapter.features()).enabled)
+    ├ 缺的 feature 进 FeatureReport.missing，只记日志
+    └ 这次申请若仍被驱动打脸 → warn 后退回 Features::empty() 重试（宁少能力，不许打不开）
+6'. 记一行能力日志: "图形能力: 后端 Vulkan / 要求 vulkan / 特性 a|b / 缺 c"
+    caps_line(): "backend=vulkan device=... 特性 a|b 要求 vulkan"
+```
+
+**为什么不许静默回退**：若 `WGPU_BACKEND=dx12` 却在拿不到 dx12 时悄悄用 vulkan 跑，「dx12 的像素看着没问题」
+这句话就是假的 —— 那不是小瑕疵，而是把矩阵这道门本身废掉。所以 `Renderer::new` 在 `backend_matches` 为假时
+返回 `Err`，进程随后以**退出码 3** 结束：
+
+| 退出码 | 含义 | CI 侧行为 |
+| --- | --- | --- |
+| 0 | 正常 | 继续比像素 |
+| 2 | 渲染器 / 截图链路不可用（无 GPU、窗口建不出来） | 非严格模式跳过，严格模式红 |
+| 3 | **要求了后端却没拿到**（扩展四十三） | 红，错误信息里贴日志尾部 |
+
+`exit(3)` 只在 `requested_backends().is_some()` 时触发：没设 `WGPU_BACKEND` 的机器（普通开发机、托管 runner）
+保持原有「初始化失败就退出」的语义，不被这次改动改写。
+
+**CI 矩阵**（`.github/workflows/ci.yml` 的 `visual-gpu`）：`backend: [vulkan, dx12]`，两行都用
+`R3E_VISUAL_CHANNEL_DELTA=2` / `R3E_VISUAL_BAD_RATIO=0.001`（库里的默认值，一个数都不放宽），
+`fail-fast: false`（一边红时另一边的结果仍有诊断价值），artifacts 名字带后端名。
+只有两行不是漏了 gl：实测 SSAO 管线在 GL 后端直接 `create_render_pipeline` 校验失败
+（`textureLoad` from depth textures is not supported in GLSL），那是后端能力缺失而非「差异」，进了矩阵只会
+变成一条永远红、没人会看的 job。
+
+**双后端不重建基准图**：基准图仍是在 vulkan 上建的。实测 dx12 与该基准在同场景下的差异落在默认容差内
+（见 §13 验证表的四十三行），所以「一个后端一张基准」暂时没有必要；真出现驱动升级导致的像素抖动，做法是
+**只放宽那一行的容差**，绝不动基准图、更不许用 `R3E_UPDATE_BASELINE` 抹平 —— 那会把回归洗成永远绿。
+
+**测试侧的第二道复核**：`visual_regression.rs` 改用 `Command::output()` 收下引擎 stdout + stderr
+（落盘到 `target/visual-regression/engine.log`），从里面抓 `backend=` 再断言一次。进程内那道校验若哪天被改掉，
+这一道仍会把「要 dx12 却跑在别的后端」判红。顺序是固定的：**先断言后端，再谈像素** —— 反了就会把「后端没
+生效的那张图」当成结论。
+
+三条与协商相关的取舍：
+
+- `negotiate` 取交集，而不是「要么全要要么全不要」。dx12 上 `polygon-mode-point` 拿不到，其余三个照常授予，
+  线框调试只在 `missing` 里少一项，不影响主渲染；若改成缺一个就全放弃，一个非关键 feature 会让整条能力链归零。
+- 交集仍被驱动拒绝时，**退回空特性集重试**并 `warn`。这不是自我否定：`request_device` 的错误可能来自
+  驱动自己的 bug（报告支持但拒绝授予），此时「两个调试能力」远不值得换来「窗口打不开」。
+- 没有命令行参数：`WGPU_BACKEND` 是 wgpu 生态的既有约定，CI、手动验证、脚本三处只改一个环境变量，
+  比再加一个 `--backend` 少维护一份解析与一份文档。
+
 ---
 
 ### 8.1 程序入口（main.rs）
@@ -4982,6 +5063,7 @@ cargo test -p r3e-render upload_staging
 | **四十（已完成：逐实例形状掩码）** | **让同一网格的实例各挑一套形状**：`MorphInstance` 加 `mask: u32`（第 `i` 位 = 形状 `i` 启用，初值 `ALL_SHAPE_MASK = u32::MAX` 而非 `(1 << count) - 1`，因为掩码只表达取舍、不表达数量）与 `shape_mask()`（夹到 `min(target_count, MAX_MORPH_TARGETS)`）、`shape_enabled` / `set_shape_enabled` / `disable_all_shapes` / `enabled_shape_count` / `masked_nonzero_count`；`normalized_weights()` **先把掩码外的槽位归零再算互斥和**（否则「同组两个各 1.0、关掉一个」会被压成 0.5），权重本身一位不改；`Scene` 加 `set_morph_mask_by_name` / `morph_mask_by_name` / `set_morph_shape_enabled_by_name` / `morph_shape_enabled_by_name`；`InstanceRaw` 尾部补 `morph_mask`（location 14，**stride 128 → 132**），渲染侧 `clip_instance_mask` / `mask_drops_all_shapes` 两个纯函数（掩码全 0 的实例 `morph_count` 按 0 上报）；`shader.wgsl` 的 `morph_offset` 多收一个 `mask` 参数、逐组按位判 `if (mask & bit) != 0u` 才累加；脚本 4 个 API（`morph_mask` / `morph_mask_set` / `morph_show` / `morph_visible`，写掩码返回**裁剪后**的生效值）；`RenderStats.morph_masked_shapes` 与帧探针 `mask=` 读数 | `core/morph.rs`（+5 测）、`core/scene.rs`（+5 测）、`render/mesh.rs`（布局 +1 测）、`render/renderer.rs`（`morph_mask_tests` +3 测）、`render/shader.wgsl`、`render/tests/morph_shader_parity.rs`（+4 测）、`script/api.rs`、`app/app.rs`（探针）、新套件 `morph_mask`（app，337 行 3 测）+ 夹具 `fixtures/morph_mask`、`morph_mask_api`（script，4 测） | 无（**不调掩码 API 的场景零影响**：`mask` 初值全开，进缓冲的权重与扩展三十九逐位一致，`InstanceRaw` 尾部只是多 4 B 未用字段）。**真机五态**（8 形状夹具，640×360 第 4 帧，逐字节比对）：`morph=0/288f mask=0/0`（基线 5,376 B）→ 形状 0 开 `1/288f mask=0/0 inflate=2.062`（7,180 B，对基线 **12,312 像素 / 5.34%**）→ 掩码关第 0 位 `morph=0/288f mask=0/1`（**0 像素**，且脚本读到 `w0 = 1.0`、`visible0 = false` 同时成立）→ 掩码整块写 0 `morph=0/288f mask=1/1`（**0 像素**，`w4 = 1.0` 仍在）→ 掩码写 65535 读回 255（越界位被夹掉，表长仍 `288f`）。**边界**：掩码只做取舍、**不改权重**（脚本写 1.0 读回还是 1.0）；形状**增量数据**仍逐网格共享，要换数据只能换网格；掩码按槽位逐位比较，形状数再涨需要改成紧凑列表（见 §11.3 ③） |
 | **四十一（已完成：三组 `vec4` 权重 / 形状数 8 → 12）** | **把「组数 × 4」这条机制再加一组**：`MORPH_WEIGHT_GROUPS` 2 → 3（`MAX_MORPH_TARGETS` 跟着变成 12，`MorphInstance` 的 `weights` / `exclusive` 随常量变宽到 12 格，`ALL_SHAPE_MASK` 到 `0xFFF`）；`r3e-render::mesh` 的 `MORPH_MASK_LOCATION` 由常量推导出 **15**、`MORPH_MASK_OFFSET` 到 **144**、`ATTRIBUTES` 多一条 location 14 的 `vec4`（第三组权重）、`array_stride` **132 → 148**；`shader.wgsl` 的 `MORPH_SHAPES = 12`、`morph_offset` 加第三组累加（主通道与深度通道两个 `VsIn` 都补 `morph_w2`）；`gltf_import` / `renderer` 里定长 `[f32; 8]` 的权重数组同步到 12。详见 §4.20 / §5.28 | `core/morph.rs` 常量 + 契约用例断言（2 → 3）；`render/mesh.rs` 布局常量与 `instance_layout_carries_morph_weights` / `instance_layout_carries_morph_mask`；`render/tests/instance_upload_contract.rs` 步长改 148；`render/shader.wgsl`；`script/api.rs` 掩码夹取跟着 `MAX_MORPH_TARGETS` 走；新增 `app/tests/morph_twelve_shapes.rs`（2 测）+ 夹具 `fixtures/morph_twelve`（12 形状 `octa_face.glb` 3,040 B、`scene.json`、`raw` / `shape0` / `shape4` / `shape8` / `shape11` 五个脚本） | 无（**不改渲染结果**：`count ≤ 8` 的资产第三组权重恒 0，`morph_offset` 里第三组是 `0.0 × 增量` 的乘加，像素与扩展四十逐位相同，基线无需重建）。**代价**：实例记录 132 → **148 B**（+16 B/实例，1,537 实例影子多 ≈ 24 KiB）；顶点每形状多一次乘加，但只在 `count > 8` 的实例上真跑。**边界**：`ATTRIBUTES` 手写数组与 `shader.wgsl` 的 `MORPH_SHAPES` 必须同步改，漏一处就是 layout 与着色器对不上（本次首轮编译即因此失败）；再往上加组（4 组 = 16 形状）会先撞上掩码的槽位比较，应先做 ③ 的 `popcount` + 紧凑列表（**已由扩展四十二落地**） |
 | **四十二（已完成：形状槽序号 / 掩码 → 紧凑索引列表）** | **把「按位比较」换成「按序号间接取」**：`core/morph.rs` 加 `MORPH_SLOT_CAPACITY = MORPH_WEIGHT_GROUPS × 4`（槽容量恰等于权重分量数：多一个槽也没权重喂它）与 `shape_slots()`（把掩码压成升序序号列表，供渲染侧取）；掩码本身仍是脚本侧语义（`morph_mask` / `morph_show` 一字不改）。`r3e-render::mesh` 把 location 15 的 `Uint32` 掩码换成 **`vec4<u32>` 序号块**：`MORPH_SLOT_WORDS = 3`（3 字 × 4 个 `u8` = 12 槽）、`MORPH_SLOT_ATTR_WORDS = 4`（第 4 字恒 0 只为填满 `vec4`）、`MORPH_SLOT_LOCATION_BASE = 15`、`MORPH_SLOT_OFFSET = 144`、`pack_morph_slots` 按 `u8` 小端打包，`array_stride` **148 → 160**；`renderer::morph_upload` 成为「掩码 → 槽列表」的唯一入口（越界形状丢掉并左移压缩，返回的 `count` 即槽数）；`shader.wgsl` 删掉逐形状静态展开与掩码乘子，改成 `morph_slot_shape`（按字节取序号）+ `morph_slot_accumulate`（`head + stride * shape` 运行时偏移）+ 按槽循环，`instance_meta.w` 语义从「网格形状数」变「槽数」。详见 §5.29 | `core/morph.rs` / `core/lib.rs`；`render/mesh.rs`（4 个常量 + `pack_morph_slots` + 布局用例）、`render/renderer.rs`（`morph_upload`）、`render/shader.wgsl`（净减 9 行）、`render/tests/morph_shader_parity.rs`（+4 契约：`both_vertex_stages_declare_morph_slots` / `both_stages_pass_slot_words_into_morph_offset` / `slot_index_is_extracted_per_byte` / `mask_multiplier_is_gone` / `slot_offset_sits_after_the_weight_block`）、`render/tests/instance_upload_contract.rs`（步长 160） | 无（**像素逐位不变**：槽列表按形状下标升序、权重分量按同一槽下标对齐，累加顺序与位图方案逐项相同 —— 真机 `morph_mask` 夹具五态与扩展四十**同字节数、同像素数**，视觉基线无需重建）。**真机核心判据**：形状 4（`w1.x`、落在槽 1）与形状 0 互差 **24,807 像素 / 10.77%**，与扩展三十九记录的「形状 4 vs 形状 0 = 10.77%」一位不差 —— 序号打包若写错，两帧会逐字节重合。**代价（不粉饰）**：每顶点每槽一次间接寻址（`head + stride * shape` 里的 `shape` 是运行时读出的 `u8`，GPU 折不进立即数）+ 实例记录 **+12 B**（148 → 160，其中 4 B 是 `vec4` 的占位字）；**12 槽以内没有提速**，收益是结构可伸缩（加槽只改常量与 `MORPH_SLOTS`）。**边界**：形状序号 `u8` 上限 256；`MORPH_SLOT_WORDS > MORPH_SLOT_ATTR_WORDS` 时 `const { assert! }` 编译期就红，逼着加第二个 location 而不是静默丢形状；槽容量仍等于权重分量数，**加容量仍须先加权重组** |
+| **四十三（已完成：后端矩阵 CI + 特性按需协商）** | **让「跑在哪个后端上」从沉默变成可断言**：新建 `crates/r3e-render/src/gpu_caps.rs` —— `BACKEND_ENV = "WGPU_BACKEND"` + `parse_backends`（认 `vk` / `d3d12` 等别名，逗号或空白分隔，不认识的名字留在第二个返回值里而不是静默丢）+ `requested_backends` + `backend_matches` + `backend_name` / `backend_from_name`（互为逆）；`Renderer::new` 按 env 钉 `Instance` 的 `backends`、拿到 adapter 后校验 `backend_matches`（不符即 `Err`，app 层以**退出码 3** 结束，与「无 GPU 跳过」的 2 严格分开）、`request_device` 改申请 `FeatureReport::negotiate(adapter.features()).enabled`（`FeatureReport { enabled, missing }`，缺的只记日志不失败；交集仍被驱动拒绝则 warn 后退回 `Features::empty()` 重试），并记一行能力日志与 `caps_line()`（`backend=vulkan device=... 特性 a|b 要求 vulkan`）；CI 的 `visual-gpu` 拆成 `vulkan` + `dx12` 矩阵（`fail-fast: false`、artifacts 分后端名、容差仍取默认值不放宽）；`visual_regression.rs` 改用 `Command::output()` 收日志并**先断言后端、再比像素**（进程内 + 日志两道，防「要 dx12 却跑在 vulkan」的假绿）。**边界**：`gl` 不进矩阵（实测 SSAO 管线 `textureLoad` from depth textures 不被 GLSL 支持，`create_render_pipeline` 直接校验失败 —— 那是后端能力缺失，不是"差异"）；`exit(3)` 只在设了 `WGPU_BACKEND` 时触发，普通开发机语义不变；**本机实测两个后端都真跑通**（`WGPU_BACKEND=vulkan` → 日志 `要求 vulkan / 实际 Vulkan`，`WGPU_BACKEND=dx12` → `要求 dx12 / 实际 Dx12`，严格模式各 2 测 passed），dx12 实际图与 vulkan 基准**最大通道差 1、超阈值（>2）像素 0 / 230,400**，因此**暂不按后端分基准**（同一张图 + 默认容差即可），将来抖动只许放宽那一行的容差 |
 
 两条与顺序相关的说明：
 

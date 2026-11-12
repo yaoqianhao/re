@@ -123,27 +123,58 @@ jobs:
   # 「拍不到图就跳过」改成「拍不到图就红」。没有这台 runner 时 job 显示 skipped（不阻塞合并），
   # 但它是可见的、不可能被误认为绿——这正是这个开关存在的意义。
   #
+  # 扩展四十三：这道门按后端拆成矩阵（vulkan / dx12）。理由不是「多跑一遍更放心」，而是
+  # 同一个场景在两个后端上走的是两条不同的着色器翻译与采样路径，只测一条就等于把另一条
+  # 当成"反正也差不多"。后端用 WGPU_BACKEND 钉住（r3e_render::gpu_caps 解析），没跑在要求的
+  # 后端上就红：进程内校验不通过时 r3e 以退出码 3 结束，测试再独立复核一遍引擎日志里的
+  # backend= 字段，两道缺一不可，否则"要 dx12、实际跑在 vulkan"会变成假绿。
+  #
+  # 为什么没有 gl：实测本工程用到的 SSAO 管线在 GL 后端直接被 wgpu 判死
+  # （`textureLoad` from depth textures is not supported in GLSL，create_render_pipeline 校验失败），
+  # 那不是矩阵该覆盖的"差异"，而是后端能力缺失。硬加进来只会得到一条永远红、没人会看的 job。
+  #
   # 开启方式：仓库 Settings -> Secrets and variables -> Actions -> Variables 加
   # R3E_GPU_RUNNER=true。runner 标签必须是 self-hosted + windows + gpu 三个，注册步骤见
   # docs/CI_GPU_RUNNER.md。
   visual-gpu:
-    name: visual-gpu (像素漂移, 自建)
+    name: visual-gpu (${{ matrix.backend }}, 自建)
     runs-on: [self-hosted, windows, gpu]
     if: vars.R3E_GPU_RUNNER == 'true'
     # 自建 runner 是台真机器，可能被别的事占着；给个上限，免得 PR 卡到超时（GitHub 默认 6 小时）。
-    timeout-minutes: 40
+    timeout-minutes: 30
+    strategy:
+      # 一个后端红了，另一个后端的结果仍然有诊断价值（比如"只有 dx12 变了"），别让前者取消后者。
+      fail-fast: false
+      matrix:
+        include:
+          # 基准图是在 vulkan 上建的，所以 vulkan 这一行用库里的默认容差，一个数都不放宽。
+          - backend: vulkan
+            channel_delta: "2"
+            bad_ratio: "0.001"
+          # dx12 目前也能用同一张基准图和同一套默认容差（实测差异在容差内），所以不预先放宽——
+          # 放宽等于降低这道门的灵敏度。真出现"驱动升级导致某些像素抖动"时，只在这一行走
+          # R3E_VISUAL_CHANNEL_DELTA / R3E_VISUAL_BAD_RATIO 覆盖，绝不允许改基准图或换成
+          # R3E_UPDATE_BASELINE 来抹平。
+          - backend: dx12
+            channel_delta: "2"
+            bad_ratio: "0.001"
+    env:
+      WGPU_BACKEND: ${{ matrix.backend }}
+      R3E_VISUAL_CHANNEL_DELTA: ${{ matrix.channel_delta }}
+      R3E_VISUAL_BAD_RATIO: ${{ matrix.bad_ratio }}
     steps:
       - uses: actions/checkout@v4
 
       # 自建 runner 的软件栈由我们自己维护，所以这里做一次自检而不是假设：缺工具链就当场红，
       # 并且把显卡型号打出来——像素基线跨 GPU / 驱动不保证一致，换卡后第一眼要看的就是这一行。
-      - name: 环境自检（显卡 / 工具链 / 链接器 / 基准图）
+      - name: 环境自检（显卡 / 工具链 / 链接器 / 基准图 / 要求后端）
         shell: pwsh
         run: |
           if ($env:R3E_UPDATE_BASELINE) {
             Write-Error "CI 中禁止设置 R3E_UPDATE_BASELINE：基准图只在本机用 R3E_UPDATE_BASELINE=1 重建后提交。"
             exit 1
           }
+          Write-Host "== 本次要求后端: $env:WGPU_BACKEND =="
           Write-Host "== 显卡 =="
           Get-CimInstance Win32_VideoController | ForEach-Object { Write-Host ("{0}  驱动 {1}" -f $_.Name, $_.DriverVersion) }
           if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -162,17 +193,19 @@ jobs:
           }
 
       # 严格模式：闸门必须同时打开（漏配 R3E_VISUAL_REGRESSION 会直接 panic，而不是悄悄 pass）。
-      - name: cargo test -p r3e-app --test visual_regression（严格）
+      # 后端矩阵同理——名单里只允许 CI 真能跑的后端名，写错了当场红，而不是让引擎悄悄回退到别的后端。
+      - name: cargo test -p r3e-app --test visual_regression（严格, ${{ matrix.backend }}）
         env:
           R3E_VISUAL_REGRESSION: "1"
           R3E_VISUAL_STRICT: "1"
         run: cargo test -p r3e-app --test visual_regression -- --nocapture
 
       # 这里失败通常意味着「画面真的变了」或者「这台机器的显卡 / 驱动换了」——两种都得看差异图。
-      - name: upload 实际图 / 差异图
+      # artifacts 带上后端名：矩阵两行的图混在一个名字下，下载后分不清是哪条后端拍的。
+      - name: upload 实际图 / 差异图 / 引擎日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: visual-gpu-artifacts
+          name: visual-gpu-${{ matrix.backend }}-artifacts
           path: crates/r3e-app/target/visual-regression
           if-no-files-found: ignore

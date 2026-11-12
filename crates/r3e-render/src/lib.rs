@@ -4,6 +4,7 @@
 //! 或 `r3e_core::ProceduralProvider`。这里只导出 wgpu 布局与渲染器本体。
 
 pub mod envprobe;
+pub mod gpu_caps;
 pub mod instance_upload;
 pub mod mesh;
 pub mod occlusion;
@@ -19,6 +20,11 @@ pub mod upload_staging;
 pub use envprobe::{
     encode_faces, f16_to_f32, f32_to_f16, mip_lod, EnvProbeFaceUpload, EnvProbeSource,
     EnvProbeStats, CUBE_FACES, DUMMY_CUBE_FACE_SIZE, ENV_CUBE_BINDING,
+};
+pub use gpu_caps::{
+    backend_bit, backend_from_name, backend_matches, backend_name, describe_features,
+    describe_requested, parse_backends, requested_backends, requested_backends_from, FeatureReport,
+    RequestedBackends, BACKEND_ENV,
 };
 pub use instance_upload::{plan_upload, UploadPlan, MAX_RANGES, MERGE_GAP};
 pub use mesh::{group_morph_weights, vertex_layout, InstanceRaw, MORPH_WEIGHT_GROUPS};
