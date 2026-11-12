@@ -1550,7 +1550,7 @@ struct ShadowPlan {
 /// 扩展四十：把实例掩码裁剪到「这份网格真有几个形状」。网格没登记形状时取 0。
 ///
 /// 两个数都可能超界：`MorphInstance` 只知道场景绑定的 `target_count`，网格侧
-/// 登记的 `count` 是另一份（脚本写满 8 位、网格只有 3 个形状都很常见）。
+/// 登记的 `count` 是另一份（脚本把掩码写满、网格只有 3 个形状都很常见）。
 /// 不裁的话掩码会「亮着」而那些位对应的形变表段落根本不存在。
 fn clip_instance_mask(instance_mask: u32, registered: Option<u32>) -> u32 {
     registered.map_or(0, |count| {
@@ -5225,7 +5225,7 @@ mod morph_table_tests {
             stride: 18,
             count: 1,
             max_displacement: 2.0,
-            max_displacements: [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            max_displacements: [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         assert_eq!(morph.cull_inflate(0.0, 1.0), 0.0, "权重 0 不外扩");
         assert_eq!(morph.cull_inflate(1.0, 1.0), 2.0);
@@ -5272,24 +5272,36 @@ mod morph_table_tests {
             stride: 36,
             count: 2,
             max_displacement: 0.15,
-            max_displacements: [0.02, 0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            max_displacements: [0.02, 0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         // 只眨眼：余量 0.02，粗界口径会算成 0.15（大 7.5 倍）
-        let only_blink = morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        let only_blink = morph.cull_inflate_weights(
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
         assert!((only_blink - 0.02).abs() < 1e-6, "实际 {only_blink}");
         assert!(
             (morph.cull_inflate(1.0, 1.0) - 0.15).abs() < 1e-6,
             "粗界仍是 0.15"
         );
         // 两个一起动 = 各自贡献之和（互斥归一化后通常落在 1.0 预算内）
-        let both = morph.cull_inflate_weights(&[0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        let both = morph.cull_inflate_weights(
+            &[0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
         assert!((both - 0.085).abs() < 1e-6, "实际 {both}");
         // 负权重按绝对值计：反向形变同样把顶点推出静止盒
-        let negative = morph.cull_inflate_weights(&[-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        let negative = morph.cull_inflate_weights(
+            &[-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
         assert!((negative - 0.02).abs() < 1e-6);
         // 缩放线性放大、零权重严格为 0
         assert!(
-            (morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3.0) - 0.06)
+            (morph.cull_inflate_weights(
+                &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                3.0
+            ) - 0.06)
                 .abs()
                 < 1e-6
         );
@@ -5298,22 +5310,57 @@ mod morph_table_tests {
             0.0
         );
         assert_eq!(
-            morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.0),
+            morph.cull_inflate_weights(
+                &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                0.0
+            ),
             0.0
         );
         // NaN 权重 / NaN 缩放按 0 处理，绝不让 NaN 泄进包围盒
         assert_eq!(
-            morph.cull_inflate_weights(&[f32::NAN, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0),
+            morph.cull_inflate_weights(
+                &[
+                    f32::NAN,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                1.0
+            ),
             0.0
         );
         assert_eq!(
-            morph.cull_inflate_weights(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], f32::NAN),
+            morph.cull_inflate_weights(
+                &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                f32::NAN
+            ),
             0.0
         );
         // 溢出时 fail-open 到无穷：宁可多画，不能把本该可见的实例剔除掉
         assert_eq!(
             morph.cull_inflate_weights(
-                &[f32::MAX, f32::MAX, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                &[
+                    f32::MAX,
+                    f32::MAX,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
                 f32::MAX
             ),
             f32::MAX
@@ -5328,9 +5375,12 @@ mod morph_table_tests {
             stride: 18,
             count: 1,
             max_displacement: 0.5,
-            max_displacements: [0.5, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            max_displacements: [0.5, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
-        let inflate = morph.cull_inflate_weights(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        let inflate = morph.cull_inflate_weights(
+            &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
         assert_eq!(inflate, 0.0, "第二个槽位不在 count 内，不该产生余量");
     }
 
@@ -5344,10 +5394,13 @@ mod morph_table_tests {
             stride: 18,
             count: 8,
             max_displacement: 0.4,
-            max_displacements: [0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0],
+            max_displacements: [0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         // 只有形状 4（第 2 组第 1 分量）有位移，其余全 0
-        let inflate = morph.cull_inflate_weights(&[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 2.0);
+        let inflate = morph.cull_inflate_weights(
+            &[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            2.0,
+        );
         assert!(
             (inflate - 0.8).abs() < 1e-6,
             "形状 4 全权重 × 缩放 2 应得 0.8，实际 {inflate}"
@@ -5358,7 +5411,10 @@ mod morph_table_tests {
             0.0
         );
         // 最后一个形状（下标 7）同理，防「循环少跑一格」
-        let last = morph.cull_inflate_weights(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 1.0);
+        let last = morph.cull_inflate_weights(
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+        );
         assert_eq!(last, 0.0, "形状 7 没有登记位移，余量为 0");
     }
 }
@@ -5382,9 +5438,9 @@ mod morph_mask_tests {
         );
         assert_eq!(clip_instance_mask(u32::MAX, Some(3)), 0b111);
         assert_eq!(
-            clip_instance_mask(u32::MAX, Some(8)),
+            clip_instance_mask(u32::MAX, Some(r3e_core::MAX_MORPH_TARGETS as u32)),
             r3e_core::ALL_SHAPE_MASK,
-            "网格形状数到上限时等于全启用"
+            "网格形状数到上限（扩展四十一后 12）时等于全启用"
         );
         assert_eq!(
             clip_instance_mask(0b101, Some(0)),

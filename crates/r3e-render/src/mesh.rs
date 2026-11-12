@@ -9,7 +9,8 @@ pub use r3e_core::MORPH_WEIGHT_GROUPS;
 
 pub use r3e_core::mesh::{MeshData as CoreMeshData, Vertex as CoreVertex};
 
-/// 实例属性中形变权重的起始 location（扩展三十六取 12，扩展三十九再加一组 → 13）。
+/// 实例属性中形变权重的**起始** location（扩展三十六取 12）：第 `g` 组占 `12 + g`，
+/// 扩展四十一到 14，掩码接在其后的 15。
 pub const MORPH_WEIGHT_BASE_LOCATION: u32 = 12;
 
 /// 形变权重在实例缓冲里的字节偏移：`model(64) + color(16) + 元数据(16)`。
@@ -21,8 +22,8 @@ pub const MORPH_WEIGHT_OFFSET: u32 = 96;
 /// 扩展四十：形状掩码的 location（跟在最后一组权重之后）与字节偏移。
 ///
 /// 掩码占 4 字节，`InstanceRaw` 里没有别的 `u32` 能与它共用一个属性，
-/// 因此实例步长从 128 涨到 **132**。这 4 字节换的是「整组形状短路」：
-/// 一组形状全被掩码关掉时，着色器连 4 次权重比较都不做。
+/// 因此实例步长从 128 涨到 **132**（扩展四十一加第三组权重后是 **148**）。
+/// 这 4 字节换的是「整段短路」：掩码全 0 的实例直接摘掉形变分支。
 pub const MORPH_MASK_LOCATION: u32 = MORPH_WEIGHT_BASE_LOCATION + MORPH_WEIGHT_GROUPS as u32;
 /// 掩码字节偏移：权重区之后（`96 + 16 × 组数`）。
 pub const MORPH_MASK_OFFSET: u32 = MORPH_WEIGHT_OFFSET + 16 * MORPH_WEIGHT_GROUPS as u32;
@@ -69,8 +70,8 @@ pub fn group_morph_weights(
 /// （step_mode = Instance）上传。
 ///
 /// 总长 = `96 + 16 × MORPH_WEIGHT_GROUPS + 4` 字节：扩展三十六的 1 组权重是 112，
-/// 扩展三十九的 2 组是 **128**，扩展四十的形状掩码再加 4 → **132**。
-/// 加一组的代价就是这 16 字节——形状数同时多 4 个。
+/// 扩展三十九的 2 组是 128，扩展四十的形状掩码再加 4 → 132，扩展四十一的 3 组再
+/// 加 16 → **148**。加一组的代价就是这 16 字节——形状数同时多 4 个。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceRaw {
@@ -97,8 +98,8 @@ pub struct InstanceRaw {
 }
 
 impl InstanceRaw {
-    /// 属性槽位：5..=8 = model 四行、9 = color、10 = 元数据、12 起每组权重一格，
-    /// 最后 14 = 形状掩码（扩展四十）。
+    /// 属性槽位：5..=8 = model 四行、9 = color、10 = 元数据、12 起每组权重一格
+    /// （12 / 13 / 14），最后 15 = 形状掩码（扩展四十）。
     ///
     /// `vertex_attr_array!` 只吃字面量 location，所以组数无法在宏里循环展开 ——
     /// 下面的 `assert!` 把「改组数必须同步改这里」钉住，避免静默少传一组权重。
@@ -111,7 +112,8 @@ impl InstanceRaw {
         10 => Uint32x4,
         12 => Float32x4,
         13 => Float32x4,
-        14 => Uint32
+        14 => Float32x4,
+        15 => Uint32
     ];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -139,7 +141,7 @@ impl InstanceRaw {
 
 /// 权重组数与属性表必须同步：宏里写死了每个 location，改组数就得改上面那张表。
 const _: () = assert!(
-    MORPH_WEIGHT_GROUPS == 2,
+    MORPH_WEIGHT_GROUPS == 3,
     "`InstanceRaw::ATTRIBUTES` 里权重属性是手写的，改 MORPH_WEIGHT_GROUPS 必须同步增删"
 );
 
@@ -209,7 +211,7 @@ mod tests {
             96 + 16 * MORPH_WEIGHT_GROUPS as u64 + 4,
             "model64 + color16 + meta16 + 每组权重 16 × 组数 + 掩码 4"
         );
-        assert_eq!(layout.array_stride, 132, "扩展四十的 2 组权重 + 掩码");
+        assert_eq!(layout.array_stride, 148, "扩展四十一的 3 组权重 + 掩码");
         assert_eq!(layout.attributes.len(), 6 + MORPH_WEIGHT_GROUPS + 1);
         assert_eq!(layout.attributes[5].shader_location, 10);
         assert_eq!(layout.attributes[5].format, wgpu::VertexFormat::Uint32x4);
@@ -235,11 +237,12 @@ mod tests {
                 "第 {group} 组紧跟上一组"
             );
         }
+        let last_group = MORPH_WEIGHT_GROUPS as u32 - 1;
         let last = layout
             .attributes
             .iter()
-            .find(|a| a.shader_location == MORPH_WEIGHT_BASE_LOCATION + 1)
-            .expect("第 2 组权重");
+            .find(|a| a.shader_location == MORPH_WEIGHT_BASE_LOCATION + last_group)
+            .unwrap_or_else(|| panic!("最后一组权重（第 {last_group} 组）缺失"));
         assert_eq!(
             last.offset + 16,
             MORPH_MASK_OFFSET as u64,
@@ -274,7 +277,7 @@ mod tests {
             .expect("形状掩码属性缺失");
         assert_eq!(mask.format, wgpu::VertexFormat::Uint32);
         assert_eq!(mask.offset, MORPH_MASK_OFFSET as u64);
-        assert_eq!(mask.offset, 128);
+        assert_eq!(mask.offset, 144, "3 组权重之后：96 + 48");
         assert_eq!(
             mask.offset + 4,
             layout.array_stride,

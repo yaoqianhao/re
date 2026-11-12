@@ -286,9 +286,10 @@ fn morph_survives_to_mesh_data_and_validates() {
     }
 
     // 权重 1：形状 0 的位移必须整段落在第一个顶点上（z 为负，已换轴）。
-    let one = data
-        .morph
-        .apply(&data, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let one = data.morph.apply(
+        &data,
+        &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
     let base = data.vertices[0].position;
     assert!(
         (one.vertices[0].position[2] - (base[2] - 1.0)).abs() < 1e-5,
@@ -297,9 +298,10 @@ fn morph_survives_to_mesh_data_and_validates() {
     );
 
     // 权重 1 只开形状 1：切线 xyz 要吃到 -0.5 的 z 增量，手性 w 不动。
-    let tan_only = data
-        .morph
-        .apply(&data, &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let tan_only = data.morph.apply(
+        &data,
+        &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
     let tan_before = data.vertices[0].tangent;
     let tan_after = tan_only.vertices[0].tangent;
     assert!(

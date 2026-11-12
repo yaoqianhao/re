@@ -40,21 +40,21 @@ fn defaults_report_nothing_uploaded() {
     assert_eq!(stats.instance_upload.skipped, 0);
 }
 
-/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 132 字节、且能整除
+/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 148 字节、且能整除
 /// 4 字节对齐要求。脏段换算用的是同一个 stride，这里把它钉住。
 ///
 /// 扩展三十六加了形变（morph）三项 + 一组 `vec4` 权重，把记录从 96 撑到 112；
-/// 扩展三十九把权重从 1 组扩到 `MORPH_WEIGHT_GROUPS` 组（2 组 → 128 字节）：
+/// 扩展三十九把权重从 1 组扩到 `MORPH_WEIGHT_GROUPS` 组（2 组 → 128 字节）；
+/// 扩展四十再补一个 `u32` 形状掩码；扩展四十一把组数抬到 3 组（+16 字节）→ **148**：
 /// `model` 64 + `color` 16 + `joint_base`/`morph_base`/`morph_stride`/`morph_count`
-/// 打包成 `Uint32x4`（16）+ 每组权重 `vec4`（16）。扩展四十再补一个 `u32` 形状掩码
-/// （location 14）→ **132**，且这 4 字节**没有**被结构体对齐吃掉（尾随标量不补到 16）。
+/// 打包成 `Uint32x4`（16）+ 每组权重 `vec4`（16 × `MORPH_WEIGHT_GROUPS`）+ 形状掩码 4。
 /// **步长同时是平移量的语义**：任何一次字段增删都要
-/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12..14)`。
+/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12..15)`。
 #[test]
 fn instance_record_stride_matches_weight_groups() {
     let expected = 96 + 16 * MORPH_WEIGHT_GROUPS + 4;
     assert_eq!(size_of::<InstanceRaw>(), expected);
-    assert_eq!(size_of::<InstanceRaw>(), 132, "扩展四十：2 组权重 + 掩码");
+    assert_eq!(size_of::<InstanceRaw>(), 148, "扩展四十一：3 组权重 + 掩码");
     assert_eq!(size_of::<InstanceRaw>() % 4, 0);
 }
 

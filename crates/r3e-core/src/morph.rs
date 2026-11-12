@@ -38,15 +38,17 @@ use crate::NodeId;
 /// 就多 4 个**。与「加宽单个 `vec4`」（WGSL 里不存在这种类型）或「同一帧内分批切
 /// 权重」（帧内做不到）相比，这是唯一既线性又不损帧内表达能力的扩展方式。
 ///
-/// 取 2 组的原因：表情 / 口型实际用量典型 3~6 个，8 个槽位能一次装下；再往上加组
-/// 的收益递减（顶点属性与形变表容量都要成倍摊薄），见 ARCHITECTURE §4.20 的容量表。
-pub const MORPH_WEIGHT_GROUPS: usize = 2;
+/// 取 3 组的原因：表情（`mouthOpen` / `blinkL` / `blinkR` / 微笑）加口型（8 个视素）
+/// 的实际用量会到 10~12 个，8 个槽位装不下时只能靠「换网格」绕开；12 个槽位
+/// 一次装下，付的仍是每实例 16 字节。再加组（16 形状）的容量收益已低于表与属性开销，
+/// 见 ARCHITECTURE §4.20 的容量表。
+pub const MORPH_WEIGHT_GROUPS: usize = 3;
 
 /// 单个实例可同时启用的形状数上限 = [`MORPH_WEIGHT_GROUPS`] 组 × 每组 4 个。
 ///
-/// 扩展三十九把 4 抬成 8，**形状数随组数线性扩展**：`4 → 8` 只多付每实例 16 字节
-/// 顶点属性，着色器多几次乘加。着色器按下标 `g * 4 + 分量` 取权重，所以这个数
-/// 必须是 4 的倍数 —— 下面那条 `assert!` 把约束钉在编译期。
+/// 扩展三十九把 4 抬成 8、扩展四十一再抬成 12，**形状数随组数线性扩展**：每加一组
+/// 只多付每实例 16 字节顶点属性，着色器多 4 次乘加。着色器按下标 `g * 4 + 分量`
+/// 取权重，所以这个数必须是 4 的倍数 —— 下面那条 `assert!` 把约束钉在编译期。
 pub const MAX_MORPH_TARGETS: usize = MORPH_WEIGHT_GROUPS * 4;
 
 const _: () = assert!(
@@ -67,7 +69,7 @@ pub const MAX_EXCLUSIVE_GROUP_MEMBERS: usize = MAX_MORPH_TARGETS;
 /// 「全部形状启用」的掩码（扩展四十）。
 ///
 /// 第 `i` 位为 1 表示形状 `i` 在本实例启用；默认就是这个值，所以不碰掩码时
-/// 行为与扩展三十九逐位相同。形状上限是 8，掩码只用到低 8 位（0xFF）。
+/// 行为与上一扩展逐位相同。形状上限 12（扩展四十一），掩码只用到低 12 位（0xFFF）。
 pub const ALL_SHAPE_MASK: u32 = if MAX_MORPH_TARGETS >= 32 {
     u32::MAX
 } else {
@@ -82,7 +84,7 @@ pub const ALL_SHAPE_MASK: u32 = if MAX_MORPH_TARGETS >= 32 {
 ///
 /// 同时夹到 [`MAX_MORPH_TARGETS`]：调用方传进来的可能是网格登记数（不受
 /// `target_count` 约束），不夹的话返回的掩码会比形状上限还宽 —— 自己写着
-/// 「生效 8 个」，着色器却只有 8 个槽位可查。
+/// 「生效 12 个」，着色器却只有 12 个槽位可查。
 pub const fn shape_mask_bits(count: usize) -> u32 {
     let count = if count >= MAX_MORPH_TARGETS {
         MAX_MORPH_TARGETS
@@ -1129,7 +1131,7 @@ mod tests {
     /// 着色器按下标 `g * 4 + 分量` 取权重，组数一旦不是「每组 4 个」就会整体串位。
     #[test]
     fn target_limit_is_groups_times_four() {
-        assert_eq!(MORPH_WEIGHT_GROUPS, 2, "扩展三十九取 2 组 = 8 个形状");
+        assert_eq!(MORPH_WEIGHT_GROUPS, 3, "扩展四十一取 3 组 = 12 个形状");
         assert_eq!(MAX_MORPH_TARGETS, MORPH_WEIGHT_GROUPS * 4);
         assert_eq!(MAX_MORPH_TARGETS % 4, 0, "每组固定 4 个分量");
         assert_eq!(MAX_EXCLUSIVE_GROUP_MEMBERS, MAX_MORPH_TARGETS);

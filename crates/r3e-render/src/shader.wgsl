@@ -97,11 +97,11 @@ struct MorphDelta {
 /// 布局：+0..3 = Δ位置，+3..6 = Δ法线，+6..9 = Δ切线（三个通道恒占槽位，缺的补 0）。
 const MORPH_VERTEX_FLOATS: u32 = 9u;
 
-/// 单实例可同时生效的形状数 —— 必须与 `r3e_core::MAX_MORPH_TARGETS` 一致（扩展三十九：8）。
+/// 单实例可同时生效的形状数 —— 必须与 `r3e_core::MAX_MORPH_TARGETS` 一致（扩展四十一：12）。
 ///
 /// 权重按 `vec4` 分组进顶点属性，所以这个数恒等于组数 × 4；`tests/morph_shader_parity.rs`
 /// 会把这里与 Rust 常量逐字比对，改一处漏另一处会直接红。
-const MORPH_SHAPES: u32 = 8u;
+const MORPH_SHAPES: u32 = 12u;
 
 /// 累加单个形状的增量。`at` = 该形状在本顶点上的浮点起点，`w` = 权重。
 ///
@@ -130,7 +130,8 @@ fn morph_mask_vec(mask: u32, shift: u32) -> vec4<f32> {
 
 /// 按权重线性累加各形状增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
 ///
-/// 权重按 `vec4` 分组传进来：`w0` 是形状 0..4，`w1` 是形状 4..8（扩展三十九）。
+/// 权重按 `vec4` 分组传进来：`w0` = 形状 0..4、`w1` = 4..8（扩展三十九）、
+/// `w2` = 8..12（扩展四十一）；组数与 `MORPH_WEIGHT_GROUPS` 一一对应。
 /// 分量逐个写而不是 `weights[i]` —— WGSL 不允许用运行时值索引向量分量，
 /// 这也是 `skin_matrix` 采用同一写法的原因。形状数为 0 时整体零开销提前返回。
 ///
@@ -141,6 +142,7 @@ fn morph_offset(
     imeta: vec4<u32>,
     w0: vec4<f32>,
     w1: vec4<f32>,
+    w2: vec4<f32>,
     mask: u32,
     vi: u32,
 ) -> MorphDelta {
@@ -160,6 +162,7 @@ fn morph_offset(
     // 不能写 `let w0 = w0 * ...` —— WGSL 不允许局部名遮蔽同名参数。
     let on0 = w0 * morph_mask_vec(mask, 0u);
     let on1 = w1 * morph_mask_vec(mask, 4u);
+    let on2 = w2 * morph_mask_vec(mask, 8u);
     // 第 1 组（形状 0..4）
     if on0.x != 0.0 {
         morph_accumulate(&delta, head, on0.x);
@@ -185,6 +188,19 @@ fn morph_offset(
     }
     if count > 7u && on1.w != 0.0 {
         morph_accumulate(&delta, head + stride * 7u, on1.w);
+    }
+    // 第 3 组（形状 8..12，扩展四十一）
+    if count > 8u && on2.x != 0.0 {
+        morph_accumulate(&delta, head + stride * 8u, on2.x);
+    }
+    if count > 9u && on2.y != 0.0 {
+        morph_accumulate(&delta, head + stride * 9u, on2.y);
+    }
+    if count > 10u && on2.z != 0.0 {
+        morph_accumulate(&delta, head + stride * 10u, on2.z);
+    }
+    if count > 11u && on2.w != 0.0 {
+        morph_accumulate(&delta, head + stride * 11u, on2.w);
     }
     return delta;
 }
@@ -237,8 +253,10 @@ struct VsIn {
     // （形状 g*4+i 取第 g 组的第 i 个分量；morph_count 之外的分量无意义）
     @location(12) morph_w0: vec4<f32>,
     @location(13) morph_w1: vec4<f32>,
+    // 扩展四十一：第三组权重（形状 8..12）
+    @location(14) morph_w2: vec4<f32>,
     // 扩展四十：逐实例形状掩码，第 i 位 = 形状 i 启用（0 = 整段无形变）
-    @location(14) morph_mask: u32,
+    @location(15) morph_mask: u32,
 };
 
 struct VsOut {
@@ -292,6 +310,7 @@ fn vs_main(in: VsIn) -> VsOut {
             in.instance_meta,
             in.morph_w0,
             in.morph_w1,
+            in.morph_w2,
             in.morph_mask,
             in.vertex_index,
         );
@@ -361,8 +380,10 @@ struct ShadowVsIn {
     // 扩展三十九：形变权重两组，口径与主通道的 `VsIn` 完全一致
     @location(12) morph_w0: vec4<f32>,
     @location(13) morph_w1: vec4<f32>,
+    // 扩展四十一：第三组权重，口径与主通道一致
+    @location(14) morph_w2: vec4<f32>,
     // 扩展四十：口径与主通道一致
-    @location(14) morph_mask: u32,
+    @location(15) morph_mask: u32,
 };
 
 // 深度 pass 专用：只含光源正交矩阵，故意不复用阴影贴图那一组绑定，
@@ -612,6 +633,7 @@ fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
             in.instance_meta,
             in.morph_w0,
             in.morph_w1,
+            in.morph_w2,
             in.morph_mask,
             in.vertex_index,
         );
