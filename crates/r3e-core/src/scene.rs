@@ -10,6 +10,7 @@ use crate::anim_blend::{
     apply_additive, blend_override, sample_layer_pose, AnimLayer, BoneMask, LayerMode,
     MAX_ANIM_LAYERS,
 };
+use crate::blend_space::BlendSpace;
 use crate::light::{self, LocalLight};
 use crate::morph::{MorphInstance, NO_EXCLUSIVE_GROUP};
 use crate::text::ScreenText;
@@ -1220,7 +1221,11 @@ impl Scene {
             }
 
             // 第二遍：混合树层按挂载顺序叠加到主姿态上
-            for layer in inst.layers.iter() {
+            //
+            // 扩展四十五：挂了混合空间的层先用当前参数重算层内片段权重，再照旧叠加。
+            // 没挂空间的层这一步是空操作，权重仍是脚本/场景写死的值——零变化验收靠这一行保证。
+            for layer in inst.layers.iter_mut() {
+                layer.apply_blend_space();
                 let layer_weight = layer.effective_weight();
                 if layer_weight <= 0.0 {
                     continue;
@@ -1654,6 +1659,123 @@ impl Scene {
             }
             None => false,
         }
+    }
+
+    // ---------- 1D / 2D 混合空间（扩展四十五） ----------
+
+    /// 给层挂一维混合空间（`param` 是参数名，例如 `"speed"`），样本表清空重建。
+    ///
+    /// 换维度 / 换参数名等于换了一张图，旧采样点留着只会错配，因此不保留。
+    pub fn set_anim_layer_blend_space_1d(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        param: &str,
+    ) -> bool {
+        self.set_anim_layer_blend_space(instance, layer, BlendSpace::new_1d(param))
+    }
+
+    /// 给层挂二维混合空间（`x` / `y` 两个参数名），样本表清空重建。
+    pub fn set_anim_layer_blend_space_2d(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        x: &str,
+        y: &str,
+    ) -> bool {
+        self.set_anim_layer_blend_space(instance, layer, BlendSpace::new_2d(x, y))
+    }
+
+    /// 给层挂一个现成的混合空间（覆盖原有，连同样本一起）。
+    pub fn set_anim_layer_blend_space(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        space: BlendSpace,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.blend_space = Some(space);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 摘掉层的混合空间。返回 `true` 表示确实摘掉了（层不存在或本来就没挂 → `false`）。
+    ///
+    /// 层内片段权重**不会**回滚成挂空间之前的值，而是冻结在最后一次由空间算出的结果上
+    /// （想改手写值就接着调 `set_anim_layer_clip_weight`）。这样切换时不会突然跳一下。
+    pub fn clear_anim_layer_blend_space(&mut self, instance: &str, layer: &str) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => l.blend_space.take().is_some(),
+            None => false,
+        }
+    }
+
+    /// 往层的混合空间加一个样本。
+    ///
+    /// `None` = 层不存在或没挂空间；`Some(false)` = 样本被拒
+    /// （片段名解析不到 / 坐标重复 / 非有限值 / 超过 16 个上限）。
+    ///
+    /// 片段名走 `find_anim_clip` 解析（可以只写实例前缀段），入库用**解析后的规范名**，
+    /// 保证样本名与层内片段名同一口径，不会被前缀差异坑掉。
+    pub fn add_anim_layer_blend_sample(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip_name: &str,
+        at: [f32; 2],
+    ) -> Option<bool> {
+        // 先解析片段（只读借用到此结束），再取层与空间的可变借用
+        let clip = self.find_anim_clip(instance, clip_name);
+        let layer_ref = anim_layer_mut(self.anim_instance_mut(instance)?, layer)?;
+        let space = layer_ref.blend_space.as_mut()?;
+        Some(match clip {
+            Some(c) => space.add_sample(c.name.clone(), at),
+            None => {
+                space.note_rejected();
+                false
+            }
+        })
+    }
+
+    /// 设定混合空间参数（一维只认 `x`，`y` 传 0 即可）。
+    ///
+    /// `None` = 层不存在或没挂空间；`Some(false)` = 参数非有限，整条拒绝、保持旧值。
+    pub fn set_anim_layer_blend_value(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        x: f32,
+        y: f32,
+    ) -> Option<bool> {
+        let layer_ref = anim_layer_mut(self.anim_instance_mut(instance)?, layer)?;
+        layer_ref.blend_space.as_mut().map(|s| s.set_value(x, y))
+    }
+
+    /// 混合空间单行摘要（日志 / RPC 回显用）。没挂空间返回 `None`。
+    pub fn anim_layer_blend_brief(&self, instance: &str, layer: &str) -> Option<String> {
+        self.blend_space_of(instance, layer).map(|s| s.brief())
+    }
+
+    /// 当前参数下的权重（按名字合并、和为 1、零权重不出现）。没挂空间返回 `None`。
+    pub fn anim_layer_blend_weights(
+        &self,
+        instance: &str,
+        layer: &str,
+    ) -> Option<Vec<(String, f32)>> {
+        self.blend_space_of(instance, layer).map(|s| s.weights())
+    }
+
+    fn blend_space_of(&self, instance: &str, layer: &str) -> Option<&BlendSpace> {
+        self.anim_layer(instance, layer)?.blend_space.as_ref()
     }
 
     /// 按「实例名前缀 + 片段名（大小写不敏感）」解析出可切换片段。
@@ -2452,6 +2574,129 @@ mod anim_tests {
         assert!(!scene.remove_anim_layer("demo/walk", "upper"));
         assert!(scene.anim_layer("demo/walk", "upper").is_none());
         assert!(scene.anim_layer_names("nope").is_empty());
+    }
+
+    // ---------- 1D / 2D 混合空间（扩展四十五） ----------
+
+    #[test]
+    fn blend_space_drives_layer_clip_weights() {
+        let (mut scene, arm, _leg) = layer_scene();
+        // still 恒 0；fast 是 0→100 的直线，0.5s 处为 50
+        let still = std::sync::Arc::new(AnimClip {
+            name: "still".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::ZERO)],
+        });
+        let fast = std::sync::Arc::new(AnimClip {
+            name: "fast".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(100.0, 0.0, 0.0))],
+        });
+        scene.register_anim_clip("demo/still", still.clone());
+        scene.register_anim_clip("demo/fast", fast.clone());
+
+        let mut layer = AnimLayer::new("move", still.clone(), 1.0);
+        assert!(layer.add_clip(fast.clone(), 0.0));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        // 没挂空间：照旧走手写权重（fast 权重 0 → arm 停在 0），零变化
+        scene.update_animations(0.5);
+        let x = scene.get(arm).unwrap().transform.position.x;
+        assert!(x.abs() < 1e-4, "未挂空间时应走手写权重，实际 {x}");
+
+        assert!(scene.set_anim_layer_blend_space_1d("demo/walk", "move", "speed"));
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "move", "still", [0.0, 0.0]),
+            Some(true)
+        );
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "move", "fast", [1.0, 0.0]),
+            Some(true)
+        );
+
+        // 参数 0.5：两路各半 → 0*0.5 + 50*0.5 = 25
+        assert_eq!(
+            scene.set_anim_layer_blend_value("demo/walk", "move", 0.5, 0.0),
+            Some(true)
+        );
+        scene.update_animations(0.0);
+        let x = scene.get(arm).unwrap().transform.position.x;
+        assert!((x - 25.0).abs() < 1e-3, "参数 0.5 应混合到 25，实际 {x}");
+
+        // 参数推到底：fast 全额 → 50
+        assert_eq!(
+            scene.set_anim_layer_blend_value("demo/walk", "move", 1.0, 0.0),
+            Some(true)
+        );
+        scene.update_animations(0.0);
+        let x = scene.get(arm).unwrap().transform.position.x;
+        assert!((x - 50.0).abs() < 1e-3, "参数 1.0 应取 fast，实际 {x}");
+    }
+
+    #[test]
+    fn blend_space_api_reports_missing_layer_and_space() {
+        let (mut scene, _arm, _leg) = layer_scene();
+        let atk = atk_clip();
+        scene.register_anim_clip("demo/atk", std::sync::Arc::new(atk.clone()));
+
+        // 层不存在：整组 API 全是 None / false，不 panic
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "nope", "atk", [0.0, 0.0]),
+            None
+        );
+        assert_eq!(
+            scene.set_anim_layer_blend_value("demo/walk", "nope", 0.0, 0.0),
+            None
+        );
+        assert!(scene.anim_layer_blend_brief("demo/walk", "nope").is_none());
+        assert!(scene
+            .anim_layer_blend_weights("demo/walk", "nope")
+            .is_none());
+        assert!(!scene.set_anim_layer_blend_space_1d("demo/walk", "nope", "speed"));
+        assert!(!scene.clear_anim_layer_blend_space("demo/walk", "nope"));
+
+        // 层存在但没挂空间：同样是 None
+        let layer = AnimLayer::new("move", std::sync::Arc::new(atk), 1.0);
+        assert!(scene.add_anim_layer("demo/walk", layer));
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "move", "atk", [0.0, 0.0]),
+            None
+        );
+        assert_eq!(
+            scene.set_anim_layer_blend_value("demo/walk", "move", 0.0, 0.0),
+            None
+        );
+        assert!(scene.anim_layer_blend_brief("demo/walk", "move").is_none());
+        assert!(!scene.clear_anim_layer_blend_space("demo/walk", "move"));
+
+        // 挂上二维空间
+        assert!(scene.set_anim_layer_blend_space_2d("demo/walk", "move", "mx", "my"));
+        let brief = scene
+            .anim_layer_blend_brief("demo/walk", "move")
+            .expect("应已挂空间");
+        assert!(brief.starts_with("2d(mx,my)"), "{brief}");
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "move", "atk", [0.0, 0.0]),
+            Some(true)
+        );
+        // 重复位置被拒；片段名解析不到也被拒
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "move", "atk", [0.0, 0.0]),
+            Some(false)
+        );
+        assert_eq!(
+            scene.add_anim_layer_blend_sample("demo/walk", "move", "ghost", [1.0, 0.0]),
+            Some(false)
+        );
+        assert_eq!(
+            scene.anim_layer_blend_weights("demo/walk", "move"),
+            Some(vec![("atk".to_string(), 1.0)])
+        );
+        // 摘掉空间后回到手写权重
+        assert!(scene.clear_anim_layer_blend_space("demo/walk", "move"));
+        assert!(scene.anim_layer_blend_brief("demo/walk", "move").is_none());
+        scene.update_animations(0.5);
+        assert!((scene.get(_arm).unwrap().transform.position.x - 50.0).abs() < 1e-3);
     }
 
     #[test]

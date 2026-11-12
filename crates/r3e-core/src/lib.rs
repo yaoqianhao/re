@@ -6,6 +6,7 @@ pub mod aabb;
 pub mod air;
 pub mod anim;
 pub mod anim_blend;
+pub mod blend_space;
 pub mod camera;
 pub mod env;
 pub mod envmap;
@@ -41,6 +42,7 @@ pub use anim_blend::{
     sample_layer_pose, AnimLayer, BoneMask, LayerClip, LayerFade, LayerMode, LayerSample,
     MAX_ANIM_LAYERS, MAX_LAYER_CLIPS,
 };
+pub use blend_space::{BlendDim, BlendSample, BlendSpace, MAX_BLEND_SAMPLES};
 pub use camera::Camera;
 pub use env::{
     env_brdf_approx, sh_basis, sky_radiance, sky_radiance_blurred, specular_dominant_dir,

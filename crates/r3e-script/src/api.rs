@@ -1031,6 +1031,17 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 改层内某一路片段的权重（混合空间摘掉之后，手写权重从这里接管）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_clip_weight",
+        move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_clip_weight(inst, layer, clip, f32_of(weight))
+        },
+    );
+
     // 把层的片段整体换成指定片段（层内收敛为单片段，权重保留）。
     let c = ctx.clone();
     engine.register_fn(
@@ -1062,6 +1073,88 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn("clear_anim_layers", move |inst: &str| -> bool {
         c.scene.borrow_mut().clear_anim_layers(inst)
     });
+
+    // ---------------- 1D / 2D 混合空间（扩展四十五） ----------------
+    //
+    // 用法：给层挂一个混合空间 → 往里塞 (片段, 参数坐标) 样本 → 每帧推参数值。
+    // 层内片段的权重就由「参数落在样本图上的位置」算出来，脚本不用再手算权重。
+
+    // 挂一维混合空间：`param` 只是参数名（日志/回显用），例如 "speed"。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_blend_1d",
+        move |inst: &str, layer: &str, param: &str| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_blend_space_1d(inst, layer, param)
+        },
+    );
+
+    // 挂二维混合空间：`px` / `py` 两个参数名，例如 "move.x" / "move.y"。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_blend_2d",
+        move |inst: &str, layer: &str, px: &str, py: &str| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_blend_space_2d(inst, layer, px, py)
+        },
+    );
+
+    // 摘掉空间，层回到手写权重（脚本里做「动态混合 / 硬编码权重」切换时用）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "clear_anim_layer_blend",
+        move |inst: &str, layer: &str| -> bool {
+            c.scene
+                .borrow_mut()
+                .clear_anim_layer_blend_space(inst, layer)
+        },
+    );
+
+    // 加样本：`x` / `y` 是这块片段在参数空间里的坐标（一维只认 x）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "add_anim_layer_blend_sample",
+        move |inst: &str, layer: &str, clip: &str, x: f64, y: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .add_anim_layer_blend_sample(inst, layer, clip, [x as f32, y as f32])
+                .unwrap_or(false)
+        },
+    );
+
+    // 每帧推参数值（一维只认 x）：权重随参数插值 / 外插钳制在内部完成。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_blend_value",
+        move |inst: &str, layer: &str, x: f64, y: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_blend_value(inst, layer, x as f32, y as f32)
+                .unwrap_or(false)
+        },
+    );
+
+    // 回显：`1d(speed) n=2 drop=0 v=0.50 w=idle=0.50,walk=0.50`，没挂空间返回空串。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_blend",
+        move |inst: &str, layer: &str| -> String {
+            let s = c.scene.borrow();
+            let Some(brief) = s.anim_layer_blend_brief(inst, layer) else {
+                return String::new();
+            };
+            let line = s
+                .anim_layer_blend_weights(inst, layer)
+                .unwrap_or_default()
+                .iter()
+                .map(|(name, w)| format!("{name}={w:.2}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{brief} w={line}")
+        },
+    );
 
     // ---------------- 相机 / 光照 / 环境 ----------------
     let c = ctx.clone();

@@ -24,6 +24,7 @@ use std::sync::Arc;
 use glam::{Quat, Vec3};
 
 use crate::anim::AnimClip;
+use crate::blend_space::BlendSpace;
 use crate::Transform;
 
 /// 单个实例最多挂载的层数。
@@ -239,6 +240,10 @@ pub struct AnimLayer {
     pub playing: bool,
     /// 权重过渡（`None` = 静止在当前权重）。
     pub fade: Option<LayerFade>,
+    /// 参数驱动的权重（扩展四十五）：有空间时层内片段权重由它算出，手写权重被覆盖。
+    ///
+    /// 为 `None` 时行为与扩展四十五之前**逐位一致**——这是本扩展「零变化」验收的支点。
+    pub blend_space: Option<BlendSpace>,
 }
 
 impl AnimLayer {
@@ -259,6 +264,7 @@ impl AnimLayer {
             looping: true,
             playing: true,
             fade: None,
+            blend_space: None,
         }
     }
 
@@ -275,6 +281,44 @@ impl AnimLayer {
     pub fn with_speed(mut self, speed: f32) -> Self {
         self.speed = speed;
         self
+    }
+
+    pub fn with_blend_space(mut self, space: BlendSpace) -> Self {
+        self.blend_space = Some(space);
+        self
+    }
+
+    /// 把混合空间当前参数算出来的权重写进层内片段（扩展四十五）。
+    ///
+    /// 返回是否真的改过权重：
+    /// - 没有混合空间 → `false`（层保持手写权重）；
+    /// - 空间没有样本 → `false`（刚建空间还没加样本，此时不该把层清成静音）；
+    /// - 有空间且有权重 → 先清零再按名字写，返回 `true`。
+    ///
+    /// 「先清零」是有意为之：参数从 1.0 走到 2.0 时，原来 1.0 那一档的片段必须真的掉到 0，
+    /// 否则权重会残留成「越走越多路」。空间里出现、层里没有的片段名直接忽略
+    /// （它的权重份额会被 `normalize_weights` 重新分配，不会让整层整体变暗）。
+    pub fn apply_blend_space(&mut self) -> bool {
+        let Some(space) = self.blend_space.as_ref() else {
+            return false;
+        };
+        let weights = space.weights();
+        if weights.is_empty() {
+            return false;
+        }
+        for layer_clip in &mut self.clips {
+            layer_clip.weight = 0.0;
+        }
+        for (name, weight) in weights {
+            if let Some(layer_clip) = self
+                .clips
+                .iter_mut()
+                .find(|c| c.clip.name.eq_ignore_ascii_case(&name))
+            {
+                layer_clip.weight = weight;
+            }
+        }
+        true
     }
 
     /// 层内片段名（日志用）。
@@ -535,14 +579,19 @@ fn scale_ratio(value: f32, reference: f32) -> f32 {
 
 /// 层信息摘要（脚本 `anim_layer_info` / RPC 回显用）。
 pub fn layer_report(layer: &AnimLayer) -> String {
-    format!(
+    let base = format!(
         "{} mode={} w={:.2} clips={:?} mask={}",
         layer.name,
         layer.mode.as_str(),
         layer.effective_weight(),
         layer.clip_names(),
         layer.mask.rule_count()
-    )
+    );
+    // 混合空间段只在挂了空间时追加，既有日志行（前缀）保持不变。
+    match &layer.blend_space {
+        Some(space) => format!("{base} blend={}", space.brief()),
+        None => base,
+    }
 }
 
 #[cfg(test)]
@@ -550,6 +599,85 @@ mod tests {
     use super::*;
     use crate::anim::{AnimKey, AnimTrack};
     use glam::Vec3;
+
+    #[test]
+    fn blend_space_drives_clip_weights() {
+        type Space = crate::blend_space::BlendSpace;
+        let mut layer = AnimLayer::new("move", clip("idle", vec![]), 1.0);
+        assert!(layer.add_clip(clip("run", vec![]), 1.0));
+        let mut space = Space::new_1d("speed");
+        assert!(space.add_sample("idle", [0.0, 0.0]));
+        assert!(space.add_sample("run", [2.0, 0.0]));
+        space.set_value_1d(0.5);
+        layer.blend_space = Some(space);
+
+        assert!(layer.apply_blend_space());
+        let w = layer.normalized_weights();
+        assert!((w[0] - 0.75).abs() < 1e-3, "idle 应 0.75，实为 {}", w[0]);
+        assert!((w[1] - 0.25).abs() < 1e-3, "run 应 0.25，实为 {}", w[1]);
+
+        // 参数推到底：run 全额、idle 必须真的归零（没有残留）
+        layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_value_1d(2.0);
+        assert!(layer.apply_blend_space());
+        let w = layer.normalized_weights();
+        assert_eq!(w[0], 0.0);
+        assert_eq!(w[1], 1.0);
+    }
+
+    #[test]
+    fn blend_space_without_samples_keeps_manual_weights() {
+        type Space = crate::blend_space::BlendSpace;
+        let mut layer = AnimLayer::new("move", clip("idle", vec![]), 1.0);
+        assert!(layer.add_clip(clip("run", vec![]), 0.25));
+        // 空间存在但一个样本都没有：层不能因此变成静音，手写权重照旧。
+        layer.blend_space = Some(Space::new_1d("speed"));
+        assert!(!layer.apply_blend_space());
+        let w = layer.normalized_weights();
+        assert!((w[0] - 0.8).abs() < 1e-3);
+        assert!((w[1] - 0.2).abs() < 1e-3);
+        // 去掉空间也一样：完全没有空间的层永远走手写权重
+        layer.blend_space = None;
+        assert!(!layer.apply_blend_space());
+    }
+
+    #[test]
+    fn blend_space_ignores_clip_not_in_layer() {
+        type Space = crate::blend_space::BlendSpace;
+        let mut layer = AnimLayer::new("move", clip("idle", vec![]), 1.0);
+        assert!(layer.add_clip(clip("run", vec![]), 0.5));
+        let mut space = Space::new_1d("speed");
+        space.add_sample("idle", [0.0, 0.0]);
+        space.add_sample("run", [1.0, 0.0]);
+        space.add_sample("ghost", [2.0, 0.0]);
+        space.set_value_1d(2.0);
+        layer.blend_space = Some(space);
+        // 参数停在只有 ghost 有权重的位置：层内两路都被清零，
+        // 归一化后为全零（层静音），但绝不能把权重错位到别的片段上。
+        assert!(layer.apply_blend_space());
+        assert!(layer.normalized_weights().is_empty() || layer.normalized_weights()[1] == 0.0);
+        assert_eq!(layer.clips[1].weight, 0.0);
+    }
+
+    #[test]
+    fn layer_report_appends_blend_segment() {
+        type Space = crate::blend_space::BlendSpace;
+        let mut layer = AnimLayer::new("move", clip("idle", vec![]), 1.0);
+        let before = layer_report(&layer);
+        assert!(!before.contains("blend="));
+
+        let mut space = Space::new_1d("speed");
+        assert!(space.add_sample("idle", [0.0, 0.0]));
+        space.set_value_1d(0.7);
+        layer.blend_space = Some(space);
+        let after = layer_report(&layer);
+        assert!(after.starts_with(&before), "原有前缀不应改动：{after}");
+        assert!(after.contains("blend=1d(speed) n=1"), "{after}");
+        assert!(after.contains("v=0.70"), "{after}");
+    }
 
     fn track_at(node_index: u32, path: &str, end: Vec3) -> AnimTrack {
         AnimTrack {
