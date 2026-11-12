@@ -98,6 +98,165 @@ pub const fn shape_mask_bits(count: usize) -> u32 {
     }
 }
 
+/// 单个实例可同时启用的形状**槽**数（扩展四十二）= [`MAX_MORPH_TARGETS`]。
+///
+/// 槽容量与权重容量是同一个数：每个启用形状在实例缓冲里占「一个权重 + 一个形状序号」，
+/// 权重仍是 `vec4 × 组数`，槽数没有独立余量。这个常量存在的意义是把两件事分开表述 ——
+/// **形状总数**由 `u8` 形状序号承载（上限 255，与位宽无关），**每实例同时启用数**由它管。
+/// 以后加槽只改它（以及权重组数），掩码层不必再动。
+pub const MORPH_SLOT_CAPACITY: usize = MAX_MORPH_TARGETS;
+
+/// 扩展四十二：紧凑形状槽列表 —— 一个实例**实际启用**的形状序号，升序去重。
+///
+/// 扩展四十用的是 `u32` 位图（第 `i` 位 = 形状 `i` 启用）。位图的问题不在当下
+/// （12 个形状只占低 12 位），而在两处结构性约束：
+///
+/// * 形状数一涨到 32 以上就**没地方放位**，掩码得整体换表示；
+/// * 着色器只能「按形状序号静态展开、再逐位乘 0」—— 顶点路径的指令数绑死在
+///   **形状总数**上，与这个实例真正用几个形状无关。
+///
+/// 换成槽列表后：形状序号是 `u8`（与位宽脱钩）；渲染层把权重**按槽压缩**
+/// （第 `k` 个槽的权重 = `weights[shape[k]]`），着色器只需迭代 `len` 次，且每次
+/// 拿到的 `shape[k]` 直接就是形变表的形状偏移。只用一个形状的实例从 12 段比较降到 1 段。
+///
+/// 不变的是外部口径：位图 API（[`MorphInstance::shape_mask`] /
+/// [`MorphInstance::set_shape_mask`]）原样保留，内部换成列表后再折回位图，
+/// 脚本与场景侧的写法不用改。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShapeSlots {
+    /// 升序排列的形状序号；`shape[..len]` 有效，其余是 0 —— **不表示**「形状 0 启用」。
+    shape: [u8; MORPH_SLOT_CAPACITY],
+    len: u8,
+}
+
+impl ShapeSlots {
+    /// 一个形状都不启用（槽容量与形状数的乘积为空）。
+    pub const fn empty() -> Self {
+        Self {
+            shape: [0; MORPH_SLOT_CAPACITY],
+            len: 0,
+        }
+    }
+
+    /// 「形状 `0..count` 全部启用」—— 默认状态，等价于扩展四十的 [`ALL_SHAPE_MASK`]。
+    pub fn all(count: usize) -> Self {
+        let mut slots = Self::empty();
+        let count = count.min(MORPH_SLOT_CAPACITY);
+        for index in 0..count {
+            slots.shape[index] = index as u8;
+            slots.len += 1;
+        }
+        slots
+    }
+
+    /// 从位图转换（扩展四十的掩码入口）：`count` 以上的位静默丢掉，与
+    /// [`shape_mask_bits`] 的裁剪口径一致。
+    pub fn from_mask(mask: u32, count: usize) -> Self {
+        let mut slots = Self::empty();
+        let count = count.min(MORPH_SLOT_CAPACITY);
+        for index in 0..count {
+            // `count ≤ 12`，`1u32 << index` 不会溢出
+            if mask & (1u32 << index) != 0 {
+                slots.shape[slots.len as usize] = index as u8;
+                slots.len += 1;
+            }
+        }
+        slots
+    }
+
+    /// 折回位图。槽容量 12 < 32，所以每一位都有地方放；升级容量后超过 32 的序号
+    /// 会被静默丢掉（那时应改用 [`ShapeSlots::indices`] 而不是位图）。
+    pub fn to_mask(&self) -> u32 {
+        let mut mask = 0u32;
+        for &index in self.indices() {
+            if (index as usize) < 32 {
+                mask |= 1u32 << index;
+            }
+        }
+        mask
+    }
+
+    /// 启用的形状序号，升序。
+    pub fn indices(&self) -> &[u8] {
+        &self.shape[..self.len as usize]
+    }
+
+    /// 只保留 `< count` 的序号（`target_count` 被外部改小时用）。
+    ///
+    /// 列表升序，所以截断点就是第一个 `>= count` 的位置 —— 不必筛整段。
+    pub fn truncated(&self, count: usize) -> &[u8] {
+        let end = self
+            .indices()
+            .iter()
+            .position(|&index| index as usize >= count)
+            .unwrap_or(self.len as usize);
+        &self.shape[..end]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.len as usize >= MORPH_SLOT_CAPACITY
+    }
+
+    /// 某个形状是否在列表里。
+    pub fn contains(&self, index: u8) -> bool {
+        // 槽数上限 12，线性扫比二分省一次除法
+        self.indices().contains(&index)
+    }
+
+    /// 加入一个形状，保持升序。已存在时无动作（返回 `false` 表示「没有改动」），
+    /// 槽满时同样放弃加入并返回 `false`。
+    pub fn insert(&mut self, index: u8) -> bool {
+        if self.contains(index) || self.is_full() {
+            return false;
+        }
+        let at = self
+            .indices()
+            .iter()
+            .position(|&existing| existing > index)
+            .unwrap_or(self.len as usize);
+        // 从尾部后移一位腾出空槽（`at..len` 最多 11 次移动）
+        let mut cursor = self.len as usize;
+        while cursor > at {
+            self.shape[cursor] = self.shape[cursor - 1];
+            cursor -= 1;
+        }
+        self.shape[at] = index;
+        self.len += 1;
+        true
+    }
+
+    /// 移除一个形状（不存在时返回 `false`）。
+    pub fn remove(&mut self, index: u8) -> bool {
+        let Some(at) = self
+            .indices()
+            .iter()
+            .position(|&existing| existing == index)
+        else {
+            return false;
+        };
+        let len = self.len as usize;
+        for cursor in at..len - 1 {
+            self.shape[cursor] = self.shape[cursor + 1];
+        }
+        self.len -= 1;
+        self.shape[self.len as usize] = 0;
+        true
+    }
+
+    /// 全部清空（`morph_count` 会被写成 0，渲染层整段摘掉形变）。
+    pub fn clear(&mut self) {
+        *self = Self::empty();
+    }
+}
+
 /// 形变表里**每顶点**占用的 `f32` 个数（扩展三十七把 6 抬到 9）。
 ///
 /// 布局：`[0..3) = Δ位置 xyz`、`[3..6) = Δ法线 xyz`、`[6..9) = Δ切线 xyz`。
@@ -484,59 +643,67 @@ pub struct MorphInstance {
     ///
     /// 组只存在于**实例**侧：同一份形状集，敌人和主角可以配不同的互斥关系。
     pub exclusive: [u8; MAX_MORPH_TARGETS],
-    /// 扩展四十：逐实例形状掩码 —— 第 `i` 位为 1 表示形状 `i` 在本实例启用。
+    /// 扩展四十二：本实例启用的形状槽列表（紧凑序号列表，升序去重）。
     ///
-    /// `target_count` 是**网格级**的（这份网格有几个形状），掩码是**实例级**的
+    /// `target_count` 是**网格级**的（这份网格有几个形状），槽列表是**实例级**的
     /// （这个实例用哪几个）。同一份「人脸」网格上，主角可能只用「笑 / 眨眼」，
     /// 路人群演只用「说话」——扩三十九之前只能把不用的权重全置 0，顶点照样
-    /// 进 `morph_offset` 走满 8 个分支；有掩码后渲染层能在**实例级**把形状集
-    /// 直接收缩到 0 个，那个实例的 `morph_count` 写 0，顶点路径与不带形变的
-    /// 网格逐位相同。
+    /// 进 `morph_offset` 走满全部形状分支；扩展四十引入位图掩码，能在实例级把
+    /// 形状集收缩到 0 个（`morph_count` 写 0，顶点路径与无形变网格逐位相同）。
     ///
-    /// 越界位在读写时按 `target_count` 与网格登记数裁剪（见 [`shape_mask_bits`]），
-    /// 默认 [`ALL_SHAPE_MASK`] 等价于扩展三十九的行为。
-    pub mask: u32,
+    /// 扩展四十二把位图换成槽列表，保留扩展四十的全部行为（位图 API 仍是门面），
+    /// 但顶点侧不再按「形状总数」静态展开：迭代次数 = 本实例的槽数，槽里存的就是
+    /// 形状序号。形状总数因此与 32 位宽脱钩，以后加槽也不必再换表示。
+    ///
+    /// 越界序号在读写时按 `target_count` 与网格登记数裁剪（见 [`shape_mask_bits`]、
+    /// [`ShapeSlots::truncated`]），默认「全部启用」等价于扩展三十九的行为。
+    pub slots: ShapeSlots,
 }
 
 impl MorphInstance {
     pub fn new(mesh_node: NodeId, target_count: usize) -> Self {
+        let target_count = target_count.min(MAX_MORPH_TARGETS);
         Self {
             mesh_node,
             weights: [0.0; MAX_MORPH_TARGETS],
-            target_count: target_count.min(MAX_MORPH_TARGETS),
+            target_count,
             // 默认全部独立：不调用 `set_exclusive_group` 时行为与扩展三十七逐位相同
             exclusive: [NO_EXCLUSIVE_GROUP; MAX_MORPH_TARGETS],
             // 默认全部启用：不碰掩码时行为与扩展三十九逐位相同
-            mask: ALL_SHAPE_MASK,
+            slots: ShapeSlots::all(target_count),
         }
     }
 
-    /// 本实例**生效**的形状掩码：已按 `target_count` 裁剪（扩展四十）。
+    /// 本实例**生效**的形状掩码：已按 `target_count` 裁剪（扩展四十二）。
     ///
-    /// 越界位不会报错，只是不生效 —— 场景侧先绑 `target_count`、脚本后写掩码，
+    /// 位图现在是**兼容门面**：内部真值是槽列表（[`ShapeSlots`]），折回 `u32` 是为了
+    /// 让脚本侧 `morph_mask(...)` 的读写口径与扩展四十逐位相同。槽容量 12 < 32，
+    /// 折回不丢位；形状总数涨到 32 以上时应改用 [`MorphInstance::active_shapes`]。
+    ///
+    /// 越界序号不会报错，只是不生效 —— 场景侧先绑 `target_count`、脚本后写掩码，
     /// 顺序反过来时也不该让整个实例静默失效。
     pub fn shape_mask(&self) -> u32 {
-        self.mask & shape_mask_bits(self.target_count.min(MAX_MORPH_TARGETS))
+        self.slots.to_mask() & shape_mask_bits(self.target_count.min(MAX_MORPH_TARGETS))
     }
 
-    /// 整块替换掩码，返回裁剪后的生效值（扩展四十）。越界位被静默丢掉。
+    /// 整块替换掩码（位图门面），返回裁剪后的生效值。越界位被静默丢掉。
     pub fn set_shape_mask(&mut self, mask: u32) -> u32 {
-        self.mask = mask;
+        self.slots = ShapeSlots::from_mask(mask, self.target_count.min(MAX_MORPH_TARGETS));
         self.shape_mask()
     }
 
-    /// 开 / 关单个形状。越界下标拒绝并返回 `false`（不改动任何状态）。
+    /// 开 / 关单个形状。越界下标、或「槽已满装不下新形状」时返回 `false`（不改动状态）。
     pub fn set_shape_enabled(&mut self, index: usize, enabled: bool) -> bool {
         if index >= self.target_count.min(MAX_MORPH_TARGETS) {
             return false;
         }
-        let bit = 1u32 << index;
+        let index = index as u8;
         if enabled {
-            self.mask |= bit;
+            self.slots.insert(index);
         } else {
-            self.mask &= !bit;
+            self.slots.remove(index);
         }
-        true
+        self.slots.contains(index) == enabled
     }
 
     /// 某个形状在本实例是否启用（越界返回 `None`）。
@@ -544,22 +711,31 @@ impl MorphInstance {
         if index >= self.target_count.min(MAX_MORPH_TARGETS) {
             return None;
         }
-        Some(self.shape_mask() & (1u32 << index) != 0)
+        Some(self.slots.contains(index as u8))
     }
 
-    /// 全部形状重新启用（掩码回到 [`ALL_SHAPE_MASK`]，权重不动）。
+    /// 全部形状重新启用（槽列表回到 `0..target_count`，权重不动）。
     pub fn enable_all_shapes(&mut self) {
-        self.mask = ALL_SHAPE_MASK;
+        self.slots = ShapeSlots::all(self.target_count.min(MAX_MORPH_TARGETS));
     }
 
-    /// 全部形状停用（掩码归 0）：渲染层会把该实例的形变整段摘掉。
+    /// 全部形状停用（槽列表清空）：渲染层会把该实例的形变整段摘掉。
     pub fn clear_shape_mask(&mut self) {
-        self.mask = 0;
+        self.slots.clear();
     }
 
-    /// 生效掩码里启用了几个形状（`popcount`）。
+    /// 当前启用几个形状（= 槽数，已按 `target_count` 裁剪）。
     pub fn enabled_shape_count(&self) -> u32 {
-        self.shape_mask().count_ones()
+        self.active_shapes().len() as u32
+    }
+
+    /// 扩展四十二：本实例启用的形状序号（升序），已按 `target_count` 裁剪。
+    ///
+    /// 这是槽列表的对外读数：渲染层拿它算「迭代几次、每次取哪个形状」。
+    /// 与位图不同，它不受 32 位宽限制 —— 形状总数涨到 32 以上时这里仍然准确。
+    pub fn active_shapes(&self) -> &[u8] {
+        self.slots
+            .truncated(self.target_count.min(MAX_MORPH_TARGETS))
     }
 
     /// 被掩码挡在外面、但权重仍非零的形状数（扩展四十的探针读数）。
@@ -567,15 +743,33 @@ impl MorphInstance {
     /// 这个数就是「本实例因为掩码省下的形变乘加组数」—— 权重非零却用不到的
     /// 形状，扩三十九之前要进满分支，现在连槽都不占。
     pub fn masked_nonzero_count(&self) -> u32 {
-        let on = self.shape_mask();
         let count = self.target_count.min(MAX_MORPH_TARGETS);
         let mut masked = 0;
         for (index, weight) in self.weights.iter().enumerate().take(count) {
-            if on & (1u32 << index) == 0 && *weight != 0.0 && weight.is_finite() {
+            if !self.slots.contains(index as u8) && *weight != 0.0 && weight.is_finite() {
                 masked += 1;
             }
         }
         masked
+    }
+
+    /// 扩展四十二：按槽压缩的权重 —— 第 `k` 个 = `weights[active_shapes()[k]]`。
+    ///
+    /// 返回值第二项是槽数（渲染层直接当 `morph_count`）。互斥归一化在这里一并做完，
+    /// 调用方拿到的是「屏幕上那一份」：槽里存归一化后的值、实例缓冲里也是同一份，
+    /// 剔除余量与实际位移不会分叉。
+    ///
+    /// 被掩码挡住的形状连槽都不占，它的权重根本不上传 —— 这是位图换槽列表之后
+    /// **每实例带宽**上的实际收益（位图方案里那 4 个字节同样是死的，却仍按形状总数
+    /// 逐个比较）。
+    pub fn slot_weights(&self) -> ([f32; MORPH_SLOT_CAPACITY], usize) {
+        let (weights, _) = self.normalized_weights();
+        let shapes = self.active_shapes();
+        let mut out = [0.0f32; MORPH_SLOT_CAPACITY];
+        for (slot, &shape) in shapes.iter().enumerate() {
+            out[slot] = weights[shape as usize];
+        }
+        (out, shapes.len())
     }
 
     /// 把一个形状归入某个互斥组（`group = None` 表示退出组、回到独立叠加）。
@@ -646,12 +840,13 @@ impl MorphInstance {
     pub fn normalized_weights(&self) -> ([f32; MAX_MORPH_TARGETS], bool) {
         let mut weights = self.weights;
         let count = self.target_count.min(MAX_MORPH_TARGETS);
-        // 扩展四十：掩码外的槽位先归零，后面的互斥求和自然忽略它们
-        let on = self.shape_mask();
+        // 扩展四十二：不在槽里的形状先归零（含 `target_count` 之外的位置 ——
+        // 槽列表本身就是按 `target_count` 构造的，越界序号不在里面），
+        // 后面的互斥求和自然忽略它们。按槽判断比按位比较少一次移位与掩码运算。
         let mut handled = [false; MAX_MORPH_TARGETS];
         let mut scaled = false;
         for (index, weight) in weights.iter_mut().enumerate() {
-            if on & (1u32 << index) == 0 {
+            if !self.slots.contains(index as u8) {
                 *weight = 0.0;
             }
         }
@@ -715,15 +910,13 @@ impl MorphInstance {
 
     /// 是否有任何形状在起作用。全 0 时渲染层会跳过整条形变路径。
     ///
-    /// 扩展四十：被掩码挡住的形状不算 —— 「权重非零但形状停用」的实例在渲染层
-    /// 是与「没有表情」同一个路径，这里也要给出同一个答案。
+    /// 扩展四十二：只看**槽里**的形状 —— 「权重非零但形状停用」的实例在渲染层
+    /// 是与「没有表情」同一个路径，这里也要给出同一个答案。只迭代槽数，
+    /// 形状总数涨上去之后这个热点的代价不随之上涨。
     pub fn is_active(&self) -> bool {
-        let on = self.shape_mask();
-        (0..self.target_count.min(MAX_MORPH_TARGETS)).any(|index| {
-            on & (1u32 << index) != 0 && {
-                let weight = self.weights[index];
-                weight != 0.0 && weight.is_finite()
-            }
+        self.active_shapes().iter().any(|&shape| {
+            let weight = self.weights[shape as usize];
+            weight != 0.0 && weight.is_finite()
         })
     }
 }
@@ -1226,10 +1419,17 @@ mod tests {
     /// 扩展四十（契约一）：默认掩码 = 全部启用，与扩展三十九逐位兼容。
     ///
     /// 不碰掩码的场景必须完全不受影响 —— 这是「加能力不改画面」的底线。
+    /// 扩展四十二把真值换成槽列表，这条契约不变：默认槽列表就是 `0..count`。
     #[test]
     fn mask_default_keeps_every_shape_enabled() {
         let instance = MorphInstance::new(0, 3);
-        assert_eq!(instance.mask, ALL_SHAPE_MASK);
+        assert_eq!(instance.slots, ShapeSlots::all(3));
+        assert_eq!(
+            instance.shape_mask(),
+            ALL_SHAPE_MASK & 0b111,
+            "位图门面照旧"
+        );
+        assert_eq!(instance.active_shapes(), &[0, 1, 2], "槽列表 = 全部形状");
         assert_eq!(instance.enabled_shape_count(), 3, "只数到 target_count");
         assert_eq!(instance.shape_mask(), 0b111, "越界位被裁掉");
         assert_eq!(instance.masked_nonzero_count(), 0);
@@ -1324,5 +1524,129 @@ mod tests {
             instance.weights.iter().all(|w| *w == 1.0),
             "纯函数：场景原值一份不动"
         );
+    }
+
+    /// 扩展四十二（契约一）：槽列表升序、去重、有界。
+    ///
+    /// 升序是渲染层的隐含前提 —— 「截断到 `target_count`」靠它一次 `position` 定位，
+    /// 别的地方也默认「第 k 槽的形状序号单调递增」。
+    #[test]
+    fn slot_list_is_sorted_unique_and_bounded() {
+        let mut slots = ShapeSlots::empty();
+        assert!(slots.is_empty());
+        // 乱序插入
+        for index in [5u8, 1, 9, 3, 1] {
+            slots.insert(index);
+        }
+        assert_eq!(slots.indices(), &[1, 3, 5, 9], "升序去重");
+        assert_eq!(slots.len(), 4);
+        assert!(slots.contains(3));
+        assert!(!slots.contains(2));
+
+        assert!(!slots.insert(5), "已存在 → 无改动");
+        assert!(slots.remove(3));
+        assert!(!slots.remove(3), "移除不存在的 → 无改动");
+        assert_eq!(slots.indices(), &[1, 5, 9]);
+
+        // 装满之后再加就拒绝，且不破坏已有顺序
+        let mut full = ShapeSlots::all(MORPH_SLOT_CAPACITY);
+        assert!(full.is_full());
+        assert!(!full.insert(MORPH_SLOT_CAPACITY as u8), "槽满 → 拒绝");
+        assert_eq!(full.len(), MORPH_SLOT_CAPACITY);
+
+        full.clear();
+        assert!(full.is_empty());
+        assert_eq!(full.to_mask(), 0);
+    }
+
+    /// 扩展四十二（契约二）：位图门面与槽列表互为无损转换。
+    ///
+    /// `MORPH_SLOT_CAPACITY ≤ 32` 是位图门面成立的前提。以后把槽容量抬到 32 以上时
+    /// 这条断言会先炸 —— 提醒「`morph_mask()` 该退役了，别让它静默丢位」。
+    #[test]
+    fn mask_facade_round_trips_through_slots() {
+        // 编译期常量断言：槽容量一旦抬到 32 以上，位图门面就会静默丢位。
+        // 写成 `const {}` 而不是运行期 `assert!`，否则 clippy 会当「常量断言」报错。
+        const {
+            assert!(
+                MORPH_SLOT_CAPACITY <= 32,
+                "槽容量超过 32 后 u32 位图门面会丢位，应改用 active_shapes()"
+            )
+        };
+        let mut instance = MorphInstance::new(0, MAX_MORPH_TARGETS);
+        assert_eq!(instance.shape_mask(), ALL_SHAPE_MASK);
+
+        // 只留形状 0 / 4 / 11
+        let mask = 0b1000_0001_0001;
+        assert_eq!(instance.set_shape_mask(mask), mask);
+        assert_eq!(instance.active_shapes(), &[0, 4, 11]);
+        assert_eq!(instance.shape_mask(), mask, "折回位图逐位相同");
+        assert_eq!(instance.enabled_shape_count(), 3);
+
+        // 按索引开关（不受位宽限制的入口）
+        assert!(instance.set_shape_enabled(7, true));
+        assert_eq!(instance.active_shapes(), &[0, 4, 7, 11], "插入保持升序");
+        assert!(instance.set_shape_enabled(0, false));
+        assert_eq!(instance.active_shapes(), &[4, 7, 11]);
+        assert!(
+            !instance.set_shape_enabled(MORPH_SLOT_CAPACITY, true),
+            "越界拒"
+        );
+    }
+
+    /// 扩展四十二（契约三）：`slot_weights` 按槽压缩，且用的是互斥归一化后的值。
+    ///
+    /// 渲染层把它直接搬进实例缓冲：第 k 个槽的权重对应 `active_shapes()[k]`，
+    /// 槽数即 `morph_count`。「屏幕上是哪一份」与「剔除余量按哪一份算」必须同源。
+    #[test]
+    fn slot_weights_compress_by_shape_index() {
+        let mut instance = MorphInstance::new(0, 4);
+        instance.set_weight(0, 0.25);
+        instance.set_weight(1, 0.5);
+        instance.set_weight(2, 0.75);
+        instance.set_weight(3, 1.0);
+
+        let (weights, count) = instance.slot_weights();
+        assert_eq!(count, 4);
+        assert_eq!(&weights[..4], &[0.25, 0.5, 0.75, 1.0], "全启用时原样");
+
+        // 关掉形状 0 与 2：权重左移压缩，槽数降到 2
+        instance.set_shape_mask(0b1010);
+        let (weights, count) = instance.slot_weights();
+        assert_eq!(count, 2);
+        assert_eq!(&weights[..3], &[0.5, 1.0, 0.0], "{weights:?}");
+
+        // 互斥归一化后的值才是上传值（组内 0.5 + 1.0 超预算 → 按 1/1.5 等比压回 1.0）
+        assert!(instance.set_exclusive_group(1, Some(3)));
+        assert!(instance.set_exclusive_group(3, Some(3)));
+        let (weights, count) = instance.slot_weights();
+        assert_eq!(count, 2);
+        assert!((weights[0] - 0.5 / 1.5).abs() < 1e-6, "{weights:?}");
+        assert!((weights[1] - 1.0 / 1.5).abs() < 1e-6, "{weights:?}");
+        assert_eq!(instance.weight_of(3), Some(1.0), "场景原值不动");
+    }
+
+    /// 扩展四十二（契约四）：槽列表按 `target_count` 截断，不靠位宽。
+    ///
+    /// `target_count` 是公开字段，外部改小之后列表里可能残留更大的序号；
+    /// 升序保证截断点唯一，渲染层因此不会拿到越界形状序号去算表偏移。
+    #[test]
+    fn slot_list_truncates_to_target_count() {
+        let slots = ShapeSlots::all(MAX_MORPH_TARGETS);
+        assert_eq!(slots.truncated(3), &[0, 1, 2]);
+        assert_eq!(slots.truncated(0), &[] as &[u8]);
+        assert_eq!(
+            slots.truncated(MAX_MORPH_TARGETS + 9).len(),
+            MAX_MORPH_TARGETS
+        );
+
+        let mut instance = MorphInstance::new(0, MAX_MORPH_TARGETS);
+        assert_eq!(instance.active_shapes().len(), MAX_MORPH_TARGETS);
+        // 直接改小 target_count：槽里的 6..12 立即失效，但列表本身没被改写
+        instance.target_count = 3;
+        assert_eq!(instance.active_shapes(), &[0, 1, 2]);
+        assert_eq!(instance.enabled_shape_count(), 3);
+        assert_eq!(instance.shape_mask(), 0b111, "位图门面同步裁到位");
+        assert_eq!(instance.slots.indices().len(), MAX_MORPH_TARGETS);
     }
 }

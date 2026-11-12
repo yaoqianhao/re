@@ -97,11 +97,18 @@ struct MorphDelta {
 /// 布局：+0..3 = Δ位置，+3..6 = Δ法线，+6..9 = Δ切线（三个通道恒占槽位，缺的补 0）。
 const MORPH_VERTEX_FLOATS: u32 = 9u;
 
-/// 单实例可同时生效的形状数 —— 必须与 `r3e_core::MAX_MORPH_TARGETS` 一致（扩展四十一：12）。
+/// 单实例可同时生效的形状**槽**数 —— 必须与 `r3e_core::MORPH_SLOT_CAPACITY` 一致（12）。
 ///
-/// 权重按 `vec4` 分组进顶点属性，所以这个数恒等于组数 × 4；`tests/morph_shader_parity.rs`
-/// 会把这里与 Rust 常量逐字比对，改一处漏另一处会直接红。
-const MORPH_SHAPES: u32 = 12u;
+/// 扩展四十二之后这个数不再是「网格形状数上限」：形状总数可以超过 32，
+/// 槽只是「这个实例同时启用的形状」的容量上限。权重按 `vec4` 分组进顶点属性，
+/// 所以槽容量恒等于组数 × 4 —— 加组的代价是每个实例多 16 字节权重 + 序号字。
+/// `tests/morph_shader_parity.rs` 会把这里与 Rust 常量逐字比对，改一处漏另一处会直接红。
+///
+/// 12 个槽 = 3 个字，装进**一个** `vec4<u32>` 属性（`@location(15)`）。之所以不在
+/// 属性上摊成 3 个 `u32`：webgpu 的顶点属性 location 只有 0..=15 共 16 个，
+/// 顶点侧已占 6 个、实例侧 model / 色 / 元数据 / 三组权重占 9 个，只剩 1 格。
+/// 打成一个 `vec4` 既省 location，又允许槽容量靠 `MORPH_SLOT_CAPACITY` 单独涨到 16。
+const MORPH_SLOTS: u32 = 12u;
 
 /// 累加单个形状的增量。`at` = 该形状在本顶点上的浮点起点，`w` = 权重。
 ///
@@ -113,44 +120,61 @@ fn morph_accumulate(delta: ptr<function, MorphDelta>, at: u32, w: f32) {
     (*delta).tangent += w * vec3<f32>(morph_table[at + 6u], morph_table[at + 7u], morph_table[at + 8u]);
 }
 
-/// 扩展四十：把 4 位掩码展开成 `vec4<f32>` 的 0/1 乘子。
+/// 扩展四十二：从序号字里取第 `lane` 个槽的形状序号（`u8` 小端打包）。
 ///
-/// 用 `select` 而不是 4 个 `if`：掩码是**实例级**数据，同一批次里每个实例都可能
-/// 不同，分支会让 warp 内部发散；`select` 是逐分量取值，没有控制流。
-/// 展开后与权重相乘，掩码外的分量直接变 0 —— 下面的 `w != 0.0` 判断自然跳过。
-fn morph_mask_vec(mask: u32, shift: u32) -> vec4<f32> {
-    let m = mask >> shift;
-    return vec4<f32>(
-        select(0.0, 1.0, (m & 1u) != 0u),
-        select(0.0, 1.0, (m & 2u) != 0u),
-        select(0.0, 1.0, (m & 4u) != 0u),
-        select(0.0, 1.0, (m & 8u) != 0u),
-    );
+/// 这是整次结构改造的关键一步：形状序号**是数据**，不再是「第几位亮着」。
+/// 位图方案下换哪个形状由静态展开的 12 段代码决定（`head + stride * 11u` 这种），
+/// 因此形状数被 32 位宽钉死；这里序号来自实例缓冲，`stride * shape` 是运行时算的，
+/// 形状总数涨到多少都不需要改着色器。
+fn morph_slot_shape(word: u32, lane: u32) -> u32 {
+    return (word >> (lane * 8u)) & 0xFFu;
 }
 
-/// 按权重线性累加各形状增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
+/// 累加第 `lane` 槽：序号取自 `word`，权重为 `w`。权重 0 直接跳过。
 ///
-/// 权重按 `vec4` 分组传进来：`w0` = 形状 0..4、`w1` = 4..8（扩展三十九）、
-/// `w2` = 8..12（扩展四十一）；组数与 `MORPH_WEIGHT_GROUPS` 一一对应。
-/// 分量逐个写而不是 `weights[i]` —— WGSL 不允许用运行时值索引向量分量，
-/// 这也是 `skin_matrix` 采用同一写法的原因。形状数为 0 时整体零开销提前返回。
+/// 槽数之外的字节渲染层填 0，但循环上界是 `morph_count`（槽数），所以这里
+/// 只需挡住「权重为 0」——这也是「实例启用形状但没播放」的常态。
+fn morph_slot_accumulate(
+    delta: ptr<function, MorphDelta>,
+    head: u32,
+    stride: u32,
+    word: u32,
+    lane: u32,
+    w: f32,
+) {
+    if w == 0.0 {
+        return;
+    }
+    let shape = morph_slot_shape(word, lane);
+    morph_accumulate(delta, head + stride * shape, w);
+}
+
+/// 按权重线性累加各槽的增量。与 `r3e_core::morph::MorphSet::apply` 逐式对应。
 ///
-/// 扩展四十：`mask` 是逐实例形状掩码，仅在这里参与运算 —— 掩码外的形状权重先乘 0，
-/// 后续「权重非零才累加」的判断就不会命中。掩码把全部形状关空的实例根本进不到这里：
-/// 渲染层把它的 `morph_count`（`imeta.w`）写成 0，在下面的提前返回处就出去了。
+/// 权重按 `vec4` 分组传进来：`w0` = 槽 0..4、`w1` = 4..8、`w2` = 8..12；
+/// 组数与 `MORPH_WEIGHT_GROUPS` 一一对应。分量逐个写而不是 `weights[i]` ——
+/// WGSL 不允许用运行时值索引向量分量（`skin_matrix` 同一个理由），所以**权重**
+/// 仍是静态展开，真正动态的是**形状序号**（`slots` 里按字节取）。
+///
+/// 扩展四十二：`imeta.w` 现在是**槽数**（这个实例真用到的形状个数），不再是
+/// 网格形状总数。被掩码挡掉的形状不占槽，所以循环次数天然收紧；槽全空时渲染层
+/// 写 `imeta.w = 0`，在下面的提前返回处就出去了，一次读取都不做。
+///
+/// `slots` 与权重**同组对齐**：第 `g` 个分量（`.x` / `.y` / `.z`）对应第 `g` 组权重的
+/// 4 个槽。分量下标是静态写死的常量，不做运行时向量索引（WGSL 不允许）。
 fn morph_offset(
     imeta: vec4<u32>,
     w0: vec4<f32>,
     w1: vec4<f32>,
     w2: vec4<f32>,
-    mask: u32,
+    slots: vec4<u32>,
     vi: u32,
 ) -> MorphDelta {
     var delta: MorphDelta;
     delta.position = vec3<f32>(0.0);
     delta.normal = vec3<f32>(0.0);
     delta.tangent = vec3<f32>(0.0);
-    let count = min(imeta.w, MORPH_SHAPES);
+    let count = min(imeta.w, MORPH_SLOTS);
     // imeta.z = 0 表示该实例没有可用形状数据（未登记 / 校验未过），直接跳过
     if count == 0u || imeta.z == 0u {
         return delta;
@@ -158,49 +182,44 @@ fn morph_offset(
     // 顶点在该形状内的浮点起点；形状之间相隔一个 imeta.z
     let head = imeta.y + vi * MORPH_VERTEX_FLOATS;
     let stride = imeta.z;
-    // 扩展四十：掩码外的分量先归零（乘子只有 0/1，权重原值不受影响）。
-    // 不能写 `let w0 = w0 * ...` —— WGSL 不允许局部名遮蔽同名参数。
-    let on0 = w0 * morph_mask_vec(mask, 0u);
-    let on1 = w1 * morph_mask_vec(mask, 4u);
-    let on2 = w2 * morph_mask_vec(mask, 8u);
-    // 第 1 组（形状 0..4）
-    if on0.x != 0.0 {
-        morph_accumulate(&delta, head, on0.x);
+    // 第 1 组（槽 0..4）
+    if count > 0u {
+        morph_slot_accumulate(&delta, head, stride, slots.x, 0u, w0.x);
     }
-    if count > 1u && on0.y != 0.0 {
-        morph_accumulate(&delta, head + stride, on0.y);
+    if count > 1u {
+        morph_slot_accumulate(&delta, head, stride, slots.x, 1u, w0.y);
     }
-    if count > 2u && on0.z != 0.0 {
-        morph_accumulate(&delta, head + stride * 2u, on0.z);
+    if count > 2u {
+        morph_slot_accumulate(&delta, head, stride, slots.x, 2u, w0.z);
     }
-    if count > 3u && on0.w != 0.0 {
-        morph_accumulate(&delta, head + stride * 3u, on0.w);
+    if count > 3u {
+        morph_slot_accumulate(&delta, head, stride, slots.x, 3u, w0.w);
     }
-    // 第 2 组（形状 4..8）
-    if count > 4u && on1.x != 0.0 {
-        morph_accumulate(&delta, head + stride * 4u, on1.x);
+    // 第 2 组（槽 4..8）
+    if count > 4u {
+        morph_slot_accumulate(&delta, head, stride, slots.y, 0u, w1.x);
     }
-    if count > 5u && on1.y != 0.0 {
-        morph_accumulate(&delta, head + stride * 5u, on1.y);
+    if count > 5u {
+        morph_slot_accumulate(&delta, head, stride, slots.y, 1u, w1.y);
     }
-    if count > 6u && on1.z != 0.0 {
-        morph_accumulate(&delta, head + stride * 6u, on1.z);
+    if count > 6u {
+        morph_slot_accumulate(&delta, head, stride, slots.y, 2u, w1.z);
     }
-    if count > 7u && on1.w != 0.0 {
-        morph_accumulate(&delta, head + stride * 7u, on1.w);
+    if count > 7u {
+        morph_slot_accumulate(&delta, head, stride, slots.y, 3u, w1.w);
     }
-    // 第 3 组（形状 8..12，扩展四十一）
-    if count > 8u && on2.x != 0.0 {
-        morph_accumulate(&delta, head + stride * 8u, on2.x);
+    // 第 3 组（槽 8..12）
+    if count > 8u {
+        morph_slot_accumulate(&delta, head, stride, slots.z, 0u, w2.x);
     }
-    if count > 9u && on2.y != 0.0 {
-        morph_accumulate(&delta, head + stride * 9u, on2.y);
+    if count > 9u {
+        morph_slot_accumulate(&delta, head, stride, slots.z, 1u, w2.y);
     }
-    if count > 10u && on2.z != 0.0 {
-        morph_accumulate(&delta, head + stride * 10u, on2.z);
+    if count > 10u {
+        morph_slot_accumulate(&delta, head, stride, slots.z, 2u, w2.z);
     }
-    if count > 11u && on2.w != 0.0 {
-        morph_accumulate(&delta, head + stride * 11u, on2.w);
+    if count > 11u {
+        morph_slot_accumulate(&delta, head, stride, slots.z, 3u, w2.w);
     }
     return delta;
 }
@@ -255,8 +274,11 @@ struct VsIn {
     @location(13) morph_w1: vec4<f32>,
     // 扩展四十一：第三组权重（形状 8..12）
     @location(14) morph_w2: vec4<f32>,
-    // 扩展四十：逐实例形状掩码，第 i 位 = 形状 i 启用（0 = 整段无形变）
-    @location(15) morph_mask: u32,
+    // 扩展四十二：逐实例形状序号，每字 4 个 u8（小端），与权重同组对齐；
+    // 扩展四十二：形状序号列表，第 g 个分量装槽 g*4..g*4+4 的 u8 序号
+    //（有效长度 = morph_count 个槽，0 = 整段无形变）。3 个字压进一个 vec4，
+    //  因为 webgpu 的顶点 location 只有 16 个，摊成 3 格会把管线撑爆。
+    @location(15) morph_slots: vec4<u32>,
 };
 
 struct VsOut {
@@ -311,7 +333,7 @@ fn vs_main(in: VsIn) -> VsOut {
             in.morph_w0,
             in.morph_w1,
             in.morph_w2,
-            in.morph_mask,
+            in.morph_slots,
             in.vertex_index,
         );
         local_position += shape.position;
@@ -383,7 +405,7 @@ struct ShadowVsIn {
     // 扩展四十一：第三组权重，口径与主通道一致
     @location(14) morph_w2: vec4<f32>,
     // 扩展四十：口径与主通道一致
-    @location(15) morph_mask: u32,
+    @location(15) morph_slots: vec4<u32>,
 };
 
 // 深度 pass 专用：只含光源正交矩阵，故意不复用阴影贴图那一组绑定，
@@ -634,7 +656,7 @@ fn vs_shadow(in: ShadowVsIn) -> @builtin(position) vec4<f32> {
             in.morph_w0,
             in.morph_w1,
             in.morph_w2,
-            in.morph_mask,
+            in.morph_slots,
             in.vertex_index,
         );
         local_position += shape.position;

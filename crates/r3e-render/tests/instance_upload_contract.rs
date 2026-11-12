@@ -40,21 +40,28 @@ fn defaults_report_nothing_uploaded() {
     assert_eq!(stats.instance_upload.skipped, 0);
 }
 
-/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 148 字节、且能整除
+/// 记录布局必须与 shader 的实例步长一致：`InstanceRaw` 160 字节、且能整除
 /// 4 字节对齐要求。脏段换算用的是同一个 stride，这里把它钉住。
 ///
 /// 扩展三十六加了形变（morph）三项 + 一组 `vec4` 权重，把记录从 96 撑到 112；
 /// 扩展三十九把权重从 1 组扩到 `MORPH_WEIGHT_GROUPS` 组（2 组 → 128 字节）；
-/// 扩展四十再补一个 `u32` 形状掩码；扩展四十一把组数抬到 3 组（+16 字节）→ **148**：
+/// 扩展四十把掩码换成 `u32` 位图；扩展四十一把组数抬到 3 组（+16 字节）→ 148；
+/// 扩展四十二把位图拆成 3 个 `u8` 序号字，并压进一个 `vec4<u32>` 属性 → **160**：
 /// `model` 64 + `color` 16 + `joint_base`/`morph_base`/`morph_stride`/`morph_count`
-/// 打包成 `Uint32x4`（16）+ 每组权重 `vec4`（16 × `MORPH_WEIGHT_GROUPS`）+ 形状掩码 4。
+/// 打包成 `Uint32x4`（16）+ 每组权重 `vec4`（16 × `MORPH_WEIGHT_GROUPS`）+ 序号 `vec4`（16）。
+/// 序号属性固定吃 16 字节（3 个真实字 + 1 个占位字）—— 这是换 location 的票价：
+/// webgpu 顶点 location 只有 16 格，摊成 3 个 `Uint32` 会顶到 16/17 被拒建管线。
 /// **步长同时是平移量的语义**：任何一次字段增删都要
-/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12..15)`。
+/// 同步改这里与 `shader.wgsl` 的 `@location(10)`/`@location(12..14)`/`@location(15)`。
 #[test]
 fn instance_record_stride_matches_weight_groups() {
-    let expected = 96 + 16 * MORPH_WEIGHT_GROUPS + 4;
+    let expected = 96 + 16 * MORPH_WEIGHT_GROUPS + 16;
     assert_eq!(size_of::<InstanceRaw>(), expected);
-    assert_eq!(size_of::<InstanceRaw>(), 148, "扩展四十一：3 组权重 + 掩码");
+    assert_eq!(
+        size_of::<InstanceRaw>(),
+        160,
+        "扩展四十二：3 组权重 + 序号 vec4（4 × 4 字节）"
+    );
     assert_eq!(size_of::<InstanceRaw>() % 4, 0);
 }
 

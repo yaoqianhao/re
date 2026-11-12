@@ -219,6 +219,14 @@ app +246 src 含 `attach_morph_bindings`、script +182 src 含 6 个 `morph_*` �
 src 一栏为同口径重算的净值——扩展四十一自身只加了常量与一槽属性，删掉的 8 元素表比新增的 12 元素表更零碎；
 收尾实测 **63,656 src / 13,175 tests / 1,163 单测 / 83 套件 1,163 passed / 0 failed**，
 `--features rapier` 同 83 套件 1,163 passed），
+扩展四十二（掩码 → 紧凑形状槽序号）再增量 **+109 src / +79 tests / +7 单测 / +0 套件 / −9 WGSL**
+（`core/morph.rs` 的 `MORPH_SLOT_CAPACITY` / `shape_slots` / 槽相关用例、`core/lib.rs` 导出、
+`render/mesh.rs` 的 `MORPH_SLOT_WORDS` / `MORPH_SLOT_ATTR_WORDS` / `MORPH_SLOT_LOCATION_BASE` / `MORPH_SLOT_OFFSET` /
+`pack_morph_slots` 与布局用例、`render/renderer.rs` 的 `morph_upload`（掩码 → 槽列表的唯一入口）、
+`render/shader.wgsl` 的 `morph_slot_shape` / `morph_slot_accumulate` / 按槽循环（**删掉**逐形状静态展开与掩码乘子，净减 9 行）、
+`render/tests/morph_shader_parity.rs` 的四个新契约、`instance_upload_contract.rs` 步长 148 → 160；
+收尾实测 **63,765 src / 13,254 tests / 1,170 单测 / 83 套件 1,170 passed / 0 failed**，
+`--features rapier` 同 83 套件 1,170 passed），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
 （`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
@@ -1140,7 +1148,7 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 | `MAX_MORPH_TARGETS = MORPH_WEIGHT_GROUPS × 4 = 12` | 每实例形状数的硬上限：超出的形状**既不扁平化也不参与求解**（不是截断数据，是不入表）。写成「组数 × 4」而不是写死 12，改组数时上限自动跟着走（有 `const _: () = assert!` 钉住两者关系） |
 | `MorphInstance` | 每实例元数据：`mesh_node` / `target_count` / `weights: [f32; MAX_MORPH_TARGETS]`（扩展三十九起随组数走，扩展四十一后 12 格）；`set_weight` 拒越界下标与非有限权重，`is_active` 供渲染层判断是否值得带形变 |
 | `ALL_SHAPE_MASK = u32::MAX` | 扩展四十：掩码的「全开」初值。取 `MAX` 而不是 `(1 << count) - 1`，是为了让掩码只表达**取舍**、不表达**数量** —— 网格换形状集时旧实例的掩码不会因为「原来关掉的位」而误伤新形状 |
-| `MorphInstance.mask: u32` | 同上 | 逐实例形状掩码，第 `i` 位 = 形状 `i` 启用。`shape_mask()` 把它夹到 `min(target_count, MAX_MORPH_TARGETS)`（多出来的位是脏数据，不能当「启用」）；`shape_enabled(i)` / `set_shape_enabled(i, bool)` / `disable_all_shapes()` / `enabled_shape_count()` / `masked_nonzero_count()` 都读写这一格 |
+| `MorphInstance.mask: u32` | 同上 | 逐实例形状掩码，第 `i` 位 = 形状 `i` 启用。**扩展四十二起它只是脚本侧语义**：渲染侧把它压成紧凑序号列表（§5.29），着色器里再没有掩码乘子。`shape_mask()` 把它夹到 `min(target_count, MAX_MORPH_TARGETS)`（多出来的位是脏数据，不能当「启用」）；`shape_enabled(i)` / `set_shape_enabled(i, bool)` / `disable_all_shapes()` / `enabled_shape_count()` / `masked_nonzero_count()` 都读写这一格 |
 | `apply` / `vertex_at` | **CPU 参考实现**：与 `shader.wgsl` 的 `morph_offset` 逐式对应（权重×增量线性累加、法线累加后**不**归一化、切线同样线性累加且不归一化、手性 `w` 原样保留），用于对拍与离线烘焙 |
 
 `MeshData` 加 `morph: MorphSet` 字段；`bake_transform` 把形变增量与顶点一起烘焙时，位置只乘 3×3 线性部分、
@@ -1248,7 +1256,7 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 （`vertex_layout_carries_skinning` 查 stride 72 与 location 序列 `[0,1,2,3,4,11]`，
 `vertex_layout_carries_tangent` 查偏移 56 且 `offset + 16 == stride`），改布局时先看它们。
 
-**实例格式 `InstanceRaw`（stride 148 字节，`step_mode = Instance`）**
+**实例格式 `InstanceRaw`（stride 160 字节，`step_mode = Instance`）**
 
 | 字段 | 类型 | location | 说明 |
 | --- | --- | --- | --- |
@@ -1256,7 +1264,7 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 | `color` | `[f32; 4]` | 9 | 线性空间 RGBA |
 | `instance_meta` | `[u32; 4]` | 10 | `(joint_base, morph_base, morph_stride, morph_count)`：蒙皮关节矩阵表在本帧 storage buffer 中的起点（非蒙皮填 0）+ 形变增量在全局形变表里的起点 / 每形状步长 / 形状数（无形变时后三项全 0）。前身是单值的 `joint_base`，扩展三十六扩成 `u32x4` |
 | `morph_weights` | `[[f32; 4]; 3]` | 12,13,14 | 各形状权重，一组 `vec4` 管 4 个形状（扩展三十六一组、扩展三十九两组、扩展四十一三组，location 按组号递增）；第 g 组第 i 个分量对应形状 `g × 4 + i`；`morph_count` 之外的分量无意义 |
-| `morph_mask` | `u32` | 15 | 扩展四十：逐实例形状掩码，第 `i` 位 = 形状 `i` 启用；`0` = 该实例整段摘掉形变。掩码占 4 字节且没有别的 `u32` 能与它共用属性；步长因此从 128 涨到 132，扩展四十一加第三组权重后再到 **148**（尾随标量不补到 16） |
+| `morph_slots` | `vec4<u32>` | 15 | 扩展四十二：**紧凑形状索引列表**。3 个字按 `u8` 小端各装 4 个形状序号（共 12 槽），第 4 字恒 0 只为把 `vec4` 填满。`instance_meta.w` 是**槽数**而不是网格形状数，`0` = 整段摘掉形变。位序：第 g 字 = 槽 `4g..4g+3`。步长因整个属性 = 128 → 132（扩展四十掩码）→ 148（扩展四十一第三组权重）→ **160**（序号换成 16 B 对齐属性） |
 
 之所以把模型矩阵放进实例缓冲而不是 uniform：这样**整个场景一次上传、按网格分组一次绘制**，不随物件数量增加 draw call。`step_mode = Instance` 让每个实例读同一份顶点但不同矩阵。
 
@@ -1264,7 +1272,7 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
 `instance_shadow: Vec<InstanceRaw>` 保存**上一帧真正写进 GPU 的那批字节**；每帧只把与影子不同的记录按连续
 区间 `write_buffer` 上去（§5.23）。所以「实例格式」与上传策略是**正交**的两件事：扩展三十一把记录定在 96 B，
 扩展三十六加到 112 B（多一个元数据 `vec4` + 一组权重 `vec4`），扩展三十九再抬到 128 B（第二组权重 `vec4`，§5.28），
-扩展四十补到 132 B（形状掩码 4 B）、扩展四十一加到 **148 B**（第三组权重 `vec4`），`plan_upload` / `upload_staging`
+扩展四十补到 132 B（形状掩码 4 B）、扩展四十一加到 148 B（第三组权重 `vec4`）、扩展四十二把掩码换成序号 `vec4` 后到 **160 B**，`plan_upload` / `upload_staging`
 只按 `size_of::<InstanceRaw>()` 取步长、代码一行没改；变的只是「什么时候写、写多少」：稳态静态场景一帧写 0 字节。
 
 ### 5.2 程序化网格
@@ -2102,7 +2110,6 @@ core 侧给了成品 mip 链（§4.16），渲染侧负责三件事：**上传�
 - **依赖材质组重建**：换探针会重建整批材质 bind group，属可预期的偶发停顿，不放在帧循环里就不会掉帧。
 
 ---
-
 ## 6. 物理层：r3e-physics
 
 > 完整用法、规则与实测数据见 [`docs/PHYSICS.md`](PHYSICS.md)。本节只讲架构。
@@ -3284,7 +3291,7 @@ render_to_view
 每条记录从 96 B 变 112 B、扩展三十九再变 128 B、扩展四十补到 132 B、扩展四十一到 148 B，一帧一次写 + 逐段飞行原样生效；权重与掩码都不变的角色连这多出来的 16 / 32 / 36 B 都不会进暂存环
 （memcmp 判等即跳）。形状增量本身是**网格级**数据，在网格上传时一次性进全局表（§5.28），不参与每帧上传。
 
-### 5.28 全局形变表与每实例元数据指针（扩展三十六；切线通道扩展三十七；多组权重扩展三十九；逐实例掩码扩展四十）
+### 5.28 全局形变表与每实例元数据指针（扩展三十六；切线通道扩展三十七；多组权重扩展三十九；逐实例掩码扩展四十；槽序号扩展四十二）
 
 **问题**：形变增量是"逐顶点常量"，与权重无关。若按常见写法给每个带形状的网格配一个 storage buffer
 或一个 bind group，场景里有几个带表情的角色就有几个绑定——bind group 本身就是难扩的稀缺资源；
@@ -3311,16 +3318,17 @@ render_to_view
 | 权重的「本帧唯一定稿点」 | 同上 | 扩展三十八：`prepare_instances` 第一遍就对每个实例调 `normalized_weights()` 并把结果存进 `InstancePlan.morph_weights`，第二遍直接搬进 `InstanceRaw` —— **剔除用的权重与着色器吃到的权重必须是同一份**，否则归一化前后包围盒对不上 |
 | `instance_meta`（location 10） | `render/mesh.rs` | `[u32; 4]` = `(joint_base, morph_base, morph_stride, morph_count)`；原先单值的 `joint_base` 扩成这个 `u32x4` |
 | `morph_weights`（location 12 / 13 / 14） | 同上 | `[[f32; 4]; MORPH_WEIGHT_GROUPS]`，扩展四十一后是三组：第 g 组第 i 个分量管形状 `g × 4 + i`；`count` 之外的分量无意义（填 0）。布局由 `group_morph_weights` 从扁平 `[f32; 12]` 按 4 个一片切出来，`VertexAttribute` 的 `shader_location` 也按组号递增生写 |
-| `morph_mask`（location 15） | 同上 | 扩展四十：`u32` 逐实例掩码，偏移 `MORPH_MASK_OFFSET = MORPH_WEIGHT_OFFSET + 16 × MORPH_WEIGHT_GROUPS`（3 组时 = 144）；两个常量都由组数推出，改组数时不用手抄绝对值（`morph_shader_parity` 查 `mesh.rs` 里确实是这个表达式） |
-| `clip_instance_mask(mask, shape_count)` | `render/renderer.rs` | 扩展四十：**纯函数**，把实例掩码夹到网格实际形状数（`count` 可能大于实例的 `target_count`，脏位不能点亮不存在的形状） |
+| `morph_slots`（location 15） | 同上 | 扩展四十二：`vec4<u32>` 形状序号列表，偏移 `MORPH_SLOT_OFFSET = MORPH_WEIGHT_OFFSET + 16 × MORPH_WEIGHT_GROUPS`（3 组时 = 144）；两个常量都由组数推出，改组数时不用手抄绝对值（`morph_shader_parity` 查 `mesh.rs` 里确实是这个表达式） |
+| `morph_upload(instance, shape_count)` | `render/renderer.rs` | 扩展四十二：**纯函数**，把实例掩码压成「只含在用形状」的槽列表（权重与序号按同一槽下标对齐，越界形状左移压缩），`count` 即槽数 `target_count`，脏位不能点亮不存在的形状） |
 | `mask_drops_all_shapes(mask, shape_count)` | 同上 | 裁剪后掩码为 0 即「整段摘掉」：该实例的 `morph_count` 按 0 上报，着色器提前返回 |
-| `RenderStats.morph_masked_shapes` | 同上 | 扩展四十：本帧因掩码省下的形变槽位数（`masked_nonzero_count` 求和）。无形状网格恒 0，不会虚高 |
+| `pack_morph_slots(shapes)` | `render/mesh.rs` | 扩展四十二：把槽列表（`&[u8]`）按 `u8` 小端打包进 `[u32; 4]`，每字 4 槽、空槽留 0。第 4 字是 `vec4` 的占位字，恒 0 |
+| `RenderStats.morph_masked_shapes` | 同上 | 扩展四十：本帧因掩码省下的形变槽位数（`masked_nonzero_count` 求和）。无形状网格恒 0，不会虚高。扩展四十二后它仍是「脚本关了但权重非零」的那部分，与槽列表长度互补 |
 | `group(2) binding(1)` | `shader.wgsl` | `var<storage, read> morph_table: array<f32>`，和关节表（`binding(0)`）**同一个 bind group**，只是多一个 binding |
 | `RenderStats.morph_instances` / `morph_floats` | 同上 | 本帧带形变的实例数 / 表当前 float 长度，探针见 §8.31 |
 | `RenderStats.morph_normalized` | 同上 | 扩展三十八：其中**互斥组超预算、权重被归一化过**的实例数。0 = 没配组或组内和 ≤ 1，此时进缓冲的权重与场景原值逐位相同；逐帧非零说明有表情在抢预算 |
 | `RenderStats.morph_cull_inflate` | 同上 | 扩展三十八：本帧逐形状剔除余量合计（世界单位）。与扩展三十六的「峰值 × 最长位移」口径相比只会更小，差额即逐形状余量省下的包围盒膨胀 |
 
-实例记录因此从 **96 B 变 148 B**（`model` 64 + `color` 16 + `instance_meta` 16 + `morph_weights` 16 × `MORPH_WEIGHT_GROUPS` + 掩码 4）。
+实例记录因此从 **96 B 变 160 B**（`model` 64 + `color` 16 + `instance_meta` 16 + `morph_weights` 16 × `MORPH_WEIGHT_GROUPS` + 序号 `vec4` 16）。
 `plan_upload` / `upload_staging` 的 `record` 参数自动跟着走，脏段语义、暂存环打包、扩容策略全部不变。
 顶点着色器侧只多一处分支：
 
@@ -3328,7 +3336,7 @@ render_to_view
 // instance_meta.w = morph_count，0 表示该实例没有形状（或被掩码整段摘掉）
 if in.instance_meta.w != 0u {
     let shape = morph_offset(
-        in.instance_meta, in.morph_w0, in.morph_w1, in.morph_w2, in.morph_mask, in.vertex_index,
+        in.instance_meta, in.morph_w0, in.morph_w1, in.morph_w2, in.morph_slots, in.vertex_index,
     );
     local_position += shape.position;
     local_normal  += shape.normal;
@@ -3337,7 +3345,7 @@ if in.instance_meta.w != 0u {
 // 之后才是蒙皮：形变在模型空间做，蒙皮把模型空间顶点搬到骨骼空间
 ```
 
-**阴影通道同样叠形变**：深度 pass 的 `ShadowVsIn` 也带 `location 10 / 12 / 13 / 14 / 15`，调同一个 `morph_offset`——否则角色
+**阴影通道同样叠形变**：深度 pass 的 `ShadowVsIn` 也带 `location 10 / 12 / 13 / 14 / 15`（15 是序号 `vec4`），调同一个 `morph_offset`——否则角色
 做表情时，实体形变了而影子还停在绑定姿态。表数据是共用的，所以阴影侧零额外上传。
 
 **三条必须遵守的不变量**：
@@ -3348,9 +3356,9 @@ if in.instance_meta.w != 0u {
    所以换代时清表 + `morph_version` 自增、让所有网格重新登记；否则新网格的增量会写进旧网格的区段，画面直接错位。
 3. **权重走实例缓冲，不走 uniform**。权重是逐实例状态，放进 `InstanceRaw` 后天然享受扩展三十一的脏段上传——
    表情不变的静止角色**每帧 0 B 差异**，只有真在做表情的实例才有 16 B 记录变化。
-4. **掩码只做取舍、不改权重**（扩展四十）。`mask` 与 `weights` 是两格独立状态：脚本写 1.0、掩码关掉，
-   读回来仍是 1.0 而画面不动；把掩码开回来立刻又动。这条不成立的话「临时预览」类脚本会丢状态，
-   而且存盘结果会依赖当时帧序。
+4. **掩码只做取舍、不改权重**（扩展四十；扩展四十二把它换成了「出不出现在槽列表里」）。`mask` 与 `weights`
+   是两格独立状态：脚本写 1.0、掩码关掉，读回来仍是 1.0 而画面不动；把掩码开回来立刻又动。这条不成立的话
+   「临时预览」类脚本会丢状态，而且存盘结果会依赖当时帧序。
 
 **取舍与边界**：
 
@@ -3359,8 +3367,8 @@ if in.instance_meta.w != 0u {
 - **1 MiB 能装多少**：`(1 << 18) / (9 × 4) ≈ 7,281` 个顶点 × 4 形状（扩展三十七前是 `/(6 × 4) ≈ 10,922`）。
   超了不是截断形状，而是**整个网格退回无形变**（宁可不动，也不做半截形变）；
 - **形状数据结构仍不能逐实例换**：同一网格的所有实例共享同一段表（增量是资产属性）；
-  扩展四十补上的是**取舍**那一半 —— 每个实例用 `mask` 各选一套形状子集，没选的形状连乘加都不进
-  （掩码全 0 时整段分支摘掉）。想给某个实例真的换一套**增量数据**仍要换网格；
+  扩展四十补上的是**取舍**那一半 —— 每个实例各选一套形状子集（扩展四十二起落成紧凑槽列表），没选的形状
+  连乘加都不进（槽数 0 时整段分支摘掉）。想给某个实例真的换一套**增量数据**仍要换网格；
 - **切线增量自扩展三十七进表**：`[pos3, nrm3, tan3]` 每顶点 9 个 `f32`，代价是同容量能装的顶点数少 1/3；
   缺 `TANGENT` 目标的资产在表里对应的 3 个 `f32` 恒为 0，读出来加了个 0 向量，**像素与扩展三十六逐位相同**
   （实测截图 31,735 差异像素 / 13.77% 与改前一位不差）；
@@ -3380,9 +3388,87 @@ if in.instance_meta.w != 0u {
 `render/tests/morph_shader_parity.rs`（13 测，不开 GPU 直读 `shader.wgsl` 文本：锁
 `const MORPH_VERTEX_FLOATS` 与 Rust 常量同值、`MorphDelta` 字段序与 `+0/+3/+6` 偏移对应、
 蒙皮用的是累积后的 `local_tangent`、`vs_shadow` 也调 `morph_offset`、表仍是 `group(2) @binding(1)`；
-扩展四十加 `both_vertex_stages_declare_morph_mask` 与 `both_stages_pass_mask_into_morph_offset`，
-钉住两个顶点入口都声明 `morph_mask` 并把同一位传进 `morph_offset` —— 只改主通道会留下「影子还在变形」的错位）。
+扩展四十加 `both_vertex_stages_declare_morph_mask` 与 `both_stages_pass_mask_into_morph_offset`；
+扩展四十二把这一对换成 `both_vertex_stages_declare_morph_slots` / `both_stages_pass_slot_words_into_morph_offset`，
+并补 `slot_index_is_extracted_per_byte`（槽序号的 `u8` 取值式）、`mask_multiplier_is_gone`（着色器里不再有掩码乘子）、
+`slot_offset_sits_after_the_weight_block`（序号属性紧跟在最后一组权重之后）—— 只改主通道会留下「影子还在变形」的错位）。
 真机取证见 §8.31。
+
+---
+
+### 5.29 形状槽序号：把「掩码」换成紧凑索引列表（扩展四十二）
+
+§5.28 的掩码（扩展四十）解决了「哪些形状要算」，但它有两个隔着一层看不出来的毛病：
+
+1. **上限被位宽偷偷钉死**。掩码是一格 `u32`，第 33 个形状**根本无处安放** —— 不是「不支持」，是「没法表达」。
+   扩展四十一把形状数抬到 12 之后这条路已经走到「一格还剩 20 位、但下一个属性 location 已经没有了」的位置。
+2. **按位比较是逐形状的短路，不是循环**。着色器里 `if (mask & bit) != 0u` 得为**每个**形状静态展开一份，
+   形状数涨一批、WGSL 就得跟着长一段；它优化的是「开关」，不是「索引」。
+
+槽列表把这两个问题一起换掉：每实例带**最多 `MORPH_SLOT_CAPACITY`（= 12）个形状序号** + 一个数量，不再带位图。
+
+| 契约 | 位置 | 语义 |
+| --- | --- | --- |
+| `MORPH_SLOT_CAPACITY = MORPH_WEIGHT_GROUPS × 4` | `core/morph.rs` | 槽容量**恰好等于权重分量数**：一个槽配一个 `f32` 权重分量，多一个槽也没权重喂它 |
+| `MORPH_SLOT_WORDS = ceil(CAP / 4) = 3` | `render/mesh.rs` | 序号按 `u8` 打包，每字 4 槽；形状序号用 `u8`（上限 256）而不是 `u32`，这是「形状数与 32 位宽脱钩」的实质 |
+| `MORPH_SLOT_ATTR_WORDS = 4` | 同上 | 属性固定吃 4 字（`vec4<u32>`）：3 个真实字 + 1 个恒 0 占位字。多出的 4 B 是换 location 的票价（见下条） |
+| `MORPH_SLOT_LOCATION_BASE = 15` | 同上 | 由 `MORPH_WEIGHT_BASE_LOCATION + MORPH_WEIGHT_GROUPS` 推出，**只有一个** location（不是三个） |
+| `MORPH_SLOT_OFFSET = 144` | 同上 | `MORPH_WEIGHT_OFFSET + 16 × MORPH_WEIGHT_GROUPS`，紧跟在最后一组权重之后，中间不留空 |
+| `pack_morph_slots(shapes)` | 同上 | 槽列表 → `[u32; 4]`，`u8` 小端：第 `w` 字第 `i` 字节 = 槽 `4w + i`；空槽留 0（不能拿脏数据点亮不存在的形状） |
+| `morph_upload(instance, shape_count)` | `render/renderer.rs` | 掩码 → 槽列表的**唯一入口**：按形状下标升序收集在用形状、越界（≥ 网格形状数）的丢掉并**左移压缩**，返回的 `count` 就是槽数 |
+| `instance_meta.w` | `shader.wgsl` | 语义从「网格形状数」变成**槽数**：`0` = 该实例整段摘掉形变（与扩展四十的全关等价，探针口径不变） |
+
+顶点侧从「逐形状静态展开」变成「按槽数循环 + 间接寻址」：
+
+```wgsl
+fn morph_slot_shape(word: u32, lane: u32) -> u32 {   // slot → 形状序号
+    return (word >> (lane * 8u)) & 0xFFu;             // u8 小端逐字节取
+}
+
+fn morph_slot_accumulate(d: ptr<function, MorphDelta>, head: u32, stride: u32, word: u32, lane: u32, w: f32) {
+    let shape = morph_slot_shape(word, lane);
+    let base  = head + stride * shape;                // 运行时偏移：表里按真实形状下标取
+    ...
+}
+
+// morph_offset：权重仍静态展开（三组 vec4 是三个属性），序号是动态的
+for (var slot = 0u; slot < 12u; slot = slot + 1u) {
+    let g = slot / 4u;  let lane = slot % 4u;
+    let w   = select(select(select(w0, w1, g == 1u), w2, g >= 2u), 0.0, slot >= cap);
+    let word = select(select(select(slots.x, slots.y, g == 1u), slots.z, g >= 2u), 0u, slot >= cap);
+    morph_slot_accumulate(&delta, head, stride, word, lane, w);
+}
+```
+
+**为什么压缩成 `vec4<u32>` 而不是三个 `Uint32`**：webgpu 的顶点属性 location 只有 `0..=15` 共 16 格。
+顶点侧占了 `0..=4` 与 `11`，实例侧 `model` / `color` / `instance_meta` / 三组权重占了 `5..=10`、`12..=14`，
+只剩 **15** 这一格。把序号摊成 `15 / 16 / 17` 时管线创建阶段直接失败：
+
+```
+Vertex attribute location 16 must be less than limit 16
+```
+
+这不是推演出来的边界 —— 是本次改造第一版真机运行时报的原话。合成一个 `vec4` 后 location 回到 15，
+多付 4 B/实例（占位字第 4 分量）换「形状数继续涨也不用再找 location」。
+
+**代价（真实存在，不粉饰）**：
+
+- **每顶点每槽一次间接寻址**。位图方案里 `i` 是编译期常量、表偏移 `head + stride * i` 也是常量；现在
+  `head + stride * shape` 里的 `shape` 来自运行时读出的 `u8`，GPU 无法把它折进立即数，多一次整数乘与
+  一次「依赖寄存器」的地址计算。12 个槽全开时每个顶点多 12 次这样的计算。
+- **12 槽以内没有收益**。位图的 `mask & bit` 短路在形状数少时本来就不贵；槽列表的价值在**上限**与
+  **可伸缩的循环结构**（加槽只改 `MORPH_SLOT_CAPACITY` 与着色器的 `MORPH_SLOTS`，不用再加一段静态展开）。
+  换句话说：这次是**为几十形状铺路的结构改造**，不是当下的提速。
+- **形状序号上限 256**：`u8` 打包的副产品。真实 blend shape 集远小于此，超了要换 `u16` 打包（`MORPH_SLOT_WORDS` 翻倍）。
+- **像素不变**：槽列表按形状下标升序、权重分量按同一槽下标对齐，累加顺序与位图方案**逐项相同**，
+  所以形变结果逐位一致 —— 视觉回归套件（`morph_mask` / `morph_twelve_shapes` / `morph_deform`）无需重建基线。
+
+**下一档怎么加容量**：槽容量本来就等于权重分量数，所以加槽的唯一方式是**再加一组权重**（`MORPH_WEIGHT_GROUPS`
+4 → 16 形状、5 → 20 形状）。此时 `MORPH_SLOT_WORDS` 自动变成 4 / 5，但 `MORPH_SLOT_ATTR_WORDS` 仍是 4 就装不下了 ——
+`const { assert!(MORPH_SLOT_WORDS <= MORPH_SLOT_ATTR_WORDS) }` 会在编译期先红，逼着把序号搬去第二个 location。
+这是有意的：**上限增长必须先撞到显式的栏杆**，而不是静默丢形状。
+
+---
 
 ### 8.1 程序入口（main.rs）
 
@@ -4644,6 +4730,28 @@ cargo test -p r3e-render upload_staging
 取证命令 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test morph_twelve_shapes -- --nocapture`，rc 0，
 探针行 `12 形状探针：表 432f | 形状0 5.34% | 形状4 6.42% | 形状8 5.34% | 互差 10.56% / 11.70%`。
 
+**扩展四十二的验收：槽列表必须与掩码逐像素等价**（夹具 `crates/r3e-app/tests/fixtures/morph_mask`
+= 八面体 / 8 个形状 / 2 三角形，表长仍是 `288f` —— 槽列表**不改表**，只改「按哪个形状下标去取」；
+同一场景同一相机，640×360 第 4 帧截图，RTX 5060 Laptop / Vulkan，2026-11-12）：
+
+| 脚本状态 | 脚本读到 | `morph` | `mask` | 截图字节 | 对「形状 0 = 1.0」的像素差异 |
+| --- | --- | --- | --- | --- | --- |
+| 形状 0 = `1.0`，掩码全开 | `mask=255 w0=1.0` | `1/288f` | `0/0` | 7,180 B | —（基准） |
+| 形状 4 = `1.0`（`w1.x`，序号要跨组） | `mask=255 w4=1.0` | `1/288f` | `0/0` | 5,377 B | **24,807 像素 / 10.77%** |
+| 形状 0 = `1.0`，掩码关掉 0 号 | `mask=254 show=true visible0=false` | `0/288f` | `0/1` | 5,376 B | 5.34%（回到基线） |
+| 形状 4 = `1.0`，掩码整块写 0 | `mask=0 effective=0 w4=1.0` | `0/288f` | `1/1` | 5,376 B | 5.34%（回到基线） |
+| 整块写回 255（越界裁剪） | `mask=255 effective=255 count=8` | `0/288f` | `0/0` | 5,376 B | 5.34%（权重仍全 0） |
+
+第二行是这次结构改造的核心证据：形状 4 的权重在第 2 组（`w1.x`）、形状在 8 槽列表里的位置是**槽 1**，
+着色器必须读出「槽 1 → 形状序号 4」再去表里取第 4 段增量。若序号打包写错（例如把槽下标当形状下标），
+画面会退回形状 0、与基准**逐字节重合**；实测互差 10.77%，与扩展三十九记录的「形状 4 对形状 0 = 10.77%」
+一位不差 —— **同号同量**，说明取到的确实是第 4 段而不是第 0 段。
+
+后三行的 `mask` 计数与扩展四十完全一致（半掩 `0/1`、全关 `1/1`），字节数也与扩展四十同场景的 5,376 B 相同：
+**槽列表没有改变任何可见结果**，它是纯结构替换。取证命令
+`target/x86_64-pc-windows-gnu/debug/r3e.exe crates/r3e-app/tests/fixtures/morph_mask/scene.json .../<脚本>.rhai --run-seconds 2 --window-size 640x360 --capture-frame <png> --capture-after 3`；
+像素数用同一套 `RgbaFrame` 逐字节复算（阈值通道差 > 2）。
+
 
 自动绑定也在日志里留痕（不需要脚本填形状数）：`形变 \`Face\`：绑 1 个形状，权重初值全 0（脚本用 morph_set 调）` 与
 `形变绑定已登记: 1 个网格`。取证命令 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test morph_deform`，rc 0
@@ -4868,7 +4976,8 @@ cargo test -p r3e-render upload_staging
 | **三十八（已完成：形变互斥组归一化 + 逐形状剔除余量）** | **让语义相反的形状抢同一份预算**：`MorphInstance` 加 `exclusive: [u8; 4]`（扩展三十九后该数组随 `MAX_MORPH_TARGETS` 变成 8 格；`NO_EXCLUSIVE_GROUP = u8::MAX` 哨兵，取 `MAX` 而非 0 是为了让全 0 初始化的缓冲不把四个形状并成一组）+ `set_exclusive_group` / `exclusive_group_of` / `clear_exclusive_groups` / `exclusive_group_count`；纯函数 `normalized_weights() -> ([f32; MAX_MORPH_TARGETS], bool)` 只把**组内正值之和 > 1** 的等比压回 1（和 ≤ 1 原样、负权重不参与求和也不被缩放、非有限值原样上抛），第二项 `bool` 供零变化验收；`Scene` 加 `set_morph_exclusive_by_name` / `morph_exclusive_by_name` / `morph_normalized_weight_by_name` 三个门面，脚本加 `morph_exclusive` / `morph_group` / `morph_norm` 三个 API；渲染侧 `MeshMorph` 加**逐形状** `max_displacements` 与 `cull_inflate_weights(weights, scale)`（`Σ\|w_t\|×d_t×scale`，非有限权重当 0、炸成无穷返回 `f32::MAX` fail-open），`prepare_instances` 第一遍就把归一化权重定稿存进 `InstancePlan.morph_weights`，剔除与着色器**吃同一份**；`RenderStats` 加 `morph_normalized` / `morph_cull_inflate`，帧探针追加 `norm=` / `inflate=` | `core/morph.rs`（+7 测）、`core/scene.rs`（+3 测）、`render/renderer.rs`（+3 测 `cull_inflate_weights`）、`script/api.rs`、`app/app.rs`（探针格式）、新套件 `script/tests/morph_exclusive_api.rs`（3 测） | 无（**不调互斥 API 的场景零影响**：`exclusive` 全哨兵、`normalized_weights` 返回逐位相同的副本与 `scaled=false`，进缓冲的权重与扩展三十七逐位一致，像素基线不重建）。**真机三态**：不分组两形状各 1.0 → `norm=0 inflate=5.381`（10,141 B）；同组只开一个 → `norm=0 inflate=2.691`；同组各 1.0 被压成 0.5 → `norm=1 inflate=2.691` 且**与「只开一个」0 像素差异**（位移同量时 0.5+0.5 ≡ 1.0，证明是压回一份预算而非各削一半）。**边界**：归一化只在渲染层算副本、**不改写场景权重**（脚本写 1.0 读回仍是 1.0）；组只存在于实例侧，同网格不同实例可配不同互斥关系；仍是线性叠加，**多组 `vec4` 权重（形状数 > 4）与逐实例形状掩码未做**（前者已由扩展三十九补上） |
 | **三十九（已完成：多组 `vec4` 权重 / 形状数 4 → 8）** | **让形状数随组数线性扩**：`MAX_MORPH_TARGETS` 改为由 `MORPH_WEIGHT_GROUPS = 2` 推导（`2 × 4 = 8`，`const _: () = assert!` 钉住），`MorphInstance.weights` / `exclusive` 双双变成 `[_; MAX_MORPH_TARGETS]`，`InstanceRaw` 尾部再加一组 `vec4`（location 13、`ATTRIBUTES` 长度 `6 + MORPH_WEIGHT_GROUPS` 并带 const 断言），着色器 `morph_offset(imeta, w0, w1, vi)` 按 `g × 4 + i` 取分量、`MORPH_SHAPES = 8`；布局由 `group_morph_weights` 从扁平 `[f32; MAX_MORPH_TARGETS]` 按 4 个一片切出，`VertexAttribute` 的 `shader_location` / `offset` 都按组号递增生写 | `core/morph.rs`（+5 测）、`render/mesh.rs`（`group_morph_weights` / `ATTRIBUTES` / 布局合约 +2 测）、`render/renderer.rs`、`render/shader.wgsl`、`render/tests/morph_shader_parity.rs`、`asset/gltf_import.rs`、新套件 `morph_eight_shapes`（app，263 行 2 测）+ 夹具 `fixtures/morph_eight` | 无（**4 个形状以内的场景零影响**：权重前 16 字节与缓冲前 112 字节逐位不变，像素基线不重建）。**真机四态**：`morph=0/288f` → 形状 0 对基线 5.34% → 形状 4 对基线 6.42% / 对形状 0 10.77% → 形状 7（位移全 0）0 像素。**边界**：仍是「权重 × 增量」线性叠加（本轮只扩形状数）；**逐实例形状掩码当时未做** —— `count` 是网格级、同网格所有实例共享同一套形状（已由扩展四十补上） |
 | **四十（已完成：逐实例形状掩码）** | **让同一网格的实例各挑一套形状**：`MorphInstance` 加 `mask: u32`（第 `i` 位 = 形状 `i` 启用，初值 `ALL_SHAPE_MASK = u32::MAX` 而非 `(1 << count) - 1`，因为掩码只表达取舍、不表达数量）与 `shape_mask()`（夹到 `min(target_count, MAX_MORPH_TARGETS)`）、`shape_enabled` / `set_shape_enabled` / `disable_all_shapes` / `enabled_shape_count` / `masked_nonzero_count`；`normalized_weights()` **先把掩码外的槽位归零再算互斥和**（否则「同组两个各 1.0、关掉一个」会被压成 0.5），权重本身一位不改；`Scene` 加 `set_morph_mask_by_name` / `morph_mask_by_name` / `set_morph_shape_enabled_by_name` / `morph_shape_enabled_by_name`；`InstanceRaw` 尾部补 `morph_mask`（location 14，**stride 128 → 132**），渲染侧 `clip_instance_mask` / `mask_drops_all_shapes` 两个纯函数（掩码全 0 的实例 `morph_count` 按 0 上报）；`shader.wgsl` 的 `morph_offset` 多收一个 `mask` 参数、逐组按位判 `if (mask & bit) != 0u` 才累加；脚本 4 个 API（`morph_mask` / `morph_mask_set` / `morph_show` / `morph_visible`，写掩码返回**裁剪后**的生效值）；`RenderStats.morph_masked_shapes` 与帧探针 `mask=` 读数 | `core/morph.rs`（+5 测）、`core/scene.rs`（+5 测）、`render/mesh.rs`（布局 +1 测）、`render/renderer.rs`（`morph_mask_tests` +3 测）、`render/shader.wgsl`、`render/tests/morph_shader_parity.rs`（+4 测）、`script/api.rs`、`app/app.rs`（探针）、新套件 `morph_mask`（app，337 行 3 测）+ 夹具 `fixtures/morph_mask`、`morph_mask_api`（script，4 测） | 无（**不调掩码 API 的场景零影响**：`mask` 初值全开，进缓冲的权重与扩展三十九逐位一致，`InstanceRaw` 尾部只是多 4 B 未用字段）。**真机五态**（8 形状夹具，640×360 第 4 帧，逐字节比对）：`morph=0/288f mask=0/0`（基线 5,376 B）→ 形状 0 开 `1/288f mask=0/0 inflate=2.062`（7,180 B，对基线 **12,312 像素 / 5.34%**）→ 掩码关第 0 位 `morph=0/288f mask=0/1`（**0 像素**，且脚本读到 `w0 = 1.0`、`visible0 = false` 同时成立）→ 掩码整块写 0 `morph=0/288f mask=1/1`（**0 像素**，`w4 = 1.0` 仍在）→ 掩码写 65535 读回 255（越界位被夹掉，表长仍 `288f`）。**边界**：掩码只做取舍、**不改权重**（脚本写 1.0 读回还是 1.0）；形状**增量数据**仍逐网格共享，要换数据只能换网格；掩码按槽位逐位比较，形状数再涨需要改成紧凑列表（见 §11.3 ③） |
-| **四十一（已完成：三组 `vec4` 权重 / 形状数 8 → 12）** | **把「组数 × 4」这条机制再加一组**：`MORPH_WEIGHT_GROUPS` 2 → 3（`MAX_MORPH_TARGETS` 跟着变成 12，`MorphInstance` 的 `weights` / `exclusive` 随常量变宽到 12 格，`ALL_SHAPE_MASK` 到 `0xFFF`）；`r3e-render::mesh` 的 `MORPH_MASK_LOCATION` 由常量推导出 **15**、`MORPH_MASK_OFFSET` 到 **144**、`ATTRIBUTES` 多一条 location 14 的 `vec4`（第三组权重）、`array_stride` **132 → 148**；`shader.wgsl` 的 `MORPH_SHAPES = 12`、`morph_offset` 加第三组累加（主通道与深度通道两个 `VsIn` 都补 `morph_w2`）；`gltf_import` / `renderer` 里定长 `[f32; 8]` 的权重数组同步到 12。详见 §4.20 / §5.28 | `core/morph.rs` 常量 + 契约用例断言（2 → 3）；`render/mesh.rs` 布局常量与 `instance_layout_carries_morph_weights` / `instance_layout_carries_morph_mask`；`render/tests/instance_upload_contract.rs` 步长改 148；`render/shader.wgsl`；`script/api.rs` 掩码夹取跟着 `MAX_MORPH_TARGETS` 走；新增 `app/tests/morph_twelve_shapes.rs`（2 测）+ 夹具 `fixtures/morph_twelve`（12 形状 `octa_face.glb` 3,040 B、`scene.json`、`raw` / `shape0` / `shape4` / `shape8` / `shape11` 五个脚本） | 无（**不改渲染结果**：`count ≤ 8` 的资产第三组权重恒 0，`morph_offset` 里第三组是 `0.0 × 增量` 的乘加，像素与扩展四十逐位相同，基线无需重建）。**代价**：实例记录 132 → **148 B**（+16 B/实例，1,537 实例影子多 ≈ 24 KiB）；顶点每形状多一次乘加，但只在 `count > 8` 的实例上真跑。**边界**：`ATTRIBUTES` 手写数组与 `shader.wgsl` 的 `MORPH_SHAPES` 必须同步改，漏一处就是 layout 与着色器对不上（本次首轮编译即因此失败）；再往上加组（4 组 = 16 形状）会先撞上掩码的槽位比较，应先做 ③ 的 `popcount` + 紧凑列表 |
+| **四十一（已完成：三组 `vec4` 权重 / 形状数 8 → 12）** | **把「组数 × 4」这条机制再加一组**：`MORPH_WEIGHT_GROUPS` 2 → 3（`MAX_MORPH_TARGETS` 跟着变成 12，`MorphInstance` 的 `weights` / `exclusive` 随常量变宽到 12 格，`ALL_SHAPE_MASK` 到 `0xFFF`）；`r3e-render::mesh` 的 `MORPH_MASK_LOCATION` 由常量推导出 **15**、`MORPH_MASK_OFFSET` 到 **144**、`ATTRIBUTES` 多一条 location 14 的 `vec4`（第三组权重）、`array_stride` **132 → 148**；`shader.wgsl` 的 `MORPH_SHAPES = 12`、`morph_offset` 加第三组累加（主通道与深度通道两个 `VsIn` 都补 `morph_w2`）；`gltf_import` / `renderer` 里定长 `[f32; 8]` 的权重数组同步到 12。详见 §4.20 / §5.28 | `core/morph.rs` 常量 + 契约用例断言（2 → 3）；`render/mesh.rs` 布局常量与 `instance_layout_carries_morph_weights` / `instance_layout_carries_morph_mask`；`render/tests/instance_upload_contract.rs` 步长改 148；`render/shader.wgsl`；`script/api.rs` 掩码夹取跟着 `MAX_MORPH_TARGETS` 走；新增 `app/tests/morph_twelve_shapes.rs`（2 测）+ 夹具 `fixtures/morph_twelve`（12 形状 `octa_face.glb` 3,040 B、`scene.json`、`raw` / `shape0` / `shape4` / `shape8` / `shape11` 五个脚本） | 无（**不改渲染结果**：`count ≤ 8` 的资产第三组权重恒 0，`morph_offset` 里第三组是 `0.0 × 增量` 的乘加，像素与扩展四十逐位相同，基线无需重建）。**代价**：实例记录 132 → **148 B**（+16 B/实例，1,537 实例影子多 ≈ 24 KiB）；顶点每形状多一次乘加，但只在 `count > 8` 的实例上真跑。**边界**：`ATTRIBUTES` 手写数组与 `shader.wgsl` 的 `MORPH_SHAPES` 必须同步改，漏一处就是 layout 与着色器对不上（本次首轮编译即因此失败）；再往上加组（4 组 = 16 形状）会先撞上掩码的槽位比较，应先做 ③ 的 `popcount` + 紧凑列表（**已由扩展四十二落地**） |
+| **四十二（已完成：形状槽序号 / 掩码 → 紧凑索引列表）** | **把「按位比较」换成「按序号间接取」**：`core/morph.rs` 加 `MORPH_SLOT_CAPACITY = MORPH_WEIGHT_GROUPS × 4`（槽容量恰等于权重分量数：多一个槽也没权重喂它）与 `shape_slots()`（把掩码压成升序序号列表，供渲染侧取）；掩码本身仍是脚本侧语义（`morph_mask` / `morph_show` 一字不改）。`r3e-render::mesh` 把 location 15 的 `Uint32` 掩码换成 **`vec4<u32>` 序号块**：`MORPH_SLOT_WORDS = 3`（3 字 × 4 个 `u8` = 12 槽）、`MORPH_SLOT_ATTR_WORDS = 4`（第 4 字恒 0 只为填满 `vec4`）、`MORPH_SLOT_LOCATION_BASE = 15`、`MORPH_SLOT_OFFSET = 144`、`pack_morph_slots` 按 `u8` 小端打包，`array_stride` **148 → 160**；`renderer::morph_upload` 成为「掩码 → 槽列表」的唯一入口（越界形状丢掉并左移压缩，返回的 `count` 即槽数）；`shader.wgsl` 删掉逐形状静态展开与掩码乘子，改成 `morph_slot_shape`（按字节取序号）+ `morph_slot_accumulate`（`head + stride * shape` 运行时偏移）+ 按槽循环，`instance_meta.w` 语义从「网格形状数」变「槽数」。详见 §5.29 | `core/morph.rs` / `core/lib.rs`；`render/mesh.rs`（4 个常量 + `pack_morph_slots` + 布局用例）、`render/renderer.rs`（`morph_upload`）、`render/shader.wgsl`（净减 9 行）、`render/tests/morph_shader_parity.rs`（+4 契约：`both_vertex_stages_declare_morph_slots` / `both_stages_pass_slot_words_into_morph_offset` / `slot_index_is_extracted_per_byte` / `mask_multiplier_is_gone` / `slot_offset_sits_after_the_weight_block`）、`render/tests/instance_upload_contract.rs`（步长 160） | 无（**像素逐位不变**：槽列表按形状下标升序、权重分量按同一槽下标对齐，累加顺序与位图方案逐项相同 —— 真机 `morph_mask` 夹具五态与扩展四十**同字节数、同像素数**，视觉基线无需重建）。**真机核心判据**：形状 4（`w1.x`、落在槽 1）与形状 0 互差 **24,807 像素 / 10.77%**，与扩展三十九记录的「形状 4 vs 形状 0 = 10.77%」一位不差 —— 序号打包若写错，两帧会逐字节重合。**代价（不粉饰）**：每顶点每槽一次间接寻址（`head + stride * shape` 里的 `shape` 是运行时读出的 `u8`，GPU 折不进立即数）+ 实例记录 **+12 B**（148 → 160，其中 4 B 是 `vec4` 的占位字）；**12 槽以内没有提速**，收益是结构可伸缩（加槽只改常量与 `MORPH_SLOTS`）。**边界**：形状序号 `u8` 上限 256；`MORPH_SLOT_WORDS > MORPH_SLOT_ATTR_WORDS` 时 `const { assert! }` 编译期就红，逼着加第二个 location 而不是静默丢形状；槽容量仍等于权重分量数，**加容量仍须先加权重组** |
 
 两条与顺序相关的说明：
 

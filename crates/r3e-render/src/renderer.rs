@@ -1545,26 +1545,61 @@ struct ShadowPlan {
     box_tests: u32,
 }
 
-/// 把掩码落成实例区间。
+/// 扩展四十二：一个实例上传给 GPU 的形变槽数据（第一遍算好、第二遍直接搬）。
 ///
-/// 扩展四十：把实例掩码裁剪到「这份网格真有几个形状」。网格没登记形状时取 0。
-///
-/// 两个数都可能超界：`MorphInstance` 只知道场景绑定的 `target_count`，网格侧
-/// 登记的 `count` 是另一份（脚本把掩码写满、网格只有 3 个形状都很常见）。
-/// 不裁的话掩码会「亮着」而那些位对应的形变表段落根本不存在。
-fn clip_instance_mask(instance_mask: u32, registered: Option<u32>) -> u32 {
-    registered.map_or(0, |count| {
-        instance_mask & r3e_core::shape_mask_bits(count as usize)
-    })
+/// 与扩展四十的 `u32` 位图不只是「换了表示」：这里是**压缩过的**槽列表 ——
+/// 被掩码挡掉的形状不占槽、不占带宽，循环次数是「真用到的形状数」而不是
+/// 「网格形状总数」。位图方案里那 4 个字节是死的，还得逐个形状比较一次。
+#[derive(Copy, Clone, Debug, Default)]
+struct MorphUpload {
+    /// 槽序权重：第 `k` 个 = 第 `k` 槽的形状权重（已互斥归一化）。
+    weights: [f32; r3e_core::MAX_MORPH_TARGETS],
+    /// 槽序形状序号，每字 4 个 `u8`（小端），有效长度 = `count`。
+    slots: [u32; mesh::MORPH_SLOT_ATTR_WORDS],
+    /// 槽数 = 上传的 `morph_count`。0 = 该实例整段摘掉形变。
+    count: u32,
 }
 
-/// 扩展四十：掩码是否把这个实例的形状集**整个**关掉。
+impl MorphUpload {
+    /// 没有形变的实例（无绑定 / 网格无形状 / 掩码清空）。
+    const fn zero() -> Self {
+        Self {
+            weights: [0.0; r3e_core::MAX_MORPH_TARGETS],
+            slots: [0; mesh::MORPH_SLOT_ATTR_WORDS],
+            count: 0,
+        }
+    }
+}
+
+/// 扩展四十二：把实例的形状槽列表压成上传三元组（槽序权重 / 序号字 / 槽数）。
 ///
-/// 只有这条路径能真正省下开销：`morph_count` 写 0 后着色器在 `imeta.w == 0`
-/// 处提前返回。网格本来就没有形状（`count == 0`）不算「被掩码摘掉」——
-/// 那是「本来就没有」，统计里不该计进 `morph_masked`。
-fn mask_drops_all_shapes(mask: u32, registered_count: u32) -> bool {
-    mask == 0 && registered_count > 0
+/// 两处裁剪在这里一次做完，且**顺序不能换**：
+///
+/// 1. 按实例 `target_count`：`active_shapes()` 已经截过，`slot_weights()` 与它同源；
+/// 2. 按网格 `mesh_count`：脚本可以给实例启用网格并不存在的形状序号，那些槽在
+///    着色器里算出来的表偏移会落到形变表之外 —— 必须丢掉并**左移压缩**，
+///    否则后面的槽位跟着错位，屏幕上是「形变张冠李戴」而不是越界报错。
+///
+/// 权重取自 `slot_weights()`（互斥归一化后的那一份），所以「剔除算的余量」与
+/// 「着色器吃到的位移」仍然是同一份数据。
+fn morph_upload(instance: &r3e_core::MorphInstance, mesh_count: usize) -> MorphUpload {
+    let (slot_weights, _) = instance.slot_weights();
+    let mut shapes = [0u8; r3e_core::MORPH_SLOT_CAPACITY];
+    let mut weights = [0.0f32; r3e_core::MAX_MORPH_TARGETS];
+    let mut count = 0usize;
+    for (slot, &shape) in instance.active_shapes().iter().enumerate() {
+        if shape as usize >= mesh_count {
+            continue;
+        }
+        weights[count] = slot_weights[slot];
+        shapes[count] = shape;
+        count += 1;
+    }
+    MorphUpload {
+        weights,
+        slots: mesh::pack_morph_slots(&shapes[..count]),
+        count: count as u32,
+    }
 }
 
 /// `mask = None` 表示不裁剪（局部光源阴影、或按级裁剪被关掉）：每个分组一段全量，
@@ -3612,16 +3647,11 @@ impl Renderer {
             key: (MeshRef, Option<SurfaceKey>),
             world_matrix: Mat4,
             color: Vec4,
-            /// 扩展三十八：本帧该实例**实际生效**的形变权重（已按互斥组归一化）。
-            ///
-            /// 第一遍就定下来，第二遍直接搬进实例缓冲 —— 保证「剔除用的权重」与
-            /// 「着色器吃到的权重」是同一份，否则互斥归一化会让两者的包围盒对不上。
-            morph_weights: [f32; r3e_core::MAX_MORPH_TARGETS],
             /// 该网格的形变登记（无形状为 `None`），第二遍填进 `InstanceRaw`。
             morph: Option<MeshMorph>,
-            /// 扩展四十：裁剪到「网格真有形状数」之后的逐实例形状掩码。
-            /// 与 `morph` 同生共死 —— `morph` 为 `None`（掩码清空/无登记）时这里是 0。
-            morph_mask: u32,
+            /// 扩展四十二：裁剪并打包好的形状槽列表（槽序权重 + 序号字 + 槽数）。
+            /// 与 `morph` 同生共死 —— `morph` 为 `None` 时这里是全 0。
+            upload: MorphUpload,
         }
 
         // 扩展二十九：视锥剔除从「逐实例判定」升级成「按子树预筛」，复用扩展二十五
@@ -3654,35 +3684,31 @@ impl Renderer {
             // 场景里的权重保持不变（脚本写 1.0 读回还是 1.0，只有着色器吃到 0.5）。
             // 扩展四十：形状掩码也在这里一次定下来。归一层已经把掩码外的槽位清 0，
             // 所以「剔除用的权重」与「着色器吃到的权重」仍然是同一份。
-            let (morph, morph_weights, morph_scaled, shape_mask, masked_slots) = {
+            let (morph, morph_weights, morph_scaled, upload, masked_slots) = {
                 let registered = self.mesh_cache.morph_of(node.mesh);
                 match scene.morph_of(node.id) {
                     Some(instance) => {
                         let (weights, scaled) = instance.normalized_weights();
-                        // 掩码按「网格真有几个形状」裁剪：脚本里写满了 8 位，
-                        // 网格只有 3 个形状时高位本来也不参与，裁掉后比较更省心。
-                        let mask =
-                            clip_instance_mask(instance.shape_mask(), registered.map(|m| m.count));
-                        (
-                            registered,
-                            weights,
-                            scaled,
-                            Some(mask),
-                            // 网格没登记形状时没有形变表可省，这个读数只对
-                            // 「有表却被掩码挡住」的槽位有意义
-                            if registered.is_some() {
-                                instance.masked_nonzero_count()
-                            } else {
-                                0
-                            },
-                        )
+                        // 扩展四十二：槽列表按「网格真有几个形状」裁剪后再打包。
+                        // 脚本里实例可能启用了网格并不存在的形状序号，这些槽不占
+                        // 带宽也不进循环 —— 位图方案下它们只是「亮着但无表可读」。
+                        let (upload, masked) = match registered {
+                            Some(m) => (
+                                morph_upload(instance, m.count as usize),
+                                // 网格没登记形状时没有形变表可省，这个读数只对
+                                // 「有表却被掩码挡在槽外」的形状有意义
+                                instance.masked_nonzero_count(),
+                            ),
+                            None => (MorphUpload::zero(), 0),
+                        };
+                        (registered, weights, scaled, upload, masked)
                     }
                     None => (
                         registered,
                         [0.0; r3e_core::MAX_MORPH_TARGETS],
                         false,
-                        None,
                         // 没有实例绑定时权重本来就是全 0，「被掩掉的槽」无从谈起
+                        MorphUpload::zero(),
                         0,
                     ),
                 }
@@ -3696,17 +3722,13 @@ impl Renderer {
             // `imeta.w == 0` 处直接返回，连 8 次权重比较都不做。权重置 0 做不到
             // 这一点 —— 那是「算了再乘 0」。半掩的实例仍走完整路径（形状集是
             // 动态索引的，跳着取反而更贵），收益体现在这一格权重被归一化清 0。
-            let morph = match (morph, shape_mask) {
-                (Some(m), Some(mask)) if mask_drops_all_shapes(mask, m.count) => {
-                    morph_masked += 1;
-                    morph_masked_shapes += masked_slots;
-                    None
-                }
-                (m, Some(_)) => {
-                    morph_masked_shapes += masked_slots;
-                    m
-                }
-                (m, None) => m,
+            let morph = if morph.is_some_and(|m| m.count > 0) && upload.count == 0 {
+                morph_masked += 1;
+                morph_masked_shapes += masked_slots;
+                None
+            } else {
+                morph_masked_shapes += masked_slots;
+                morph
             };
             let world_bounds = match self.mesh_cache.bounds(node.mesh) {
                 Some(local) => {
@@ -3766,9 +3788,8 @@ impl Renderer {
                 key,
                 world_matrix: node.world,
                 color: node.color,
-                morph_weights,
                 morph,
-                morph_mask: shape_mask.unwrap_or(0),
+                upload,
             });
         }
 
@@ -3896,10 +3917,11 @@ impl Renderer {
             // 剔除用的盒与着色器吃到的权重必须是同一份，否则「两个表情各 1.0」
             // 的实例会按两倍位移外扩，盒大一圈、遮挡剔除白白失效。
             let morph = item.morph;
-            let morph_weights = item.morph_weights;
+            let upload = &item.upload;
             // 扩展三十六：只有「网格真有形状」且「实例至少有非零权重」时才计入，
             // 否则着色器不会进形变分支，顶点输出与扩展三十五逐位相同。
-            if morph.is_some_and(|m| m.count > 0) && morph_weights.iter().any(|w| *w != 0.0) {
+            // 扩展四十二：判据换成槽序权重（上传的那一份），与着色器同源。
+            if upload.count > 0 && upload.weights.iter().any(|w| *w != 0.0) {
                 morph_instances += 1;
             }
             let instance = InstanceRaw {
@@ -3909,13 +3931,15 @@ impl Renderer {
                 // 扩展三十六：形变登记（无形状时全 0，着色器看 morph_count = 0 直接跳过）
                 morph_base: morph.map_or(0, |m| m.base),
                 morph_stride: morph.map_or(0, |m| m.stride),
-                morph_count: morph.map_or(0, |m| m.count),
+                // 扩展四十二：`morph_count` 现在是**槽数**（≤ 网格形状数），
+                // 不是网格共有几个形状 —— 循环上界与槽列表长度必须一致。
+                morph_count: upload.count,
                 // 扩展三十九：扁平权重按 4 个一组切进 `vec4` 槽位；场景没登记形变时全 0
-                morph_weights: mesh::group_morph_weights(&morph_weights),
-                // 扩展四十：逐实例形状掩码。第一遍已按网格形状数裁剪，
-                // 且与 `morph_count == 0` 绑定 —— 掩码清空的实例这里一定是 0，
-                // 着色器读到 `imeta.w == 0` 就先短路，掩码位根本不会被查。
-                morph_mask: item.morph_mask,
+                morph_weights: mesh::group_morph_weights(&upload.weights),
+                // 扩展四十二：形状序号字。第一遍已按网格形状数裁剪，
+                // 且与 `morph_count == 0` 绑定 —— 槽清空的实例这里全是 0，
+                // 着色器读到 `imeta.w == 0` 就先短路，序号字根本不会被拆。
+                morph_slots: upload.slots,
             };
             // 平移列就是实例的世界位置；用它到相机的距离平方当半透明排序键
             let depth =
@@ -5419,61 +5443,105 @@ mod morph_table_tests {
     }
 }
 
-/// 扩展四十（逐实例形状掩码）的渲染侧合约：不开窗口、不建 GPU，只验掩码口径。
+/// 扩展四十二（形状槽列表）的渲染侧合约：不开窗口、不建 GPU，只验上传口径。
 #[cfg(test)]
-mod morph_mask_tests {
+mod morph_upload_tests {
     use super::*;
 
-    /// 契约一：掩码按「网格真有几个形状」裁剪，高位一律作废。
+    /// 契约一：槽数 = 真用到的形状数，权重与序号按同一个槽下标对齐。
     ///
-    /// 脚本把掩码写满（`morph_mask_set(node, 0xFFFF)`）而网格只有 3 个形状时，
-    /// 若不裁，「第 5 个形状启用中」会被记进统计，形变表那段却不存在 ——
-    /// 数字好看但实际读不到数据。
+    /// 位图方案里 `morph_count` 是「网格共有几个形状」，着色器只好按形状总数静态
+    /// 展开、逐个比较位。现在 `morph_count` 是**槽数**：用不到的形状不占槽、不占
+    /// 带宽、不进循环。这条测试钉的就是这个换底 —— 一旦 `count` 又被写成网格形状数，
+    /// 着色器就会按槽数去读超出列表的序号，形变表偏移直接越界。
     #[test]
-    fn mask_is_clipped_to_mesh_shape_count() {
+    fn slot_list_carries_only_the_shapes_in_use() {
+        let mut instance = r3e_core::MorphInstance::new(0, 4);
+        instance.set_weight(1, 0.5);
+        instance.set_weight(3, 0.25);
+        instance.set_shape_mask(0b1010);
+
+        let upload = morph_upload(&instance, 4);
+        assert_eq!(upload.count, 2, "网格 4 个形状、实例只用 2 个 → 槽数 2");
+        assert_eq!(&upload.weights[..2], &[0.5, 0.25], "槽 0/1 配形状 1/3");
+        assert_eq!(upload.slots[0], 1 | (3 << 8), "序号按字节小端打包");
         assert_eq!(
-            clip_instance_mask(0b1111_1011, Some(3)),
-            0b011,
-            "只留低 3 位"
+            &upload.slots[1..],
+            &[0, 0, 0],
+            "未用槽（含 vec4 的第 4 个占位字）必须留 0"
         );
-        assert_eq!(clip_instance_mask(u32::MAX, Some(3)), 0b111);
-        assert_eq!(
-            clip_instance_mask(u32::MAX, Some(r3e_core::MAX_MORPH_TARGETS as u32)),
-            r3e_core::ALL_SHAPE_MASK,
-            "网格形状数到上限（扩展四十一后 12）时等于全启用"
-        );
-        assert_eq!(
-            clip_instance_mask(0b101, Some(0)),
-            0,
-            "形状数为 0 的网格没有可用的位"
-        );
+        assert_eq!(upload.weights[2], 0.0, "未用槽的权重不得残留");
     }
 
-    /// 契约二：网格根本没登记形状时掩码取 0。
+    /// 契约二：网格没有的形状序号必须丢掉并**左移压缩**。
     ///
-    /// 这时实例缓冲里的 `morph_count` 本来就写 0，掩码写什么都不该让着色器
-    /// 以为「有形状可用」—— 非 0 掩码 + 0 形状数是着色器里最危险的组合。
+    /// 脚本能给实例启用网格并不存在的形状（`morph_mask_set(node, 0xFFFF)` 而网格
+    /// 只有 3 个形状是常见写法）。这些槽在着色器里算出的表偏移会落到形变表之外，
+    /// 而且会让后面的槽位跟着错位 —— 表现是「形变张冠李戴」，不是越界报错。
     #[test]
-    fn unregistered_mesh_forces_zero_mask() {
-        assert_eq!(clip_instance_mask(r3e_core::ALL_SHAPE_MASK, None), 0);
-        assert!(
-            !mask_drops_all_shapes(clip_instance_mask(u32::MAX, None), 0),
-            "没有形状的网格不算「被掩码摘掉」，否则统计里会虚高"
-        );
+    fn slots_beyond_mesh_shape_count_are_dropped_and_compacted() {
+        let mut instance = r3e_core::MorphInstance::new(0, 8);
+        instance.set_weight(1, 0.5);
+        instance.set_weight(5, 0.75);
+        // 只启用形状 1 / 5：掩码全开时形状 0..3 都会进槽，测不出「压缩」这件事
+        instance.set_shape_mask(0b100010);
+
+        // 网格只有 3 个形状 → 形状 5 没有表可读，只留形状 1
+        let upload = morph_upload(&instance, 3);
+        assert_eq!(upload.count, 1);
+        assert_eq!(upload.weights[0], 0.5, "留下的槽不能被前面丢掉的槽顶掉");
+        assert_eq!(upload.slots[0], 1, "序号 1 压缩到槽 0");
+
+        // 网格一个形状都没有 → 一个槽都不留（着色器整段短路）
+        assert_eq!(morph_upload(&instance, 0).count, 0);
     }
 
-    /// 契约三：只有掩码全关才算「整段摘掉形变」，半掩仍走完整路径。
+    /// 契约三：实例启用的形状全在网格之外时，槽数归 0 而不是留下脏槽。
     ///
-    /// 形状集是动态索引的（`imeta.y + vi * z`），跳着取反而更贵，所以半掩
-    /// 的收益只体现在权重被归一化清 0，不计入 `morph_masked`。
+    /// 这条路径就是第一遍里 `morph_masked` 的判据来源 —— 槽数 0 才能把
+    /// `morph_count` 写成 0，让着色器在 `imeta.w == 0` 处提前返回。
     #[test]
-    fn only_a_fully_closed_mask_drops_the_morph_path() {
-        assert!(mask_drops_all_shapes(0, 3));
-        assert!(!mask_drops_all_shapes(0b001, 3), "半掩仍走完整路径");
-        assert!(!mask_drops_all_shapes(0b111, 3));
-        assert!(
-            !mask_drops_all_shapes(0, 0),
-            "形状数为 0 不属于「被掩码摘掉」"
-        );
+    fn empty_slot_list_drops_the_morph_path() {
+        let mut instance = r3e_core::MorphInstance::new(0, 8);
+        instance.set_weight(6, 1.0);
+        // 只启用形状 6 —— 网格只有 2 个形状，这个槽一个都留不下
+        instance.set_shape_mask(1 << 6);
+        let upload = morph_upload(&instance, 2);
+        assert_eq!(upload.count, 0, "形状 6 超出网格 2 个形状的范围");
+        assert_eq!(upload.slots, [0; mesh::MORPH_SLOT_ATTR_WORDS]);
+        assert!(upload.weights.iter().all(|w| *w == 0.0));
+
+        // 掩码全关（位图 0）也归 0，且与「形状在网格外」走同一出口
+        instance.set_shape_mask(0);
+        assert_eq!(morph_upload(&instance, 8).count, 0);
+    }
+
+    /// 契约四：实例 `target_count` 的截断在上传侧同样生效。
+    ///
+    /// `target_count` 是公开字段，脚本能改小；改小之后槽里可能残留更大的序号，
+    /// 打包时必须按 `active_shapes()` 走，不能让旧槽漏进上传数据。
+    #[test]
+    fn upload_follows_instance_target_count() {
+        let mut instance = r3e_core::MorphInstance::new(0, r3e_core::MAX_MORPH_TARGETS);
+        instance.set_weight(1, 0.5);
+        instance.set_weight(9, 0.25);
+        let upload = morph_upload(&instance, r3e_core::MAX_MORPH_TARGETS);
+        assert_eq!(upload.count, r3e_core::MAX_MORPH_TARGETS as u32);
+
+        instance.target_count = 2;
+        let upload = morph_upload(&instance, r3e_core::MAX_MORPH_TARGETS);
+        assert_eq!(upload.count, 2, "只剩形状 0 / 1");
+        assert_eq!(upload.weights[1], 0.5);
+
+        // 互斥归一化后的值才是上传值：槽里 0.5 + 0.75 超预算 → 等比压回 1.0
+        let mut normalized = r3e_core::MorphInstance::new(0, 4);
+        normalized.set_weight(0, 0.5);
+        normalized.set_weight(1, 0.75);
+        assert!(normalized.set_exclusive_group(0, Some(1)));
+        assert!(normalized.set_exclusive_group(1, Some(1)));
+        let upload = morph_upload(&normalized, 4);
+        assert!((upload.weights[0] - 0.5 / 1.25).abs() < 1e-6, "{upload:?}");
+        assert!((upload.weights[1] - 0.75 / 1.25).abs() < 1e-6, "{upload:?}");
+        assert_eq!(normalized.weight_of(0), Some(0.5), "场景原值不动");
     }
 }
