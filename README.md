@@ -54,6 +54,7 @@ D:\rust3d-engine
 │   ├─ query_demo.rhai        # 物理查询演示（raycast 射线 + overlap 球体圈选 + 球/盒扫掠）
 │   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
 │   ├─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
+│   ├─ blend_space_demo.rhai  # 1D / 2D 混合空间（推参数看权重插值 + 越界钳制 + 重复样本被拒）
 │   ├─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
 │   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
 │   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
@@ -837,6 +838,8 @@ fn on_update(dt) {
 片段播放走 `play_anim` / `set_anim_clip` / `set_anim_clip_fade`（交叉淡入，阶段三 C），
 分层混合走 18 个 `anim_layer*` API（挂层 / 遮罩 / 权重淡入淡出 / override 与 additive），
 **完整表与硬口径见 [§21 动画混合树](#21-动画混合树扩展十八-a)**，此处不重复。
+层内「参数 → 权重」走 6 个 `anim_layer_blend*` API（扩展四十五：1D 线性 / 2D 重心插值），
+见 [§29 1D / 2D 混合空间](#29-1d--2d-混合空间扩展四十五)。
 
 ### 场景切换与存档（扩展十八 B）
 
@@ -2046,6 +2049,7 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 过渡 | `fade_anim_layer(inst, layer, w, dur)`：从当前权重起步，`dur` 秒到位 |
 | 删层 | `remove_anim_layer` / `clear_anim_layers` |
 | 查询 | `anim_layers(inst)` / `anim_layer_count` / `anim_layer_weight` / `anim_layer_mask` / `anim_layer_info(inst, layer)`（人读的一行报告） |
+| 混合空间 | 扩展四十五另加 6 个（`set_anim_layer_blend_1d` / `_2d` / `clear_anim_layer_blend` / `add_anim_layer_blend_sample` / `set_anim_layer_blend_value` / `anim_layer_blend`），见 [§29](#29-1d--2d-混合空间扩展四十五) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -2087,6 +2091,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 是独立的一组标量，不随动画片段曲线走，表情切换要脚本自己插值）、
 **没有 IK 与脚部对齐**（斜坡上脚会浮）、遮罩是二值而非软权重。
 这几条与 `docs/ARCHITECTURE.md` §11 的动画边界保持同一口径。
+层内「参数 → 权重」这步已由 [§29 1D / 2D 混合空间](#29-1d--2d-混合空间扩展四十五) 收进引擎（扩展四十五）。
 
 ### 21.7 测试覆盖
 
@@ -2732,7 +2737,7 @@ cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> 
 | `crates/r3e-script/tests/env_map_api.rs` | 4 | 8 个绑定写后读、六面不足 6 条返回值、非法强度被夹取、`clear` 后 `has_env_map` 为 false |
 | `crates/r3e-editor/tests/environment_map_rpc.rs` | 7 | `EnvironmentMapPatch` 补丁合并、非法字段不透传、快照回显与 `scene.set_environment` 互不干扰 |
 
-该节收尾时为 79 个套件 / 1,124 passed；截至扩展四十四为 **85 个套件 / 1,218 passed / 0 failed**（`--features rapier` 同 85 套件 1,222 passed）。
+该节收尾时为 79 个套件 / 1,124 passed；截至扩展四十五为 **86 个套件 / 1,247 passed / 0 failed**（`--all-features` 同 86 套件 1,251 passed）。
 
 ### 27.7 已知边界
 
@@ -2813,5 +2818,79 @@ cargo test -p r3e-render gfx                     # 23 条内联单测（枚举 /
 - **接新 API 的改动面**：`GfxApi` 加变体 → `gfx::backend` 加 `open` → `PLATFORM_PREFERENCE` 插优先级（+ 新后端的绘制文件）。
 
 ---
+
+## 29. 1D / 2D 混合空间（扩展四十五）
+
+§21 的分层混合解决「哪部分骨骼听谁的」，但**同一层里几段片段各占多少**仍是手工数字：
+`set_anim_layer_clip_weight("run", 0.35)` 这类写法把插值公式写在脚本里，走→跑→冲刺的过渡每加一档
+就要重算一遍，参数一旦二维（八向移动的 x/y）还得自己拼三角形。混合空间把这段算术搬进引擎：
+给层挂一个参数空间，往里摆样本（片段 + 坐标），每帧只推参数值，权重由几何位置算出来。
+
+实现落在 `crates/r3e-core/src/blend_space.rs`（942 行 / 19 条单测，纯 CPU、不碰 wgpu），
+层与场景侧挂在 `anim_blend.rs` 与 `scene.rs`，脚本绑定在 `api.rs`。这是数据不是句柄：
+`BlendSpace` 的 `dim` / `params` / `samples` / `value` / `triangles` / `rejected` 全部公开，渲染侧一行没改。
+
+### 29.1 求值规则
+
+| 维度 | 规则 |
+| --- | --- |
+| 1D | 样本按 `x` 排序后二分定位区间 → 区间内线性插值 → **区间外钳制到端点**（不外插：速度推到 3.0 不会把跑的动作放大成 2 倍权重，而是停在末样本 1.0） |
+| 2D | Bowyer–Watson 增量剖分（`triangles` 可查）→ 定位包裹参数点的三角形 → 重心坐标当权重；**点落在剖分对角线上时两侧三角形一起 `merge` 归一**，四向中心得各 0.25，而不是「先遍历到的那一对各 0.5」 |
+| 兜底 | 点不在任何三角形里（剖分有洞 / 共线退化）→ 遍历**全部点对**找最近线段投影插值，仍可用而不是掉回空权重 |
+| 归一 | 权重按**片段名**合并后再归一（同名片段可出现在多个样本点），保证和恒为 1 |
+| 拒收 | `add_sample` 拒空名 / 非有限坐标 / 同位置（`EPS = 1e-6`）并计入 `rejected`；片段名解析不到也计 `drop`（走 `note_rejected`），探针里看得见 |
+
+`apply_blend_space()` 是**三态**语义：层没挂空间 → `false`（保持手写权重，老场景逐位不变）；
+挂了空间但没有样本 → `false` 且**不清空现有权重**；有空间有样本 → **先清零再按名字写**，
+避免参数跨档时残留出「越走越多路」的权重。
+
+### 29.2 脚本 API（6 个）
+
+| API | 语义 |
+| --- | --- |
+| `set_anim_layer_blend_1d(inst, layer, param) -> bool` | 挂一维空间，`param` 是参数名（用于日志 / 回显） |
+| `set_anim_layer_blend_2d(inst, layer, px, py) -> bool` | 挂二维空间，两个参数名 |
+| `clear_anim_layer_blend(inst, layer) -> bool` | 摘掉空间，层立刻回到手写权重（当前权重**冻结不跳变**） |
+| `add_anim_layer_blend_sample(inst, layer, clip, x, y) -> bool` | 摆样本，`clip` 走片段表解析后存规范名；一维只认 `x`，`y` 入库归零 |
+| `set_anim_layer_blend_value(inst, layer, x, y) -> bool` | 每帧推参数值，插值与钳制在内部完成 |
+| `anim_layer_blend(inst, layer) -> string` | 回显：`1d(speed) n=2 drop=0 v=0.50 w=idle_loop=0.50,run_loop=0.50`，没挂空间返回空串 |
+
+配套 `set_anim_layer_clip_weight` 仍是摘空间后接管权重的手段。样例脚本：`scripts/blend_space_demo.rhai`。
+
+### 29.3 真机探针
+
+```powershell
+cargo test -p r3e-core blend_space                 # 19 条算法单测（排序 / 钳制 / 剖分 / 重心 / 兜底 / 拒收）
+cargo test -p r3e-script --test blend_space_api     # 4 条脚本行为
+target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_space_demo.rhai --run-seconds 3
+```
+
+日志取证（rc 0）：1D 在 `v=0.50` 得 `idle_loop=0.50 / run_loop=0.50`，`v=1.00` 时 lerp 未用到的
+`idle_loop` 权重自然归零消失，`v=1.49` 钳制在 `run_loop=1.00`；2D `n=3 tri=1 drop=1`
+（重复样本被拒），三角形内重心插值权重连续且和恒为 1。
+
+### 29.4 已知边界
+
+- **2D 剖分每次 `add_sample` 整表重建**：运行时频繁改样本的编辑器场景可改增量插入 + 脏标记；
+- **上限 16 样本 / 空间**（`MAX_BLEND_SAMPLES`）：真做 3D（八向 × 三档速）不够用，撞顶要抬常量；
+- **无 3D 混合空间**：三层速度档目前靠「2D 空间 × 层权重」叠两层表达，不是三维单纯形；
+- **样本不携带开关**：不能给单个样本自带播放速率 / 循环标志，时间缩放只能走层的 `speed`；
+- **无相位同步**：两路片段各按自己的时间轴走，跑 / 冲刺淡入时脚掌可能滑步——这是混合空间手感的主因；
+- **与 additive 层的组合语义未定义**：空间份额直接乘到 additive 层上，多路相加会让偏移量翻倍。
+
+### 29.5 测试覆盖
+
+新增 29 条用例，全 CPU 无 GPU 依赖：
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/blend_space.rs` | 19 | 1D 排序与二分、端点钳制、2D 三角形数、重心权重与和为 1、对角线两侧 `merge`、共线退化走兜底、同位置 / 空名 / 非有限拒收计数、16 上限、维度与参数名解析 |
+| `crates/r3e-core`（`anim_blend` / `scene` 内联） | 6 | 三态语义（无空间 / 无样本 / 有样本）、按名字合并、先清零再写、摘空间后权重冻结、`layer_report` 的 `blend=` 段、`find_anim_clip` 解析失败进 `drop` |
+| `crates/r3e-script/tests/blend_space_api.rs` | 4 | 挂空间 + 摆样本 + 推参数整链、越界钳制、重复样本被拒、摘空间回手写权重 |
+
+该节收尾为 **86 个套件 / 1,247 passed / 0 failed**（扩展四十四为 85 套件 1,218）。
+
+---
+
 
 *（内容由AI生成，仅供参考）*

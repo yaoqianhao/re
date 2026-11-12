@@ -154,7 +154,7 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **65,300** | **13,596** | **1,218** | **约 6.5 万行 Rust + 1,512 行 WGSL（扩展四十四未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 85 个套件 / 1,218 passed / 0 failed** |
+| **合计** | **66,713** | **13,857** | **1,247** | **约 6.7 万行 Rust + 1,512 行 WGSL（扩展四十五未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 86 个套件 / 1,247 passed / 0 failed，`--all-features` 同 86 套件 / 1,251 passed（多 4 条 `rapier` 专属）** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,512 行 WGSL，全在 `r3e-render`，按 `crates/**/src/**/*.wgsl` 实测）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
@@ -243,6 +243,14 @@ src 一栏为同口径重算的净值——扩展四十一自身只加了常量�
 `render/lib.rs` +6、`app/app.rs` +5（退出码 3 的条件扩到「点名了 API」），
 收尾实测 **65,300 src / 13,596 tests / 1,218 单测 / 85 套件 1,218 passed / 0 failed**，
 `--features rapier` 同 85 套件 1,222 passed），
+扩展四十五（1D / 2D 混合空间）再增量 **+1,413 src / +261 tests / +29 单测 / +1 套件 / 0 WGSL**
+（`core/blend_space.rs` **942 行 19 测** —— `BlendDim` / `BlendSample` / `MAX_BLEND_SAMPLES = 16` / 1D 线性插值与端点钳制 /
+Bowyer–Watson 剖分与重心插值 / 最近线段兜底 / `brief` 与 `weights_line`；
+`core/anim_blend.rs` **+130**（`AnimLayer.blend_space`、`with_blend_space`、`apply_blend_space`、`layer_report` 的 `blend=` 段，含 4 测）、
+`core/scene.rs` **+246**（8 个门面 + 2 测）、`script/api.rs` **+93**（7 个绑定）、`core/lib.rs` +2、
+`script/tests/blend_space_api.rs` **261 行 4 测**；`scripts/blend_space_demo.rhai` 81 行不计入 Rust 行数），
+收尾实测 **66,713 src / 13,857 tests / 1,247 单测 / 86 套件 1,247 passed / 0 failed**，
+`--all-features` 同 86 套件 1,251 passed），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
 （`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
@@ -1251,6 +1259,81 @@ core 侧新增 `morph.rs`（纯 CPU、零 wgpu，`architecture_guard` 守着这�
    省下的只是每个实例那几次「白跑的乘法」。
 3. **全关 = 整段摘掉**。`mask == 0` 时该实例的 `morph_count` 直接按 0 上报，着色器的 `if in.instance_meta.w != 0u`
    提前返回 —— 连 4 次权重比较都不做，剩下的成本是 4 B/实例。
+
+### 4.21 1D / 2D 混合空间在核心侧的契约（扩展四十五）
+
+**要解决的不是"层怎么叠"，是"层内几路片段各占几成"**。§4.11 的混合树回答了"多层如何按权重叠加"，
+但层内那几路片段（走 / 跑 / 冲刺）的分配一直靠脚本手算：`if speed < 0.3 { w_idle = 1.0 } else { … }`。
+这类"参数 → 权重"的算术每多做一次就有一次写错的机会（阈值写反、边界漏一档、权重忘了归一）。
+业界做法是**混合空间**（blend space）：把片段摆到参数轴上（1D 一条线、2D 一个平面），
+求值器按"当前参数落在样本图的哪个位置"插值出权重。脚本只管推一个数（跑多快、看向哪），不管怎么分。
+
+core 侧新增 `blend_space.rs`（942 行 19 测，纯 CPU、零 wgpu，`architecture_guard` 守着这条线）：
+
+| 类型 / 函数 | 职责 |
+| --- | --- |
+| `BlendDim` | 维度：`Linear1D` / `Planar2D`。`as_str` 给日志与脚本统一口径（`"1d"` / `"2d"`，2D 也认 `planar` 别名），`parse` 大小写不敏感，`axes()` 返回参数个数 |
+| `MAX_BLEND_SAMPLES = 16` | 单个空间最多样本数。「待机 / 走 / 跑 / 冲刺」与「八向移动 × 三个速度档」都在 16 以内；求值最坏 O(样本数²) = 120 次线段距离，每帧每层可忽略 |
+| `BlendSample` | 一个样本：`at: [f32; 2]` 参数坐标 + `clip: String` 片段名。1D 只用 `at[0]`，`at[1]` 在入库时被归零 —— 两种维度共用同一套"重复位置"判定 |
+| `BlendSpace` | 空间本体：`dim` / `params`（参数名，2D 两个）/ `samples` / `value`（当前参数）/ `triangles`（2D 剖分，1D 恒空）/ `rejected`（累计被拒次数）。字段全公开 —— 它是**数据**不是句柄，编辑器快照与存档要能直接读写 |
+| `add_sample(clip, at)` | 加样本，返回是否接受。拒三种：片段名为空、坐标含 NaN / ∞、与已有样本**同位置**（容差 `EPS = 1e-6`）。同位置不拒的话，"两份各 0.5"到底是"平均姿态"还是"叠加"没有正确答案，而调用方一定以为是自己想的那种 |
+| `note_rejected()` | 记一次**外部**拒绝（片段名在实例里解析不到）。这类失败发生在几何之外，但同样是"以为加进去了、其实没加"，算进 `drop=` 才能让日志一眼看出样本表为什么是空的 |
+| `clear_samples()` | 清空样本与剖分；`rejected` **保留** —— 它是这个空间的病史，清表不该顺手把病史洗掉 |
+| `set_value(x, y)` / `set_value_1d(x)` | 推参数。非有限值整体拒绝、保持原值，返回是否写入（脚本侧 `if set_…` 直接当哨兵用） |
+| `weights()` / `weights_at(at)` | 当前参数 / 指定坐标的权重（按名字合并、和为 1、**零权重不出现在结果里**）。`weights_at` 对非有限坐标按 0 处理而不是拒绝：查询不该有副作用，也不该把 NaN 权重漏出去把整层姿态污染成 NaN |
+| `brief()` / `weights_line()` | 单行摘要 `1d(speed) n=2 drop=0 v=0.50` / `2d(move.x,move.y) n=4 tri=2 drop=0 v=(0.50,-0.50)` 与权重行 `idle=0.50,walk=0.50`，日志、脚本回显、探针共用同一格式 |
+| `rebuild()` / `triangles()` | 重建 / 只读剖分（编辑器画线框用）。`add_sample` 与 `clear_samples` 已自动重建；直接改 `samples` 才会需要手动调 |
+
+**求值三条路，按"精确 → 兜底"排列**：
+
+1. **1D**：样本按坐标排序（**只排副本，不动 `samples` 顺序**），二分找区间线性插值；区间外**钳制到端点**
+   而不是外插 —— 参数推到 1.5 时该是"全力跑"，不是"比全力跑更用力"。
+2. **2D**：Bowyer–Watson 增量三角剖分（超级三角形按包围盒 `SUPER_SCALE = 16` 放大）+ 重心坐标插值。
+   一个点通常只属于一个三角形，但**规则网格的中心点恰落在对角线上**，两侧三角形都包含它；
+   这里把两侧结果一起交给 `merge` 归一（等价于取平均），于是四向样本的中心得到「各 0.25」，
+   而不是"先被遍历到的那一对各 0.5"—— 后者会让玩家在中心附近微动时姿态在对角之间跳变。
+3. **兜底**：点落在全部三角形外（或在共线 / 样本不足三个撑不起剖分时）退回**最近线段**投影。
+   遍历**全部点对**而不是只遍历三角形边：16 个点 120 次线段距离可以忽略，换来的是
+   "剖分有洞 / 数据被外部改坏"时结果依旧可用。
+
+`merge` 按片段名合并后复用层内那个 `normalize_weights` —— **同一个归一函数**，于是"空间算出的权重"
+与"脚本手写的权重"在层里是同一口径（和为 1、零权重丢弃），不会出现"空间给的三路加起来 0.98"。
+
+**接到层上（`anim_blend.rs`）**：`AnimLayer` 加 `blend_space: Option<BlendSpace>` 与 `with_blend_space` /
+`apply_blend_space()`。`apply_blend_space` 的三条返回语义是刻意分开的：
+
+- 没有空间 → `false`（层保持手写权重）；
+- 有空间但**没有样本** → `false`（刚建空间还没塞样本，此时不该把层清成静音）；
+- 有空间且算出权重 → **先清零再按名字写**，返回 `true`。
+
+「先清零」是有意为之：参数从 1.0 走到 2.0 时，原来 1.0 那一档的片段必须真的掉到 0，
+否则权重会残留成"越走越多路"（层内权重和 > 1，`normalize_weights` 归一后又变成"整体变暗"）。
+空间里出现、层里没有的片段名直接忽略 —— 它的份额会被归一重新分配，不会让整层变暗。
+`layer_report` 只在挂了空间时追加 ` blend=…` 段，既有日志行的前缀一位不改（`anim_layer_info` 的格式契约不变）。
+
+**`Scene` 侧门面**（`update_animations` 的第二遍里逐层调 `apply_blend_space`，见 §8.7）：
+
+| 门面 | 语义 |
+| --- | --- |
+| `set_anim_layer_blend_space_1d(实例, 层, 参数名)` / `_2d(实例, 层, x, y)` / `set_anim_layer_blend_space(实例, 层, 空间)` | 挂空间。换维度 / 换参数名等于换了一张图，**旧样本不保留**（留着只会错配） |
+| `clear_anim_layer_blend_space(实例, 层)` | 摘掉空间，返回是否真摘掉。层内权重**不回滚**，冻结在最后一次由空间算出的结果上 —— 想让手写值接管就接着调 `set_anim_layer_clip_weight`（扩展四十五顺带补的脚本 API） |
+| `add_anim_layer_blend_sample(实例, 层, 片段, at) -> Option<bool>` | `None` = 层不存在或没挂空间；`Some(false)` = 样本被拒且已计入 `drop=`。片段名走 `find_anim_clip` 解析（可只写实例前缀段），**入库用解析后的规范名**，保证样本名与层内片段名同一口径 |
+| `set_anim_layer_blend_value(实例, 层, x, y) -> Option<bool>` | 推参数，同上三态。1D 只认 `x`，`y` 传 0 |
+| `anim_layer_blend_brief(实例, 层)` / `anim_layer_blend_weights(实例, 层)` | 回显摘要 / 权重；没挂空间返回 `None`（不返回空空间，避免调用方把"没挂"当成"挂了但空"） |
+
+**边界**：
+
+- 上限 **16 样本 / 空间**，超出即拒并计入 `drop=`（不是截断，是不入表）；
+- **只驱动层内已有的片段**：空间不负责"从资产里挑片段"，层里没有的名字会被忽略；
+- 片段名**重复不拒**：同一个动作在参数轴上录了两段是正常需求，求值时按名字合并权重；
+- 参数**不夹到样本范围**：区间外钳制到端点样本，所以"速度 100"与"速度 1"等价 —— 钳制发生在求值侧，
+  `value` 里存的永远是脚本写进去的原值（与 §4.20 的"归一化不改写权重"同一原则：读回即所写）；
+- **不做 3D / 曲面混合**（八向移动 + 三个速度档的正解是"2D 空间 × 层权重"，不是三维单纯形）；
+- 空间只改"层内片段之间的分配"，层整体权重（`weight` / `fade` / `effective_weight`）照旧走 §4.11 那套 ——
+  两者正交，所以"跑起来同时淡入这一层"不需要新 API；
+- **零变化**：`blend_space == None` 时 `apply_blend_space` 是空操作，进缓冲的权重与扩展四十四**逐位相同**
+  （基线截图不用重建），这条由 `blend_space_without_samples_keeps_manual_weights` 与
+  场景侧 `blend_space_drives_layer_clip_weights` 的前半段（未挂空间时 `arm` 停在 0）钉住。
 
 ## 5. 渲染层：r3e-render
 
@@ -2445,6 +2528,21 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `anim_layers(实例)` / `anim_layer_count(实例)` | 层名列表（挂载顺序）/ 层数 |
 | `anim_layer_info(实例, 层)` | 整层快照（模式 / 权重 / 有效权重 / 遮罩 / 片段与归一权重 / 时间 / 速度 / 循环 / 播放中） |
 | `anim_layer_weight(实例, 层)` / `anim_layer_clips(实例, 层)` | 有效权重（含过渡）/ 层内片段名列表 |
+
+**1D / 2D 混合空间（扩展四十五）**
+
+给层挂一张"参数 → 权重"的图，脚本只推参数（跑多快、看向哪），权重由样本几何算出来（core 侧契约见 §4.21）。
+样本上限 16 / 空间；坐标重复、片段名解析不到、非有限坐标都会被拒并计入 `drop=`。
+
+| 函数 | 说明 |
+| --- | --- |
+| `set_anim_layer_blend_1d(实例, 层, 参数名)` | 挂一维空间（`参数名` 只用于日志回显，例 `"speed"`）；换维度 / 换参数名会清空旧样本 |
+| `set_anim_layer_blend_2d(实例, 层, x 名, y 名)` | 挂二维空间（例 `"move.x"` / `"move.y"`） |
+| `add_anim_layer_blend_sample(实例, 层, 片段, x, y)` | 加样本（1D 的 `y` 写 `0`）；被拒返回 `false`，层不存在 / 没挂空间也是 `false` |
+| `set_anim_layer_blend_value(实例, 层, x, y)` | 每帧推参数；非有限值整体拒、保持旧值，返回是否写入 |
+| `clear_anim_layer_blend(实例, 层)` | 摘掉空间回到手写权重；层内权重**冻结不跳变**，要改就接着调 `set_anim_layer_clip_weight` |
+| `anim_layer_blend(实例, 层)` | 单行回显 `1d(speed) n=2 drop=0 v=0.50 w=idle=0.50,walk=0.50`，没挂空间返回空串 |
+| `set_anim_layer_clip_weight(实例, 层, 片段, w)` | 手写层内某一路片段权重（摘掉空间后接管用；整层重新归一，`w <= 0` 时该路不参与） |
 
 **形变（扩展三十六）**
 
@@ -4946,6 +5044,53 @@ cargo test -p r3e-render upload_staging
 切线段的「表结构与 shader 是否对得上」不靠跑 GPU，靠 `morph_shader_parity` 直接读 `shader.wgsl` 文本断言
 （常量同值、字段序、偏移、蒙皮用累积后的 `local_tangent`）：这类单边改动不会编译失败，只会静默读错段。
 
+### 8.32 混合空间驱动（扩展四十五探针）
+
+夹具沿用 `assets/scene_anim.json`（实例 `tirger/idle_loop`，片段 7 个：`idle_loop` / `run_loop` / `atk` / `atk2` /
+`die` / `free` / `sleep_loop`），脚本 `scripts/blend_space_demo.rhai`（81 行，不计入 Rust 行数）挂两层：
+`locomotion` 是 1D（轴名 `speed`，样本 `idle_loop@0` / `run_loop@1`），`aim` 是 2D（`aim.x,aim.y`，
+样本 `idle_loop@(-1,-1)` / `run_loop@(1,-1)` / `atk@(-1,1)`，外加一条**故意重复**的 `atk@(-1,-1)` 用来验拒绝路径）。
+取证命令：
+
+```
+target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_space_demo.rhai --run-seconds 3
+```
+
+2026-11-12，RTX 5060 Laptop / Vulkan，rc 0。每帧参数由脚本推进（1D 跟着片段播放时间 `t`、2D 沿对角线扫过平面），
+脚本读回的 `anim_layer_blend(...)` 行就是探针输出：
+
+| 时刻 | 层 | 脚本读回 | 说明 |
+| --- | --- | --- | --- |
+| `t=0.00` | 1D | `1d(speed) n=2 drop=0 v=0.00 w=idle_loop=1.00` | 起点：单片段全额 |
+| `t=0.50` | 1D | `1d(speed) n=2 drop=0 v=0.50 w=idle_loop=0.50,run_loop=0.50` | 轴中点：两路各半，和恰为 1 |
+| `t=1.00` | 1D | `1d(speed) n=2 drop=0 v=1.00 w=run_loop=1.00` | 端点：`idle_loop=0.00` **不出现在结果里**（零权重被丢弃） |
+| `t=1.49` | 1D | `1d(speed) n=2 drop=0 v=1.49 w=run_loop=1.00` | 越界：`v` 存原值 1.49，权重**钳制**在端点，不外插成 1.49 倍 |
+| `t=0.00` | 2D | `2d(aim.x,aim.y) n=3 tri=1 drop=1 v=(-1.00,1.00) w=atk=1.00` | 顶点处单片段；`n=3` 说明重复样本没进表 |
+| `t=0.50` | 2D | `2d(aim.x,aim.y) n=3 tri=1 drop=1 v=(-0.70,0.80) w=run_loop=0.13,atk=0.87` | 三角形内部：重心插值，权重随参数连续变化 |
+| `t=1.49` | 2D | `2d(aim.x,aim.y) n=3 tri=1 drop=1 v=(-0.10,0.40) w=run_loop=0.37,atk=0.63` | 扫到近 `run_loop` 一侧，份额按几何位置转移 |
+
+五条判据各堵一种错法：
+
+1. **`v=0.50` → 恰好 `0.50 / 0.50`**：1D 走的是区间线性插值。若把参数当成"直接索引样本"（阈值判断），
+   这一点会返回到最近样本（`1.00 / 0.00`），画面在中间速度上没有过渡。
+2. **`v=1.49` 而权重仍是 `run_loop=1.00`**：钳制发生在求值侧、`value` 保存原值。若实现改成"写参数时夹到
+   `[0,1]`"，读回就变成 `v=1.00` —— 脚本拿不到自己推的真实速度，调试时无从判断是谁夹的。
+3. **`v=1.00` 那行只剩 `run_loop`**：`idle_loop` 权重掉到 0 后被 `normalize_weights` 丢弃。若残留成 `0.00`，
+   层内权重表会随参数变化无限增长（每帧多一个零项），层内片段数从 2 涨到几百。
+4. **`n=3 tri=1 drop=1`**：三个有效样本撑起**恰好一个**三角形（2D 的最少剖分），重复样本被拒且计了 `drop`。
+   若同位置样本被接受，`n=4` 会让剖分退化成零面积三角形，权重出现 NaN 或 0.5/0.5 的"平均姿态"。
+5. **2D 三个时刻的权重和恒为 1**（`0.13+0.87` / `0.37+0.63`）：重心插值的归一由 `merge` 统一做，
+   不是各三角形自己算一份——否则点落在对角线上时两侧三角形各给一份、和变 2。
+
+`t=1.00` 那一行的 `idle_loop` 消失，同时是"空间不与层权重打架"的证据：层整体权重是 1.0（`locomotion` 单层），
+空间只决定层内分配，`anim_layer_info` 的 `weight` / `fade` 字段一位不动（§4.21 末条）。
+
+**零变化**由像素回归守着：`R3E_VISUAL_REGRESSION=1 cargo test --workspace --all-features` 86 套件 1,251 passed /
+0 failed，**基线图一张未重建** —— 说明"不调新 API 的场景"渲染结果与扩展四十四逐字节相同
+（`apply_blend_space` 在 `blend_space == None` 时是空操作）。CPU 侧的等价结论由
+`blend_space_without_samples_keeps_manual_weights`（core）与 `blend_space_drives_layer_clip_weights`
+前半段（场景：未挂空间时 `arm` 停在 0）双锁。
+
 ## 9. 端到端数据流
 
 ```
@@ -5023,7 +5168,7 @@ cargo test -p r3e-render upload_staging
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
 | 剔除 | 视锥剔除（AABB × 6 平面）+ **遮挡剔除**（扩展二十二：上一帧深度金字塔 + 两阶段 AABB 判定，缺省关闭）；两者都按场景树层级预筛（扩展二十九视锥 / 扩展三十遮挡：子树盒被判不可见则整枝跳过） | 逐实例用网格局部 AABB 变换到世界后与视锥测试，蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒避免形变越界被误剔；取不到包围盒时保守绘制（树里登记 `fail_open_bounds` 巨盒，所在整枝都不许剪）。遮挡剔除只剔**不透明**批次（半透明不写深度，判了也不准），金字塔低频读回（默认 4 帧）因而滞后几帧，且只按 AABB 粗判——细长物 / 栅栏类遮挡体效果有限；层级预筛只省「被剪枝里的实例判定」，扁平场景（实例都挂在根下）净收益为 0；无 GPU 遮挡查询、无「连续 N 帧才剔」的迟滞 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**形变（扩展三十六 ~ 四十二：blend shape）支持位置 / 法线 / 切线增量、每实例上限 12 个形状（三组 `vec4` 权重）、逐实例形状集（掩码 → 紧凑槽序号列表，≤12 个槽）、互斥组按和归一**（§4.20 / §5.29）；**仍无混合空间（blend space）、无 IK、无根运动提取**
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**形变（扩展三十六 ~ 四十二：blend shape）支持位置 / 法线 / 切线增量、每实例上限 12 个形状（三组 `vec4` 权重）、逐实例形状集（掩码 → 紧凑槽序号列表，≤12 个槽）、互斥组按和归一**（§4.20 / §5.29）；**1D / 2D 混合空间（扩展四十五：层内片段摆到参数轴上，1D 线性插值与端点钳制 + 2D Bowyer–Watson 剖分与重心插值、16 样本 / 空间、按名字合并归一，7 个 `anim_layer_blend*` 脚本 API，见 §4.21 / §8.32）；仍无 3D 混合、无 IK、无根运动提取**
 | 拾取 | **屏幕射线拾取**（扩展三十四）：脚本按像素坐标 / 光标位置取最近命中物件，或取同一射线上全部命中列表（含节点号、名字、距离、交点），几何用网格局部 AABB × 世界矩阵（见 §5.26） | 判定粒度是**包围盒**，不是三角形——凹形 / 镂空资产会出现「点在洞里也算命中」；不要求刚体、也不走物理（与 `raycast` 两条独立通路，`raycast` 只答物理世界）；取不到包围盒的网格视为透明，不做单位盒兜底；隐藏节点不参与；UI 遮挡需脚本自己用 `ui_hit` 先判；线性遍历全部可见节点，无空间加速结构 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
@@ -5106,6 +5251,17 @@ cargo test -p r3e-render upload_staging
    ~~表情互斥归一化~~：已由扩展三十八落地（`MorphInstance.exclusive` + `normalized_weights()` 纯函数，只在渲染层算副本）；
    ~~补切线 / UV 增量通道~~：切线段已由扩展三十七补齐（每顶点多 3 个 `f32`）；UV 仍不做——
    形变不改变参数化，UV 没有独立自由度。
+7. **动画层的延伸**（扩展四十五已落地 1D / 2D 混合空间，见 §4.21 / §8.32）：现在是「层内片段摆到参数轴上、
+   按样本几何位置插值、16 样本上限、按名字合并归一、1D 端点钳制」。仍可加固处：
+   ① **3D / 三维单纯形**：八向移动 + 三个速度档的正解目前是「2D 空间 × 层权重」（两层叠），
+   真做成三维要解决 k-D 剖分与样本数上限（16 个样本在三维只够 2×2×2 加八个散点，很快撞顶）；
+   ② **剖分缓存**：`add_sample` 每次都整表重建 Bowyer–Watson，运行时频繁改样本的编辑器可改增量插入 + 脏标记；
+   ③ **样本自带播放速率 / 循环标志**：同一片段在不同参数区间需要不同时间缩放（走 → 跑的步频），
+   现在只能靠层的 `speed` 一刀切；
+   ④ **同步组与相位锁**：两路片段按归一化相位对齐（跑 / 冲刺淡入时脚掌不打滑）——这是动作游戏里
+   「混合空间看着别扭」的主因，比权重公式本身更要紧；
+   ⑤ **与 `additive` 层的组合语义**：现在是「空间算出的份额乘到 additive 层上」，没有单独定义
+   （additive 层通常只该有一路片段，多路相加会让偏移量翻倍）。
 
 ---
 
@@ -5167,6 +5323,7 @@ cargo test -p r3e-render upload_staging
 | **四十二（已完成：形状槽序号 / 掩码 → 紧凑索引列表）** | **把「按位比较」换成「按序号间接取」**：`core/morph.rs` 加 `MORPH_SLOT_CAPACITY = MORPH_WEIGHT_GROUPS × 4`（槽容量恰等于权重分量数：多一个槽也没权重喂它）与 `shape_slots()`（把掩码压成升序序号列表，供渲染侧取）；掩码本身仍是脚本侧语义（`morph_mask` / `morph_show` 一字不改）。`r3e-render::mesh` 把 location 15 的 `Uint32` 掩码换成 **`vec4<u32>` 序号块**：`MORPH_SLOT_WORDS = 3`（3 字 × 4 个 `u8` = 12 槽）、`MORPH_SLOT_ATTR_WORDS = 4`（第 4 字恒 0 只为填满 `vec4`）、`MORPH_SLOT_LOCATION_BASE = 15`、`MORPH_SLOT_OFFSET = 144`、`pack_morph_slots` 按 `u8` 小端打包，`array_stride` **148 → 160**；`renderer::morph_upload` 成为「掩码 → 槽列表」的唯一入口（越界形状丢掉并左移压缩，返回的 `count` 即槽数）；`shader.wgsl` 删掉逐形状静态展开与掩码乘子，改成 `morph_slot_shape`（按字节取序号）+ `morph_slot_accumulate`（`head + stride * shape` 运行时偏移）+ 按槽循环，`instance_meta.w` 语义从「网格形状数」变「槽数」。详见 §5.29 | `core/morph.rs` / `core/lib.rs`；`render/mesh.rs`（4 个常量 + `pack_morph_slots` + 布局用例）、`render/renderer.rs`（`morph_upload`）、`render/shader.wgsl`（净减 9 行）、`render/tests/morph_shader_parity.rs`（+4 契约：`both_vertex_stages_declare_morph_slots` / `both_stages_pass_slot_words_into_morph_offset` / `slot_index_is_extracted_per_byte` / `mask_multiplier_is_gone` / `slot_offset_sits_after_the_weight_block`）、`render/tests/instance_upload_contract.rs`（步长 160） | 无（**像素逐位不变**：槽列表按形状下标升序、权重分量按同一槽下标对齐，累加顺序与位图方案逐项相同 —— 真机 `morph_mask` 夹具五态与扩展四十**同字节数、同像素数**，视觉基线无需重建）。**真机核心判据**：形状 4（`w1.x`、落在槽 1）与形状 0 互差 **24,807 像素 / 10.77%**，与扩展三十九记录的「形状 4 vs 形状 0 = 10.77%」一位不差 —— 序号打包若写错，两帧会逐字节重合。**代价（不粉饰）**：每顶点每槽一次间接寻址（`head + stride * shape` 里的 `shape` 是运行时读出的 `u8`，GPU 折不进立即数）+ 实例记录 **+12 B**（148 → 160，其中 4 B 是 `vec4` 的占位字）；**12 槽以内没有提速**，收益是结构可伸缩（加槽只改常量与 `MORPH_SLOTS`）。**边界**：形状序号 `u8` 上限 256；`MORPH_SLOT_WORDS > MORPH_SLOT_ATTR_WORDS` 时 `const { assert! }` 编译期就红，逼着加第二个 location 而不是静默丢形状；槽容量仍等于权重分量数，**加容量仍须先加权重组** |
 | **四十三（已完成：后端矩阵 CI + 特性按需协商）** | **让「跑在哪个后端上」从沉默变成可断言**：新建 `crates/r3e-render/src/gpu_caps.rs` —— `BACKEND_ENV = "WGPU_BACKEND"` + `parse_backends`（认 `vk` / `d3d12` 等别名，逗号或空白分隔，不认识的名字留在第二个返回值里而不是静默丢）+ `requested_backends` + `backend_matches` + `backend_name` / `backend_from_name`（互为逆）；`Renderer::new` 按 env 钉 `Instance` 的 `backends`、拿到 adapter 后校验 `backend_matches`（不符即 `Err`，app 层以**退出码 3** 结束，与「无 GPU 跳过」的 2 严格分开）、`request_device` 改申请 `FeatureReport::negotiate(adapter.features()).enabled`（`FeatureReport { enabled, missing }`，缺的只记日志不失败；交集仍被驱动拒绝则 warn 后退回 `Features::empty()` 重试），并记一行能力日志与 `caps_line()`（`backend=vulkan device=... 特性 a|b 要求 vulkan`）；CI 的 `visual-gpu` 拆成 `vulkan` + `dx12` 矩阵（`fail-fast: false`、artifacts 分后端名、容差仍取默认值不放宽）；`visual_regression.rs` 改用 `Command::output()` 收日志并**先断言后端、再比像素**（进程内 + 日志两道，防「要 dx12 却跑在 vulkan」的假绿）。**边界**：`gl` 不进矩阵（实测 SSAO 管线 `textureLoad` from depth textures 不被 GLSL 支持，`create_render_pipeline` 直接校验失败 —— 那是后端能力缺失，不是"差异"）；`exit(3)` 只在设了 `WGPU_BACKEND` 时触发，普通开发机语义不变；**本机实测两个后端都真跑通**（`WGPU_BACKEND=vulkan` → 日志 `要求 vulkan / 实际 Vulkan`，`WGPU_BACKEND=dx12` → `要求 dx12 / 实际 Dx12`，严格模式各 2 测 passed），dx12 实际图与 vulkan 基准**最大通道差 1、超阈值（>2）像素 0 / 230,400**，因此**暂不按后端分基准**（同一张图 + 默认容差即可），将来抖动只许放宽那一行的容差 |
 | **四十四（已完成：图形 API 抽象层）** | **把「引擎绑不绑 wgpu」变成源码级可验证的边界**：新建 `crates/r3e-render/src/gfx/`（`mod.rs` + `api.rs` + `selection.rs` + `info.rs` + `backend.rs`，994 行 23 测）—— `GfxApi`（`#[non_exhaustive]`，今天只有 `Wgpu`，**枚举里不放假选项**）、`GfxPlatform`（windows / linux / macos / android / web / other）、`PLATFORM_PREFERENCE` 六行优先级表 + `preference` / `default_api`（表里漏行退回 `GfxApi::ALL`）；`GfxSelection` 的选路是 `R3E_GFX_API`（`wgpu` 或 `auto`，**拼错即 `Err` 不静默回落**，显式指定时 `candidates()` 只有它自己）→ 平台偏好表 → 逐个降级；设备获取整体下沉到 `gfx::backend::open`，产出 `GfxContext { info, device, queue, surface, config }`，`GfxInfo`（api / backend / adapter / device_type / features / missing / requested）是**不含任何图形库类型**的中性能力面；`trait RenderBackend` 只收 5 件事（`gfx_api` / `gfx_info` / `caps_line` / `size` / `resize`），**不把 `Renderer` 的其余方法搬进去**（那是 wgpu 说明书，按证据扩面）；`Renderer` 里原 `AdapterInfo` / `Features` / `Backends` 三件套换成一个 `gfx_info` 字段、`new()` 只剩 `gfx::selection()` + `gfx::create_context()`、对外访问器变成 `gfx_info()` / `gfx_api()` / `caps_line()`；app 的退出码 3 条件从「钉了后端」扩到「点名了 API」。详见 §5.31 | `render/gfx/{mod,api,selection,info,backend}.rs` 新增（994 行）、`render/lib.rs` 导出 13 项、`render/renderer.rs` 净 -81 行、`app/app.rs` 退出码条件 +5；新增 `render/tests/gfx_boundary.rs`（196 行 6 测，扫描生产源码的边界守卫）+ 各文件内联 23 测 | 无（**行为一字未改**：默认仍选 wgpu，`WGPU_BACKEND` 语义不变，像素与上传读数逐位一致，视觉基线不重建）。**新增开关**：`R3E_GFX_API=wgpu|auto`（拼错 → 退出码 3，与「无 GPU 跳过」的 2 分开）。**边界**：只实现 wgpu 一套 API、无 `dyn` 运行时分发、跨 API 契约仅 5 项、启动时定死不可热切、`GfxApi::ALL` 只列已实现者；接新 API 只改「枚举 + `backend::open` + 优先级表」三处，渲染器与宿主不改 |
+| **四十五（已完成：1D / 2D 混合空间）** | **把「参数 → 权重」这段算术从脚本搬进引擎**：新建 `crates/r3e-core/src/blend_space.rs`（942 行 19 测，纯 CPU、零 wgpu）—— `BlendDim`（`Linear1D` / `Planar2D`，`parse` 大小写不敏感）、`BlendSample`（参数坐标 + 片段名，1D 的 `at[1]` 入库归零）、`MAX_BLEND_SAMPLES = 16`、`BlendSpace`（`dim` / `params` / `samples` / `value` / `triangles` / `rejected` 全公开——它是数据不是句柄）；求值三条路：**1D 排序后二分 + 区间线性插值 + 区间外钳制到端点**（不外插）、**2D Bowyer–Watson 增量剖分 + 重心坐标插值**（点落在对角线上时两侧三角形一起 `merge` 归一，四向中心得各 0.25，而不是「先遍历到的那一对各 0.5」）、**兜底最近线段**（遍历全部点对而非只走三角形边，剖分有洞时仍可用）；`add_sample` 拒「空名 / 非有限 / 同位置（`EPS = 1e-6`）」并计数，`note_rejected` 让「片段名解析不到」这类场外失败也进 `drop=`；`AnimLayer.blend_space: Option<BlendSpace>` + `apply_blend_space()` 三态语义（无空间 → `false` 保持手写权重；有空间无样本 → `false` 不清空层；有空间有样本 → **先清零再按名字写**，防止参数跨档时权重残留成「越走越多路」），`layer_report` 仅在挂空间时追加 `blend=` 段；`Scene` 8 个门面（`set_…_1d` / `_2d` / `set_anim_layer_blend_space` / `clear_…` 冻结不跳变 / `add_…_sample` 走 `find_anim_clip` 解析后存规范名 / `set_…_value` / `anim_layer_blend_brief` / `_weights`，三态 `Option<bool>`：`None` = 层不存在或没挂空间、`Some(false)` = 被拒）；`script/api.rs` 7 个绑定（含摘空间后接管用的 `set_anim_layer_clip_weight`）；**零变化**：`blend_space == None` 时是空操作，基线截图一张未重建，86 套件 1,247 passed | 新增 `core/blend_space.rs`；改 `core/anim_blend.rs`（+130）/ `core/scene.rs`（+246）/ `core/lib.rs` / `script/api.rs`（+93）；新增 `script/tests/blend_space_api.rs`（261 行 4 测）+ `scripts/blend_space_demo.rhai` | 无（层 / 场景 / 脚本 API 全是新增；不动 shader、不动顶点布局、不重建像素基线） |
 
 两条与顺序相关的说明：
 
@@ -5250,6 +5407,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 形变多组 vec4 权重（扩展三十九） | `$env:R3E_VISUAL_REGRESSION=1; cargo test -p r3e-app --test morph_eight_shapes` → **2 passed**（`shape_five_is_driven_by_the_second_weight_group` / `zero_displacement_shape_changes_nothing`）：探针 `morph=0/288f` → `1/288f`，形状 0 对基线 **5.34%**、形状 4 对基线 **6.42%**、两者互差 **10.77%**、形状 7（位移全 0）**0 像素**；**变异验证**：把 `shader.wgsl` 的 `morph_offset` 改成两组都读 `w0` 后该测试失败（rc=101），还原即绿。`cargo test -p r3e-core --all-features morph --lib` → **28 passed**（较扩展三十八的 23 增 5：常量一致性、第 8 个形状真的推动顶点、跨组互斥、`flatten_limited` 尾部、`target_count` 夹上限等）；`cargo test -p r3e-render --all-features morph --lib` → **14 passed**（较 12 增 2：`instance_layout_carries_morph_weights` 改逐组断言、新增 `group_morph_weights_slices_in_order`）；`cargo test -p r3e-render --test morph_shader_parity` → **9 passed**（较 6 增 3）；`cargo test --workspace --all-features` **80 套件 1,136 passed / 0 failed**（扩展三十八收尾 79 套件 1,124），`--features rapier` 同 80 套件 1,136 passed；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning（首版 fmt 被新增测试文件的断行格式拦下，`cargo fmt --all` 修） |
 | 逐实例形状掩码（扩展四十） | `$env:R3E_VISUAL_REGRESSION=1; cargo test -p r3e-app --test morph_mask` → **3 passed**（`mask_hides_a_shape_that_still_carries_weight` / `fully_closed_mask_drops_the_morph_path` / `mask_is_clipped_to_mesh_shape_count_on_device`）；`cargo test -p r3e-script --test morph_mask_api` → **4 passed**（默认全开 / 整块写后读回 / 单形状开关联动归一化 / 非法入参拒绝）；`cargo test -p r3e-core --all-features morph --lib` → **38 passed**（较扩展三十九的 28 增 10：`morph.rs` 的默认掩码全开 / 越界位不算启用 / `set_shape_enabled` 拒越界 / `disable_all_shapes` 清计数 / 掩码在归一化之前生效共 5 条，`scene.rs` 的门面转发与「掩码是实例级」等 5 条）；`cargo test -p r3e-render --all-features morph --lib` → **18 passed**（较 14 增 4：`instance_layout_carries_morph_mask` + `morph_mask_tests` 三条 —— 裁剪到网格形状数 / 只有全关才摘分支 / 未登记网格强制 0）；`cargo test -p r3e-render --test morph_shader_parity` → **13 passed**（较 9 增 4：两个顶点入口都声明 `morph_mask`、都把同一位传进 `morph_offset`）；`cargo test --workspace --all-features` **82 套件 1,161 passed / 0 failed**（扩展三十九收尾 80 套件 1,136），`R3E_VISUAL_REGRESSION=1` 下同 82 套件 1,161 passed、`--features rapier` 亦同；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning（首版 clippy 被 `morph.rs` 两处 `needless_range_loop` / `unnecessary_cast` 拦下，改 `iter().enumerate().take(count)` 与去 `as usize` 后过）。**真机五态探针**（`fixtures/morph_mask`，8 形状 / 表长 `288f`）：`mask=0/0` 基线 5,376 B → 形状 0 开 `1/288f inflate=2.062` 7,180 B（对基线 12,312 像素 / 5.34%）→ 掩码关第 0 位 `0/288f mask=0/1` **0 像素** → 掩码全 0 `0/288f mask=1/1` **0 像素** → 掩码 65535 读回 255。**踩坑一条**：`core/scene.rs` 的「掩码是实例级」用例首版把两侧写反（期望 1 的实例读到 0）—— 原因是把掩码与互斥归一化的作用顺序搞混，掩码必须先于归一化生效才成立；`instance_upload_contract.rs` 的 stride 断言同步从 128 改 132（`96 + 16 × GROUPS + 4`） |
 | 三组 `vec4` 形变权重 / 12 形状（扩展四十一） | `$env:R3E_VISUAL_REGRESSION=1; cargo test -p r3e-app --test morph_twelve_shapes` → **2 passed**（`shape_nine_is_driven_by_the_third_weight_group` / `zero_displacement_shape_changes_nothing`）：探针 `morph=0/432f` → `1/432f`，形状 0 / 4 / 8 对基线 **5.34% / 6.42% / 5.34%**，形状 8 与 0 / 4 互差 **10.56% / 11.70%**，形状 11（第 3 组末槽位、位移全 0）差 **0 像素**；`cargo test -p r3e-render --lib morph` → **18 passed**（掩码裁剪改读 `MAX_MORPH_TARGETS` 后 `mask_is_clipped_to_mesh_shape_count` 仍全绿）；`cargo test --workspace --all-features` **83 套件 1,163 passed / 0 failed**（扩展四十收尾为 82 套件 1,161）；`--features rapier` 同 **83 套件 1,163 passed / 0 failed**；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning |
+| 1D / 2D 混合空间（扩展四十五） | `cargo test -p r3e-core blend_space` → lib 内联 **19 passed**；`cargo test -p r3e-script --test blend_space_api` → **4 passed**；`cargo test -p r3e-core anim_tests` → **+6 passed**（`blend_space_drives_layer_clip_weights` 等）；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_space_demo.rhai --run-seconds 3` → rc 0，日志 `1d(speed) n=2 drop=0 v=0.50 w=idle_loop=0.50,run_loop=0.50` / `v=1.49 w=run_loop=1.00`（越界钳制）/ `2d(aim.x,aim.y) n=3 tri=1 drop=1 v=(-0.50,0.50) w=run_loop=0.25,atk=0.75` / 重复样本被拒 `重复样本被拒: true`；`cargo test --workspace` 86 套件 **1,247 passed / 0 failed**（扩展四十四收尾为 85 套件 1,218），`--all-features` 同 86 套件 **1,251 passed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-features --all-targets -- -D warnings` 全绿；基线图未重建 |
 
 
 ---
