@@ -154,10 +154,10 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **63,656** | **13,175** | **1,163** | **约 6.4 万行 Rust + 1,490 行 WGSL；`cargo test --workspace --all-features` 83 个套件 / 1,163 passed / 0 failed** |
+| **合计** | **63,765** | **13,254** | **1,170** | **约 6.4 万行 Rust + 1,512 行 WGSL（扩展四十二净减 9 行，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 83 个套件 / 1,170 passed / 0 failed** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
-着色器（1,473 行 WGSL，全在 `r3e-render`）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
+着色器（1,512 行 WGSL，全在 `r3e-render`，按 `crates/**/src/**/*.wgsl` 实测）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
 扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测，
 扩展二十九（主通道视锥剔除层级化）再增量 +241 src / +387 tests / +14 单测 / +2 套件，
 扩展三十（主通道遮挡剔除层级化）再增量 +414 src（净）/ 0 tests / +7 单测 / 0 套件，
@@ -249,8 +249,8 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,124 passed / 0 failed（79 个套件；较扩展三十七收尾的 1,108 增 16：core `morph.rs` 互斥组 7、core `scene.rs` 门面 3、render 逐形状外扩 3、新套件 `morph_exclusive_api` 3） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,124 passed / 0 failed（79 个套件；本轮 rapier 侧计数与默认特性相同——`ccd_penetration` 整文件 3 条与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events` 1 条在默认特性下走的是内置后端同义用例）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,170 passed / 0 failed（83 个套件；较扩展四十一收尾的 1,163 增 7：core `morph.rs` 槽函数与容量 3、core `scene.rs` 槽门面 1、render `mesh.rs` 布局 / `shader.wgsl` 口径 2、`instance_upload_contract` 步长 1） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,170 passed / 0 failed（83 个套件；本轮 rapier 侧计数与默认特性相同——`ccd_penetration` 整文件 3 条与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events` 1 条在默认特性下走的是内置后端同义用例）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -4840,7 +4840,7 @@ cargo test -p r3e-render upload_staging
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
 | 剔除 | 视锥剔除（AABB × 6 平面）+ **遮挡剔除**（扩展二十二：上一帧深度金字塔 + 两阶段 AABB 判定，缺省关闭）；两者都按场景树层级预筛（扩展二十九视锥 / 扩展三十遮挡：子树盒被判不可见则整枝跳过） | 逐实例用网格局部 AABB 变换到世界后与视锥测试，蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒避免形变越界被误剔；取不到包围盒时保守绘制（树里登记 `fail_open_bounds` 巨盒，所在整枝都不许剪）。遮挡剔除只剔**不透明**批次（半透明不写深度，判了也不准），金字塔低频读回（默认 4 帧）因而滞后几帧，且只按 AABB 粗判——细长物 / 栅栏类遮挡体效果有限；层级预筛只省「被剪枝里的实例判定」，扁平场景（实例都挂在根下）净收益为 0；无 GPU 遮挡查询、无「连续 N 帧才剔」的迟滞 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**形变（扩展三十六 ~ 三十九：blend shape）支持位置 / 法线 / 切线增量、每实例上限 8 个形状（两组 `vec4` 权重）、无逐实例形状集切换**（§4.20 / §5.28）；**仍无混合空间（blend space）、无 IK、无根运动提取**
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，18 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，见 §4.11 / §8.15）；**形变（扩展三十六 ~ 四十二：blend shape）支持位置 / 法线 / 切线增量、每实例上限 12 个形状（三组 `vec4` 权重）、逐实例形状集（掩码 → 紧凑槽序号列表，≤12 个槽）、互斥组按和归一**（§4.20 / §5.29）；**仍无混合空间（blend space）、无 IK、无根运动提取**
 | 拾取 | **屏幕射线拾取**（扩展三十四）：脚本按像素坐标 / 光标位置取最近命中物件，或取同一射线上全部命中列表（含节点号、名字、距离、交点），几何用网格局部 AABB × 世界矩阵（见 §5.26） | 判定粒度是**包围盒**，不是三角形——凹形 / 镂空资产会出现「点在洞里也算命中」；不要求刚体、也不走物理（与 `raycast` 两条独立通路，`raycast` 只答物理世界）；取不到包围盒的网格视为透明，不做单位盒兜底；隐藏节点不参与；UI 遮挡需脚本自己用 `ui_hit` 先判；线性遍历全部可见节点，无空间加速结构 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
@@ -4850,11 +4850,11 @@ cargo test -p r3e-render upload_staging
 ### 11.2 性能特征
 
 - **Draw call**：≤ 4（实际使用的网格种类数），与物件数无关。
-- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（148 B/物件）组装，
+- **每帧 CPU 成本**：O(物件数) 的视锥测试 + O(可见物件数) 的 `InstanceRaw`（160 B/物件）组装，
   外加一次 O(实例数) 的 memcmp（脏段比较）与若干次 `write_buffer`（只传脏段）；
   视锥测试前先查 `MeshCache::bounds`（哈希，`MeshRef` 为键），不重扫顶点、不走 `dyn`。
   蒙皮实例额外做一次关节矩阵求解（O(关节数)）、一次关节矩阵 memcmp 与第二路 `write_buffer`。
-- **上传带宽**（扩展三十一 / 三十二起两路都按脏段计）：实例侧最坏仍是 实例数 × 148 B/帧，稳态静态场景为 **0 B/帧**；
+- **上传带宽**（扩展三十一 / 三十二起两路都按脏段计）：实例侧最坏仍是 实例数 × 160 B/帧，稳态静态场景为 **0 B/帧**；
   1,537 实例场景实测稳态 `脏段 0 / 写 0 条 / 跳过 1,539 条`，只转两个物件时 `脏段 1 / 写 3 条`（省 50%）。
   关节侧（64 B/关节）同样只在变化时才传：完全静止的蒙皮 `脏段 0 / 写 0 条`（0 B/帧），
   正在播动画时 37 条连续全脏 → 合并成 **1 段 2.3 KiB**（字节数不变，`write_buffer` 调用从 37 次降到 1 次）。
@@ -4874,13 +4874,14 @@ cargo test -p r3e-render upload_staging
   上传是一次性 `6 × mip_levels` 次 `write_texture`（缺省 36 次，约 1 MiB f16 数据）。
   **每帧开销为零**：探针配置不变时 `sync_env_probe` 在比较后直接返回，镜头 / 物件数都不影响它；
   唯一的偶发尖峰是「换探针」那一帧重建整批材质 bind group。
-- **形变开销**（扩展三十六）：形状增量在**网格上传时**一次性进全局表（上限 1 MiB），每帧零表上传；
-  每帧只多 16 B/实例的权重，而且这 16 B 落在实例记录里，权重不变就连这 16 B 也不进脏段；
+- **形变开销**（扩展三十六，权重槽按扩展四十一 / 四十二口径）：形状增量在**网格上传时**一次性进全局表（上限 1 MiB），每帧零表上传；
+  每帧只多 48 B/实例的权重（三组 `vec4`）+ 12 B 的槽序号（`vec4<u32>` 打包 12 个 `u8` 槽，扩展四十二），
+  且这 60 B 落在实例记录里，权重与掩码不变就连这 60 B 也不进脏段；
   顶点侧多一次 `morph_count != 0` 判断（无形状的实例直接跳过，**像素与扩展三十五逐位相同**），
   带形状的实例多 4 次乘加 / 顶点 / 形状。阴影通道共用同一批顶点数据，不额外上传。
   容量换算与取舍见 §5.28；
 - **扩容策略**：实例缓冲按 2 倍增长（起始 512），避免每帧重建 buffer；只有跨越容量边界时才有一次分配，
-  且换代当帧强制全量上传（`instance_shadow` 清空，`resets` 累计 +1）。影子缓冲本身是 148 B/实例的
+  且换代当帧强制全量上传（`instance_shadow` 清空，`resets` 累计 +1）。影子缓冲本身是 160 B/实例的
   CPU 内存（1,537 实例 ≈ 168 KiB），随扩容同步增长。关节影子（`joint_shadow`）是定长
   `MAX_JOINT_MATRICES × 64 B`，不存在扩容与换代，只在「无蒙皮帧」被清空。
 - **阴影通道成本**：单级时顶点开销 ≈ 主通道一遍（同批网格再画一次，片元只写深度、无着色）；
@@ -4908,14 +4909,17 @@ cargo test -p r3e-render upload_staging
 5. **级联遮挡体的 GPU 代理预筛**：扩展二十四按 AABB 裁掉级外遮挡体、扩展二十五把判定改成
    按场景树的层级剔除（§4.18 / §5.18，扁平场景净收益为 0，组装场景实测约三成）。进一步可把判定
    搬到 GPU：级联层级包围盒做成实例化球/盒代理 + 硬件裁剪，或跨帧复用上一帧的掩码。
-6. **形变的延伸**（扩展三十六 / 三十七 / 三十八 / 三十九 / 四十 / 四十一已落地，见 §4.20 / §5.28）：现在是「每实例 12 个形状（三组 `vec4` 权重）、
-   逐实例形状掩码（每个实例各选一套形状子集，掩码全 0 整段摘掉分支）、位置 + 法线 + 切线三条通道（每顶点 9 个 `f32`）、
+6. **形变的延伸**（扩展三十六 ~ 四十二已落地，见 §4.20 / §5.29）：现在是「每实例 12 个形状（三组 `vec4` 权重）、
+   逐实例形状**槽序号列表**（掩码在渲染侧压成 ≤12 个 `u8` 升序槽号，着色器按槽循环 + 间接寻址取形状增量，
+   掩码全 0 的实例 `morph_count` 直接写 0 整段摘掉）、位置 + 法线 + 切线三条通道（每顶点 9 个 `f32`）、
    同网格的实例共享同一段表、可选互斥组按和归一」。仍可加固处：
-   ① ~~逐实例形状掩码~~：已由扩展四十落地（`MorphInstance.mask` + 着色器掩码乘子 + `mask` 探针）——
-   「权重置 0 假装没开」那部分白跑的乘法变成「按位比较 + 只算开着的形状」，代价是 4 B/实例；
-   ② ~~继续加组~~：已由扩展四十一落地（`MORPH_WEIGHT_GROUPS = 3` 即 12 个形状、步长 148 B）——
+   ① ~~逐实例形状掩码~~：已由扩展四十落地（`MorphInstance.mask` + `mask` 探针），代价 4 B/实例；
+   ② ~~继续加组~~：已由扩展四十一落地（`MORPH_WEIGHT_GROUPS = 3` 即 12 个形状）——
    机制本来就是「组数 × 4」，再往上加只是常量 + `ATTRIBUTES` 数组 + 着色器多一组累加；
-   ③ 掩码的**二进制化**：现在仍按槽位比较（`mask & (1u << g*4 + i)`），形状数再涨就该改成先算 `popcount` 再走紧凑列表。
+   ③ ~~掩码的二进制化~~：已由扩展四十二落地（`shape_slots()` 先算 `popcount` 再走紧凑列表，
+   `render` 侧唯一的掩码入口是 `morph_upload`，shader 里逐形状静态展开与掩码乘子已整段删除，净减 9 行 WGSL）；
+   **槽容量与权重分量数强绑定**（`MORPH_SLOT_CAPACITY = MORPH_WEIGHT_GROUPS × 4`）——
+   要继续涨形状数，必须先把权重从「定长 `vec4` 组」改成「显式槽位表」，否则多出的槽没有权重喂它。
    ~~表情互斥归一化~~：已由扩展三十八落地（`MorphInstance.exclusive` + `normalized_weights()` 纯函数，只在渲染层算副本）；
    ~~补切线 / UV 增量通道~~：切线段已由扩展三十七补齐（每顶点多 3 个 `f32`）；UV 仍不做——
    形变不改变参数化，UV 没有独立自由度。
