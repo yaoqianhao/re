@@ -2335,9 +2335,14 @@ impl ApplicationHandler for EngineApp {
             }
             Err(e) => {
                 log::error!("渲染器初始化失败: {e}");
-                // 扩展四十三：钉了后端却起不来，不是「本机没显卡」（那种情况留给退出码 2 表示跳过），
-                // 而是「这台机器不满足矩阵要求」。给独立退出码 3，既不与跳过混淆，也绝不能被读成成功。
-                if r3e_render::gpu_caps::requested_backends().is_some() {
+                // 扩展四十三 / 四十四：钉了后端却起不来，不是「本机没显卡」（那种情况留给
+                // 退出码 2 表示跳过），而是「这台机器不满足矩阵要求」。给独立退出码 3，
+                // 既不与跳过混淆，也绝不能被读成成功。
+                // 判定走中性查询：宿主不需要（也不允许）认识 wgpu 的 `Backends` 类型。
+                // 显式指定了图形 API（`R3E_GFX_API`）同理 —— 点名要的起不来必须算失败。
+                if r3e_render::backend_was_explicitly_requested()
+                    || r3e_render::api_was_explicitly_requested()
+                {
                     std::process::exit(3);
                 }
                 event_loop.exit();

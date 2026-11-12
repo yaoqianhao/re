@@ -2732,7 +2732,7 @@ cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> 
 | `crates/r3e-script/tests/env_map_api.rs` | 4 | 8 个绑定写后读、六面不足 6 条返回值、非法强度被夹取、`clear` 后 `has_env_map` 为 false |
 | `crates/r3e-editor/tests/environment_map_rpc.rs` | 7 | `EnvironmentMapPatch` 补丁合并、非法字段不透传、快照回显与 `scene.set_environment` 互不干扰 |
 
-`cargo test --workspace` 现为 79 个套件 / 1,124 passed / 0 failed（`--features rapier` 同 79 套件 1,124 passed）。
+该节收尾时为 79 个套件 / 1,124 passed；截至扩展四十四为 **85 个套件 / 1,218 passed / 0 failed**（`--features rapier` 同 85 套件 1,222 passed）。
 
 ### 27.7 已知边界
 
@@ -2744,6 +2744,73 @@ cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> 
 - **换图即重建材质 bind group**：频繁热切换 `.hdr` 会有一次 bind group 重建开销（不是每帧）。
 
 > 注：仓库**不带**示例 `.hdr`（避免二进制资产进库）。要试效果，自己放一张 Radiance `.hdr`，按 §27.4 写进场景即可。
+
+---
+
+## 28. 图形 API 抽象层（扩展四十四）
+
+一句话：**引擎的宿主面只认「中性身份 + 中性能力」，wgpu 是今天唯一的实现；接第二套图形 API 只改三处，
+渲染器与调用方都不改。**
+
+| 层 | 位置 | 只认什么 |
+| --- | --- | --- |
+| 宿主层 | `r3e-app` / `r3e-editor` / 插件 | `GfxApi` / `GfxInfo` / `caps_line()` |
+| 门面层 | `Renderer` + `gfx::RenderBackend` | 身份 / 能力 / 尺寸 / resize |
+| 获取层 | `gfx::selection` → `gfx::create_context` → `gfx::backend::open` | 设备怎么弄到手（唯一碰 Instance / Adapter 的地方） |
+| 实现层 | `renderer.rs` 其余部分 | wgpu 具体绘制 |
+
+### 28.1 怎么选 API
+
+```powershell
+cargo run                                       # 未设 → 平台偏好表首项（Windows 上 = wgpu）
+$env:R3E_GFX_API = "wgpu"; cargo run            # 点名 wgpu；起不来 → 退出码 3
+$env:R3E_GFX_API = "auto"; cargo run            # 同"未设"，但日志记 source=env
+$env:R3E_GFX_API = "vulkan"; cargo run          # 拼错 → Err + 退出码 3（不静默回落）
+```
+
+`R3E_GFX_API` 管的是**API 家族**；`WGPU_BACKEND`（扩展四十三）管的是**wgpu 内部走哪个后端**。两者正交：
+`R3E_GFX_API=wgpu` + `WGPU_BACKEND=dx12` 表示"用 wgpu 这套 API，落到 DX12"。
+
+### 28.2 中性能力面
+
+`renderer.gfx_info()` 返回 `GfxInfo`（`api` / `backend` / `adapter` / `device_type` / `features` / `missing` /
+`requested`，全是纯数据）；`renderer.caps_line()` 压成一行进日志与遥测：
+
+```
+api=wgpu backend=vulkan device=NVIDIA GeForce RTX 5060 Laptop GPU (discrete) 特性 ... / 缺 ... 要求 ...
+```
+
+`RenderBackend` 只收 5 件事（`gfx_api` / `gfx_info` / `caps_line` / `size` / `resize`）——刻意不搬
+`Renderer` 的其余方法：那是「wgpu 实现说明书」，新后端得为每个 wgpu 概念编假 API。按证据扩面。
+
+### 28.3 怎么验证这层没被绕过
+
+```powershell
+cargo test -p r3e-render --test gfx_boundary     # 6 条源码级守卫
+cargo test -p r3e-render gfx                     # 23 条内联单测（枚举 / 选路 / 能力面 / 设备描述）
+```
+
+`gfx_boundary.rs` 扫描生产源码，守住三件容易被"顺手绕过"的事：设备只在 `gfx::backend` 里获取、
+`Renderer` 公开面不再出现 wgpu 类型、中性层（`mod` / `api` / `info` / `selection`）不出现 `wgpu::`。
+
+### 28.4 测试覆盖
+
+| 文件 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-render/src/gfx/api.rs` | 5 | `GfxApi` 名称往返、`from_name` 大小写与空格、每个平台都有偏好行、未知平台退回 `ALL` |
+| `crates/r3e-render/src/gfx/selection.rs` | 7 | `R3E_GFX_API` 未设 / `auto` / 空 / 具名 / 拼错即 `Err`、显式时候选唯一、`describe` 带来源 |
+| `crates/r3e-render/src/gfx/info.rs` | 5 | `caps_line` 保留探针字段、无特性时写 none、缺特性不失败、`device_type` 不碰后端类型 |
+| `crates/r3e-render/src/gfx/backend.rs` | 3 | 设备类型名映射、未实现的 API 在碰 GPU 前就被拒、`DeviceDescriptor` 用 WebGPU 基线限制 |
+| `crates/r3e-render/src/gfx/mod.rs` | 3 | 选路可在无 GPU 环境读、`backend_was_explicitly_requested` 在干净环境为 false、候选必含选中项 |
+| `crates/r3e-render/tests/gfx_boundary.rs` | 6 | 设备获取唯一位置、`Renderer` 不吐后端类型、中性层保持中性、`Renderer` 实现契约、平台偏好表自洽、只列已实现 API |
+
+### 28.5 已知边界
+
+- **只实现 wgpu**：`GfxApi` 里没有 `Vulkan` / `Metal` / `D3D12` 变体 —— 枚举里不放假选项；
+- **没有 `dyn` 运行时分发**：单后端下虚表只增加间接跳转；
+- **启动时定死**：换 API 要重启，不支持一进程双后端；
+- **跨 API 契约只有 5 项**：其余能力仍属 `Renderer`（wgpu 实现）；
+- **接新 API 的改动面**：`GfxApi` 加变体 → `gfx::backend` 加 `open` → `PLATFORM_PREFERENCE` 插优先级（+ 新后端的绘制文件）。
 
 ---
 

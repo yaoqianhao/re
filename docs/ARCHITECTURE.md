@@ -154,7 +154,7 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **64,760** | **13,400** | **1,193** | **约 6.5 万行 Rust + 1,512 行 WGSL（扩展四十三未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 84 个套件 / 1,193 passed / 0 failed** |
+| **合计** | **65,300** | **13,596** | **1,218** | **约 6.5 万行 Rust + 1,512 行 WGSL（扩展四十四未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 85 个套件 / 1,218 passed / 0 failed** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,512 行 WGSL，全在 `r3e-render`，按 `crates/**/src/**/*.wgsl` 实测）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
@@ -235,6 +235,14 @@ src 一栏为同口径重算的净值——扩展四十一自身只加了常量�
 再比像素 ~+56；`lib.rs` 导出 +6，
 收尾实测 **64,760 src / 13,400 tests / 1,193 单测 / 84 套件 1,193 passed / 0 failed**，
 `--features rapier` 同 84 套件 1,193 passed），
+扩展四十四（图形 API 抽象层）新增 `render/gfx/` 五个文件 **994 行 23 测**（`mod.rs` 的 `RenderBackend` 契约与门面 3 测、
+`api.rs` 的 `GfxApi` / `GfxPlatform` / `PLATFORM_PREFERENCE` 5 测、`selection.rs` 的 `R3E_GFX_API` 解析与 `GfxSelection` 7 测、
+`info.rs` 的中性能力面 `GfxInfo` 5 测、`backend.rs` 的 `GfxContext` 与 `open` 3 测）
++ `render/tests/gfx_boundary.rs` **196 行 6 测**（源码级边界守卫），`render/renderer.rs` **净 -81 行**
+（设备获取整段搬到 `gfx::backend`，`AdapterInfo` / `Features` / `Backends` 三件套换成一个 `gfx_info` 字段），
+`render/lib.rs` +6、`app/app.rs` +5（退出码 3 的条件扩到「点名了 API」），
+收尾实测 **65,300 src / 13,596 tests / 1,218 单测 / 85 套件 1,218 passed / 0 failed**，
+`--features rapier` 同 85 套件 1,222 passed），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
 （`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
@@ -257,8 +265,8 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
-| 单测（默认特性） | `cargo test --workspace` | 1,189 passed / 0 failed（84 个套件；扩展四十三新增套件 `gpu_caps_contract` 6 测 + `r3e-render::gpu_caps` 17 条单测） |
-| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,193 passed / 0 failed（84 个套件；比默认特性多 4 条，来源是**只在该特性下编译**的 `ccd_penetration.rs`（文件级 `#![cfg(feature = "rapier")]`，3 测）与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`（1 测），默认特性下整条用例不参与计数）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
+| 单测（默认特性） | `cargo test --workspace` | 1,218 passed / 0 failed（85 个套件；扩展四十四新增套件 `gfx_boundary` 6 测 + `r3e-render::gfx` 23 条单测） |
+| 单测（Rapier） | `cargo test --workspace --features rapier` | 1,222 passed / 0 failed（85 个套件；比默认特性多 4 条，来源是**只在该特性下编译**的 `ccd_penetration.rs`（文件级 `#![cfg(feature = "rapier")]`，3 测）与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`（1 测），默认特性下整条用例不参与计数）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -3551,6 +3559,100 @@ features，日志里那句后端名只是 `adapter.get_info()` 的副产品。�
 
 ---
 
+### 5.31 图形 API 抽象层（扩展四十四）
+
+扩展四十三把「wgpu 内部选哪个后端」做成了可钉死、可复核；但那是**同一套 API 内部**的事。
+真正让「引擎绑定 wgpu」成立的是另一层：`r3e-render` 的公开面曾把 `wgpu::AdapterInfo`、`wgpu::Features`、
+`wgpu::Backends` 直接递给宿主 —— 换一套图形 API 时，宿主、插件、编辑器都得跟着改。这不算解耦，
+只是把耦合挪了个位置。这一节处理的是**API 家族**这一层（与 §5.30 的后端选择是两个正交维度）。
+
+#### 四层边界
+
+| 层 | 位置 | 只认什么 |
+| --- | --- | --- |
+| 宿主层 | `r3e-app` / `r3e-editor` / 插件 | `GfxApi` / `GfxInfo` / `caps_line()`，不 import 任何图形库类型 |
+| 门面层 | `renderer.rs` 的 `Renderer` + `gfx::RenderBackend` | 跨 API 契约：身份 / 能力 / 尺寸 / resize |
+| 获取层 | `gfx::selection()` → `gfx::create_context()` → `gfx::backend::open()` | 设备怎么弄到手（**唯一**碰 Instance / Adapter 的地方） |
+| 实现层 | `renderer.rs` 其余部分（管线 / 绑定 / pass） | wgpu 具体绘制，既有调用一处未改 |
+
+#### 三个真被验证的不变量
+
+抽象在这里不靠 `dyn Trait` 假装多态（那会给既有的数百处 wgpu 调用各自长出一条虚表分支），
+靠的是 `render/tests/gfx_boundary.rs` 扫描生产源码守住的三条：
+
+| 不变量 | 守它的测试 | 破了意味着什么 |
+| --- | --- | --- |
+| 设备只能由 `gfx::backend` 获取 | `device_acquisition_lives_only_in_the_backend_impl` | 别处又直接 `Instance::new` / `request_adapter`，抽象层立刻形同虚设 |
+| `Renderer` 的公开面不出现后端类型 | `renderer_no_longer_hands_out_backend_types` | 宿主被迫认识 wgpu，下一个后端得伪造一个假 `AdapterInfo` 才能满足签名 |
+| 中性层（`mod` / `api` / `info` / `selection`）不出现 `wgpu::` | `the_neutral_layer_stays_neutral`（剔除注释行，只查代码） | 能力面被实现细节污染，换 API 时它第一个要改 |
+
+另三条：`renderer_implements_the_cross_api_contract`（`Renderer` 真实现了 trait，不只是写了 trait 声明）、
+`platform_preference_table_is_consistent`（每个已知平台都有行、行内各项都在 `GfxApi::ALL` 里、顺序即优先级）、
+`only_implemented_apis_are_offered_today`（`GfxApi::ALL` 只含已实现者 —— 枚举里不放假选项）。
+
+#### 选路
+
+```
+R3E_GFX_API=wgpu      → 只有 wgpu（点名要的，起不来就失败：app 以退出码 3 结束）
+R3E_GFX_API=auto/空   → 平台偏好表首项（今天每个平台都是 wgpu），source = Env
+未设                  → 平台偏好表首项，source = Platform
+```
+
+`GfxSelection::from_spec` 对拼错的名字返回 `Err`（附可选值列表），**不静默回落** —— 否则你以为在验证新后端，
+实际跑的是 wgpu。`candidates()` 给出降级顺序：显式指定时**只有它自己**（悄悄退到别的 API 会让「指定」失去意义）；
+平台默认时按该平台行顺序去重，表里漏了当前平台就退回 `GfxApi::ALL`（新平台不该因为表里少一行就起不来）。
+
+`PLATFORM_PREFERENCE` 六行（windows / linux / macos / android / web / other）现在**每行都只有 `wgpu`**——
+这不是占位符，是当前事实。将来要「Windows 优先自建 Vulkan、失败再退 wgpu」，把那行改成
+`&[GfxApi::Vulkan, GfxApi::Wgpu]` 即可，`candidates()` 自动按新顺序返回，`Renderer` 与宿主零改动。
+
+#### 中性能力面
+
+`GfxInfo` 是宿主唯一可见的设备身份，**七个字段全是纯数据、不含任何图形库类型**：
+
+| 字段 | 内容 |
+| --- | --- |
+| `api` | `GfxApi::Wgpu` |
+| `backend` | 后端名（`vulkan` / `dx12`，来自扩展四十三的 `WGPU_BACKEND`） |
+| `adapter` | 适配器名（`NVIDIA GeForce RTX 5060 Laptop GPU`） |
+| `device_type` | `discrete` / `integrated` / `cpu` / `virtual` / `other` |
+| `features` | 协商到的特性名列表（空 = 一个可选特性都没要） |
+| `missing` | 要求了但驱动没给的（**只记日志、不失败**） |
+| `requested` | 要求的后端（如 `dx12`，来自 `WGPU_BACKEND`） |
+
+`caps_line()` 把它们压成一行 `api=wgpu backend=vulkan device=... (discrete) 特性 ... / 缺 ... 要求 ...`，
+启动日志与真机验收都抓这一行；`is_partial()` / `is_discrete()` 是两个纯查询，替代原来散落在各处的
+`matches!(adapter_info.device_type, wgpu::DeviceType::DiscreteGpu)` 写法。
+
+#### `RenderBackend` 只收 5 件事
+
+`gfx_api` / `gfx_info` / `caps_line` / `size` / `resize`。**刻意不收** `Renderer` 的其余方法（设置阴影、后处理、
+拾取、文本、上传策略……）：把它们放进 trait 会得到一份「wgpu 实现说明书」而不是跨 API 契约，新后端得为每个
+wgpu 特有概念编一个假 API，抽象反成负担。准确表述是：**这一层管身份、能力、尺寸、resize；具体绘制能力暂时
+绑定在具体类型 `Renderer` 上**（宿主本来就 `use r3e_render::Renderer`），待某能力在第二个后端上也有对应物，
+再提到 trait 上 —— 按证据扩面，不按想象扩面。
+
+#### 接入一套新 API 要改哪
+
+1. `gfx/api.rs`：给 `GfxApi` 加变体（`#[non_exhaustive]` 已保证对下游非破坏）、`name` / `from_name` 各加一支；
+2. `gfx/backend.rs`：加一条 `open` 实现，产出同一个 `GfxContext`（`info` 用自己的数据填成 `GfxInfo`）；
+3. `PLATFORM_PREFERENCE`：在对应平台行里插入优先级；
+4. 渲染实现侧：新后端自己的绘制文件。
+
+宿主、编辑器、插件、脚本 API **不改**。这也是「保留余地」的具体含义：改的是枚举、获取实现、优先级表三处，
+改的不是调用方。
+
+#### 边界（不做什么）
+
+- **没有 `dyn` 运行时多态**：只有一套 API 时，虚表只是给既有调用加一次间接跳转，收益为零；
+- **没有「一个进程同时跑两个后端」**：选择在启动时定死，换 API 需重启（与 `WGPU_BACKEND` 同语义）；
+- **`GfxApi::ALL` 只列已实现**：`Vulkan` / `Metal` / `D3D12` 直连等真写出来才进枚举，避免「枚举里有、跑起来没有」；
+- **跨 API 契约只有 5 项**：`Renderer` 的其余能力仍属 wgpu 实现，跨 API 调用方目前只敢依赖这 5 项；
+- **`resize` 的第二套语义未验证**：注释写明「重建尺寸相关附件、不重建设备」，这是 wgpu 的语义，接 GL / Metal 时需复核；
+- **`GfxInfo` 不含队列族、扩展列表、显存等底层字段**：那些是把 wgpu 之上的信息面再拉宽，等真需要时按证据加。
+
+---
+
 ### 8.1 程序入口（main.rs）
 
 ```rust
@@ -5064,6 +5166,7 @@ cargo test -p r3e-render upload_staging
 | **四十一（已完成：三组 `vec4` 权重 / 形状数 8 → 12）** | **把「组数 × 4」这条机制再加一组**：`MORPH_WEIGHT_GROUPS` 2 → 3（`MAX_MORPH_TARGETS` 跟着变成 12，`MorphInstance` 的 `weights` / `exclusive` 随常量变宽到 12 格，`ALL_SHAPE_MASK` 到 `0xFFF`）；`r3e-render::mesh` 的 `MORPH_MASK_LOCATION` 由常量推导出 **15**、`MORPH_MASK_OFFSET` 到 **144**、`ATTRIBUTES` 多一条 location 14 的 `vec4`（第三组权重）、`array_stride` **132 → 148**；`shader.wgsl` 的 `MORPH_SHAPES = 12`、`morph_offset` 加第三组累加（主通道与深度通道两个 `VsIn` 都补 `morph_w2`）；`gltf_import` / `renderer` 里定长 `[f32; 8]` 的权重数组同步到 12。详见 §4.20 / §5.28 | `core/morph.rs` 常量 + 契约用例断言（2 → 3）；`render/mesh.rs` 布局常量与 `instance_layout_carries_morph_weights` / `instance_layout_carries_morph_mask`；`render/tests/instance_upload_contract.rs` 步长改 148；`render/shader.wgsl`；`script/api.rs` 掩码夹取跟着 `MAX_MORPH_TARGETS` 走；新增 `app/tests/morph_twelve_shapes.rs`（2 测）+ 夹具 `fixtures/morph_twelve`（12 形状 `octa_face.glb` 3,040 B、`scene.json`、`raw` / `shape0` / `shape4` / `shape8` / `shape11` 五个脚本） | 无（**不改渲染结果**：`count ≤ 8` 的资产第三组权重恒 0，`morph_offset` 里第三组是 `0.0 × 增量` 的乘加，像素与扩展四十逐位相同，基线无需重建）。**代价**：实例记录 132 → **148 B**（+16 B/实例，1,537 实例影子多 ≈ 24 KiB）；顶点每形状多一次乘加，但只在 `count > 8` 的实例上真跑。**边界**：`ATTRIBUTES` 手写数组与 `shader.wgsl` 的 `MORPH_SHAPES` 必须同步改，漏一处就是 layout 与着色器对不上（本次首轮编译即因此失败）；再往上加组（4 组 = 16 形状）会先撞上掩码的槽位比较，应先做 ③ 的 `popcount` + 紧凑列表（**已由扩展四十二落地**） |
 | **四十二（已完成：形状槽序号 / 掩码 → 紧凑索引列表）** | **把「按位比较」换成「按序号间接取」**：`core/morph.rs` 加 `MORPH_SLOT_CAPACITY = MORPH_WEIGHT_GROUPS × 4`（槽容量恰等于权重分量数：多一个槽也没权重喂它）与 `shape_slots()`（把掩码压成升序序号列表，供渲染侧取）；掩码本身仍是脚本侧语义（`morph_mask` / `morph_show` 一字不改）。`r3e-render::mesh` 把 location 15 的 `Uint32` 掩码换成 **`vec4<u32>` 序号块**：`MORPH_SLOT_WORDS = 3`（3 字 × 4 个 `u8` = 12 槽）、`MORPH_SLOT_ATTR_WORDS = 4`（第 4 字恒 0 只为填满 `vec4`）、`MORPH_SLOT_LOCATION_BASE = 15`、`MORPH_SLOT_OFFSET = 144`、`pack_morph_slots` 按 `u8` 小端打包，`array_stride` **148 → 160**；`renderer::morph_upload` 成为「掩码 → 槽列表」的唯一入口（越界形状丢掉并左移压缩，返回的 `count` 即槽数）；`shader.wgsl` 删掉逐形状静态展开与掩码乘子，改成 `morph_slot_shape`（按字节取序号）+ `morph_slot_accumulate`（`head + stride * shape` 运行时偏移）+ 按槽循环，`instance_meta.w` 语义从「网格形状数」变「槽数」。详见 §5.29 | `core/morph.rs` / `core/lib.rs`；`render/mesh.rs`（4 个常量 + `pack_morph_slots` + 布局用例）、`render/renderer.rs`（`morph_upload`）、`render/shader.wgsl`（净减 9 行）、`render/tests/morph_shader_parity.rs`（+4 契约：`both_vertex_stages_declare_morph_slots` / `both_stages_pass_slot_words_into_morph_offset` / `slot_index_is_extracted_per_byte` / `mask_multiplier_is_gone` / `slot_offset_sits_after_the_weight_block`）、`render/tests/instance_upload_contract.rs`（步长 160） | 无（**像素逐位不变**：槽列表按形状下标升序、权重分量按同一槽下标对齐，累加顺序与位图方案逐项相同 —— 真机 `morph_mask` 夹具五态与扩展四十**同字节数、同像素数**，视觉基线无需重建）。**真机核心判据**：形状 4（`w1.x`、落在槽 1）与形状 0 互差 **24,807 像素 / 10.77%**，与扩展三十九记录的「形状 4 vs 形状 0 = 10.77%」一位不差 —— 序号打包若写错，两帧会逐字节重合。**代价（不粉饰）**：每顶点每槽一次间接寻址（`head + stride * shape` 里的 `shape` 是运行时读出的 `u8`，GPU 折不进立即数）+ 实例记录 **+12 B**（148 → 160，其中 4 B 是 `vec4` 的占位字）；**12 槽以内没有提速**，收益是结构可伸缩（加槽只改常量与 `MORPH_SLOTS`）。**边界**：形状序号 `u8` 上限 256；`MORPH_SLOT_WORDS > MORPH_SLOT_ATTR_WORDS` 时 `const { assert! }` 编译期就红，逼着加第二个 location 而不是静默丢形状；槽容量仍等于权重分量数，**加容量仍须先加权重组** |
 | **四十三（已完成：后端矩阵 CI + 特性按需协商）** | **让「跑在哪个后端上」从沉默变成可断言**：新建 `crates/r3e-render/src/gpu_caps.rs` —— `BACKEND_ENV = "WGPU_BACKEND"` + `parse_backends`（认 `vk` / `d3d12` 等别名，逗号或空白分隔，不认识的名字留在第二个返回值里而不是静默丢）+ `requested_backends` + `backend_matches` + `backend_name` / `backend_from_name`（互为逆）；`Renderer::new` 按 env 钉 `Instance` 的 `backends`、拿到 adapter 后校验 `backend_matches`（不符即 `Err`，app 层以**退出码 3** 结束，与「无 GPU 跳过」的 2 严格分开）、`request_device` 改申请 `FeatureReport::negotiate(adapter.features()).enabled`（`FeatureReport { enabled, missing }`，缺的只记日志不失败；交集仍被驱动拒绝则 warn 后退回 `Features::empty()` 重试），并记一行能力日志与 `caps_line()`（`backend=vulkan device=... 特性 a|b 要求 vulkan`）；CI 的 `visual-gpu` 拆成 `vulkan` + `dx12` 矩阵（`fail-fast: false`、artifacts 分后端名、容差仍取默认值不放宽）；`visual_regression.rs` 改用 `Command::output()` 收日志并**先断言后端、再比像素**（进程内 + 日志两道，防「要 dx12 却跑在 vulkan」的假绿）。**边界**：`gl` 不进矩阵（实测 SSAO 管线 `textureLoad` from depth textures 不被 GLSL 支持，`create_render_pipeline` 直接校验失败 —— 那是后端能力缺失，不是"差异"）；`exit(3)` 只在设了 `WGPU_BACKEND` 时触发，普通开发机语义不变；**本机实测两个后端都真跑通**（`WGPU_BACKEND=vulkan` → 日志 `要求 vulkan / 实际 Vulkan`，`WGPU_BACKEND=dx12` → `要求 dx12 / 实际 Dx12`，严格模式各 2 测 passed），dx12 实际图与 vulkan 基准**最大通道差 1、超阈值（>2）像素 0 / 230,400**，因此**暂不按后端分基准**（同一张图 + 默认容差即可），将来抖动只许放宽那一行的容差 |
+| **四十四（已完成：图形 API 抽象层）** | **把「引擎绑不绑 wgpu」变成源码级可验证的边界**：新建 `crates/r3e-render/src/gfx/`（`mod.rs` + `api.rs` + `selection.rs` + `info.rs` + `backend.rs`，994 行 23 测）—— `GfxApi`（`#[non_exhaustive]`，今天只有 `Wgpu`，**枚举里不放假选项**）、`GfxPlatform`（windows / linux / macos / android / web / other）、`PLATFORM_PREFERENCE` 六行优先级表 + `preference` / `default_api`（表里漏行退回 `GfxApi::ALL`）；`GfxSelection` 的选路是 `R3E_GFX_API`（`wgpu` 或 `auto`，**拼错即 `Err` 不静默回落**，显式指定时 `candidates()` 只有它自己）→ 平台偏好表 → 逐个降级；设备获取整体下沉到 `gfx::backend::open`，产出 `GfxContext { info, device, queue, surface, config }`，`GfxInfo`（api / backend / adapter / device_type / features / missing / requested）是**不含任何图形库类型**的中性能力面；`trait RenderBackend` 只收 5 件事（`gfx_api` / `gfx_info` / `caps_line` / `size` / `resize`），**不把 `Renderer` 的其余方法搬进去**（那是 wgpu 说明书，按证据扩面）；`Renderer` 里原 `AdapterInfo` / `Features` / `Backends` 三件套换成一个 `gfx_info` 字段、`new()` 只剩 `gfx::selection()` + `gfx::create_context()`、对外访问器变成 `gfx_info()` / `gfx_api()` / `caps_line()`；app 的退出码 3 条件从「钉了后端」扩到「点名了 API」。详见 §5.31 | `render/gfx/{mod,api,selection,info,backend}.rs` 新增（994 行）、`render/lib.rs` 导出 13 项、`render/renderer.rs` 净 -81 行、`app/app.rs` 退出码条件 +5；新增 `render/tests/gfx_boundary.rs`（196 行 6 测，扫描生产源码的边界守卫）+ 各文件内联 23 测 | 无（**行为一字未改**：默认仍选 wgpu，`WGPU_BACKEND` 语义不变，像素与上传读数逐位一致，视觉基线不重建）。**新增开关**：`R3E_GFX_API=wgpu|auto`（拼错 → 退出码 3，与「无 GPU 跳过」的 2 分开）。**边界**：只实现 wgpu 一套 API、无 `dyn` 运行时分发、跨 API 契约仅 5 项、启动时定死不可热切、`GfxApi::ALL` 只列已实现者；接新 API 只改「枚举 + `backend::open` + 优先级表」三处，渲染器与宿主不改 |
 
 两条与顺序相关的说明：
 
