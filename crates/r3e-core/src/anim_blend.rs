@@ -1154,6 +1154,53 @@ mod tests {
         assert!(after.contains("v=0.70"), "{after}");
     }
 
+    #[test]
+    fn blend_space_3d_drives_clip_weights() {
+        type Space = crate::blend_space::BlendSpace;
+        // 扩展四十九：层侧不改一行代码，三维空间靠 apply_blend_space 的通用路径生效。
+        let mut layer = AnimLayer::new("move", clip("idle", vec![]), 1.0);
+        assert!(layer.add_clip(clip("walk", vec![]), 1.0));
+        assert!(layer.add_clip(clip("run", vec![]), 1.0));
+        let mut space = Space::new_3d("speed", "turn", "slope");
+        assert!(space.add_sample_3d("idle", [0.0, 0.0, 0.0]));
+        assert!(space.add_sample_3d("walk", [1.0, 0.0, 0.0]));
+        assert!(space.add_sample_3d("run", [2.0, 0.0, 0.0]));
+        assert!(space.add_sample_3d("far", [2.0, 1.0, 1.0]));
+        space.set_value_3d(1.0, 0.0, 0.0);
+        layer.blend_space = Some(space);
+
+        assert!(layer.apply_blend_space());
+        let w = layer.normalized_weights();
+        assert_eq!(w, vec![0.0, 1.0, 0.0], "参数停在 walk：{w:?}");
+
+        // 斜着走到 idle/walk/run 中间：三档都得到份额，且层内没有的 far 被忽略
+        layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_value_3d(1.0, 0.5, 0.5);
+        assert!(layer.apply_blend_space());
+        let w = layer.normalized_weights();
+        assert!((w.iter().sum::<f32>() - 1.0).abs() < 1e-3, "{w:?}");
+        assert!(w[1] > 0.0, "walk 应有份额：{w:?}");
+        assert!(layer.clips[0].weight >= 0.0 && layer.clips[2].weight >= 0.0);
+    }
+
+    #[test]
+    fn layer_report_appends_3d_blend_segment() {
+        type Space = crate::blend_space::BlendSpace;
+        let mut layer = AnimLayer::new("move", clip("idle", vec![]), 1.0);
+        let mut space = Space::new_3d("speed", "turn", "slope");
+        assert!(space.add_sample_3d("idle", [0.0, 0.0, 0.0]));
+        assert!(space.add_sample_3d("walk", [1.0, 0.0, 0.0]));
+        space.set_value_3d(0.5, 0.0, 0.0);
+        layer.blend_space = Some(space);
+        let info = layer_report(&layer);
+        assert!(info.contains("blend=3d(speed,turn,slope)"), "{info}");
+        assert!(info.contains("tet=0"), "{info}");
+        assert!(info.contains("v=(0.50,0.00,0.00)"), "{info}");
+    }
+
     fn track_at(node_index: u32, path: &str, end: Vec3) -> AnimTrack {
         AnimTrack {
             node_path: path.to_string(),

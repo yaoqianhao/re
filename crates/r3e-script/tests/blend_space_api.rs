@@ -1,12 +1,13 @@
-//! 脚本层 1D / 2D 混合空间绑定的行为测试（扩展四十五）。
+//! 脚本层 1D / 2D / 3D 混合空间绑定的行为测试（扩展四十五 / 四十九）。
 //!
 //! `r3e-core` 的单测保证了几何算法本身对不对，但「脚本调完之后骨骼到底怎么动」只有真跑
-//! Rhai 才能确认。这里覆盖五件事：
+//! Rhai 才能确认。这里覆盖六件事：
 //! ① 挂空间之前层仍走手写权重（零变化），挂空间之后权重由参数算出来；
 //! ② 一维参数推到端点 / 中点时的姿态落点；
 //! ③ 二维四角样本在中心各占一半、框外外插钳制到最近边；
 //! ④ 回显字符串（`anim_layer_blend`）能 grep 到维度、样本数、参数值与权重；
-//! ⑤ 摘掉空间后回到手写权重，实例/层不存在时返回中性值。
+//! ⑤ 摘掉空间后回到手写权重，实例/层不存在时返回中性值；
+//! ⑥ 三维空间（四面体剖分）的顶点 / 棱上落点，以及二维入口在三维空间上等价于 z=0。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -239,6 +240,73 @@ fn script_blend_space_cleared_falls_back_to_manual_weights() {
     f.advance(0.0);
     let x = f.pos_x("arm");
     assert!(x.abs() < 1e-4, "手写权重应重新接管，实际 {x}");
+}
+
+#[test]
+fn script_3d_blend_space_drives_layer_weights() {
+    let mut f = fixture();
+    assert!(f.bool_of(r#"add_anim_layer("demo/walk", "move", "idle", 1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_clip("demo/walk", "move", "atk", 0.0)"#));
+    // 挂之前仍然走手写权重
+    f.advance(0.5);
+    let x = f.pos_x("arm");
+    assert!(x.abs() < 1e-4, "未挂三维空间时应走手写权重，实际 {x}");
+
+    assert!(
+        f.bool_of(r#"set_anim_layer_blend_3d("demo/walk", "move", "move.x", "move.y", "speed")"#)
+    );
+    // 四个不共面样本 → 一个四面体：idle 占原点角，atk 占另外三个角
+    assert!(f.bool_of(
+        r#"add_anim_layer_blend_sample_3d("demo/walk", "move", "idle", -1.0, -1.0, -1.0)"#
+    ));
+    assert!(
+        f.bool_of(r#"add_anim_layer_blend_sample_3d("demo/walk", "move", "atk", 1.0, -1.0, -1.0)"#)
+    );
+    assert!(
+        f.bool_of(r#"add_anim_layer_blend_sample_3d("demo/walk", "move", "atk", 1.0, 1.0, -1.0)"#)
+    );
+    assert!(
+        f.bool_of(r#"add_anim_layer_blend_sample_3d("demo/walk", "move", "atk", 1.0, 1.0, 1.0)"#)
+    );
+    // 同一位置再来一份要被拒（否则等于偷偷加一路平均姿态）
+    assert!(!f.bool_of(
+        r#"add_anim_layer_blend_sample_3d("demo/walk", "move", "idle", -1.0, -1.0, -1.0)"#
+    ));
+
+    // 棱中点 idle-atk：各半 → 25（t=0.5 时 idle=0、atk=50）
+    assert!(f.bool_of(r#"set_anim_layer_blend_value_3d("demo/walk", "move", 0.0, -1.0, -1.0)"#));
+    f.advance(0.0);
+    let x = f.pos_x("arm");
+    assert!((x - 25.0).abs() < 1e-3, "棱中点应各半，实际 {x}");
+
+    let line = f.string_of(r#"anim_layer_blend("demo/walk", "move")"#);
+    assert!(
+        line.starts_with("3d(move.x,move.y,speed) n=4 tet=1 drop=1 v=(0.00,-1.00,-1.00) w="),
+        "回显前缀不对: {line}"
+    );
+    assert!(
+        line.contains("idle=0.50") && line.contains("atk=0.50"),
+        "回显权重不对: {line}"
+    );
+
+    // 顶点：全 atk → 50
+    assert!(f.bool_of(r#"set_anim_layer_blend_value_3d("demo/walk", "move", 1.0, -1.0, -1.0)"#));
+    f.advance(0.0);
+    let x = f.pos_x("arm");
+    assert!((x - 50.0).abs() < 1e-3, "顶点应取 atk，实际 {x}");
+
+    // 二维入口在三维空间上等价于 z=0：四面体内部，权重仍归一
+    assert!(f.bool_of(r#"set_anim_layer_blend_value("demo/walk", "move", 1.0, 1.0)"#));
+    f.advance(0.0);
+    let x = f.pos_x("arm");
+    assert!((0.0..=50.0).contains(&x), "二维入口不应越界，实际 {x}");
+
+    // 三维入口的缺失目标仍是 false，不 panic
+    assert!(!f.bool_of(r#"set_anim_layer_blend_3d("nobody", "nope", "x", "y", "z")"#));
+    assert!(
+        !f.bool_of(r#"add_anim_layer_blend_sample_3d("demo/walk", "nope", "idle", 0.0, 0.0, 0.0)"#)
+    );
+    assert!(!f.bool_of(r#"set_anim_layer_blend_value_3d("demo/walk", "nope", 0.0, 0.0, 0.0)"#));
 }
 
 #[test]

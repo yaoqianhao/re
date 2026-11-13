@@ -1930,7 +1930,7 @@ impl Scene {
         }
     }
 
-    // ---------- 1D / 2D 混合空间（扩展四十五） ----------
+    // ---------- 1D / 2D / 3D 混合空间（扩展四十五 / 四十九） ----------
 
     /// 给层挂一维混合空间（`param` 是参数名，例如 `"speed"`），样本表清空重建。
     ///
@@ -1953,6 +1953,21 @@ impl Scene {
         y: &str,
     ) -> bool {
         self.set_anim_layer_blend_space(instance, layer, BlendSpace::new_2d(x, y))
+    }
+
+    /// 给层挂三维混合空间（`x` / `y` / `z` 三个参数名），样本表清空重建。
+    ///
+    /// 扩展四十九：把「八向移动 × 三档速度」这种过去要拿两层 2D 叠起来的表达，
+    /// 收成一张三维单纯形图（四面体剖分 + 重心插值）。
+    pub fn set_anim_layer_blend_space_3d(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        x: &str,
+        y: &str,
+        z: &str,
+    ) -> bool {
+        self.set_anim_layer_blend_space(instance, layer, BlendSpace::new_3d(x, y, z))
     }
 
     /// 给层挂一个现成的混合空间（覆盖原有，连同样本一起）。
@@ -2027,6 +2042,53 @@ impl Scene {
     ) -> Option<bool> {
         let layer_ref = anim_layer_mut(self.anim_instance_mut(instance)?, layer)?;
         layer_ref.blend_space.as_mut().map(|s| s.set_value(x, y))
+    }
+
+    /// 往层的三维混合空间加一个样本（扩展四十九）。
+    ///
+    /// 与二维版同语义：`None` = 层不存在或没挂空间；`Some(false)` = 样本被拒
+    /// （片段名解析不到 / 坐标重复 / 非有限值 / 超过上限，上限已由 16 抬到 32）。
+    pub fn add_anim_layer_blend_sample_3d(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip_name: &str,
+        at: [f32; 3],
+    ) -> Option<bool> {
+        let clip = self.find_anim_clip(instance, clip_name);
+        let layer_ref = anim_layer_mut(self.anim_instance_mut(instance)?, layer)?;
+        let space = layer_ref.blend_space.as_mut()?;
+        Some(match clip {
+            Some(c) => space.add_sample_3d(c.name.clone(), at),
+            None => {
+                space.note_rejected();
+                false
+            }
+        })
+    }
+
+    /// 设定三维混合空间参数。
+    ///
+    /// `None` = 层不存在或没挂空间；`Some(false)` = 参数非有限，整条拒绝、保持旧值。
+    pub fn set_anim_layer_blend_value_3d(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> Option<bool> {
+        let layer_ref = anim_layer_mut(self.anim_instance_mut(instance)?, layer)?;
+        layer_ref
+            .blend_space
+            .as_mut()
+            .map(|s| s.set_value_3d(x, y, z))
+    }
+
+    /// 混合空间所属维度（`"1d"` / `"2d"` / `"3d"`）。没挂空间返回 `None`。
+    pub fn anim_layer_blend_dim(&self, instance: &str, layer: &str) -> Option<&'static str> {
+        self.blend_space_of(instance, layer)
+            .map(|s| s.dim().as_str())
     }
 
     /// 混合空间单行摘要（日志 / RPC 回显用）。没挂空间返回 `None`。
@@ -2938,6 +3000,94 @@ mod anim_tests {
         scene.update_animations(0.0);
         let x = scene.get(arm).unwrap().transform.position.x;
         assert!((x - 50.0).abs() < 1e-3, "参数 1.0 应取 fast，实际 {x}");
+    }
+
+    #[test]
+    fn blend_space_3d_drives_layer_clip_weights() {
+        let (mut scene, arm, _leg) = layer_scene();
+        let still = std::sync::Arc::new(AnimClip {
+            name: "still".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::ZERO)],
+        });
+        let fast = std::sync::Arc::new(AnimClip {
+            name: "fast".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(100.0, 0.0, 0.0))],
+        });
+        // 只为凑出四面体：这两个片段不进层，权重份额应被忽略。
+        let up = std::sync::Arc::new(AnimClip {
+            name: "up".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(0.0, 0.0, 0.0))],
+        });
+        let far = std::sync::Arc::new(AnimClip {
+            name: "far".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(0.0, 0.0, 0.0))],
+        });
+        scene.register_anim_clip("demo/still", still.clone());
+        scene.register_anim_clip("demo/fast", fast.clone());
+        scene.register_anim_clip("demo/up", up);
+        scene.register_anim_clip("demo/far", far);
+
+        let mut layer = AnimLayer::new("move", still.clone(), 1.0);
+        assert!(layer.add_clip(fast.clone(), 0.0));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        assert!(scene.set_anim_layer_blend_space_3d("demo/walk", "move", "speed", "turn", "slope"));
+        assert_eq!(
+            scene.anim_layer_blend_dim("demo/walk", "move"),
+            Some("3d"),
+            "挂的应是三维空间"
+        );
+        for (name, at) in [
+            ("still", [0.0, 0.0, 0.0]),
+            ("fast", [1.0, 0.0, 0.0]),
+            ("up", [0.0, 1.0, 0.0]),
+            ("far", [0.0, 0.0, 1.0]),
+        ] {
+            assert_eq!(
+                scene.add_anim_layer_blend_sample_3d("demo/walk", "move", name, at),
+                Some(true),
+                "{name}"
+            );
+        }
+        let brief = scene
+            .anim_layer_blend_brief("demo/walk", "move")
+            .expect("刚挂过");
+        assert!(brief.contains("3d(speed,turn,slope)"), "{brief}");
+        assert!(
+            brief.contains("tet=1"),
+            "四个不共面样本应建出一个四面体：{brief}"
+        );
+
+        // 棱中点 still-fast：各半 → 0*0.5 + 50*0.5 = 25
+        assert_eq!(
+            scene.set_anim_layer_blend_value_3d("demo/walk", "move", 0.5, 0.0, 0.0),
+            Some(true)
+        );
+        scene.update_animations(0.5);
+        let x = scene.get(arm).unwrap().transform.position.x;
+        assert!((x - 25.0).abs() < 1e-3, "三维插值应到 25，实际 {x}");
+
+        // 顶点：fast 全额 → 50（层时间停在 0.5s，避免跨过 1s 循环点）
+        assert_eq!(
+            scene.set_anim_layer_blend_value_3d("demo/walk", "move", 1.0, 0.0, 0.0),
+            Some(true)
+        );
+        scene.update_animations(0.0);
+        let x = scene.get(arm).unwrap().transform.position.x;
+        assert!((x - 50.0).abs() < 1e-3, "顶点应取 fast，实际 {x}");
+
+        // 二维入口在三维空间上仍可用（前两维），不该 panic 或丢权重
+        assert_eq!(
+            scene.set_anim_layer_blend_value("demo/walk", "move", 0.5, 0.0),
+            Some(true)
+        );
+        scene.update_animations(0.0);
+        let x = scene.get(arm).unwrap().transform.position.x;
+        assert!((x - 25.0).abs() < 1e-3, "二维入口后应回到 25，实际 {x}");
     }
 
     #[test]
