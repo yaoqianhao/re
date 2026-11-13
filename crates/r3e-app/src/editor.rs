@@ -23,7 +23,7 @@ use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::scene_stack::{SceneArchive, SceneCommand, ARCHIVE_FORMAT, ARCHIVE_VERSION};
 use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUnit, UiUpsert, UiValue};
-use r3e_core::{AnimLayer, BoneMask, LayerMode, MAX_ANIM_LAYERS};
+use r3e_core::{AnimLayer, BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_editor::{
@@ -800,6 +800,12 @@ impl EngineApi for LocalEngineApi<'_> {
             None => None,
         };
         let mask = patch.mask.as_deref().map(bone_mask_of);
+        let sync = match patch.sync.as_deref() {
+            Some(name) => Some(LayerSync::parse(name).ok_or_else(|| {
+                RpcFailure::invalid_params(format!("未知采样策略 `{name}`（可选：off / phase）"))
+            })?),
+            None => None,
+        };
         let mut scene = self.scene.borrow_mut();
         if scene.anim_instance(&patch.instance).is_none() {
             return Err(RpcFailure::invalid_params(format!(
@@ -832,6 +838,11 @@ impl EngineApi for LocalEngineApi<'_> {
         }
         if let Some(v) = patch.speed {
             if !scene.set_anim_layer_speed(&patch.instance, &patch.layer, v) {
+                return Err(layer_missing(&patch.instance, &patch.layer));
+            }
+        }
+        if let Some(v) = sync {
+            if !scene.set_anim_layer_sync_strategy(&patch.instance, &patch.layer, v) {
                 return Err(layer_missing(&patch.instance, &patch.layer));
             }
         }
@@ -1760,6 +1771,10 @@ fn anim_layer_value(instance: &str, layer: &AnimLayer) -> Value {
         "speed": layer.speed,
         "looping": layer.looping,
         "playing": layer.playing,
+        // 扩展四十六：采样策略 + 当前相位（`phase` 不受 `off` 影响，始终可读，
+        // 编辑器画相位标尺时不用管策略开关）。
+        "sync": layer.sync.as_str(),
+        "phase": layer.phase(),
     })
 }
 
@@ -2764,6 +2779,7 @@ mod tests {
                 mask: Some("cube,!root".to_string()),
                 speed: Some(2.0),
                 clip: None,
+                sync: Some("phase".to_string()),
             })
             .expect("补丁应成功");
         let layer = &out["layer"];
@@ -2775,6 +2791,9 @@ mod tests {
         assert_eq!(layer["mask_include"], json!(["cube"]));
         assert_eq!(layer["mask_exclude"], json!(["root"]));
         assert_eq!(layer["mask"], json!("cube,!root"), "遮罩应能原样回写成串");
+        // 扩展四十六：采样策略随补丁落到 core，并可回读
+        assert_eq!(layer["sync"], json!("phase"), "策略应原样回显");
+        assert!(layer["phase"].is_number(), "相位应始终可读");
 
         // 落到了 core 上，而不是只回了个好看的 JSON。
         let stored = scene
@@ -2785,7 +2804,35 @@ mod tests {
         assert!((stored.weight - 0.4).abs() < 1e-6);
         assert_eq!(stored.mode, LayerMode::Additive);
         assert!((stored.speed - 2.0).abs() < 1e-6);
+        assert_eq!(stored.sync, LayerSync::Phase);
         assert!(stored.mask.contains("cube") && !stored.mask.contains("root"));
+    }
+
+    #[test]
+    fn anim_layer_set_rejects_unknown_sync_without_side_effect() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        let _ = scripts
+            .eval(r#"add_anim_layer("hero/walk", "upper", "atk", 0.8)"#)
+            .expect("建层应成功");
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        // 策略名写错：整张补丁都不该落地，权重保持 0.8、策略保持 off。
+        let bad = api.scene_anim_layer_set(AnimLayerPatch {
+            instance: "hero/walk".to_string(),
+            layer: "upper".to_string(),
+            weight: Some(0.2),
+            sync: Some("warp".to_string()),
+            ..Default::default()
+        });
+        assert!(bad.is_err(), "未知采样策略必须报错");
+
+        let stored = scene
+            .borrow()
+            .anim_layer("hero/walk", "upper")
+            .cloned()
+            .expect("层应存在");
+        assert!((stored.weight - 0.8).abs() < 1e-6, "权重不该被改");
+        assert_eq!(stored.sync, LayerSync::Off, "策略不该被改");
     }
 
     #[test]

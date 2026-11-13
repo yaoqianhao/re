@@ -134,7 +134,8 @@ fn set_parses_every_field() {
             "mode": "additive",
             "mask": "arm,hand",
             "speed": 1.5,
-            "clip": "atk"
+            "clip": "atk",
+            "sync": "phase"
         }),
     );
     assert!(resp.error.is_none(), "不应报错: {resp:?}");
@@ -146,6 +147,7 @@ fn set_parses_every_field() {
     assert_eq!(patch.mask.as_deref(), Some("arm,hand"));
     assert_eq!(patch.speed, Some(1.5));
     assert_eq!(patch.clip.as_deref(), Some("atk"));
+    assert_eq!(patch.sync.as_deref(), Some("phase"));
 }
 
 #[test]
@@ -164,6 +166,39 @@ fn partial_patch_leaves_other_fields_untouched() {
     assert_eq!(patch.mask, None);
     assert_eq!(patch.speed, None);
     assert_eq!(patch.clip, None);
+    assert_eq!(patch.sync, None);
+}
+
+#[test]
+fn sync_alone_is_not_an_empty_patch() {
+    // 只改采样策略也是一张有效补丁：不能因为「其余字段都没给」被当成空补丁拒掉。
+    let mut api = Mock::default();
+    let resp = call(
+        &mut api,
+        "scene.anim_layer_set",
+        json!({ "instance": "hero/walk", "sync": "phase" }),
+    );
+    assert!(resp.error.is_none(), "只给 sync 应合法: {resp:?}");
+    let patch = api.seen_patch.expect("补丁应送达宿主");
+    assert_eq!(patch.sync.as_deref(), Some("phase"));
+    assert_eq!(patch.weight, None);
+    assert_eq!(patch.speed, None);
+
+    // 非字符串的 sync 应被拦在传输层，并点名字段。
+    let mut api = Mock::default();
+    let resp = call(
+        &mut api,
+        "scene.anim_layer_set",
+        json!({ "instance": "hero/walk", "sync": 1 }),
+    );
+    let err = resp.error.expect("类型错误应被拒");
+    assert_eq!(err.code, INVALID_PARAMS);
+    assert!(
+        err.message.contains("sync"),
+        "错误信息应点名字段: {}",
+        err.message
+    );
+    assert!(api.seen_patch.is_none(), "非法补丁不该送到宿主");
 }
 
 #[test]

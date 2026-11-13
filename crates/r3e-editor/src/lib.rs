@@ -408,6 +408,8 @@ pub struct AnimLayerPatch {
     pub speed: Option<f32>,
     /// 把层内片段整体换成这一路（层内收敛为单片段）。
     pub clip: Option<String>,
+    /// 层内采样时间策略（扩展四十六）：`off` / `phase`，大小写不敏感。
+    pub sync: Option<String>,
 }
 
 impl AnimLayerPatch {
@@ -417,6 +419,7 @@ impl AnimLayerPatch {
             && self.mask.is_none()
             && self.speed.is_none()
             && self.clip.is_none()
+            && self.sync.is_none()
     }
 }
 
@@ -1347,8 +1350,9 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 opt_str(&req.params, "mask"),
                 opt_num(&req.params, "speed"),
                 opt_str(&req.params, "clip"),
+                opt_str(&req.params, "sync"),
             ) {
-                (Ok(weight), Ok(mode), Ok(mask), Ok(speed), Ok(clip)) => AnimLayerPatch {
+                (Ok(weight), Ok(mode), Ok(mask), Ok(speed), Ok(clip), Ok(sync)) => AnimLayerPatch {
                     instance,
                     layer,
                     weight,
@@ -1356,12 +1360,14 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                     mask: mask.map(|s| s.to_string()),
                     speed,
                     clip: clip.map(|s| s.to_string()),
+                    sync: sync.map(|s| s.to_string()),
                 },
                 (Err(f), ..)
                 | (_, Err(f), ..)
                 | (_, _, Err(f), ..)
                 | (_, _, _, Err(f), ..)
-                | (_, _, _, _, Err(f)) => return Response::fail(id, f),
+                | (_, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, Err(f)) => return Response::fail(id, f),
             };
             if patch.is_empty() {
                 return Response::fail(

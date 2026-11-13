@@ -18,8 +18,8 @@ use r3e_core::ui::{
 };
 use r3e_core::{
     pick_all_from_screen, pick_from_screen, plan_local_shadows, BoneMask, EnvironmentMapSettings,
-    InputState, KeyCode, LayerMode, LocalLight, MeshAabbCache, MeshRef, NodeId, ObjectDesc,
-    PickBounds, PickHit, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
+    InputState, KeyCode, LayerMode, LayerSync, LocalLight, MeshAabbCache, MeshRef, NodeId,
+    ObjectDesc, PickBounds, PickHit, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
     NO_EXCLUSIVE_GROUP,
 };
 use r3e_physics::{
@@ -1153,6 +1153,69 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
                 .collect::<Vec<_>>()
                 .join(",");
             format!("{brief} w={line}")
+        },
+    );
+
+    // ---------------- 层内相位同步（扩展四十六） ----------------
+    //
+    // 用法：走 / 跑这类长短不一的片段同处一层时，开相位锁让两路按同一相位采样
+    // （脚掌同时落地）；不开则沿用老口径——整层共用一个时间，短片段到末帧停住。
+
+    // 开关相位锁：`true` = 各片段按归一化相位缩放采样。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_sync",
+        move |inst: &str, layer: &str, enabled: bool| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_sync(inst, layer, enabled)
+        },
+    );
+
+    // 按名字设策略：`"off"` / `"phase"`（大小写不敏感，`none` / `sync` 也认）。
+    // 名字解析不了返回 false，层状态不动。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_sync_mode",
+        move |inst: &str, layer: &str, mode: &str| -> bool {
+            let Some(sync) = LayerSync::parse(mode) else {
+                return false;
+            };
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_sync_strategy(inst, layer, sync)
+        },
+    );
+
+    // 回显：层是否开着相位锁（层不存在返回 false）。
+    let c = ctx.clone();
+    engine.register_fn("anim_layer_sync", move |inst: &str, layer: &str| -> bool {
+        c.scene
+            .borrow()
+            .anim_layer_sync(inst, layer)
+            .unwrap_or(false)
+    });
+
+    // 层相位（0..1，层不存在返回 0）。
+    let c = ctx.clone();
+    engine.register_fn("anim_layer_phase", move |inst: &str, layer: &str| -> f64 {
+        c.scene
+            .borrow()
+            .anim_layer_phase(inst, layer)
+            .map(f64::from)
+            .unwrap_or(0.0)
+    });
+
+    // 单行探针：`sync=phase phase=0.300 dur=1.000 drift=0.000 slow=0.300/1.000,...`
+    // `drift` 是各路片段相位与层相位的最大偏差，锁相位时恒为 0。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_sync_probe",
+        move |inst: &str, layer: &str| -> String {
+            c.scene
+                .borrow()
+                .anim_layer_sync_probe(inst, layer)
+                .unwrap_or_default()
         },
     );
 

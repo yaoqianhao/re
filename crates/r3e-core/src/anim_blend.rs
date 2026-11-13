@@ -11,7 +11,8 @@
 //! * [`blend_override`] / [`apply_additive`]：把层姿态落到主姿态上的两种算子。
 //!
 //! 求值口径与 [`crate::anim`] 完全一致：位置/缩放线性插值、旋转球面插值。层内多片段
-//! 共享同一条时间轴（走跑混合要求相位同步），不同层各有独立时间轴。
+//! 默认共享同一条时间轴，不同层各有独立时间轴；需要「走跑同相位」时给层开
+//! [`LayerSync::Phase`]（扩展四十六），各片段按归一化相位缩放采样。
 //!
 //! 双层叠加公式（`base` 为主姿态）：
 //!
@@ -161,6 +162,41 @@ impl LayerMode {
     }
 }
 
+/// 层内采样时间策略（扩展四十六）。
+///
+/// 走（1.0 s）与跑（0.5 s）同时参与混合时，若两路共用一个播放时间，跑片段会在 0.5 s 处
+/// 到达末帧并停住，而走片段还在推进——同一时刻两段动作的**步态相位**不一致，脚掌落地节奏
+/// 错开，画面上就是「滑步」。相位锁把层时间归一化成一个 0..1 的相位，每路片段再按自己的
+/// 时长把相位还原成片段内时间，于是「同一相位 = 同一步态阶段」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayerSync {
+    /// 不锁相位（默认）：整层共用一个片段内时间，短片段到末帧后由轨道端点钳制停住。
+    #[default]
+    Off,
+    /// 相位锁：按层时间归一化相位缩放各片段，步频差异保留、相位差恒为 0。
+    Phase,
+}
+
+impl LayerSync {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Phase => "phase",
+        }
+    }
+
+    /// 解析脚本 / RPC 传来的策略名（大小写不敏感）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            x if x.eq_ignore_ascii_case("off") || x.eq_ignore_ascii_case("none") => Some(Self::Off),
+            x if x.eq_ignore_ascii_case("phase") || x.eq_ignore_ascii_case("sync") => {
+                Some(Self::Phase)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// 层内的一路片段及其权重。
 #[derive(Debug, Clone)]
 pub struct LayerClip {
@@ -244,6 +280,10 @@ pub struct AnimLayer {
     ///
     /// 为 `None` 时行为与扩展四十五之前**逐位一致**——这是本扩展「零变化」验收的支点。
     pub blend_space: Option<BlendSpace>,
+    /// 层内采样时间策略（扩展四十六）。
+    ///
+    /// 为 [`LayerSync::Off`] 时层内片段共用一个时间，与扩展四十六之前**逐位一致**。
+    pub sync: LayerSync,
 }
 
 impl AnimLayer {
@@ -265,6 +305,7 @@ impl AnimLayer {
             playing: true,
             fade: None,
             blend_space: None,
+            sync: LayerSync::Off,
         }
     }
 
@@ -285,6 +326,11 @@ impl AnimLayer {
 
     pub fn with_blend_space(mut self, space: BlendSpace) -> Self {
         self.blend_space = Some(space);
+        self
+    }
+
+    pub fn with_sync(mut self, sync: LayerSync) -> Self {
+        self.sync = sync;
         self
     }
 
@@ -456,6 +502,53 @@ impl AnimLayer {
     pub fn sample_time(&self) -> f32 {
         crate::anim::wrap_time(self.time, self.looping, self.duration())
     }
+
+    /// 层时间归一化后的相位（0..1，扩展四十六）。
+    ///
+    /// 归一化基准是层时长（层内最长片段），与 [`Self::sample_time`] 同一口径，因此
+    /// `phase() * duration() == sample_time()` 恒成立；这也意味着相位**不随层内权重变化**
+    /// 而跳变——走跑权重来回摆时不会突然错拍。
+    pub fn phase(&self) -> f32 {
+        let t = self.sample_time();
+        if !t.is_finite() {
+            return 0.0;
+        }
+        let duration = self.duration().max(MIN_LAYER_DURATION);
+        (t / duration).clamp(0.0, 1.0)
+    }
+
+    /// 第 `index` 路片段在相位锁下应采样到的片段内时间。
+    ///
+    /// 层里没有这一路返回 `None`；片段时长为 0 时返回 0（该路本来就采不出姿态）。
+    pub fn synced_clip_time(&self, index: usize, phase: f32) -> Option<f32> {
+        let clip = self.clips.get(index)?;
+        Some(normalized_phase(phase) * clip.clip.duration.max(0.0))
+    }
+
+    /// 每路片段当前的采样时间（按 `sync` 策略算，探针 / 回显用）。
+    ///
+    /// `Off` 时返回的就是老口径：整层同一个时间。
+    pub fn clip_times(&self) -> Vec<f32> {
+        match self.sync {
+            LayerSync::Off => vec![self.sample_time(); self.clips.len()],
+            LayerSync::Phase => {
+                let phase = self.phase();
+                self.clips
+                    .iter()
+                    .map(|c| phase * c.clip.duration.max(0.0))
+                    .collect()
+            }
+        }
+    }
+}
+
+/// 相位收敛：非有限值按 0，其余钳到 `[0, 1]`。
+fn normalized_phase(phase: f32) -> f32 {
+    if phase.is_finite() {
+        phase.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// 权重归一化：负值 / NaN 当 0，全零时返回空数组（调用方据此跳过整层）。
@@ -490,6 +583,33 @@ pub fn sample_layer_pose(
     node_index: u32,
     node_path: &str,
 ) -> Option<LayerSample> {
+    sample_layer_pose_impl(clips, node_index, node_path, |_| time)
+}
+
+/// 相位锁采样（扩展四十六）：把归一化相位按各片段自己的时长还原成片段内时间。
+///
+/// 与 [`sample_layer_pose`] 的唯一差别是「用哪个时间采样每路片段」：本函数下
+/// 片段内时间 = `phase × 片段时长`，因此走（1.0 s）与跑（0.5 s）在同一相位永远采到
+/// 同一段步态（脚掌同时落地），而步频差异照旧保留。
+pub fn sample_layer_pose_synced(
+    clips: &[LayerClip],
+    phase: f32,
+    node_index: u32,
+    node_path: &str,
+) -> Option<LayerSample> {
+    let phase = normalized_phase(phase);
+    sample_layer_pose_impl(clips, node_index, node_path, |lc| {
+        phase * lc.clip.duration.max(0.0)
+    })
+}
+
+/// 两种采样口径共用的一份实现：`time_of` 决定每路片段用哪个时间采样。
+fn sample_layer_pose_impl(
+    clips: &[LayerClip],
+    node_index: u32,
+    node_path: &str,
+    mut time_of: impl FnMut(&LayerClip) -> f32,
+) -> Option<LayerSample> {
     let mut acc: Option<(Transform, Transform, f32)> = None;
     for lc in clips {
         let weight = if lc.weight.is_finite() {
@@ -507,7 +627,7 @@ pub fn sample_layer_pose(
         else {
             continue;
         };
-        let Some(pose) = track.sample(time) else {
+        let Some(pose) = track.sample(time_of(lc)) else {
             continue;
         };
         // 参考姿态取首帧：加法层叠加的是「相对参考的增量」
@@ -588,10 +708,44 @@ pub fn layer_report(layer: &AnimLayer) -> String {
         layer.mask.rule_count()
     );
     // 混合空间段只在挂了空间时追加，既有日志行（前缀）保持不变。
-    match &layer.blend_space {
+    let base = match &layer.blend_space {
         Some(space) => format!("{base} blend={}", space.brief()),
         None => base,
+    };
+    // 相位锁同理：只在开启时追加，`Off` 的日志行与扩展四十六之前逐字一致。
+    match layer.sync {
+        LayerSync::Off => base,
+        LayerSync::Phase => format!("{base} sync=phase"),
     }
+}
+
+/// 相位同步探针（扩展四十六）：一行说清「每路片段在采哪一刻、相位还差多少」。
+///
+/// `drift` 是各路片段相位与层相位的最大偏差：
+/// 锁相位时恒为 0；不锁相位时短片段会在末帧停住，drift 一路上涨——这就是滑步的量化证据。
+pub fn sync_probe(layer: &AnimLayer) -> String {
+    let phase = layer.phase();
+    let duration = layer.duration().max(MIN_LAYER_DURATION);
+    let times = layer.clip_times();
+    let mut drift = 0.0_f32;
+    let mut parts = Vec::with_capacity(times.len());
+    for (lc, t) in layer.clips.iter().zip(times) {
+        let clip_duration = lc.clip.duration.max(MIN_LAYER_DURATION);
+        let p = t / clip_duration;
+        // 锁相位时该值恒为 0；不锁相位时它一路上涨，就是「这一路已经停住」的量
+        if p.is_finite() {
+            drift = drift.max((p - phase).abs());
+        }
+        parts.push(format!("{}={:.3}/{:.3}", lc.clip.name, t, clip_duration));
+    }
+    format!(
+        "sync={} phase={:.3} dur={:.3} drift={:.3} {}",
+        layer.sync.as_str(),
+        phase,
+        duration,
+        drift,
+        parts.join(",")
+    )
 }
 
 #[cfg(test)]
@@ -706,6 +860,22 @@ mod tests {
             duration: 1.0,
             tracks,
         })
+    }
+
+    /// 同 `clip`，但时长可指定（相位同步测试要长短片段并存）。
+    fn clip_of(name: &str, duration: f32, tracks: Vec<AnimTrack>) -> Arc<AnimClip> {
+        Arc::new(AnimClip {
+            name: name.to_string(),
+            duration,
+            tracks,
+        })
+    }
+
+    /// 关键帧铺满 `duration` 的线性轨道（0 → `end`）。
+    fn track_span(index: u32, path: &str, end: Vec3, duration: f32) -> AnimTrack {
+        let mut t = track_at(index, path, end);
+        t.keys[1].time = duration;
+        t
     }
 
     #[test]
@@ -873,5 +1043,119 @@ mod tests {
         assert_eq!(LayerMode::parse("Additive"), Some(LayerMode::Additive));
         assert_eq!(LayerMode::parse("override"), Some(LayerMode::Override));
         assert_eq!(LayerMode::parse("mix"), None);
+    }
+
+    // ---------- 层内相位同步（扩展四十六） ----------
+
+    #[test]
+    fn layer_sync_parse_and_default_off() {
+        assert_eq!(LayerSync::default(), LayerSync::Off);
+        assert_eq!(LayerSync::parse("Phase"), Some(LayerSync::Phase));
+        assert_eq!(LayerSync::parse("SYNC"), Some(LayerSync::Phase));
+        assert_eq!(LayerSync::parse(" none "), Some(LayerSync::Off));
+        assert_eq!(LayerSync::parse("locked"), None);
+
+        // 新建层默认不锁相位：既有日志行里不会突然多出 sync= 段
+        let layer = AnimLayer::new("l", clip("a", vec![]), 1.0);
+        assert_eq!(layer.sync, LayerSync::Off);
+        assert!(
+            !layer_report(&layer).contains("sync="),
+            "{}",
+            layer_report(&layer)
+        );
+        // 开了才会追加
+        let locked = layer.with_sync(LayerSync::Phase);
+        assert!(layer_report(&locked).contains("sync=phase"));
+    }
+
+    #[test]
+    fn sync_phase_scales_clip_times_by_clip_duration() {
+        // 走 1.0 s + 跑 0.5 s：层时长取最长的那一路
+        let mut layer = AnimLayer::new("move", clip("walk", vec![]), 1.0);
+        assert!(layer.add_clip(clip_of("run", 0.5, vec![]), 1.0));
+        layer.advance(0.25);
+        assert!((layer.phase() - 0.25).abs() < 1e-5, "{}", layer.phase());
+
+        // 不锁相位：两路共用一个时间（这就是扩展四十六之前的老口径）
+        assert_eq!(layer.clip_times(), vec![0.25, 0.25]);
+
+        // 锁相位：每路按自己时长缩放，相位相同而步频保留
+        layer.sync = LayerSync::Phase;
+        let times = layer.clip_times();
+        assert!((times[0] - 0.25).abs() < 1e-5, "{times:?}");
+        assert!((times[1] - 0.125).abs() < 1e-5, "{times:?}");
+        // 越界相位被钳到 0..1，不会反向外插
+        assert_eq!(layer.synced_clip_time(1, 3.0), Some(0.5));
+        assert_eq!(layer.synced_clip_time(1, -1.0), Some(0.0));
+        assert_eq!(layer.synced_clip_time(9, 0.5), None);
+    }
+
+    #[test]
+    fn synced_sampling_aligns_equal_phase_across_durations() {
+        // 两路都是 0→10 的直线：走用 1.0 s 走完、跑用 0.5 s 走完
+        let walk = clip_of(
+            "walk",
+            1.0,
+            vec![track_span(1, "root/arm", Vec3::new(10.0, 0.0, 0.0), 1.0)],
+        );
+        let run = clip_of(
+            "run",
+            0.5,
+            vec![track_span(1, "root/arm", Vec3::new(10.0, 0.0, 0.0), 0.5)],
+        );
+        let both = vec![LayerClip::new(walk.clone(), 1.0), LayerClip::new(run, 1.0)];
+
+        // 老口径：同一时刻 0.25 s → 走到 25%、跑到 50%，两路姿态已经错开（滑步的成因）
+        let legacy = sample_layer_pose(&both, 0.25, 1, "root/arm").expect("两路都有该轨道");
+        assert!(
+            (legacy.pose.position.x - 3.75).abs() < 1e-4,
+            "老口径应 3.75，实际 {}",
+            legacy.pose.position.x
+        );
+
+        // 相位锁：同一相位 0.25 → 两路都走到 25%，姿态逐位重合
+        let one = vec![LayerClip::new(walk, 1.0)];
+        let two = vec![LayerClip::new(
+            clip_of(
+                "run",
+                0.5,
+                vec![track_span(1, "root/arm", Vec3::new(10.0, 0.0, 0.0), 0.5)],
+            ),
+            1.0,
+        )];
+        let a = sample_layer_pose_synced(&one, 0.25, 1, "root/arm").expect("走有轨道");
+        let b = sample_layer_pose_synced(&two, 0.25, 1, "root/arm").expect("跑有轨道");
+        assert!(
+            (a.pose.position.x - 2.5).abs() < 1e-4,
+            "{}",
+            a.pose.position.x
+        );
+        assert!(
+            (a.pose.position.x - b.pose.position.x).abs() < 1e-6,
+            "同相位姿态应一致：{} vs {}",
+            a.pose.position.x,
+            b.pose.position.x
+        );
+    }
+
+    #[test]
+    fn sync_probe_quantifies_phase_drift() {
+        let mut layer = AnimLayer::new("move", clip("walk", vec![]), 1.0);
+        assert!(layer.add_clip(clip_of("run", 0.5, vec![]), 1.0));
+        layer.advance(0.6);
+
+        // 不锁相位：跑片段时间也被推到 0.6，可它的时长只有 0.5 → 相位 1.2，drift 0.6
+        let probe = sync_probe(&layer);
+        assert!(probe.contains("sync=off"), "{probe}");
+        assert!(probe.contains("drift=0.600"), "{probe}");
+
+        // 锁相位：两路相位同为 0.6，drift 归零
+        layer.sync = LayerSync::Phase;
+        let probe = sync_probe(&layer);
+        assert!(probe.contains("sync=phase"), "{probe}");
+        assert!(probe.contains("drift=0.000"), "{probe}");
+        assert!(probe.contains("walk=0.600/1.000"), "{probe}");
+        assert!(probe.contains("run=0.300/0.500"), "{probe}");
+        assert!(probe.contains("phase=0.600"), "{probe}");
     }
 }

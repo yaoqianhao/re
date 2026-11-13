@@ -39,8 +39,8 @@ pub use air::{AirIssue, AirIssueKind};
 pub use anim::{AnimClip, AnimInstance, AnimKey, AnimTrack};
 pub use anim_blend::{
     apply_additive, blend_override, layer_report, normalize_weights, path_matches,
-    sample_layer_pose, AnimLayer, BoneMask, LayerClip, LayerFade, LayerMode, LayerSample,
-    MAX_ANIM_LAYERS, MAX_LAYER_CLIPS,
+    sample_layer_pose, sample_layer_pose_synced, sync_probe, AnimLayer, BoneMask, LayerClip,
+    LayerFade, LayerMode, LayerSample, LayerSync, MAX_ANIM_LAYERS, MAX_LAYER_CLIPS,
 };
 pub use blend_space::{BlendDim, BlendSample, BlendSpace, MAX_BLEND_SAMPLES};
 pub use camera::Camera;

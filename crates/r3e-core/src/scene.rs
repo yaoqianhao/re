@@ -7,8 +7,8 @@ use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
 use crate::anim_blend::{
-    apply_additive, blend_override, sample_layer_pose, AnimLayer, BoneMask, LayerMode,
-    MAX_ANIM_LAYERS,
+    apply_additive, blend_override, sample_layer_pose, sample_layer_pose_synced, AnimLayer,
+    BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS,
 };
 use crate::blend_space::BlendSpace;
 use crate::light::{self, LocalLight};
@@ -1224,6 +1224,8 @@ impl Scene {
             //
             // 扩展四十五：挂了混合空间的层先用当前参数重算层内片段权重，再照旧叠加。
             // 没挂空间的层这一步是空操作，权重仍是脚本/场景写死的值——零变化验收靠这一行保证。
+            // 扩展四十六：开了相位锁的层改用「归一化相位 × 片段时长」采样每路片段，
+            // `LayerSync::Off` 的层仍取同一个层时间，逐位不变。
             for layer in inst.layers.iter_mut() {
                 layer.apply_blend_space();
                 let layer_weight = layer.effective_weight();
@@ -1231,14 +1233,22 @@ impl Scene {
                     continue;
                 }
                 let layer_time = layer.sample_time();
+                let sync_phase = match layer.sync {
+                    LayerSync::Off => None,
+                    LayerSync::Phase => Some(layer.phase()),
+                };
                 for (i, b) in inst.bindings.iter().enumerate() {
                     let effective = layer_weight * layer.mask.weight_for(&b.path);
                     if effective <= 0.0 {
                         continue;
                     }
-                    let Some(sample) =
-                        sample_layer_pose(&layer.clips, layer_time, b.node_index, &b.path)
-                    else {
+                    let sample = match sync_phase {
+                        Some(phase) => {
+                            sample_layer_pose_synced(&layer.clips, phase, b.node_index, &b.path)
+                        }
+                        None => sample_layer_pose(&layer.clips, layer_time, b.node_index, &b.path),
+                    };
+                    let Some(sample) = sample else {
                         continue;
                     };
                     poses[i] = Some(match (layer.mode, poses[i]) {
@@ -1569,6 +1579,59 @@ impl Scene {
             }
             None => false,
         }
+    }
+
+    // ---------- 层内相位同步（扩展四十六） ----------
+
+    /// 开关层内相位锁：`true` = 各片段按归一化相位缩放采样（走跑不再错拍）。
+    ///
+    /// 返回 `false` 表示实例 / 层不存在，层状态不变。
+    pub fn set_anim_layer_sync(&mut self, instance: &str, layer: &str, enabled: bool) -> bool {
+        self.set_anim_layer_sync_strategy(
+            instance,
+            layer,
+            if enabled {
+                LayerSync::Phase
+            } else {
+                LayerSync::Off
+            },
+        )
+    }
+
+    /// 直接指定相位策略（`off` / `phase`）。
+    pub fn set_anim_layer_sync_strategy(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        sync: LayerSync,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+        {
+            Some(l) => {
+                l.sync = sync;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 层当前是否开了相位锁。实例 / 层不存在返回 `None`。
+    pub fn anim_layer_sync(&self, instance: &str, layer: &str) -> Option<bool> {
+        self.anim_layer(instance, layer)
+            .map(|l| l.sync == LayerSync::Phase)
+    }
+
+    /// 层当前相位（0..1）。实例 / 层不存在返回 `None`。
+    pub fn anim_layer_phase(&self, instance: &str, layer: &str) -> Option<f32> {
+        self.anim_layer(instance, layer).map(|l| l.phase())
+    }
+
+    /// 相位同步单行探针（日志用）。实例 / 层不存在返回 `None`。
+    pub fn anim_layer_sync_probe(&self, instance: &str, layer: &str) -> Option<String> {
+        self.anim_layer(instance, layer)
+            .map(crate::anim_blend::sync_probe)
     }
 
     /// 把层的片段替换为指定片段（层内收敛为单片段、权重 1.0，其余属性保留）。
@@ -2697,6 +2760,84 @@ mod anim_tests {
         assert!(scene.anim_layer_blend_brief("demo/walk", "move").is_none());
         scene.update_animations(0.5);
         assert!((scene.get(_arm).unwrap().transform.position.x - 50.0).abs() < 1e-3);
+    }
+
+    // ---------- 层内相位同步（扩展四十六） ----------
+
+    /// 「慢 1.0 s + 快 0.5 s」的层场景：两路都是 0→100 的直线，遮罩只开 arm。
+    fn sync_scene() -> (Scene, NodeId) {
+        let (mut scene, arm, _leg) = layer_scene();
+        let slow = std::sync::Arc::new(AnimClip {
+            name: "slow".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(1, "root/arm", Vec3::new(100.0, 0.0, 0.0))],
+        });
+        let mut fast_track = line_track(1, "root/arm", Vec3::new(100.0, 0.0, 0.0));
+        fast_track.keys[1].time = 0.5;
+        let fast = std::sync::Arc::new(AnimClip {
+            name: "fast".to_string(),
+            duration: 0.5,
+            tracks: vec![fast_track],
+        });
+
+        let mut layer = AnimLayer::new("move", slow, 1.0).with_mask(BoneMask::only(["arm"]));
+        assert!(layer.add_clip(fast, 1.0));
+        assert!(scene.add_anim_layer("demo/walk", layer));
+        (scene, arm)
+    }
+
+    #[test]
+    fn anim_layer_sync_removes_phase_drift() {
+        let (mut scene, arm) = sync_scene();
+        // 0.25 s：慢路 25%、快路 50%，等权平均 37.5 —— 两路步态已经错开
+        scene.update_animations(0.25);
+        let off = scene.get(arm).unwrap().transform.position.x;
+        assert!((off - 37.5).abs() < 1e-3, "不锁相位应 37.5，实际 {off}");
+        assert_eq!(scene.anim_layer_sync("demo/walk", "move"), Some(false));
+
+        // 锁相位：同一时刻两路都走 25%，等权平均仍是 25%
+        assert!(scene.set_anim_layer_sync("demo/walk", "move", true));
+        assert_eq!(scene.anim_layer_sync("demo/walk", "move"), Some(true));
+        scene.update_animations(0.0);
+        let on = scene.get(arm).unwrap().transform.position.x;
+        assert!((on - 25.0).abs() < 1e-3, "锁相位应 25，实际 {on}");
+
+        // 推到层时间 0.6：锁相位时两路仍是 60%
+        scene.update_animations(0.35);
+        let on = scene.get(arm).unwrap().transform.position.x;
+        assert!((on - 60.0).abs() < 1e-3, "锁相位应 60，实际 {on}");
+        // 关掉相位锁：快路停在末帧(100)，混合值回到 80 —— 漂移重新出现
+        assert!(scene.set_anim_layer_sync("demo/walk", "move", false));
+        scene.update_animations(0.0);
+        let off = scene.get(arm).unwrap().transform.position.x;
+        assert!((off - 80.0).abs() < 1e-3, "不锁相位应 80，实际 {off}");
+    }
+
+    #[test]
+    fn anim_layer_sync_probe_and_missing_layer() {
+        let (mut scene, _arm) = sync_scene();
+        scene.update_animations(0.3);
+        let probe = scene
+            .anim_layer_sync_probe("demo/walk", "move")
+            .expect("层存在");
+        assert!(probe.contains("sync=off"), "{probe}");
+        assert!(probe.contains("drift=0."), "{probe}");
+
+        assert!(scene.set_anim_layer_sync_strategy("demo/walk", "move", LayerSync::Phase));
+        let probe = scene
+            .anim_layer_sync_probe("demo/walk", "move")
+            .expect("层存在");
+        assert!(probe.contains("sync=phase"), "{probe}");
+        assert!(probe.contains("drift=0.000"), "{probe}");
+        let phase = scene.anim_layer_phase("demo/walk", "move").expect("层存在");
+        assert!((phase - 0.3).abs() < 1e-4, "相位应 0.3，实际 {phase}");
+
+        // 实例 / 层不存在：一律 None / false，不 panic
+        assert_eq!(scene.anim_layer_sync("demo/walk", "nope"), None);
+        assert_eq!(scene.anim_layer_phase("nope", "move"), None);
+        assert!(scene.anim_layer_sync_probe("demo/walk", "nope").is_none());
+        assert!(!scene.set_anim_layer_sync("demo/walk", "nope", true));
+        assert!(!scene.set_anim_layer_sync_strategy("nope", "move", LayerSync::Phase));
     }
 
     #[test]
