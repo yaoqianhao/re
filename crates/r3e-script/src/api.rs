@@ -1219,6 +1219,78 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // ---------------- 相位偏移量与跨层对齐（扩展四十七） ----------------
+    //
+    // 用法：左右脚要「同样的步幅、错开半步」时给一路设 0.5 偏移；
+    // 上半身要跟下半身同一相位起步时把上身的同步源指到下身的层名。
+
+    // 设某一路片段的相位偏移：`offset` 折进 `[0,1)`（`-0.25` -> `0.75`，`1.25` -> `0.25`）。
+    // `clip` 传空串表示层内第一路；片段/层不存在返回 false。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_clip_phase_offset",
+        move |inst: &str, layer: &str, clip: &str, offset: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_clip_phase_offset(inst, layer, clip, f32_of(offset))
+        },
+    );
+
+    // 回显某一路的相位偏移（没设过是 0）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_clip_phase_offset",
+        move |inst: &str, layer: &str, clip: &str| -> f64 {
+            c.scene
+                .borrow()
+                .anim_layer_clip_phase_offset(inst, layer, clip)
+                .map(f64::from)
+                .unwrap_or(0.0)
+        },
+    );
+
+    // 设跨层相位源：`source` 层名（大小写不敏感，空串 = 清除、跟回自己）。
+    // 源层不存在 / 指向自己 / 成环返回 false，层状态回滚。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_sync_source",
+        move |inst: &str, layer: &str, source: &str| -> bool {
+            let source = if source.trim().is_empty() {
+                None
+            } else {
+                Some(source)
+            };
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_sync_source(inst, layer, source)
+        },
+    );
+
+    // 回显跨层相位源（没设过返回空串）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_sync_source",
+        move |inst: &str, layer: &str| -> String {
+            c.scene
+                .borrow()
+                .anim_layer_sync_source(inst, layer)
+                .unwrap_or_default()
+        },
+    );
+
+    // 跨层对齐后的有效相位（0 表示层不存在）。没挂源层时等于 `anim_layer_phase`。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_sync_phase",
+        move |inst: &str, layer: &str| -> f64 {
+            c.scene
+                .borrow()
+                .anim_layer_sync_phase(inst, layer)
+                .map(f64::from)
+                .unwrap_or(0.0)
+        },
+    );
+
     // ---------------- 相机 / 光照 / 环境 ----------------
     let c = ctx.clone();
     engine.register_fn(

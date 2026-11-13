@@ -846,6 +846,33 @@ impl EngineApi for LocalEngineApi<'_> {
                 return Err(layer_missing(&patch.instance, &patch.layer));
             }
         }
+        // 扩展四十七：偏移要在 `clip` 之后应用——换片段会把层内收敛成单片段、偏移归零。
+        if let Some(offset) = patch.clip_offset {
+            let clip = patch.clip.as_deref().unwrap_or_default();
+            if !scene.set_anim_layer_clip_phase_offset(&patch.instance, &patch.layer, clip, offset)
+            {
+                return Err(RpcFailure::invalid_params(format!(
+                    "实例 `{}` 的层 `{}` 上没有片段 `{clip}`（`clip_offset` 需配 `clip` 或作用于第一路）",
+                    patch.instance, patch.layer
+                )));
+            }
+        }
+        // 跨层相位源：核心层已在 setter 里挡掉源层不存在 / 自引用 / 成环，这里只透传。
+        if let Some(source) = patch.sync_source.as_deref() {
+            let source = if source.trim().is_empty() {
+                None
+            } else {
+                Some(source)
+            };
+            if !scene.set_anim_layer_sync_source(&patch.instance, &patch.layer, source) {
+                return Err(RpcFailure::invalid_params(format!(
+                    "实例 `{}` 的层 `{}` 无法跟随 `{}`（源层不存在、指向自己或成环）",
+                    patch.instance,
+                    patch.layer,
+                    source.unwrap_or("")
+                )));
+            }
+        }
         let layer = scene
             .anim_layer(&patch.instance, &patch.layer)
             .ok_or_else(|| layer_missing(&patch.instance, &patch.layer))?;
@@ -1752,6 +1779,8 @@ fn anim_layer_value(instance: &str, layer: &AnimLayer) -> Value {
                 "name": lc.clip.name,
                 "base_weight": lc.weight,
                 "weight": w,
+                // 扩展四十七：这一路的相位偏移（没设过是 0，编辑器画错步标尺用）
+                "phase_offset": lc.phase_offset,
             })
         })
         .collect();
@@ -1775,6 +1804,8 @@ fn anim_layer_value(instance: &str, layer: &AnimLayer) -> Value {
         // 编辑器画相位标尺时不用管策略开关）。
         "sync": layer.sync.as_str(),
         "phase": layer.phase(),
+        // 扩展四十七：跨层跟随的源层名（没设是空串；成环/解析不到的情况在核心层就被挡掉了）
+        "sync_source": layer.sync_source.clone().unwrap_or_default(),
     })
 }
 
@@ -2763,6 +2794,69 @@ mod tests {
     }
 
     #[test]
+    fn anim_layer_set_applies_phase_group_fields() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        for layer in ["upper", "lower"] {
+            let _ = scripts
+                .eval(&format!(
+                    r#"add_anim_layer("hero/walk", "{layer}", "atk", 1.0)"#
+                ))
+                .expect("建层应成功");
+        }
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        // 只给片段 + 偏移：落到第一路（或指定那一路）的 phase_offset
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                clip: Some("atk".to_string()),
+                clip_offset: Some(0.25),
+                ..Default::default()
+            })
+            .expect("补丁应成功");
+        let layer = &out["layer"];
+        let offset = layer["clips"][0]["phase_offset"]
+            .as_f64()
+            .expect("每路应带 phase_offset");
+        assert!((offset - 0.25).abs() < 1e-6, "偏移应为 0.25，实得 {offset}");
+
+        // 跨层源：让 upper 跟随 lower
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                sync_source: Some("lower".to_string()),
+                ..Default::default()
+            })
+            .expect("跟随应成功");
+        assert_eq!(out["layer"]["sync_source"], json!("lower"));
+
+        // 源层不存在 / 自引用：核心层拒，宿主翻成参数错误
+        for source in ["ghost", "upper"] {
+            let err = api
+                .scene_anim_layer_set(AnimLayerPatch {
+                    instance: "hero/walk".to_string(),
+                    layer: "upper".to_string(),
+                    sync_source: Some(source.to_string()),
+                    ..Default::default()
+                })
+                .expect_err("应被拒");
+            assert_eq!(err.code, r3e_editor::INVALID_PARAMS);
+        }
+        // 空串 = 清除，跟回自己
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                sync_source: Some(String::new()),
+                ..Default::default()
+            })
+            .expect("清除应成功");
+        assert_eq!(out["layer"]["sync_source"], json!(""));
+    }
+
+    #[test]
     fn anim_layer_set_patches_and_returns_layer() {
         let (scene, physics, mut scripts) = anim_fixture();
         let _ = scripts
@@ -2780,6 +2874,8 @@ mod tests {
                 speed: Some(2.0),
                 clip: None,
                 sync: Some("phase".to_string()),
+                sync_source: None,
+                clip_offset: None,
             })
             .expect("补丁应成功");
         let layer = &out["layer"];

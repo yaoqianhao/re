@@ -203,6 +203,10 @@ pub struct LayerClip {
     pub clip: Arc<AnimClip>,
     /// 混合权重（负值按 0 处理；层内按非零和归一化后使用）。
     pub weight: f32,
+    /// 相位偏移（扩展四十七）：相位锁下这一路的采样相位 = `wrap(层相位 + phase_offset)`。
+    ///
+    /// 0.0 时与扩展四十七之前**逐位一致**；0.5 即「同一时刻反着走半步」，用来做左右脚错步。
+    pub phase_offset: f32,
 }
 
 impl LayerClip {
@@ -214,7 +218,23 @@ impl LayerClip {
             } else {
                 0.0
             },
+            phase_offset: 0.0,
         }
+    }
+
+    pub fn with_phase_offset(mut self, offset: f32) -> Self {
+        self.phase_offset = wrap_phase(offset);
+        self
+    }
+
+    /// 设本路相位偏移：非有限值按 0，其余折进 `[0, 1)`（-0.25 等价 0.75）。
+    pub fn set_phase_offset(&mut self, offset: f32) {
+        self.phase_offset = wrap_phase(offset);
+    }
+
+    /// 本路在给定层相位下应采样的片段内时间（含相位偏移）。
+    pub fn synced_time(&self, phase: f32) -> f32 {
+        clip_phase(phase, self.phase_offset) * self.clip.duration.max(0.0)
     }
 }
 
@@ -284,6 +304,11 @@ pub struct AnimLayer {
     ///
     /// 为 [`LayerSync::Off`] 时层内片段共用一个时间，与扩展四十六之前**逐位一致**。
     pub sync: LayerSync,
+    /// 相位同步的源层名（扩展四十七）：`Some` 时本层相位改为跟随该层的相位。
+    ///
+    /// 只在 [`LayerSync::Phase`] 下生效；为 `None`（默认）时相位取自本层时间，
+    /// 与扩展四十七之前**逐位一致**。名字解析失败的层按「没有源层」处理。
+    pub sync_source: Option<String>,
 }
 
 impl AnimLayer {
@@ -306,6 +331,7 @@ impl AnimLayer {
             fade: None,
             blend_space: None,
             sync: LayerSync::Off,
+            sync_source: None,
         }
     }
 
@@ -332,6 +358,43 @@ impl AnimLayer {
     pub fn with_sync(mut self, sync: LayerSync) -> Self {
         self.sync = sync;
         self
+    }
+
+    /// 让本层相位跟随 `source` 层（扩展四十七，仅 `Phase` 下生效；`None` = 跟随自己）。
+    pub fn with_sync_source(mut self, source: Option<impl Into<String>>) -> Self {
+        self.sync_source = source.map(Into::into);
+        self
+    }
+
+    /// 设 / 清相位源层；空串等价清空。不做存在性校验（那需要全层视角，见 [`phase_source`]）。
+    pub fn set_sync_source(&mut self, source: Option<&str>) {
+        self.sync_source = source
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+    }
+
+    /// 按片段名设相位偏移（扩展四十七）；`clip` 为空取第一路，名字大小写不敏感。
+    ///
+    /// 片段不存在返回 `false`，层状态不变。
+    pub fn set_clip_phase_offset(&mut self, clip: &str, offset: f32) -> bool {
+        let index = if clip.is_empty() {
+            if self.clips.is_empty() {
+                return false;
+            }
+            0
+        } else {
+            match self
+                .clips
+                .iter()
+                .position(|c| c.clip.name == clip || c.clip.name.eq_ignore_ascii_case(clip))
+            {
+                Some(i) => i,
+                None => return false,
+            }
+        };
+        self.clips[index].set_phase_offset(offset);
+        true
     }
 
     /// 把混合空间当前参数算出来的权重写进层内片段（扩展四十五）。
@@ -517,27 +580,26 @@ impl AnimLayer {
         (t / duration).clamp(0.0, 1.0)
     }
 
-    /// 第 `index` 路片段在相位锁下应采样到的片段内时间。
+    /// 第 `index` 路片段在相位锁下应采样到的片段内时间（含该路的相位偏移）。
     ///
     /// 层里没有这一路返回 `None`；片段时长为 0 时返回 0（该路本来就采不出姿态）。
+    /// 偏移为 0 时与扩展四十六逐位一致（层相位是 1.0 就采末帧，不折回首帧）。
     pub fn synced_clip_time(&self, index: usize, phase: f32) -> Option<f32> {
-        let clip = self.clips.get(index)?;
-        Some(normalized_phase(phase) * clip.clip.duration.max(0.0))
+        self.clips.get(index).map(|clip| clip.synced_time(phase))
     }
 
     /// 每路片段当前的采样时间（按 `sync` 策略算，探针 / 回显用）。
     ///
     /// `Off` 时返回的就是老口径：整层同一个时间。
     pub fn clip_times(&self) -> Vec<f32> {
+        self.clip_times_at(self.phase())
+    }
+
+    /// 在给定层相位下各路片段的采样时间（扩展四十七：允许外部传有效相位）。
+    pub fn clip_times_at(&self, phase: f32) -> Vec<f32> {
         match self.sync {
             LayerSync::Off => vec![self.sample_time(); self.clips.len()],
-            LayerSync::Phase => {
-                let phase = self.phase();
-                self.clips
-                    .iter()
-                    .map(|c| phase * c.clip.duration.max(0.0))
-                    .collect()
-            }
+            LayerSync::Phase => self.clips.iter().map(|c| c.synced_time(phase)).collect(),
         }
     }
 }
@@ -548,6 +610,75 @@ fn normalized_phase(phase: f32) -> f32 {
         phase.clamp(0.0, 1.0)
     } else {
         0.0
+    }
+}
+
+/// 相位折进 `[0, 1)`：非有限值按 0，负偏移按循环等价（-0.25 → 0.75，1.0 → 0.0）。
+///
+/// 只作用于**叠加偏移之后**的相位；层相位本身仍走 [`normalized_phase`]，
+/// 这样 1.0 这个「末帧端点」不会因为取模退回首帧，偏移为 0 的场景逐位不变。
+pub fn wrap_phase(phase: f32) -> f32 {
+    if !phase.is_finite() {
+        return 0.0;
+    }
+    let wrapped = phase - phase.floor();
+    if wrapped >= 1.0 {
+        0.0
+    } else {
+        wrapped
+    }
+}
+
+/// 某一路片段的采样相位：层相位钳到 `[0, 1]` 后叠加本路偏移再折进 `[0, 1)`。
+///
+/// 偏移为 0 时**原样返回**钳制结果（含 1.0 端点），这是「不设偏移 = 老行为」的算术支点。
+fn clip_phase(phase: f32, offset: f32) -> f32 {
+    let base = normalized_phase(phase);
+    if offset == 0.0 {
+        base
+    } else {
+        wrap_phase(base + offset)
+    }
+}
+
+/// 找一层的相位源层下标（扩展四十七）：沿 `sync_source` 链走，最多
+/// [`MAX_ANIM_LAYERS`] 跳。
+///
+/// 返回 `None` 表示「没有可跟随的源层」（没设、名字解析不到、指向自己、成环）；
+/// 此时相位仍取本层时间，行为与扩展四十六一致。链式跟随是有意支持的
+/// （上半身跟下半身、下半身再跟根层），但**环**必须在这里断掉，否则采样期会自引用死循环。
+pub fn phase_source(layers: &[AnimLayer], index: usize) -> Option<usize> {
+    let mut current = index;
+    for _ in 0..MAX_ANIM_LAYERS {
+        let name = layers.get(current)?.sync_source.as_deref()?;
+        let next = layers
+            .iter()
+            .position(|l| l.name == name || l.name.eq_ignore_ascii_case(name))?;
+        if next == index {
+            // 直接或间接回到起点：当成没有源层
+            return None;
+        }
+        if layers[next].sync_source.is_none() {
+            return Some(next);
+        }
+        current = next;
+    }
+    None
+}
+
+/// 层的有效相位（扩展四十七）：`Phase` 下若挂了可用源层，取源层相位，否则取本层相位。
+///
+/// `Off` 的层直接返回本层相位（`Off` 采样不看相位，取源层只会在探针里造成误读）。
+pub fn effective_phase(layers: &[AnimLayer], index: usize) -> f32 {
+    let Some(layer) = layers.get(index) else {
+        return 0.0;
+    };
+    if layer.sync == LayerSync::Off {
+        return layer.phase();
+    }
+    match phase_source(layers, index).and_then(|i| layers.get(i)) {
+        Some(source) => source.phase(),
+        None => layer.phase(),
     }
 }
 
@@ -597,10 +728,7 @@ pub fn sample_layer_pose_synced(
     node_index: u32,
     node_path: &str,
 ) -> Option<LayerSample> {
-    let phase = normalized_phase(phase);
-    sample_layer_pose_impl(clips, node_index, node_path, |lc| {
-        phase * lc.clip.duration.max(0.0)
-    })
+    sample_layer_pose_impl(clips, node_index, node_path, |lc| lc.synced_time(phase))
 }
 
 /// 两种采样口径共用的一份实现：`time_of` 决定每路片段用哪个时间采样。
@@ -713,39 +841,62 @@ pub fn layer_report(layer: &AnimLayer) -> String {
         None => base,
     };
     // 相位锁同理：只在开启时追加，`Off` 的日志行与扩展四十六之前逐字一致。
+    // 扩展四十七：挂了源层的层再追加 `src=`，没挂则整行与四十六逐字相同。
     match layer.sync {
         LayerSync::Off => base,
-        LayerSync::Phase => format!("{base} sync=phase"),
+        LayerSync::Phase => match layer.sync_source.as_deref() {
+            Some(source) => format!("{base} sync=phase src={source}"),
+            None => format!("{base} sync=phase"),
+        },
     }
 }
 
 /// 相位同步探针（扩展四十六）：一行说清「每路片段在采哪一刻、相位还差多少」。
 ///
-/// `drift` 是各路片段相位与层相位的最大偏差：
-/// 锁相位时恒为 0；不锁相位时短片段会在末帧停住，drift 一路上涨——这就是滑步的量化证据。
+/// `drift` 是各路片段相位与**期望相位**的最大偏差：锁相位时恒为 0（含设了偏移的层——
+/// 期望相位本身带偏移）；不锁相位时短片段会在末帧停住，drift 一路上涨——这就是滑步的量化证据。
 pub fn sync_probe(layer: &AnimLayer) -> String {
-    let phase = layer.phase();
+    sync_probe_with(layer, layer.phase(), None)
+}
+
+/// 带源层的探针（扩展四十七）：`phase` 传**有效相位**，`source` 传源层名。
+///
+/// `src=` 段只在挂了可用源层时追加，`off=` 段只在有片段设了非零偏移时追加——
+/// 两个默认窗口都不改，既有探针行逐字不变。
+pub fn sync_probe_with(layer: &AnimLayer, phase: f32, source: Option<&str>) -> String {
+    let phase = normalized_phase(phase);
     let duration = layer.duration().max(MIN_LAYER_DURATION);
-    let times = layer.clip_times();
+    let times = layer.clip_times_at(phase);
     let mut drift = 0.0_f32;
     let mut parts = Vec::with_capacity(times.len());
+    let mut offsets = Vec::new();
     for (lc, t) in layer.clips.iter().zip(times) {
         let clip_duration = lc.clip.duration.max(MIN_LAYER_DURATION);
         let p = t / clip_duration;
         // 锁相位时该值恒为 0；不锁相位时它一路上涨，就是「这一路已经停住」的量
         if p.is_finite() {
-            drift = drift.max((p - phase).abs());
+            let expected = clip_phase(phase, lc.phase_offset);
+            drift = drift.max((p - expected).abs());
+        }
+        if lc.phase_offset != 0.0 {
+            offsets.push(format!("{}={:.3}", lc.clip.name, lc.phase_offset));
         }
         parts.push(format!("{}={:.3}/{:.3}", lc.clip.name, t, clip_duration));
     }
-    format!(
-        "sync={} phase={:.3} dur={:.3} drift={:.3} {}",
+    let mut line = format!(
+        "sync={} phase={:.3} dur={:.3} drift={:.3}",
         layer.sync.as_str(),
         phase,
         duration,
-        drift,
-        parts.join(",")
-    )
+        drift
+    );
+    if let Some(source) = source {
+        line.push_str(&format!(" src={source}"));
+    }
+    if !offsets.is_empty() {
+        line.push_str(&format!(" off={}", offsets.join(",")));
+    }
+    format!("{line} {}", parts.join(","))
 }
 
 #[cfg(test)]
@@ -1157,5 +1308,108 @@ mod tests {
         assert!(probe.contains("walk=0.600/1.000"), "{probe}");
         assert!(probe.contains("run=0.300/0.500"), "{probe}");
         assert!(probe.contains("phase=0.600"), "{probe}");
+    }
+
+    // ---------- 相位偏移量与跨层对齐（扩展四十七） ----------
+
+    #[test]
+    fn phase_offset_wraps_into_unit_range() {
+        // 偏移折进 [0,1)：-0.25 等价 0.75，1.25 等价 0.25，0.5 就是错开半步
+        let walk = clip_of("walk", 1.0, vec![]);
+        let mut lc = LayerClip::new(walk.clone(), 1.0);
+        assert_eq!(lc.phase_offset, 0.0);
+        lc.set_phase_offset(-0.25);
+        assert!((lc.phase_offset - 0.75).abs() < 1e-6, "{}", lc.phase_offset);
+        lc.set_phase_offset(1.25);
+        assert!((lc.phase_offset - 0.25).abs() < 1e-6, "{}", lc.phase_offset);
+        lc.set_phase_offset(f32::NAN);
+        assert_eq!(lc.phase_offset, 0.0);
+
+        // 相位 0 + 偏移 0.5 → 采到片段半程
+        let half = LayerClip::new(walk, 1.0).with_phase_offset(0.5);
+        assert!((half.synced_time(0.0) - 0.5).abs() < 1e-6);
+        // 相位 0.75 + 偏移 0.5 折回 0.25
+        assert!((half.synced_time(0.75) - 0.25).abs() < 1e-6);
+        // 折回后不会越界
+        assert!((0.0..=1.0).contains(&wrap_phase(2.0)));
+        assert_eq!(wrap_phase(-0.25), 0.75);
+    }
+
+    #[test]
+    fn zero_offset_keeps_legacy_arithmetic() {
+        // 偏移为 0 时必须与扩展四十六逐位一致：相位 1.0 采末帧，不折回首帧
+        let mut layer = AnimLayer::new("move", clip("walk", vec![]), 1.0);
+        assert!(layer.add_clip(clip_of("run", 0.5, vec![]), 1.0));
+        layer.sync = LayerSync::Phase;
+        assert_eq!(layer.synced_clip_time(0, 1.0), Some(1.0));
+        assert_eq!(layer.synced_clip_time(1, 1.0), Some(0.5));
+        // 探针行里也不该凭空多出 off= 段
+        let probe = sync_probe(&layer);
+        assert!(!probe.contains("off="), "{probe}");
+        assert!(!probe.contains("src="), "{probe}");
+    }
+
+    #[test]
+    fn sync_probe_keeps_drift_zero_with_offset() {
+        // 设了偏移后 drift 仍应为 0：期望相位本身跟着偏移走，不该被误判成滑步
+        let walk = clip_of("walk", 1.0, vec![]);
+        let run = clip_of("run", 0.5, vec![]);
+        let mut layer = AnimLayer::new("move", walk, 1.0);
+        assert!(layer.add_clip(run, 1.0));
+        layer.sync = LayerSync::Phase;
+        assert!(layer.set_clip_phase_offset("run", 0.5));
+        layer.advance(0.25);
+
+        let probe = sync_probe(&layer);
+        assert!(probe.contains("drift=0.000"), "{probe}");
+        assert!(probe.contains("off=run=0.500"), "{probe}");
+        // run 时长 0.5、相位 0.75 → 0.375
+        assert!(probe.contains("run=0.375/0.500"), "{probe}");
+    }
+
+    /// 三层：`index 0` 根、`1` 跟随 `0`、`2` 再跟随 `1`（链式跟随应一路走到 0）。
+    fn chain_layers() -> Vec<AnimLayer> {
+        let mut root = AnimLayer::new("root", clip_of("walk", 1.0, vec![]), 1.0);
+        root.sync = LayerSync::Phase;
+        root.advance(0.4);
+        let mut mid = AnimLayer::new("mid", clip_of("walk", 1.0, vec![]), 1.0)
+            .with_sync(LayerSync::Phase)
+            .with_sync_source(Some("root"));
+        mid.speed = 0.0;
+        let mut top = AnimLayer::new("top", clip_of("walk", 1.0, vec![]), 1.0)
+            .with_sync(LayerSync::Phase)
+            .with_sync_source(Some("mid"));
+        top.speed = 0.0;
+        vec![root, mid, top]
+    }
+
+    #[test]
+    fn phase_source_follows_chain_and_breaks_cycles() {
+        let layers = chain_layers();
+        assert_eq!(phase_source(&layers, 1), Some(0));
+        assert_eq!(phase_source(&layers, 2), Some(0));
+        assert_eq!(phase_source(&layers, 0), None, "根层没有源");
+        // 有效相位取链尾的相位，本层相位仍是自己的
+        assert!((effective_phase(&layers, 2) - 0.4).abs() < 1e-5);
+        assert!((layers[2].phase() - 0.0).abs() < 1e-5);
+
+        // 成环：mid 反过来跟 top，链走不出来 → None，回落本层相位
+        let mut cyclic = chain_layers();
+        cyclic[1].set_sync_source(Some("top"));
+        assert_eq!(phase_source(&cyclic, 1), None);
+        assert!((effective_phase(&cyclic, 1) - 0.0).abs() < 1e-5);
+
+        // 自引用与解析不到的名字同样当没有源层
+        let mut selfish = chain_layers();
+        selfish[1].set_sync_source(Some("mid"));
+        assert_eq!(phase_source(&selfish, 1), None);
+        let mut ghost = chain_layers();
+        ghost[1].set_sync_source(Some("nope"));
+        assert_eq!(phase_source(&ghost, 1), None);
+
+        // Off 的层不看源层：相位就是自己的
+        let mut off = chain_layers();
+        off[2].sync = LayerSync::Off;
+        assert!((effective_phase(&off, 2) - off[2].phase()).abs() < 1e-6);
     }
 }

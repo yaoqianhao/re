@@ -135,7 +135,9 @@ fn set_parses_every_field() {
             "mask": "arm,hand",
             "speed": 1.5,
             "clip": "atk",
-            "sync": "phase"
+            "sync": "phase",
+            "sync_source": "locomotion",
+            "clip_offset": 0.25
         }),
     );
     assert!(resp.error.is_none(), "不应报错: {resp:?}");
@@ -148,6 +150,8 @@ fn set_parses_every_field() {
     assert_eq!(patch.speed, Some(1.5));
     assert_eq!(patch.clip.as_deref(), Some("atk"));
     assert_eq!(patch.sync.as_deref(), Some("phase"));
+    assert_eq!(patch.sync_source.as_deref(), Some("locomotion"));
+    assert_eq!(patch.clip_offset, Some(0.25));
 }
 
 #[test]
@@ -167,6 +171,8 @@ fn partial_patch_leaves_other_fields_untouched() {
     assert_eq!(patch.speed, None);
     assert_eq!(patch.clip, None);
     assert_eq!(patch.sync, None);
+    assert_eq!(patch.sync_source, None);
+    assert_eq!(patch.clip_offset, None);
 }
 
 #[test]
@@ -199,6 +205,54 @@ fn sync_alone_is_not_an_empty_patch() {
         err.message
     );
     assert!(api.seen_patch.is_none(), "非法补丁不该送到宿主");
+}
+
+#[test]
+fn phase_group_fields_alone_are_valid_patches() {
+    // 只调某一路的相位偏移、只改跨层源，都必须算有效补丁（扩展四十七）。
+    let mut api = Mock::default();
+    let resp = call(
+        &mut api,
+        "scene.anim_layer_set",
+        json!({ "instance": "hero/walk", "layer": "upper", "clip": "run", "clip_offset": 0.5 }),
+    );
+    assert!(resp.error.is_none(), "只给 clip_offset 应合法: {resp:?}");
+    let patch = api.seen_patch.expect("补丁应送达宿主");
+    assert_eq!(patch.clip.as_deref(), Some("run"));
+    assert_eq!(patch.clip_offset, Some(0.5));
+    assert_eq!(patch.sync_source, None);
+
+    let mut api = Mock::default();
+    let resp = call(
+        &mut api,
+        "scene.anim_layer_set",
+        json!({ "instance": "hero/walk", "sync_source": "locomotion" }),
+    );
+    assert!(resp.error.is_none(), "只给 sync_source 应合法: {resp:?}");
+    assert_eq!(
+        api.seen_patch
+            .expect("补丁应送达宿主")
+            .sync_source
+            .as_deref(),
+        Some("locomotion")
+    );
+
+    // 类型错误照旧点名字段，且不送到宿主。
+    for params in [
+        json!({ "instance": "a", "sync_source": 3 }),
+        json!({ "instance": "a", "clip_offset": "half" }),
+    ] {
+        let mut api = Mock::default();
+        let resp = call(&mut api, "scene.anim_layer_set", params);
+        let err = resp.error.expect("类型错误应被拒");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(
+            err.message.contains("sync_source") || err.message.contains("clip_offset"),
+            "错误信息应点名字段: {}",
+            err.message
+        );
+        assert!(api.seen_patch.is_none(), "非法补丁不该送到宿主");
+    }
 }
 
 #[test]

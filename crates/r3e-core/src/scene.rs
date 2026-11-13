@@ -7,8 +7,9 @@ use glam::{Mat4, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
 use crate::anim_blend::{
-    apply_additive, blend_override, sample_layer_pose, sample_layer_pose_synced, AnimLayer,
-    BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS,
+    apply_additive, blend_override, effective_phase, phase_source, sample_layer_pose,
+    sample_layer_pose_synced, sync_probe_with, AnimLayer, BoneMask, LayerMode, LayerSync,
+    MAX_ANIM_LAYERS,
 };
 use crate::blend_space::BlendSpace;
 use crate::light::{self, LocalLight};
@@ -1226,17 +1227,23 @@ impl Scene {
             // 没挂空间的层这一步是空操作，权重仍是脚本/场景写死的值——零变化验收靠这一行保证。
             // 扩展四十六：开了相位锁的层改用「归一化相位 × 片段时长」采样每路片段，
             // `LayerSync::Off` 的层仍取同一个层时间，逐位不变。
-            for layer in inst.layers.iter_mut() {
+            // 扩展四十七：相位锁层的相位可以跟随别的层（上下半身对齐），
+            // 所以先按全层视角把每层的有效相位算好，再进可变借用的混合循环。
+            // 没挂源层 / 没开相位锁时 effective_phase 就是本层 phase()，逐位不变。
+            let sync_phases: Vec<Option<f32>> = (0..inst.layers.len())
+                .map(|i| match inst.layers[i].sync {
+                    LayerSync::Off => None,
+                    LayerSync::Phase => Some(effective_phase(&inst.layers, i)),
+                })
+                .collect();
+            for (layer_index, layer) in inst.layers.iter_mut().enumerate() {
                 layer.apply_blend_space();
                 let layer_weight = layer.effective_weight();
                 if layer_weight <= 0.0 {
                     continue;
                 }
                 let layer_time = layer.sample_time();
-                let sync_phase = match layer.sync {
-                    LayerSync::Off => None,
-                    LayerSync::Phase => Some(layer.phase()),
-                };
+                let sync_phase = sync_phases[layer_index];
                 for (i, b) in inst.bindings.iter().enumerate() {
                     let effective = layer_weight * layer.mask.weight_for(&b.path);
                     if effective <= 0.0 {
@@ -1628,10 +1635,136 @@ impl Scene {
         self.anim_layer(instance, layer).map(|l| l.phase())
     }
 
-    /// 相位同步单行探针（日志用）。实例 / 层不存在返回 `None`。
+    /// 相位同步单行探针（日志用，含跨层源与偏移段）。实例 / 层不存在返回 `None`。
     pub fn anim_layer_sync_probe(&self, instance: &str, layer: &str) -> Option<String> {
+        let inst = self.anim_instance(instance)?;
+        let (index, phase, source) = self.anim_layer_phase_view(instance, layer)?;
+        Some(sync_probe_with(
+            &inst.layers[index],
+            phase,
+            source.as_deref(),
+        ))
+    }
+
+    // ---------- 相位偏移量与跨层对齐（扩展四十七） ----------
+
+    /// 层下标 + 有效相位 + 源层名（跨层对齐后真正用于采样的相位）。
+    ///
+    /// 内部用：`Off` 的层不给源层名，免得探针里出现「跟着某层但没生效」的误导。
+    fn anim_layer_phase_view(
+        &self,
+        instance: &str,
+        layer: &str,
+    ) -> Option<(usize, f32, Option<String>)> {
+        let inst = self.anim_instance(instance)?;
+        let index = if layer.is_empty() {
+            if inst.layers.is_empty() {
+                return None;
+            }
+            0
+        } else {
+            inst.layers
+                .iter()
+                .position(|l| l.name == layer || l.name.eq_ignore_ascii_case(layer))?
+        };
+        let phase = effective_phase(&inst.layers, index);
+        let source = if inst.layers[index].sync == LayerSync::Phase {
+            phase_source(&inst.layers, index).map(|i| inst.layers[i].name.clone())
+        } else {
+            None
+        };
+        Some((index, phase, source))
+    }
+
+    /// 设某一路片段的相位偏移：`offset` 折进 `[0, 1)`（`-0.25` 等价 `0.75`）。
+    ///
+    /// `clip` 为空时作用于层内第一路；片段名大小写不敏感。
+    /// 返回 `false` 表示实例 / 层 / 片段不存在，片段状态不变。
+    pub fn set_anim_layer_clip_phase_offset(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip: &str,
+        offset: f32,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+            .and_then(|l| layer_clip_mut(l, clip))
+        {
+            Some(c) => {
+                c.set_phase_offset(offset);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 读某一路片段的相位偏移（没设过是 0.0）。实例 / 层 / 片段不存在返回 `None`。
+    pub fn anim_layer_clip_phase_offset(
+        &self,
+        instance: &str,
+        layer: &str,
+        clip: &str,
+    ) -> Option<f32> {
+        let l = self.anim_layer(instance, layer)?;
+        let index = layer_clip_index(l, clip)?;
+        Some(l.clips[index].phase_offset)
+    }
+
+    /// 让层的相位跟随 `source` 层（跨层对齐：上下半身各层同一相位起步）。
+    ///
+    /// 只在层开了相位锁（[`LayerSync::Phase`]）时影响采样；`None` / 空串 = 清除，跟回自己。
+    ///
+    /// 返回 `false` 表示：实例 / 层不存在、源层不存在、指向自己、或会形成跟随环
+    /// （A→B→A）。**失败时层状态原样回滚**，不会留下半截链。
+    pub fn set_anim_layer_sync_source(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        source: Option<&str>,
+    ) -> bool {
+        let Some(inst) = self.anim_instance_mut(instance) else {
+            return false;
+        };
+        let Some(index) = anim_layer_index(inst, layer) else {
+            return false;
+        };
+        match source.map(str::trim).filter(|s| !s.is_empty()) {
+            None => {
+                inst.layers[index].set_sync_source(None);
+                true
+            }
+            Some(name) => {
+                if anim_layer_index(inst, name).is_none() {
+                    return false;
+                }
+                let before = inst.layers[index].sync_source.clone();
+                inst.layers[index].set_sync_source(Some(name));
+                // 自引用 / 成环 / 解析不到：chain 走不出来，回滚
+                if phase_source(&inst.layers, index).is_some() {
+                    true
+                } else {
+                    inst.layers[index].sync_source = before;
+                    false
+                }
+            }
+        }
+    }
+
+    /// 层当前跟随的源层名（没设过返回空串，不返回 `None` 以便脚本直接打印）。
+    /// 实例 / 层不存在返回 `None`。
+    pub fn anim_layer_sync_source(&self, instance: &str, layer: &str) -> Option<String> {
         self.anim_layer(instance, layer)
-            .map(crate::anim_blend::sync_probe)
+            .map(|l| l.sync_source.clone().unwrap_or_default())
+    }
+
+    /// 跨层对齐后的**有效相位**（含源层跟随）。实例 / 层不存在返回 `None`。
+    ///
+    /// 没挂源层时与 [`Self::anim_layer_phase`] 相同。
+    pub fn anim_layer_sync_phase(&self, instance: &str, layer: &str) -> Option<f32> {
+        self.anim_layer_phase_view(instance, layer)
+            .map(|(_, phase, _)| phase)
     }
 
     /// 把层的片段替换为指定片段（层内收敛为单片段、权重 1.0，其余属性保留）。
@@ -2141,6 +2274,44 @@ fn anim_layer_mut<'a>(inst: &'a mut AnimInstance, name: &str) -> Option<&'a mut 
     inst.layers
         .iter_mut()
         .find(|l| l.name == name || l.name.eq_ignore_ascii_case(name))
+}
+
+/// 按名字取层下标（`name` 为空取 0），口径与 [`anim_layer_mut`] 一致。
+fn anim_layer_index(inst: &AnimInstance, name: &str) -> Option<usize> {
+    if name.is_empty() {
+        return if inst.layers.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+    }
+    inst.layers
+        .iter()
+        .position(|l| l.name == name || l.name.eq_ignore_ascii_case(name))
+}
+
+/// 按名字取层内片段下标；`clip` 为空取第一路，大小写不敏感（扩展四十七）。
+fn layer_clip_index(layer: &AnimLayer, clip: &str) -> Option<usize> {
+    if clip.is_empty() {
+        return if layer.clips.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+    }
+    layer
+        .clips
+        .iter()
+        .position(|c| c.clip.name == clip || c.clip.name.eq_ignore_ascii_case(clip))
+}
+
+/// 按名字取层内可变片段（口径同 [`layer_clip_index`]）。
+fn layer_clip_mut<'a>(
+    layer: &'a mut AnimLayer,
+    clip: &str,
+) -> Option<&'a mut crate::anim_blend::LayerClip> {
+    let index = layer_clip_index(layer, clip)?;
+    layer.clips.get_mut(index)
 }
 
 #[cfg(test)]
@@ -2838,6 +3009,112 @@ mod anim_tests {
         assert!(scene.anim_layer_sync_probe("demo/walk", "nope").is_none());
         assert!(!scene.set_anim_layer_sync("demo/walk", "nope", true));
         assert!(!scene.set_anim_layer_sync_strategy("nope", "move", LayerSync::Phase));
+    }
+
+    // ---------- 相位偏移量与跨层对齐（扩展四十七） ----------
+
+    #[test]
+    fn anim_layer_clip_phase_offset_shifts_single_path() {
+        let (mut scene, arm) = sync_scene();
+        scene.update_animations(0.25);
+        assert!(scene.set_anim_layer_sync("demo/walk", "move", true));
+        scene.update_animations(0.0);
+        // 相位锁：两路同为 25%，平均值仍是 25
+        assert!((scene.get(arm).unwrap().transform.position.x - 25.0).abs() < 1e-3);
+
+        // 给快路加半步偏移：它走到 75%，两路平均被拉到 50 —— 步幅没变、只是错开半步
+        assert!(scene.set_anim_layer_clip_phase_offset("demo/walk", "move", "fast", 0.5));
+        assert_eq!(
+            scene.anim_layer_clip_phase_offset("demo/walk", "move", "fast"),
+            Some(0.5)
+        );
+        scene.update_animations(0.0);
+        let offset = scene.get(arm).unwrap().transform.position.x;
+        assert!((offset - 50.0).abs() < 1e-3, "错步应 50，实际 {offset}");
+
+        // 归零即回到逐位相同的 25
+        assert!(scene.set_anim_layer_clip_phase_offset("demo/walk", "move", "fast", 0.0));
+        scene.update_animations(0.0);
+        let back = scene.get(arm).unwrap().transform.position.x;
+        assert!((back - 25.0).abs() < 1e-3, "归零应 25，实际 {back}");
+
+        // 片段 / 层写错都不该改状态
+        assert!(!scene.set_anim_layer_clip_phase_offset("demo/walk", "move", "ghost", 0.5));
+        assert!(!scene.set_anim_layer_clip_phase_offset("demo/walk", "nope", "fast", 0.5));
+        assert_eq!(
+            scene.anim_layer_clip_phase_offset("demo/walk", "move", "ghost"),
+            None
+        );
+        // 空片段名作用于层内第一路；负偏移按循环等价折叠
+        assert!(scene.set_anim_layer_clip_phase_offset("demo/walk", "move", "", -0.25));
+        let first = scene
+            .anim_layer_clip_phase_offset("demo/walk", "move", "slow")
+            .expect("第一路是 slow");
+        assert!((first - 0.75).abs() < 1e-5, "{first}");
+    }
+
+    #[test]
+    fn anim_layer_sync_source_aligns_across_layers() {
+        let (mut scene, arm) = sync_scene();
+        // 旁观层：只驱动 leg、时间不推进（相位恒 0），充当「下半身」相位源
+        let idle = std::sync::Arc::new(AnimClip {
+            name: "idle".to_string(),
+            duration: 1.0,
+            tracks: vec![line_track(2, "root/leg", Vec3::new(100.0, 0.0, 0.0))],
+        });
+        let upper = AnimLayer::new("upper", idle, 1.0).with_mask(BoneMask::only(["leg"]));
+        assert!(scene.add_anim_layer("demo/walk", upper));
+        assert!(scene.set_anim_layer_speed("demo/walk", "upper", 0.0));
+        assert!(scene.set_anim_layer_sync("demo/walk", "move", true));
+
+        scene.update_animations(0.25);
+        assert!((scene.anim_layer_sync_phase("demo/walk", "move").unwrap() - 0.25).abs() < 1e-4);
+        assert!((scene.get(arm).unwrap().transform.position.x - 25.0).abs() < 1e-3);
+
+        // 跨层对齐：move 跟随 upper（相位 0）→ 采样相位变 0，arm 回到起点
+        assert!(scene.set_anim_layer_sync_source("demo/walk", "move", Some("upper")));
+        assert_eq!(
+            scene.anim_layer_sync_source("demo/walk", "move").as_deref(),
+            Some("upper")
+        );
+        scene.update_animations(0.0);
+        assert!(
+            scene
+                .anim_layer_sync_phase("demo/walk", "move")
+                .unwrap()
+                .abs()
+                < 1e-4
+        );
+        let aligned = scene.get(arm).unwrap().transform.position.x;
+        assert!(aligned.abs() < 1e-3, "对齐后应 0，实际 {aligned}");
+        // 本层相位不受影响（编辑器画标尺仍读自己的）
+        assert!((scene.anim_layer_phase("demo/walk", "move").unwrap() - 0.25).abs() < 1e-4);
+        // 探针带 src 段
+        let probe = scene
+            .anim_layer_sync_probe("demo/walk", "move")
+            .expect("层存在");
+        assert!(probe.contains("src=upper"), "{probe}");
+        assert!(probe.contains("drift=0.000"), "{probe}");
+
+        // 自引用 / 源层不存在：直接拒
+        assert!(!scene.set_anim_layer_sync_source("demo/walk", "move", Some("move")));
+        assert!(!scene.set_anim_layer_sync_source("demo/walk", "move", Some("nope")));
+        assert!(!scene.set_anim_layer_sync_source("demo/walk", "nope", Some("upper")));
+        // 先让 move 跟 upper 时就能看出环：upper 尚未跟人，这里成功
+        assert!(scene.set_anim_layer_sync_source("demo/walk", "move", Some("upper")));
+        // 再让 upper 反跟 move 就成环，必须拒
+        assert!(!scene.set_anim_layer_sync_source("demo/walk", "upper", Some("move")));
+
+        // 清除后相位跟回自己
+        assert!(scene.set_anim_layer_sync_source("demo/walk", "move", None));
+        assert_eq!(
+            scene.anim_layer_sync_source("demo/walk", "move").as_deref(),
+            Some("")
+        );
+        assert!((scene.anim_layer_sync_phase("demo/walk", "move").unwrap() - 0.25).abs() < 1e-4);
+        // 不存在的层没有相位可读
+        assert!(scene.anim_layer_sync_phase("demo/walk", "nope").is_none());
+        assert!(scene.anim_layer_sync_source("demo/walk", "nope").is_none());
     }
 
     #[test]
