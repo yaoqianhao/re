@@ -873,6 +873,30 @@ impl EngineApi for LocalEngineApi<'_> {
                 )));
             }
         }
+        // 扩展四十八：片段自带速率/循环，两种参数一起下发时只调一次 setter。
+        if patch.clip_speed.is_some() || patch.clip_looping.is_some() {
+            let clip = patch.clip.as_deref().unwrap_or_default();
+            let current = scene.anim_layer_clip_playback(&patch.instance, &patch.layer, clip);
+            // 只给循环标志时沿用当前速率；没设过就按原速 1.0，避免"只想停住"被顺手改成别的速度。
+            let speed = patch.clip_speed.or(current.map(|(s, _)| s)).unwrap_or(1.0);
+            // 只给速率时沿用当前循环标志；没设过默认循环。
+            let looping = patch
+                .clip_looping
+                .or(current.map(|(_, l)| l))
+                .unwrap_or(true);
+            if !scene.set_anim_layer_clip_playback(
+                &patch.instance,
+                &patch.layer,
+                clip,
+                speed,
+                looping,
+            ) {
+                return Err(RpcFailure::invalid_params(format!(
+                    "实例 `{}` 的层 `{}` 上没有片段 `{clip}`（`clip_speed` / `clip_looping` 需配 `clip` 或作用于第一路）",
+                    patch.instance, patch.layer
+                )));
+            }
+        }
         let layer = scene
             .anim_layer(&patch.instance, &patch.layer)
             .ok_or_else(|| layer_missing(&patch.instance, &patch.layer))?;
@@ -1781,6 +1805,9 @@ fn anim_layer_value(instance: &str, layer: &AnimLayer) -> Value {
                 "weight": w,
                 // 扩展四十七：这一路的相位偏移（没设过是 0，编辑器画错步标尺用）
                 "phase_offset": lc.phase_offset,
+                // 扩展四十八：这一路自带的播放参数（没设过为 null，编辑器据此显示「跟层走」）
+                "clip_speed": lc.playback.map(|pb| pb.speed),
+                "clip_looping": lc.playback.map(|pb| pb.looping),
             })
         })
         .collect();
@@ -2857,6 +2884,89 @@ mod tests {
     }
 
     #[test]
+    fn anim_layer_set_applies_clip_playback() {
+        let (scene, physics, mut scripts) = anim_fixture();
+        for layer in ["upper", "lower"] {
+            let _ = scripts
+                .eval(&format!(
+                    r#"add_anim_layer("hero/walk", "{layer}", "atk", 1.0)"#
+                ))
+                .expect("建层应成功");
+        }
+        let mut api = api(&scene, &physics, &mut scripts);
+
+        // 速率 + 循环一起给：落到该路，并在快照里回显
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                clip: Some("atk".to_string()),
+                clip_speed: Some(2.0),
+                clip_looping: Some(false),
+                ..Default::default()
+            })
+            .expect("补丁应成功");
+        let clips = &out["layer"]["clips"];
+        assert_eq!(clips[0]["clip_speed"], json!(2.0));
+        assert_eq!(clips[0]["clip_looping"], json!(false));
+
+        // 只给循环标志：速率沿用当前值，不该被顺手改成 1.0
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                clip_looping: Some(true),
+                ..Default::default()
+            })
+            .expect("补丁应成功");
+        assert_eq!(out["layer"]["clips"][0]["clip_speed"], json!(2.0));
+        assert_eq!(out["layer"]["clips"][0]["clip_looping"], json!(true));
+
+        // 只给速率（另一层没设过播放参数）：循环沿用默认 true
+        let out = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "lower".to_string(),
+                clip_speed: Some(0.5),
+                ..Default::default()
+            })
+            .expect("补丁应成功");
+        assert_eq!(out["layer"]["clips"][0]["clip_speed"], json!(0.5));
+        assert_eq!(out["layer"]["clips"][0]["clip_looping"], json!(true));
+
+        // 真落到了 core 上
+        let stored = scene
+            .borrow()
+            .anim_layer("hero/walk", "upper")
+            .cloned()
+            .expect("层应存在");
+        let pb = stored.clips[0].playback.expect("应带上播放参数");
+        assert!((pb.speed - 2.0).abs() < 1e-6);
+        assert!(pb.looping, "第二次补丁把循环改回 true");
+
+        // 片段名写错：参数错误，既有状态不变
+        let err = api
+            .scene_anim_layer_set(AnimLayerPatch {
+                instance: "hero/walk".to_string(),
+                layer: "upper".to_string(),
+                clip: Some("ghost".to_string()),
+                clip_speed: Some(3.0),
+                ..Default::default()
+            })
+            .expect_err("应被拒");
+        assert_eq!(err.code, r3e_editor::INVALID_PARAMS);
+        let stored = scene
+            .borrow()
+            .anim_layer("hero/walk", "upper")
+            .cloned()
+            .expect("层应存在");
+        assert!(
+            (stored.clips[0].playback.expect("仍在").speed - 2.0).abs() < 1e-6,
+            "被拒后速率不该变"
+        );
+    }
+
+    #[test]
     fn anim_layer_set_patches_and_returns_layer() {
         let (scene, physics, mut scripts) = anim_fixture();
         let _ = scripts
@@ -2876,6 +2986,8 @@ mod tests {
                 sync: Some("phase".to_string()),
                 sync_source: None,
                 clip_offset: None,
+                clip_speed: None,
+                clip_looping: None,
             })
             .expect("补丁应成功");
         let layer = &out["layer"];

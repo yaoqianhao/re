@@ -414,6 +414,11 @@ pub struct AnimLayerPatch {
     pub sync_source: Option<String>,
     /// 相位偏移（扩展四十七）：作用于本补丁 `clip` 指定的那一路；没给 `clip` 时作用于第一路。
     pub clip_offset: Option<f32>,
+    /// 片段自带播放速率（扩展四十八）：作用于本补丁 `clip` 指定的那一路；没给 `clip` 时作用于第一路。
+    /// 负值倒放、0 定格首帧；只在层 `sync = off` 时影响采样。
+    pub clip_speed: Option<f32>,
+    /// 片段循环标志（扩展四十八）：`false` 时到末帧停住。
+    pub clip_looping: Option<bool>,
 }
 
 impl AnimLayerPatch {
@@ -426,6 +431,8 @@ impl AnimLayerPatch {
             && self.sync.is_none()
             && self.sync_source.is_none()
             && self.clip_offset.is_none()
+            && self.clip_speed.is_none()
+            && self.clip_looping.is_none()
     }
 }
 
@@ -1359,6 +1366,8 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 opt_str(&req.params, "sync"),
                 opt_str(&req.params, "sync_source"),
                 opt_num(&req.params, "clip_offset"),
+                opt_num(&req.params, "clip_speed"),
+                opt_bool(&req.params, "clip_looping"),
             ) {
                 (
                     Ok(weight),
@@ -1369,6 +1378,8 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                     Ok(sync),
                     Ok(sync_source),
                     Ok(clip_offset),
+                    Ok(clip_speed),
+                    Ok(clip_looping),
                 ) => AnimLayerPatch {
                     instance,
                     layer,
@@ -1380,6 +1391,8 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                     sync: sync.map(|s| s.to_string()),
                     sync_source: sync_source.map(|s| s.to_string()),
                     clip_offset,
+                    clip_speed,
+                    clip_looping,
                 },
                 (Err(f), ..)
                 | (_, Err(f), ..)
@@ -1388,7 +1401,9 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
                 | (_, _, _, _, Err(f), ..)
                 | (_, _, _, _, _, Err(f), ..)
                 | (_, _, _, _, _, _, Err(f), ..)
-                | (_, _, _, _, _, _, _, Err(f)) => return Response::fail(id, f),
+                | (_, _, _, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, _, _, Err(f), ..)
+                | (_, _, _, _, _, _, _, _, _, Err(f)) => return Response::fail(id, f),
             };
             if patch.is_empty() {
                 return Response::fail(

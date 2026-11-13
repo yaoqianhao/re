@@ -1291,6 +1291,73 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 设某一路片段自带的播放速率与循环标志：速率为负倒放、0 定格首帧、非有限值按原速；
+    // `looping = false` 时到末帧停住。只在层没开相位锁时影响采样。
+    // `clip` 传空串表示层内第一路；片段/层不存在返回 false。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_clip_playback",
+        move |inst: &str, layer: &str, clip: &str, speed: f64, looping: bool| -> bool {
+            c.scene.borrow_mut().set_anim_layer_clip_playback(
+                inst,
+                layer,
+                clip,
+                f32_of(speed),
+                looping,
+            )
+        },
+    );
+
+    // 清除某一路的播放参数（回到跟着层时间轴走）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "clear_anim_layer_clip_playback",
+        move |inst: &str, layer: &str, clip: &str| -> bool {
+            c.scene
+                .borrow_mut()
+                .clear_anim_layer_clip_playback(inst, layer, clip)
+        },
+    );
+
+    // 回显某一路的播放速率（没设过返回 -1，因为 0 是合法的「定格首帧」）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_clip_speed",
+        move |inst: &str, layer: &str, clip: &str| -> f64 {
+            c.scene
+                .borrow()
+                .anim_layer_clip_playback(inst, layer, clip)
+                .map(|(speed, _)| f64::from(speed))
+                .unwrap_or(-1.0)
+        },
+    );
+
+    // 回显某一路的循环标志（没设过返回 true：跟层走的默认口径就是循环）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_clip_looping",
+        move |inst: &str, layer: &str, clip: &str| -> bool {
+            c.scene
+                .borrow()
+                .anim_layer_clip_playback(inst, layer, clip)
+                .map(|(_, looping)| looping)
+                .unwrap_or(true)
+        },
+    );
+
+    // 某一路这一帧实际采到的时间（秒，含速率/循环折算）；层/片段不存在返回 -1。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_clip_time",
+        move |inst: &str, layer: &str, clip: &str| -> f64 {
+            c.scene
+                .borrow()
+                .anim_layer_clip_time(inst, layer, clip)
+                .map(f64::from)
+                .unwrap_or(-1.0)
+        },
+    );
+
     // ---------------- 相机 / 光照 / 环境 ----------------
     let c = ctx.clone();
     engine.register_fn(

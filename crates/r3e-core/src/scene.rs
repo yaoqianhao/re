@@ -1767,6 +1767,79 @@ impl Scene {
             .map(|(_, phase, _)| phase)
     }
 
+    // ---------- 片段自带速率与循环标志（扩展四十八） ----------
+
+    /// 设某一路片段的播放速率与循环标志：这一路从此按自己的时间轴走。
+    ///
+    /// `speed` 负值倒放、`0` 定格首帧、非有限值按原速；`looping = false` 时到末帧停住。
+    /// 只在层没开相位锁（[`LayerSync::Off`]）时影响采样——相位锁层的每路时间由相位
+    /// 决定，要变速请调层 [`Self::set_anim_layer_speed`]。
+    ///
+    /// `clip` 为空时作用于层内第一路；片段名大小写不敏感。
+    /// 返回 `false` 表示实例 / 层 / 片段不存在，片段状态不变。
+    pub fn set_anim_layer_clip_playback(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip: &str,
+        speed: f32,
+        looping: bool,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+            .and_then(|l| layer_clip_mut(l, clip))
+        {
+            Some(c) => {
+                c.set_playback(speed, looping);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 清除某一路片段的播放参数：回到「跟着层时间轴走」的默认口径。
+    /// 返回 `false` 表示实例 / 层 / 片段不存在。
+    pub fn clear_anim_layer_clip_playback(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip: &str,
+    ) -> bool {
+        match self
+            .anim_instance_mut(instance)
+            .and_then(|inst| anim_layer_mut(inst, layer))
+            .and_then(|l| layer_clip_mut(l, clip))
+        {
+            Some(c) => {
+                c.clear_playback();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 读某一路片段的播放参数：`None` = 没设过（跟着层时间轴走）。
+    pub fn anim_layer_clip_playback(
+        &self,
+        instance: &str,
+        layer: &str,
+        clip: &str,
+    ) -> Option<(f32, bool)> {
+        let l = self.anim_layer(instance, layer)?;
+        let index = layer_clip_index(l, clip)?;
+        l.clips[index].playback.map(|pb| (pb.speed, pb.looping))
+    }
+
+    /// 某一路片段**这一帧实际采样到的时间**（秒，含速率/循环折算）。
+    ///
+    /// 真机取证用：同一个层时间下，两路的这个值不同就说明速率生效了。
+    pub fn anim_layer_clip_time(&self, instance: &str, layer: &str, clip: &str) -> Option<f32> {
+        let l = self.anim_layer(instance, layer)?;
+        let index = layer_clip_index(l, clip)?;
+        l.clip_times().get(index).copied()
+    }
+
     /// 把层的片段替换为指定片段（层内收敛为单片段、权重 1.0，其余属性保留）。
     ///
     /// 片段名按「实例名前缀」解析（`"tirger/idle_loop"` 的实例可只写 `"atk"`）。

@@ -197,6 +197,64 @@ impl LayerSync {
     }
 }
 
+/// 单路片段的播放参数（扩展四十八）：片段自带速率与循环标志。
+///
+/// 层级的 [`AnimLayer::speed`] / [`AnimLayer::looping`] 是「整层共用一条时间轴」的口径，
+/// 一个层内几路片段长短不一时只能折中。这里把速率与循环下放到**每一路片段**上：
+/// 呼吸（慢）与摇头（快）同处一层时，各自按自己的速率走，互不牵制。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipPlayback {
+    /// 播放速率倍数：`1.0` 原速、`2.0` 快一倍、负值倒放、`0.0` 定格首帧。
+    pub speed: f32,
+    /// 到末帧后是否绕回开头（`false` = 停在末帧）。
+    pub looping: bool,
+}
+
+impl ClipPlayback {
+    /// 构造播放参数；非有限速率按 1.0（原速）处理，避免把 NaN 传进时间轴。
+    pub fn new(speed: f32, looping: bool) -> Self {
+        Self {
+            speed: sanitize_speed(speed),
+            looping,
+        }
+    }
+
+    /// 本路在层时间 `time` 处应采样的片段内时间。
+    ///
+    /// 采样口径与 [`crate::anim::wrap_time`] 完全一致（循环取模 / 非循环钳到末帧），
+    /// 只是先把层时间按 `speed` 缩放——因此负速率能自然倒放（`rem_euclid` 保证落在 `[0, d)`）。
+    pub fn time_at(&self, time: f32, duration: f32) -> f32 {
+        // 定格：速率 0 恒采首帧（等价于把时间轴钉在 0，而不是「按 0 缩放得 0」的巧合）
+        let scaled = if self.speed == 0.0 {
+            0.0
+        } else {
+            time * self.speed
+        };
+        if !scaled.is_finite() {
+            return 0.0;
+        }
+        crate::anim::wrap_time(scaled, self.looping, duration)
+    }
+
+    /// 日志 / 探针用的紧凑写法：`1.50` 或 `2.00:once`（循环是常态，不额外标注）。
+    pub fn brief(&self) -> String {
+        if self.looping {
+            format!("{:.2}", self.speed)
+        } else {
+            format!("{:.2}:once", self.speed)
+        }
+    }
+}
+
+/// 速率收敛：非有限值按 1.0（原速），其余原样保留（负值与 0 都有语义）。
+fn sanitize_speed(speed: f32) -> f32 {
+    if speed.is_finite() {
+        speed
+    } else {
+        1.0
+    }
+}
+
 /// 层内的一路片段及其权重。
 #[derive(Debug, Clone)]
 pub struct LayerClip {
@@ -207,6 +265,12 @@ pub struct LayerClip {
     ///
     /// 0.0 时与扩展四十七之前**逐位一致**；0.5 即「同一时刻反着走半步」，用来做左右脚错步。
     pub phase_offset: f32,
+    /// 本路自己的播放速率与循环标志（扩展四十八）。
+    ///
+    /// 为 `None`（默认）时这一路**原样使用层时间**，与扩展四十八之前**逐位一致**——
+    /// 这是本扩展「零变化」验收的支点。只在 [`LayerSync::Off`] 下生效：相位锁层的
+    /// 每路时间由相位决定（要变速请调层 [`AnimLayer::speed`]），否则相位对齐会被速率破坏。
+    pub playback: Option<ClipPlayback>,
 }
 
 impl LayerClip {
@@ -219,12 +283,40 @@ impl LayerClip {
                 0.0
             },
             phase_offset: 0.0,
+            playback: None,
         }
     }
 
     pub fn with_phase_offset(mut self, offset: f32) -> Self {
         self.phase_offset = wrap_phase(offset);
         self
+    }
+
+    /// 设本路自己的播放速率与循环标志（扩展四十八）。链式构造用。
+    pub fn with_playback(mut self, speed: f32, looping: bool) -> Self {
+        self.playback = Some(ClipPlayback::new(speed, looping));
+        self
+    }
+
+    /// 设本路播放参数（非有限速率按原速）。
+    pub fn set_playback(&mut self, speed: f32, looping: bool) {
+        self.playback = Some(ClipPlayback::new(speed, looping));
+    }
+
+    /// 清除本路播放参数：这一路回到「跟着层时间轴走」的老口径。
+    pub fn clear_playback(&mut self) {
+        self.playback = None;
+    }
+
+    /// 本路在层时间 `time` 处应采样的片段内时间（扩展四十八）。
+    ///
+    /// **没设播放参数时原样返回 `time`**（不乘 1.0、不取模），这就是「不设 = 老行为」的
+    /// 算术支点：未调新 API 的场景逐位不变。
+    pub fn playback_time(&self, time: f32) -> f32 {
+        match self.playback {
+            Some(pb) => pb.time_at(time, self.clip.duration.max(0.0)),
+            None => time,
+        }
     }
 
     /// 设本路相位偏移：非有限值按 0，其余折进 `[0, 1)`（-0.25 等价 0.75）。
@@ -395,6 +487,43 @@ impl AnimLayer {
         };
         self.clips[index].set_phase_offset(offset);
         true
+    }
+
+    /// 按片段名设本路播放参数（扩展四十八）；`clip` 为空取第一路，名字大小写不敏感。
+    ///
+    /// 片段不存在返回 `false`，层状态不变。
+    pub fn set_clip_playback(&mut self, clip: &str, speed: f32, looping: bool) -> bool {
+        match self.clip_index_by_name(clip) {
+            Some(i) => {
+                self.clips[i].set_playback(speed, looping);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 按片段名清除本路播放参数（回到跟着层时间轴走）。
+    pub fn clear_clip_playback(&mut self, clip: &str) -> bool {
+        match self.clip_index_by_name(clip) {
+            Some(i) => {
+                self.clips[i].clear_playback();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 层内片段下标：空名取第一路，名字大小写不敏感，找不到返回 `None`。
+    fn clip_index_by_name(&self, clip: &str) -> Option<usize> {
+        if clip.is_empty() {
+            if self.clips.is_empty() {
+                return None;
+            }
+            return Some(0);
+        }
+        self.clips
+            .iter()
+            .position(|c| c.clip.name == clip || c.clip.name.eq_ignore_ascii_case(clip))
     }
 
     /// 把混合空间当前参数算出来的权重写进层内片段（扩展四十五）。
@@ -596,9 +725,15 @@ impl AnimLayer {
     }
 
     /// 在给定层相位下各路片段的采样时间（扩展四十七：允许外部传有效相位）。
+    ///
+    /// 扩展四十八：`Off` 口径下每路可按自己的速率/循环折算时；没设播放参数的那一路
+    /// 拿到的仍是同一个层时间，逐位不变。
     pub fn clip_times_at(&self, phase: f32) -> Vec<f32> {
         match self.sync {
-            LayerSync::Off => vec![self.sample_time(); self.clips.len()],
+            LayerSync::Off => {
+                let time = self.sample_time();
+                self.clips.iter().map(|c| c.playback_time(time)).collect()
+            }
             LayerSync::Phase => self.clips.iter().map(|c| c.synced_time(phase)).collect(),
         }
     }
@@ -708,13 +843,16 @@ pub struct LayerSample {
 ///
 /// 层内任一片段没有该节点轨道时跳过那一路（剩余权重重新归一），全部缺失返回 `None`，
 /// 调用方保留主姿态不动。
+///
+/// 扩展四十八：`time` 是**层时间**，每路片段再按自己的播放参数折算（没设参数的
+/// 那一路原样使用 `time`，与扩展四十八之前逐位一致）。
 pub fn sample_layer_pose(
     clips: &[LayerClip],
     time: f32,
     node_index: u32,
     node_path: &str,
 ) -> Option<LayerSample> {
-    sample_layer_pose_impl(clips, node_index, node_path, |_| time)
+    sample_layer_pose_impl(clips, node_index, node_path, |lc| lc.playback_time(time))
 }
 
 /// 相位锁采样（扩展四十六）：把归一化相位按各片段自己的时长还原成片段内时间。
@@ -842,13 +980,32 @@ pub fn layer_report(layer: &AnimLayer) -> String {
     };
     // 相位锁同理：只在开启时追加，`Off` 的日志行与扩展四十六之前逐字一致。
     // 扩展四十七：挂了源层的层再追加 `src=`，没挂则整行与四十六逐字相同。
-    match layer.sync {
+    let base = match layer.sync {
         LayerSync::Off => base,
         LayerSync::Phase => match layer.sync_source.as_deref() {
             Some(source) => format!("{base} sync=phase src={source}"),
             None => format!("{base} sync=phase"),
         },
+    };
+    // 扩展四十八：自带速率/循环的片段再追加 `pb=`（只有设过的才出现），
+    // 没设播放参数的层整行与扩展四十七逐字相同。
+    let playback = playback_list(layer);
+    if playback.is_empty() {
+        base
+    } else {
+        format!("{base} pb={playback}")
     }
+}
+
+/// 层内设了播放参数的片段清单：`run=2.00:once,walk=0.50`；一个都没设返回空串。
+fn playback_list(layer: &AnimLayer) -> String {
+    layer
+        .clips
+        .iter()
+        .filter_map(|lc| lc.playback.as_ref().map(|pb| (lc, pb)))
+        .map(|(lc, pb)| format!("{}={}", lc.clip.name, pb.brief()))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// 相位同步探针（扩展四十六）：一行说清「每路片段在采哪一刻、相位还差多少」。
@@ -870,16 +1027,25 @@ pub fn sync_probe_with(layer: &AnimLayer, phase: f32, source: Option<&str>) -> S
     let mut drift = 0.0_f32;
     let mut parts = Vec::with_capacity(times.len());
     let mut offsets = Vec::new();
+    let mut playbacks = Vec::new();
     for (lc, t) in layer.clips.iter().zip(times) {
         let clip_duration = lc.clip.duration.max(MIN_LAYER_DURATION);
         let p = t / clip_duration;
-        // 锁相位时该值恒为 0；不锁相位时它一路上涨，就是「这一路已经停住」的量
+        // 锁相位时该值恒为 0；不锁相位时它一路上涨，就是「这一路已经停住」的量。
+        // 扩展四十八：自带速率/循环的片段（仅 `Off` 生效）按自己的时间轴走，
+        // 期望值就是它自己走到的相位——用户主动设的「不同速」不该被报成滑步。
+        let expected = match (layer.sync, lc.playback) {
+            (LayerSync::Off, Some(_)) => p,
+            _ => clip_phase(phase, lc.phase_offset),
+        };
         if p.is_finite() {
-            let expected = clip_phase(phase, lc.phase_offset);
             drift = drift.max((p - expected).abs());
         }
         if lc.phase_offset != 0.0 {
             offsets.push(format!("{}={:.3}", lc.clip.name, lc.phase_offset));
+        }
+        if let Some(pb) = lc.playback.as_ref() {
+            playbacks.push(format!("{}={}", lc.clip.name, pb.brief()));
         }
         parts.push(format!("{}={:.3}/{:.3}", lc.clip.name, t, clip_duration));
     }
@@ -895,6 +1061,10 @@ pub fn sync_probe_with(layer: &AnimLayer, phase: f32, source: Option<&str>) -> S
     }
     if !offsets.is_empty() {
         line.push_str(&format!(" off={}", offsets.join(",")));
+    }
+    // 扩展四十八：只有设了播放参数的层才有这一段
+    if !playbacks.is_empty() {
+        line.push_str(&format!(" pb={}", playbacks.join(",")));
     }
     format!("{line} {}", parts.join(","))
 }
@@ -1411,5 +1581,117 @@ mod tests {
         let mut off = chain_layers();
         off[2].sync = LayerSync::Off;
         assert!((effective_phase(&off, 2) - off[2].phase()).abs() < 1e-6);
+    }
+
+    // ---------- 片段自带速率与循环标志（扩展四十八） ----------
+
+    #[test]
+    fn clip_playback_scales_and_wraps_time() {
+        let walk = clip_of("walk", 1.0, vec![]);
+
+        // 没设播放参数：层时间原样透传（不乘 1.0、不取模），这是零变化的算术支点
+        let plain = LayerClip::new(walk.clone(), 1.0);
+        assert!(plain.playback.is_none());
+        assert_eq!(plain.playback_time(0.0), 0.0);
+        assert_eq!(plain.playback_time(0.37), 0.37);
+        assert_eq!(
+            plain.playback_time(3.0),
+            3.0,
+            "老口径不做取模，超时长交给 track 钳末帧"
+        );
+
+        // 2 倍速：0.25 秒的层时间采到片段 0.5 秒处，超过时长绕回
+        let fast = LayerClip::new(walk.clone(), 1.0).with_playback(2.0, true);
+        assert!((fast.playback_time(0.25) - 0.5).abs() < 1e-6);
+        assert!(
+            (fast.playback_time(0.75) - 0.5).abs() < 1e-6,
+            "1.5 折回 0.5"
+        );
+
+        // 不循环：钳到末帧（时长 1.0）
+        let once = LayerClip::new(walk.clone(), 1.0).with_playback(2.0, false);
+        assert!((once.playback_time(0.75) - 1.0).abs() < 1e-6);
+
+        // 负速率倒放：层时间 0.25、速率 -1 → rem_euclid 折到 0.75
+        let back = LayerClip::new(walk.clone(), 1.0).with_playback(-1.0, true);
+        assert!((back.playback_time(0.25) - 0.75).abs() < 1e-6);
+        // 非循环的倒放：钳到首帧
+        let back_once = LayerClip::new(walk.clone(), 1.0).with_playback(-1.0, false);
+        assert_eq!(back_once.playback_time(0.25), 0.0);
+
+        // 速率 0：定格首帧
+        let frozen = LayerClip::new(walk.clone(), 1.0).with_playback(0.0, true);
+        assert_eq!(frozen.playback_time(0.6), 0.0);
+
+        // 非有限速率按原速（配 looping=true 时 0.4 原样落进 [0,1)）
+        let nan = LayerClip::new(walk, 1.0).with_playback(f32::NAN, true);
+        assert_eq!(nan.playback.as_ref().map(|p| p.speed), Some(1.0));
+        assert!((nan.playback_time(0.4) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clip_playback_changes_sampled_pose() {
+        // 位置轨道 0 → (10,0,0)，时长 1 s；层时间 0.25 时老口径采到 x = 2.5
+        let track = track_at(1, "root/arm", Vec3::new(10.0, 0.0, 0.0));
+        let walk = clip_of("walk", 1.0, vec![track]);
+
+        let plain = vec![LayerClip::new(walk.clone(), 1.0)];
+        let legacy = sample_layer_pose(&plain, 0.25, 1, "root/arm").expect("有轨道");
+        assert!((legacy.pose.position.x - 2.5).abs() < 1e-5);
+
+        // 2 倍速：同一层时间采到 0.5 s 处，x = 5.0
+        let fast = vec![LayerClip::new(walk.clone(), 1.0).with_playback(2.0, true)];
+        let sampled = sample_layer_pose(&fast, 0.25, 1, "root/arm").expect("有轨道");
+        assert!(
+            (sampled.pose.position.x - 5.0).abs() < 1e-5,
+            "2 倍速应采到半程，实际 {}",
+            sampled.pose.position.x
+        );
+
+        // 清除播放参数后逐位回到老口径
+        let mut cleared = LayerClip::new(walk, 1.0).with_playback(2.0, true);
+        cleared.clear_playback();
+        assert_eq!(cleared.playback_time(0.25), 0.25);
+        let back = sample_layer_pose(&[cleared], 0.25, 1, "root/arm").expect("有轨道");
+        assert_eq!(back.pose.position.x, legacy.pose.position.x, "逐位一致");
+    }
+
+    #[test]
+    fn clip_playback_only_shows_up_when_set() {
+        // 没设播放参数：快照行与探针行都不该凭空多出 pb= 段（零变化）
+        let mut layer = AnimLayer::new("move", clip_of("walk", 1.0, vec![]), 1.0);
+        assert!(layer.add_clip(clip_of("run", 0.5, vec![]), 1.0));
+        assert!(
+            !layer_report(&layer).contains("pb="),
+            "{}",
+            layer_report(&layer)
+        );
+        assert!(
+            !sync_probe(&layer).contains("pb="),
+            "{}",
+            sync_probe(&layer)
+        );
+
+        // 设了一路：快照与探针都追加 pb=，循环是常态不标注，非循环标 :once
+        assert!(layer.set_clip_playback("run", 2.0, false));
+        let report = layer_report(&layer);
+        assert!(report.contains("pb=run=2.00:once"), "{report}");
+        let probe = sync_probe(&layer);
+        assert!(probe.contains("pb=run=2.00:once"), "{probe}");
+
+        // 自带速率的层 drift 归零：用户主动设的不同速不该被报成滑步
+        assert!(probe.contains("drift=0.000"), "{probe}");
+    }
+
+    #[test]
+    fn phase_lock_ignores_clip_playback() {
+        // 相位锁层的每路时间由相位决定，播放速率不参与（要变速请调层 speed）
+        let mut layer = AnimLayer::new("move", clip_of("walk", 1.0, vec![]), 1.0);
+        assert!(layer.add_clip(clip_of("run", 0.5, vec![]), 1.0));
+        layer.sync = LayerSync::Phase;
+        assert!(layer.set_clip_playback("run", 2.0, true));
+        let times = layer.clip_times_at(0.5);
+        assert!((times[0] - 0.5).abs() < 1e-6, "{times:?}");
+        assert!((times[1] - 0.25).abs() < 1e-6, "{times:?}");
     }
 }
