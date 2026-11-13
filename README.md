@@ -2054,6 +2054,7 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 混合空间 | 扩展四十五另加 6 个（`set_anim_layer_blend_1d` / `_2d` / `clear_anim_layer_blend` / `add_anim_layer_blend_sample` / `set_anim_layer_blend_value` / `anim_layer_blend`），见 [§29](#29-1d--2d-混合空间扩展四十五) |
 | 相位锁 | 扩展四十六另加 5 个（`set_anim_layer_sync` / `set_anim_layer_sync_mode` / `anim_layer_sync` / `anim_layer_phase` / `anim_layer_sync_probe`），见 [§30](#30-层内相位同步扩展四十六) |
 | 相位同步组 | 扩展四十七另加 5 个（`set_anim_layer_clip_phase_offset` / `anim_layer_clip_phase_offset` / `set_anim_layer_sync_source` / `anim_layer_sync_source` / `anim_layer_sync_phase`），见 [§31](#31-相位同步组偏移量与跨层对齐扩展四十七) |
+| 片段播放参数 | 扩展四十八另加 5 个（`set_anim_layer_clip_playback` / `clear_anim_layer_clip_playback` / `anim_layer_clip_speed` / `anim_layer_clip_looping` / `anim_layer_clip_time`），见 [§32](#32-片段自带播放速率与循环标志扩展四十八) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -2878,7 +2879,9 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 - **2D 剖分每次 `add_sample` 整表重建**：运行时频繁改样本的编辑器场景可改增量插入 + 脏标记；
 - **上限 16 样本 / 空间**（`MAX_BLEND_SAMPLES`）：真做 3D（八向 × 三档速）不够用，撞顶要抬常量；
 - **无 3D 混合空间**：三层速度档目前靠「2D 空间 × 层权重」叠两层表达，不是三维单纯形；
-- **样本不携带开关**：不能给单个样本自带播放速率 / 循环标志，时间缩放只能走层的 `speed`；
+- ~~**样本不携带开关**~~：已由扩展四十八解决——播放速率 / 循环标志下放到**每一路片段**
+  （`ClipPlayback { speed, looping }` + `LayerClip.playback`，见 §32）。**残余**：仍是「一个片段一个速率」，
+  同一片段在参数轴上不同区间要不同步频（走 → 跑的加速感）还没做，那需要「按参数区间配多份样本 + 速率随样本插值」；
 - ~~**无相位同步**~~：已由扩展四十六解决（`LayerSync::Phase`，见 §30）；
   ~~**相位偏移量 / 跨层对齐**~~：已由扩展四十七补齐（`LayerClip.phase_offset` + `AnimLayer.sync_source`，见 §31）；
 - **与 additive 层的组合语义未定义**：空间份额直接乘到 additive 层上，多路相加会让偏移量翻倍。
@@ -2913,7 +2916,7 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 | 每路采样时间 `synced_clip_time(i, phase)` | `相位 × 第 i 路片段时长`；层里没这一路返回 `None`；片段时长 0 返回 0 |
 | 采样入口 | `sample_layer_pose` 抽出 `sample_layer_pose_impl` 作共用内核，`sample_layer_pose_synced` 只在"每路用哪个时间"上分叉——权重累加、骨骼遮罩、additive 参考帧判定三段逻辑只有一份 |
 | 层时间 | **不动**：切锁那一帧 `phase` 不跳变，只有短片段的时间往回落到 `相位 × 时长` |
-| 播放速率 | **不缩放时间**：`speed` 仍是唯一提速手段；相位锁只改"从哪个时刻采"，跑片段依旧按自己的时长循环 |
+| 播放速率 | **不缩放时间**：相位锁只改"从哪个时刻采"，跑片段依旧按自己的时长循环；扩展四十八起每路片段可自带 `speed` / `looping`，但**相位锁层不读它**（见 §32） |
 
 ### 30.2 脚本 API（5 个）
 
@@ -3057,7 +3060,90 @@ target_64-pc-windows-gnu\debug3e.exe assets\scene_anim.json scripts\phase_gro
 该节收尾为 **88 个套件 / 1,276 passed / 0 failed**（扩展四十六为 87 套件 1,263），
 `R3E_VISUAL_REGRESSION=1` 下同 88 套件 1,276 passed 且**基线图未重建**。
 
----
+## 32. 片段自带播放速率与循环标志（扩展四十八）
 
+§30 让同层几路**齐步走**、§31 让它们**故意错开**，但"每路走多快、到头停不停"仍只有层一个开关：
+`AnimLayer.speed` / `AnimLayer.looping` 是「整层共用一条时间轴」，一个层里呼吸（要慢）与摇头（要快）
+长短不一就只能折中；而「到末帧停住」层级开关根本给不了——层一停整层都不动。这一节把这两件事下放到
+**每一路片段**。
+
+### 32.1 机制
+
+| 概念 | 规则 |
+| --- | --- |
+| `ClipPlayback { speed, looping }` | 单路播放参数。`speed`：`1.0` 原速、`2.0` 快一倍、负值倒放、`0.0` 定格首帧；`looping = false` 到末帧停住 |
+| `ClipPlayback::new(speed, looping)` | 构造即收敛：非有限速率按 `1.0`（原速），其余原样保留——`-2.0` 要能倒放、`0.0` 要能定格，`clamp` 会让这两个语义消失 |
+| `ClipPlayback::time_at(time, duration)` | 本路应采样的片段内时间：`speed == 0` 恒 `0` → 否则 `time * speed` → 非有限归 `0` → 再走 `crate::anim::wrap_time`（与层时间轴**同一套**循环取模 / 非循环钳末帧） |
+| `LayerClip.playback: Option<ClipPlayback>` | 默认 `None`。`None` 时这一路**原样使用层时间** |
+| `LayerClip::playback_time(time)` | `playback == None` 时**原样返回 `time`**（不乘 `1.0`、不取模，超时长仍交给 track 钳末帧）——这是「不设 = 老行为」的算术支点 |
+| `sample_layer_pose` | `time_of` 闭包改调 `lc.playback_time(time)`；与相位锁仍共用 `sample_layer_pose_impl`，只在"用哪个时间采每路"上分叉 |
+| 时间口径 | `time` 参数始终是**层时间**，逐路折算发生在闭包里——所以层的 `time` / `speed` / `looping` / `playing` 语义一字未动 |
+| `layer_report` / `sync_probe` 的 `pb=` 段 | 只列设过的路：`pb=run=2.00:once,walk=0.50`（循环是常态不标注）；一个都没设就整段不出现，默认日志行逐字不变 |
+| `drift` 对主动不同速不作伪证 | `Off` + 该路有播放参数时，期望相位取**该路自己的相位**（自比恒 0）；其余情形仍是 `clip_phase(层相位, 偏移)`。没设参数的路照实报漂移，设了参数的路不背锅 |
+| 为什么只在 `LayerSync::Off` 下生效 | 相位锁下每路时间由「相位 × 本片段时长」唯一决定，再按速率缩放会让同一相位采到不同位置——**相位对齐会被速率破坏**。要变速请调层 `speed`（全层统一缩放，不破坏相对对齐） |
+
+定格为什么写成 `speed == 0 → 0` 而不是靠 `time * 0.0`：后者在 `time` 为 `NaN` / `inf` 时得 `NaN`，
+虽被后面的非有限归零兜住，但那是"碰巧对"；写成显式分支，语义是"时间轴钉死在 0"，后人改不坏。
+负速率能自然倒放同理：`wrap_time` 内部用 `rem_euclid`，`-0.6` 落进 `[0, d)` 就是 `d - 0.6` 一类结果，
+不需要第二套采样代码，也不需要给 `AnimClip` 加反向播放状态。
+
+### 32.2 脚本 API（5 个）
+
+| API | 语义 |
+| --- | --- |
+| `set_anim_layer_clip_playback(inst, layer, clip, speed, looping) -> bool` | 设某一路的播放参数；`clip` 空串 = 层内第一路、名字大小写不敏感；实例 / 层 / 片段不存在返回 `false` 且状态不动 |
+| `clear_anim_layer_clip_playback(inst, layer, clip) -> bool` | 清除，回到"跟着层时间轴走" |
+| `anim_layer_clip_speed(inst, layer, clip) -> float` | 回显速率；**没设过返回 `-1`**（`0` 是合法的"定格首帧"，不能当缺省） |
+| `anim_layer_clip_looping(inst, layer, clip) -> bool` | 回显循环标志；没设过返回 `true`（跟层走的默认口径） |
+| `anim_layer_clip_time(inst, layer, clip) -> float` | 该路**这一帧实际采到的时间**（秒，含速率 / 循环折算）；层 / 片段不存在返回 `-1`。同一层时间下两路这个值不同，就是速率生效了 |
+
+样例脚本：`scripts/clip_playback_demo.rhai`（86 行，三段：不设 / 给 `run_loop` 设 `1.5` 且不循环 / 清除，每帧一行 `CLIP`）。
+编辑器侧 `scene.anim_layer_set` 的 patch 新增 `clip_speed` / `clip_looping` 两个 `Option` 字段，可单独下发：
+只给循环时沿用当前速率（没设过按 `1.0`，避免"只想停住"被顺手改速），只给速率时沿用当前循环标志（没设过按循环）。
+
+### 32.3 真机探针
+
+```powershell
+cargo test -p r3e-core anim_tests                          # 其中 4 条属本次
+cargo test -p r3e-script --test clip_playback_api           # 4 条脚本行为（新套件）
+target_64-pc-windows-gnu\debug3e.exe assets\scene_anim.json scripts\clip_playback_demo.rhai --run-seconds 2.0
+```
+
+夹具 `assets/scene_anim.json` 的 `body` 层挂两路：`idle_loop` 2.100 s、`run_loop` 0.800 s。
+rc 0，501 行日志中 **414 行 `CLIP`**，其中 **221 行带 `pb=`**：
+
+| 时刻 | 阶段 | 探针读回（节选） | 含义 |
+| --- | --- | --- | --- |
+| `t=0.495` | 一 不设参数 | `run_t=0.495 run_speed=-1.0 … drift=0.383`，**无 `pb=` 段** | `run_t` 与 `idle_t` 逐位相等，行进与 §31 逐字一致 |
+| `t=0.501` | 二 首行 | `pb=run_loop=1.50:once run_t=0.751 idle_t=0.501 drift=0.000` | `0.751 = 1.5 × 0.501`：速率进了采样时间，不是只写进字段 |
+| `t=1.059` | 二 后段 | `run_t=0.800 idle_t=1.059` | 钳在片段时长 `0.800`（`looping=false` 停末帧），而 `idle_loop` 仍在走——层级开关做不到 |
+| `t=1.503` | 三 清除后 | `run_speed=-1.0 run_t=1.503`，**`pb=` 消失** | 彻底回到阶段一那条老路，不是"速率改回 1.0 但仍走新代码" |
+
+阶段二全 220 行 `drift=0.000`：`Off` + 有播放参数的那一路期望相位取它自己的相位，
+"用户主动设的不同速"没被误报成滑步；同段未设参数的 `idle_loop` 仍按老口径比对。
+阶段一那 0.383 的漂移是 0.8 s 短片段已经停住带来的真实滑步，旧口径的老毛病照实报。
+
+### 32.4 已知边界
+
+- **一个片段一个速率**：不做"速率随参数区间变化"（`walk→run` 的步频是两条片段各自的 `speed`，
+  不是同一条片段在参数轴上插值速率）；
+- **不改层时间轴**：`AnimLayer.time` / `speed` / `looping` / `playing` 一字未动，播放参数只决定"这一路用哪个时间采"；
+- **只在 `Off` 下生效**：`Phase` 层不读 `playback`（回显照旧返回设定值，允许先配好、再切策略）；
+- **不碰 `fade` / 权重 / 遮罩 / additive**：权重归一与合成口径不变，参数只作用于时间；
+- **不倒放骨骼**：负速率只把采样时间折回区间，不做姿态镜像。
+
+### 32.5 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/anim_blend.rs` | 4 | 缩放与取模（2× / 非循环钳末帧 / 负速率 `rem_euclid` 落回 / 定格恒 0 / 非有限按原速 / 清除后原样透传）、2× 速真的改变采样落点（`x` 由 2.5 → 5.0，清除后逐位回到 2.5）、`pb=` 只在设过后出现且 `drift` 归零、相位锁不读播放参数 |
+| `crates/r3e-core/src/scene.rs` | 2 | 门面按片段名设/清播放参数只动那一路、`anim_layer_clip_time` 随速率变化 |
+| `crates/r3e-script/tests/clip_playback_api.rs` | 4（新套件） | 速率与循环经绑定层透传、回显缺省（`-1` / `true`）、清除回老口径、未知目标返 `false` |
+| `crates/r3e-editor/tests/anim_layer_rpc.rs` | 1（本次新增） | patch 的 `clip_speed` / `clip_looping` 单独下发时落进层状态并可回读 |
+
+该节收尾为 **89 个套件 / 1,285 passed / 0 failed**（扩展四十七为 88 套件 1,276），
+`R3E_VISUAL_REGRESSION=1` 下同 89 套件 1,285 passed 且**基线图未重建**。
+
+---
 
 *（内容由AI生成，仅供参考）*
