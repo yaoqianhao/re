@@ -2875,7 +2875,8 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 - **上限 16 样本 / 空间**（`MAX_BLEND_SAMPLES`）：真做 3D（八向 × 三档速）不够用，撞顶要抬常量；
 - **无 3D 混合空间**：三层速度档目前靠「2D 空间 × 层权重」叠两层表达，不是三维单纯形；
 - **样本不携带开关**：不能给单个样本自带播放速率 / 循环标志，时间缩放只能走层的 `speed`；
-- **无相位同步**：两路片段各按自己的时间轴走，跑 / 冲刺淡入时脚掌可能滑步——这是混合空间手感的主因；
+- ~~**无相位同步**~~：已由扩展四十六解决（`LayerSync::Phase`，见 §30）。仍未做的是**相位偏移量**
+  （不能给某一路 `+0.25` 做错步走）与**跨层对齐**（上下半身各走各的相位）；
 - **与 additive 层的组合语义未定义**：空间份额直接乘到 additive 层上，多路相加会让偏移量翻倍。
 
 ### 29.5 测试覆盖
@@ -2889,6 +2890,78 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 | `crates/r3e-script/tests/blend_space_api.rs` | 4 | 挂空间 + 摆样本 + 推参数整链、越界钳制、重复样本被拒、摘空间回手写权重 |
 
 该节收尾为 **86 个套件 / 1,247 passed / 0 failed**（扩展四十四为 85 套件 1,218）。
+
+---
+
+## 30. 层内相位同步（扩展四十六）
+
+§29 解决「权重怎么分」，**这一层解决「分到权重之后每路从第几秒开始采」**。默认行为是整层一个时间：
+层时间 1.05 s 时，2.1 s 的 `idle_loop` 走到 50%，0.8 s 的 `run_loop` 已经在 0.95 s 处停住（越界钳制）——
+两路相位差 0.77，人眼里就是"跑着滑步"。打开相位锁后，每路按**归一化相位 × 自己时长**采样，
+0.5 相位时两路一个停在 1.05 s、一个停在 0.4 s，脚掌落地时刻对齐。
+
+### 30.1 机制
+
+| 概念 | 规则 |
+| --- | --- |
+| `LayerSync` | `Off`（默认）/ `Phase` 两态，`parse` 大小写不敏感，`as_str` 给日志与脚本统一口径（`off` / `phase`） |
+| 层相位 `phase()` | `sample_time() / duration()`，钳到 `[0, 1]`，非有限值按 0；`duration()` 取层内**最长**片段，与 `sample_time()` 同基准，故 `phase × duration == sample_time` 恒成立 |
+| 每路采样时间 `synced_clip_time(i, phase)` | `相位 × 第 i 路片段时长`；层里没这一路返回 `None`；片段时长 0 返回 0 |
+| 采样入口 | `sample_layer_pose` 抽出 `sample_layer_pose_impl` 作共用内核，`sample_layer_pose_synced` 只在"每路用哪个时间"上分叉——权重累加、骨骼遮罩、additive 参考帧判定三段逻辑只有一份 |
+| 层时间 | **不动**：切锁那一帧 `phase` 不跳变，只有短片段的时间往回落到 `相位 × 时长` |
+| 播放速率 | **不缩放时间**：`speed` 仍是唯一提速手段；相位锁只改"从哪个时刻采"，跑片段依旧按自己的时长循环 |
+
+### 30.2 脚本 API（5 个）
+
+| API | 语义 |
+| --- | --- |
+| `set_anim_layer_sync(inst, layer, on) -> bool` | `true` = 开相位锁，`false` = 回到整层一个时间；层不存在返回 `false` |
+| `set_anim_layer_sync_mode(inst, layer, mode) -> bool` | 字符串版：`"off"` / `"phase"`（大小写不敏感），拼错返回 `false` 且不改动现状 |
+| `anim_layer_sync(inst, layer) -> bool` | 回显是否开着相位锁（层不存在返回 `false`） |
+| `anim_layer_phase(inst, layer) -> float` | 层相位 `0..1`，**没开锁也可读**（相位是层的属性，不是锁的产物） |
+| `anim_layer_sync_probe(inst, layer) -> string` | 单行读数：`sync=phase phase=0.500 dur=2.100 drift=0.000 idle_loop=1.050/2.100,run_loop=0.400/0.800` |
+
+`drift` 是各路片段相位与层相位的**最大绝对偏差**，开锁后按构造恒为 0。样例脚本：`scripts/layer_sync_demo.rhai`
+（58 行，前 1 秒 `off`、1 秒后切 `phase`，每帧打一行 `SYNC`）。编辑器侧 `scene.anim_layer_set` 的 patch
+新增 `sync` 字段，`scene.anim_layers` 快照回显 `sync` / `phase`。
+
+### 30.3 真机探针
+
+```powershell
+cargo test -p r3e-core anim_tests                        # 其中 4 条属本次（默认 Off / 相位缩放 / 同相位对齐 / drift 量化）
+cargo test -p r3e-script --test layer_sync_api            # 4 条脚本行为
+target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\layer_sync_demo.rhai --run-seconds 2.4
+```
+
+rc 0，557 帧探针行：
+
+| 时刻 | 策略 | 读回 | 含义 |
+| --- | --- | --- | --- |
+| `t=0.50` | off | `phase=0.238 drift=0.387 idle_loop=0.500/2.100,run_loop=0.500/0.800` | 两路同一个时间，折算相位 0.238 vs 0.625 |
+| `t=0.95` | off | `phase=0.453 drift=0.736 run_loop=0.951/0.800` | 跑片段时间已越过自己时长，停在末帧 |
+| `t=1.05` | phase | `phase=0.500 drift=0.000 run_loop=0.400/0.800` | 切锁瞬间：层相位不变，跑片段落到 `0.5 × 0.8` |
+| `t=1.60` | phase | `phase=0.762 drift=0.000 run_loop=0.610/0.800` | 恒同相位；步频仍由 0.8 s 片段决定 |
+| `t=2.10` | phase | `phase=0.998 drift=0.000 idle_loop=2.096/2.100,run_loop=0.798/0.800` | 循环边界两路同时回绕，不出现"一路回绕一路没回" |
+
+### 30.4 已知边界
+
+- **不做相位偏移量**：不能给某一路加 `+0.25` 做错步走（左右脚交替落地要用它）；
+- **不做跨层对齐**：相位锁只在层内生效，上下半身各层时间互不相干；
+- **不改播放速率**：相位锁不缩放时间，变速仍靠 `speed` 或样本时长；
+- **短片段依靠自己的时长循环**：`Phase` 下每路按本片段时长独立回绕，长片段与短片段的"圈数"本来就不同；
+- **`Off` 的层仍走老函数**：不是"新函数里再判一次分支"，因此不调新 API 的场景逐位不变，像素基线不重建。
+
+### 30.5 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/anim_blend.rs` | 4 | 默认 `Off` 且 `layer_report` 不出现 `sync=`、`Off` 下 `clip_times` 两路相等、相位锁下每路时间 = `相位 × 时长`、`sync_probe` 的 `drift` 量化为 0 |
+| `crates/r3e-core/src/scene.rs` | 2 | 门面转发（`set_anim_layer_sync` / `anim_layer_sync` / `anim_layer_phase` 三态）、层不存在时返回 `None` 而不是改写别的层 |
+| `crates/r3e-script/tests/layer_sync_api.rs` | 4 | 开关 + 回显整链、字符串策略解析与非法值拒绝、`Off` 下读相位仍有效、探针字符串格式 |
+| `crates/r3e-editor/tests/anim_layer_rpc.rs` | 1（本次新增） | patch 带未知策略时 RPC 返错且不改层 |
+
+该节收尾为 **87 个套件 / 1,263 passed / 0 failed**（扩展四十五为 86 套件 1,251），
+`R3E_VISUAL_REGRESSION=1` 下同 87 套件 1,263 passed 且**基线图未重建**。
 
 ---
 
