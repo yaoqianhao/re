@@ -55,6 +55,8 @@ D:\rust3d-engine
 │   ├─ anim_demo.rhai         # 动画轮播（每 3 秒带 0.35s 交叉淡入切片段）
 │   ├─ anim_state.rhai        # 动画状态机（待机 / 跑 / 攻击，均为淡入切换）
 │   ├─ blend_space_demo.rhai  # 1D / 2D 混合空间（推参数看权重插值 + 越界钳制 + 重复样本被拒）
+│   ├─ layer_sync_demo.rhai   # 层内相位同步（前 1 秒 off 后切 phase，看两路 drift 归零）
+│   ├─ phase_group_demo.rhai  # 相位同步组（错步偏移 + 跨层对齐，三段切换看落点搬家）
 │   ├─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
 │   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
 │   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
@@ -2050,6 +2052,8 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 删层 | `remove_anim_layer` / `clear_anim_layers` |
 | 查询 | `anim_layers(inst)` / `anim_layer_count` / `anim_layer_weight` / `anim_layer_mask` / `anim_layer_info(inst, layer)`（人读的一行报告） |
 | 混合空间 | 扩展四十五另加 6 个（`set_anim_layer_blend_1d` / `_2d` / `clear_anim_layer_blend` / `add_anim_layer_blend_sample` / `set_anim_layer_blend_value` / `anim_layer_blend`），见 [§29](#29-1d--2d-混合空间扩展四十五) |
+| 相位锁 | 扩展四十六另加 5 个（`set_anim_layer_sync` / `set_anim_layer_sync_mode` / `anim_layer_sync` / `anim_layer_phase` / `anim_layer_sync_probe`），见 [§30](#30-层内相位同步扩展四十六) |
+| 相位同步组 | 扩展四十七另加 5 个（`set_anim_layer_clip_phase_offset` / `anim_layer_clip_phase_offset` / `set_anim_layer_sync_source` / `anim_layer_sync_source` / `anim_layer_sync_phase`），见 [§31](#31-相位同步组偏移量与跨层对齐扩展四十七) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -2875,8 +2879,8 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 - **上限 16 样本 / 空间**（`MAX_BLEND_SAMPLES`）：真做 3D（八向 × 三档速）不够用，撞顶要抬常量；
 - **无 3D 混合空间**：三层速度档目前靠「2D 空间 × 层权重」叠两层表达，不是三维单纯形；
 - **样本不携带开关**：不能给单个样本自带播放速率 / 循环标志，时间缩放只能走层的 `speed`；
-- ~~**无相位同步**~~：已由扩展四十六解决（`LayerSync::Phase`，见 §30）。仍未做的是**相位偏移量**
-  （不能给某一路 `+0.25` 做错步走）与**跨层对齐**（上下半身各走各的相位）；
+- ~~**无相位同步**~~：已由扩展四十六解决（`LayerSync::Phase`，见 §30）；
+  ~~**相位偏移量 / 跨层对齐**~~：已由扩展四十七补齐（`LayerClip.phase_offset` + `AnimLayer.sync_source`，见 §31）；
 - **与 additive 层的组合语义未定义**：空间份额直接乘到 additive 层上，多路相加会让偏移量翻倍。
 
 ### 29.5 测试覆盖
@@ -2945,8 +2949,8 @@ rc 0，557 帧探针行：
 
 ### 30.4 已知边界
 
-- **不做相位偏移量**：不能给某一路加 `+0.25` 做错步走（左右脚交替落地要用它）；
-- **不做跨层对齐**：相位锁只在层内生效，上下半身各层时间互不相干；
+- ~~**不做相位偏移量**~~：已由扩展四十七补上（`LayerClip.phase_offset`，见 §31）；
+- ~~**不做跨层对齐**~~：已由扩展四十七补上（`AnimLayer.sync_source` 相位源链，见 §31）；
 - **不改播放速率**：相位锁不缩放时间，变速仍靠 `speed` 或样本时长；
 - **短片段依靠自己的时长循环**：`Phase` 下每路按本片段时长独立回绕，长片段与短片段的"圈数"本来就不同；
 - **`Off` 的层仍走老函数**：不是"新函数里再判一次分支"，因此不调新 API 的场景逐位不变，像素基线不重建。
@@ -2962,6 +2966,96 @@ rc 0，557 帧探针行：
 
 该节收尾为 **87 个套件 / 1,263 passed / 0 failed**（扩展四十五为 86 套件 1,251），
 `R3E_VISUAL_REGRESSION=1` 下同 87 套件 1,263 passed 且**基线图未重建**。
+
+---
+
+## 31. 相位同步组：偏移量与跨层对齐（扩展四十七）
+
+§30 让同层几路**齐步走**，但编舞要的还有两种"**故意的不同相**"：同层两路错开半步（左右脚交替落地、
+走+跑叠加时脚掌不撞拍），以及上下半身两层**同一个相位**（上身挥拳时下身不该还停在上一拍）。
+这一节把这两件事补上，相位同步组到此收尾。
+
+### 31.1 机制
+
+| 概念 | 规则 |
+| --- | --- |
+| `LayerClip.phase_offset` | 默认 `0.0`。相位锁下该路采样相位 = `wrap(层相位 + offset)`；写入即折进 `[0, 1)`（`-0.25` 存成 `0.75`） |
+| `wrap_phase(phase)` | 公开纯函数：折进 `[0, 1)`，非有限值按 0。`0.75 + 0.5 = 1.25 → 0.25` |
+| 为什么偏移折、层相位不折 | 错半步是**循环量**；而层相位 `1.0` 是"末帧端点"，取模会退回首帧。故 `normalized_phase`（钳 `[0,1]`）管层相位、`wrap_phase`（折 `[0,1)`）只管"叠加偏移之后" |
+| `AnimLayer.sync_source` | 默认 `None`：本层相位跟随哪一层，**按层名**（层可在运行中增删，下标不稳定） |
+| `phase_source(layers, i)` | 沿链找终点层，最多 `MAX_ANIM_LAYERS`（8）跳；名字解析不到 / 指向自己 / 成环 → `None` |
+| `effective_phase(layers, i)` | `Off` 直接返回本层相位；`Phase` 下挂了可用源层就取源层相位，否则本层相位 |
+| 设置侧校验 | `set_anim_layer_sync_source` 写入后立刻验一次链，失败**回滚**并返回 `false`——不留半截链，采样期只需处理"有源层 / 无源层"两种情形 |
+| 叠加顺序 | 「先取源层相位、再加本路偏移」。反序会算出完全不同的落点 |
+| 采样时序 | `update_animations` 先算一遍 `sync_phases`（`Off` 层填 `None`），再进 `iter_mut()` 采样：可变借用期间借不到别的层，也杜绝迭代顺序依赖 |
+| `drift` 的定义 | 期望相位 = `clip_phase(层相位, 该路 offset)`，**故设了偏移的层 drift 仍恒为 0**；一旦偏移没进 `synced_time`，drift 会立刻等于 `|offset|` |
+| 零变化支点 | `clip_phase` 里 `offset == 0.0` 直接返回原值（含 `1.0` 端点），所以全零偏移的层与 §30 逐位相同 |
+
+### 31.2 脚本 API（5 个）
+
+| API | 语义 |
+| --- | --- |
+| `set_anim_layer_clip_phase_offset(inst, layer, clip, off) -> bool` | 给某一路设错步偏移（`off` 折进 `[0, 1)`）；实例 / 层 / 片段不存在返回 `false` |
+| `anim_layer_clip_phase_offset(inst, layer, clip) -> float` | 回显偏移（没设过是 `0.0`） |
+| `set_anim_layer_sync_source(inst, layer, src) -> bool` | 设相位源层名；空串 = 清除、跟回自己。源层不存在 / 指向自己 / 成环返回 `false` 且状态回滚 |
+| `anim_layer_sync_source(inst, layer) -> string` | 回显源层名（没设过是空串，方便直接打印） |
+| `anim_layer_sync_phase(inst, layer) -> float` | **跨层对齐后的有效相位**（真正用于采样的那个）；没挂源层时等于 `anim_layer_phase` |
+
+样例脚本：`scripts/phase_group_demo.rhai`（67 行，三段切换，每帧一行 `PHASE`）。编辑器侧
+`scene.anim_layer_set` 的 patch 新增 `phaseOffset`（片段名 → 偏移）与 `syncSource`，
+`scene.anim_layers` 快照回显 `syncSource` / `syncPhase`。
+
+### 31.3 真机探针
+
+```powershell
+cargo test -p r3e-core anim_tests                          # 其中 4 条属本次（偏移折回 / 零偏移老式子 / drift 仍为 0 / 相位源链与断环）
+cargo test -p r3e-script --test layer_sync_group_api        # 5 条脚本行为
+target_64-pc-windows-gnu\debug3e.exe assets\scene_anim.json scripts\phase_group_demo.rhai --run-seconds 3.2
+```
+
+夹具 `assets/scene_anim.json` 挂两层：`lower` = `idle_loop`(2.100 s) + `run_loop`(0.800 s) 各 0.5 权重，
+`upper` = 单路 `run_loop`、`speed 0.5`，两层都开相位锁。rc 0，835 行日志中 **749 行 `PHASE`**
+（`off=0.0` 223 行 / `off=0.5` 无源层 239 行 / `src=upper` 287 行）：
+
+| 时刻 | 阶段 | 探针读回（节选） | 含义 |
+| --- | --- | --- | --- |
+| `t=0.000` | 一 全默认 | `off=0.0 src= phase=0.000 sync_phase=0.000 … drift=0.000 idle_loop=0.000/2.100,run_loop=0.000/0.800` | 行进与 §30 逐字一致：**没有 `off=` / `src=` 段** |
+| `t=0.996` | 一 | `phase=0.474 sync_phase=0.474 … idle_loop=0.996/2.100,run_loop=0.379/0.800` | 0.474 × 0.800 = 0.379：两路仍同相位 |
+| `t=1.050` | 二 首行 | `off=0.5 … run_loop=0.800/0.800` | 只把 `run_loop` 推到 `wrap(0.5 + 0.5)` 的临门，`idle_loop` 一位未动 |
+| `t=1.112` | 二 | `off=0.5 … idle_loop=1.112/2.100,run_loop=0.024/0.800` | **偏移进了采样**：跑片段从 0.800 附近跳回 0.024 = `wrap(1.030) × 0.800` |
+| `t=0.699` | 三 挂源层 | `off=0.5 src=upper phase=0.333 sync_phase=0.750 … idle_loop=1.574/2.100,run_loop=0.200/0.800` | 本层相位 0.333 不再参与采样，落点全按 0.750 算 |
+| `t=1.091` | 三 后段 | `off=0.5 src=upper phase=0.520 sync_phase=0.995 … idle_loop=2.089/2.100,run_loop=0.396/0.800` | 跨层与偏移**同时**生效：`0.995 × 2.100` 与 `wrap(0.995 + 0.5) × 0.800` |
+
+阶段切换行只在状态真变时才打印：
+
+```
+[script] === 加错步半步 ok=true off=0.5
+[script] === 跨层对齐 ok=true src=upper upper_phase=0.2503...
+[script] 层已改：lower mode=override w=0.50 clips=["idle_loop", "run_loop"] mask=0 sync=phase src=upper
+```
+
+最后那行的 `sync=phase src=upper` 来自 `layer_report`，证明跨层关系进了**层状态**而不只是脚本局部变量。
+
+### 31.4 已知边界
+
+- **只在实例内跨层**：源层必须同属一个 `AnimInstance`，不做跨实例 / 跨角色对齐（多角色同步属上层编排）；
+- **只对 `Phase` 生效**：`Off` 的层不读 `sync_source` 也不读 `phase_offset`（采样根本不看相位），但**回显照旧返回设定值**——允许先配好再拨开关；
+- **偏移是常数**：不做"偏移随参数变化的曲线"（那要第二个混合轴）；
+- **不改播放速率**：偏移只挪采样相位，不改层 `speed`、不缩放时间；
+- **链长上限 8 跳**：更长的链按"无源层"处理，不做动态拓扑排序；
+- **成环在设置侧就拒**：不留半截链，也不在采样期死循环。
+
+### 31.5 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/anim_blend.rs` | 4 | 偏移折进 `[0,1)`（`-0.25→0.75`）、零偏移与 §30 式子逐位相同（含 `1.0` 端点）、带偏移时 `drift` 仍为 0、相位源链跟随且自引用/成环断在 `None` |
+| `crates/r3e-core/src/scene.rs` | 2 | 门面按片段名设偏移只挪那一路、跨层对齐后两层采样时间同相位 |
+| `crates/r3e-script/tests/layer_sync_group_api.rs` | 5（新套件） | 偏移只影响目标路、未知目标返 false、跨层对齐整链、自引用/幽灵层/成环被拒、缺目标时回中性值 |
+| `crates/r3e-editor/tests/anim_layer_rpc.rs` | 1（本次新增） | patch 带 `phaseOffset` / `syncSource` 时落进层状态并可回读 |
+
+该节收尾为 **88 个套件 / 1,276 passed / 0 failed**（扩展四十六为 87 套件 1,263），
+`R3E_VISUAL_REGRESSION=1` 下同 88 套件 1,276 passed 且**基线图未重建**。
 
 ---
 
