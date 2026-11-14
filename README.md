@@ -2058,6 +2058,7 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 相位同步组 | 扩展四十七另加 5 个（`set_anim_layer_clip_phase_offset` / `anim_layer_clip_phase_offset` / `set_anim_layer_sync_source` / `anim_layer_sync_source` / `anim_layer_sync_phase`），见 [§31](#31-相位同步组偏移量与跨层对齐扩展四十七) |
 | 片段播放参数 | 扩展四十八另加 5 个（`set_anim_layer_clip_playback` / `clear_anim_layer_clip_playback` / `anim_layer_clip_speed` / `anim_layer_clip_looping` / `anim_layer_clip_time`），见 [§32](#32-片段自带播放速率与循环标志扩展四十八) |
 | 三维混合空间 | 扩展四十九另加 3 个（`set_anim_layer_blend_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d`），摘空间与回显复用上面的 `clear_anim_layer_blend` / `anim_layer_blend`，见 [§33](#33-三维混合空间扩展四十九) |
+| 加法层组合语义 | 扩展五十**不新增 API**：`add_anim_layer_additive` 建的多路层，空间分来的份额改为「各路增量的几成」（单路口快路径不变，覆盖层不受影响），见 [§34](#34-加法层与混合空间的组合语义扩展五十) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -3248,6 +3249,106 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 
 该节收尾为 **89 个套件 / 1,296 passed / 0 failed**（扩展四十八为 89 套件 1,285），
 `--all-features` 同 89 套件 **1,300 passed**；`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
+
+---
+
+## 34. 加法层与混合空间的组合语义（扩展五十）
+
+§29 / §33 讲的是「一层里的多路片段怎么按参数分份额」，§22 讲的是「加法层怎么把增量叠到基姿态上」，
+两者相接处有个一直没写死的问题：**加法层里的份额，是「姿态的几成」还是「增量的几成」**。
+扩展四十九之前加法层与覆盖层共用 `sample_layer_pose` 这同一条采样路径，于是多路份额被当成**姿态混合权重**——
+先把各路姿态加权平均，再拿「平均姿态 − 平均参考」去和基姿态相加。位置项因为线性恰好等价，
+**旋转（四元数混合）与缩放（比值混合）会被平均钝化**：`0.5 × 左倾 30° + 0.5 × 右倾 30°` 本该互相抵消，
+旧口径给出的是「15° 的左倾」—— 增量为零的那一路，在稀释别人的增量。扩展五十把这条路径拆开。
+
+实现全在 `crates/r3e-core/src/anim_blend.rs`（**+298**，纯 CPU、零 wgpu）：新增
+`sample_layer_pose_additive` / `sample_layer_pose_additive_synced` + 共用内核 `sample_layer_pose_additive_impl`，
+`scene.rs` 在挂层采样处按 `(sync_phase, layer.mode)` 分派四态，`apply_additive` 一行未改。
+**没有新 uniform、没碰着色器、不加新脚本 API**：不调加法层多路混合的场景像素逐位不变。
+
+### 34.1 求值规则
+
+| 情形 | 结果 |
+| --- | --- |
+| 多路份额的含义 | 每路份额折算成**逐路增量系数** `k = 本路权重 / 有效路权重和`，各路增量按 `k` 缩放后再复合，不是先合成一条「平均姿态」 |
+| 旋转 | `pose.rotation *= slerp(identity, pose × ref⁻¹, k)` 后 `normalize`：两路反向等份的增量**回到单位旋转**（抵消），不是幅度减半（`additive_sums_rotation_deltas_not_pose_average`） |
+| 缩放 | `pose.scale *= lerp(1, pose_i / ref_i, k)` 逐分量连乘；参考分量接近 0 时按 1 处理（`scale_ratio`），不除零放大（`additive_sums_scale_ratios_not_pose_average`） |
+| 位置 | 线性累加 `+= (pose − ref) × k`，与旧口径数值一致 |
+| 零增量基准 | 固定取**第一路有效片段**的参考姿态 —— 顺序确定、结果可复现，单路退化时自动等于旧路径 |
+| 单路口 | **原样返回那一路、零算术**，与扩展四十九之前逐位一致（`additive_single_clip_is_bitwise_unchanged`） |
+| 零权重 / 缺轨道的路 | **不进分母**（`additive_skips_zero_weight_and_missing_track`）：没被选中的路不参与稀释 |
+| 部分权重 | 按有效路权重和重归一（`additive_normalizes_partial_weights`） |
+| 相位锁层（`sync_phase`） | 片段内时间 = `phase × 本片段时长`，按**各片段自己的时长**还原（`additive_synced_uses_own_clip_duration`） |
+| 覆盖层 | **一字未动**：多路仍是姿态加权平均，那是覆盖层的正确语义 |
+| 零份额片段 | 整条从结果里消失（不打成 `=0.00`），与混合空间的老口径一致 |
+
+组合口径的推导与取舍（为什么不能 `slerp(pose, ref, 1−k)`、为什么缩放用比值连乘、为什么基准固定取第一路）
+见 `docs/ARCHITECTURE.md` §4.26；真机逐行取证见 §8.37。这里只记用户可见口径。
+
+### 34.2 脚本 API
+
+**没有新 API**，`add_anim_layer_additive` 建的加法层、`set_anim_layer_blend_2d` 挂的样本、
+`anim_layer_blend` 读的份额全部照旧 —— 被纠正的是 core 内的语义，脚本一个字不用改。
+
+| API | 作用 |
+| --- | --- |
+| `add_anim_layer_additive(inst, layer, clip, weight)` | 建加法层（叠的是「片段当前姿态 − 该片段首帧」这份增量） |
+| `add_anim_layer_clip(inst, layer, clip, weight)` | 同一层再挂路（份额留给下面的空间分配） |
+| `set_anim_layer_blend_2d(inst, layer, "move.x", "amp")` | 挂 2D 参数空间（1D / 3D 同理） |
+| `add_anim_layer_blend_sample(inst, layer, clip, x, y)` | 摆样本；同一片段可占多个样本，按名合并 |
+| `set_anim_layer_blend_value(inst, layer, x, y)` | 每帧推参数，权重由引擎算 |
+| `anim_layer_blend(inst, layer)` | 回显，如 `2d(move.x,amp) n=3 tri=1 drop=0 v=(1.00,0.00) w=run_loop=0.50,idle_loop=0.50` |
+
+`n=` 样本数、`tri=` / `tet=` 剖分数、`drop=` 被拒样本数、`v=` 当前参数、`w=` 各路份额 ——
+日志里这几段就是判断「份额进的是增量还是姿态」的唯一现场。
+
+### 34.3 真机探针
+
+```powershell
+cargo test -p r3e-core additive                          # 10 条（本次 +7：anim_blend 6 + 场景 1）
+target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\additive_blend_space_demo.rhai --run-seconds 3.6
+```
+
+演示脚本 `scripts\additive_blend_space_demo.rhai`（78 行）拿 `assets\scene_anim.json` 的 `tirger`（7 片段），
+建**一层** `add`：`add_anim_layer_additive(inst, "add", idle_loop, 1.0)` + 两路 `0.0` 的
+`add_anim_layer_clip`（`run_loop` / `atk`），挂 2D 空间 `(move.x, amp)`，三个样本铺成直角三角形
+`idle_loop@(0,0)` / `run_loop@(2,0)` / `atk@(0,2)`。四段墙钟扫过去：
+
+`rc 0`，830 行日志，其中 **744 行 2D 探针**（阶段一 193 + 阶段二 219 + 阶段三 217 + 阶段四 115）：
+
+| 阶段 | 参数 | 读回份额 | 说明 |
+| --- | --- | --- | --- |
+| 一 | `v=(0.00,0.00)` | `idle_loop=1.00` | 单路口：走**原样返回**快路径，与扩展四十九之前逐位一致 |
+| 二 | `v=(1.00,0.00)` | `run_loop=0.50, idle_loop=0.50` | 两路口：两份**增量**各半相加（不是把两条姿态平均成一个） |
+| 三 | `v=(1.00,1.00)` | `run_loop=0.50, atk=0.50` | 落在三角形内部，重心 `idle=0`；零份额的 `idle` 整条消失 |
+| 四 | `v=(0.00,2.00)` | `atk=1.00` | 顶点：塌回单路口，不残留别路份额 |
+
+批量核对（744 行逐行，不抽样）：份额和 `max|Σw − 1| = 0.0`；无一行含 `nan`（旋转走 `slerp` 后 `normalize`，
+除零会让这列直接爆掉）；每个阶段的份额**逐帧不动**（参数不动则份额不抖）；全程 `drop=0`
+（三样本位置互不重复，不触发扩展四十九的重复拒收路径）。
+
+**单路口零变化**：阶段一那 193 行与「没挂混合空间的加法层」走同一条快路径，`w=idle_loop=1.00`
+且姿态不做任何算术 —— 这是本次改动的「零变化」侧；份额语义的差别只在两路以上出现，而那部分
+由 `additive_sums_rotation_deltas_not_pose_average` 在单测里用具体角度钉住（真机日志只有份额，看不到姿态差）。
+
+### 34.4 已知边界
+
+- 只改**加法层多路份额**的含义，**覆盖层多路仍是姿态加权平均**（那是它的正确语义，未动）；
+- 增量仍以**片段首帧**为参考（与 §33 同口径），不做「参考帧可配」；
+- 各路增量按**线性**复合，不做惯性 / 弹簧 / 每路不同的衰减核；
+- **不做逐路时间缩放**：每路走自己的 `ClipPlayback`（§32）或相位锁（§30 / §31），份额只决定幅度；
+- **零变化**：单路口走原样返回的快路径，不调加法层多路混合的场景（含全部覆盖层用例）激励路径未变。
+
+### 34.5 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/anim_blend.rs` | 6（内联） | 单路口逐位不变 / 旋转增量相加而非姿态平均 / 缩放比值连乘 / 部分权重重归一 / 零权重与缺轨道不进分母 / 相位锁版按各片段时长还原 |
+| `crates/r3e-core/src/scene.rs` | 1 | `additive_layer_multiclip_uses_delta_semantics`：1D 空间 + 加法层这条真实链路，两路反向等份应回到基姿态而非半数幅度 |
+| `crates/r3e-script` | 0 | 不加新脚本 API，既有的 `add_anim_layer_additive` / `blend_*` 套件全部照旧全绿 |
+
+该节收尾为 **89 个套件 / 1,303 passed / 0 failed**（扩展四十九为 89 套件 1,296），
+`--all-features` 同 89 套件 **1,307 passed**；`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
 
 ---
 

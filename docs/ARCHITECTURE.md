@@ -154,7 +154,7 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **69,592** | **14,769** | **1,300** | **约 6.96 万行 Rust + 1,512 行 WGSL（扩展四十九未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 89 个套件 / 1,296 passed / 0 failed，`--all-features` 同 89 套件 / 1,300 passed（多 4 条 `rapier` 专属）** |
+| **合计** | **69,988** | **14,769** | **1,307** | **约 7.00 万行 Rust + 1,512 行 WGSL（扩展五十未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 89 个套件 / 1,303 passed / 0 failed，`--all-features` 同 89 套件 / 1,307 passed（多 4 条 `rapier` 专属）** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,512 行 WGSL，全在 `r3e-render`，按 `crates/**/src/**/*.wgsl` 实测）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
@@ -290,6 +290,18 @@ Bowyer–Watson 剖分与重心插值 / 最近线段兜底 / `brief` 与 `weight
 `--all-features` 同 89 套件 1,285 passed；带 `R3E_VISUAL_REGRESSION=1` 亦 89 套件 1,285 passed 且**基线图未重建**
 （`tests` 相较上轮记录的 14,460 为 +241，正好是新套件的物理行数；`src` 净 +549 = anim_blend 282 + scene 73 + api 67 +
 editor 112 + editor/lib 16 − 9 行删除，与 `git diff --numstat` 一致），
+扩展五十（加法层与混合空间的组合语义）再增量 **+396 src / 0 tests / +7 单测 / 0 新套件 / 0 WGSL**
+（无新源文件、零着色器改动、像素基线未重建：`core/anim_blend.rs` **+298**（2 个公开入口 `sample_layer_pose_additive` /
+`sample_layer_pose_additive_synced` + 共用内核 `sample_layer_pose_additive_impl`：份额不再是姿态平均权重，而是**逐路增量系数**
+`k = 权重 / 有效路和`，旋转走 `slerp(identity, 姿态 × 参考⁻¹, k)` 连乘、缩放比值连乘、位置线性累加，参考取第一路有效片段；
+单路口走**原样返回**快路径、零算术，`apply_additive` 一行未改、不加新脚本 API，内联测试 6 条 `additive_*`）、
+`core/scene.rs` **+102/-5**（挂层采样处按 `(sync_phase, layer.mode)` 分派：加法层改走 `sample_layer_pose_additive` /
+`sample_layer_pose_additive_synced`，覆盖层原路一字未动 + 1 条 `additive_layer_multiclip_uses_delta_semantics`
+把 1D 混合空间 + 加法层这条真实链路串起来跑）、`core/lib.rs` **+3/-2**（导出两个新入口）；
+`scripts/additive_blend_space_demo.rhai` 78 行不计入 Rust 行数），
+收尾实测 **69,988 src / 14,769 tests / 1,307 单测 / 89 套件 1,303 passed / 0 failed**，
+`--all-features` 同 89 套件 1,307 passed；带 `R3E_VISUAL_REGRESSION=1` 亦 89 套件 1,307 passed 且**基线图未重建**
+（`tests` 行数不变，7 条新测试全部写成 `src` 内联；`src` 净 +396 = anim_blend 298 + scene 97 + lib 1，与 `git diff --numstat` 一致），
 扩展四十九（三维混合空间 · 四面体剖分）再增量 **+1,067 src / +68 tests / +15 单测 / 0 新套件 / 0 WGSL**
 （无新源文件、零着色器改动、像素基线未重建：`core/blend_space.rs` **+897/-64**（942 → 1,775 行）（`BlendDim::Volumetric3D`、
 `BlendSample.at` / `BlendSpace.value` 升 `[f32; 3]`、`params` 升 `[String; 3]`、`MAX_BLEND_SAMPLES` 16 → 32、
@@ -1680,6 +1692,52 @@ O(样本数²) 的重复劳动，存下来后每次求值只走 O(凸包面数)�
 - 不做 4D 及以上；
 - **零变化**：1D / 2D 的求值代码一字未改（`weights()` 只是多绕一层 `weights_at_3d(value)`），
   不挂空间的层仍然零开销 —— 既有的 1D / 2D 用例都在 4~5 个样本，撞不到新上限，结果逐位不变。
+
+### 4.26 加法层与混合空间的组合语义：份额叠的是增量，不是姿态（扩展五十）
+
+**§4.21 / §4.25 给出了「一层里的多路片段怎么按参数分份额」，§4.11 给出了「加法层怎么把增量叠到基姿态上」，
+但没有回答两者相接处的那个问题：加法层里的份额，是「姿态的几成」还是「增量的几成」。**扩展四十九之前，
+加法层与覆盖层共用 `sample_layer_pose` 这一条采样路径，于是多路份额被当成姿态混合权重——
+先把各路姿态加权平均，再拿「平均姿态 − 平均参考」去和基姿态相加。位置项因为线性恰好等价，
+**旋转（四元数混合）与缩放（比值混合）会被平均钝化**：`0.5 × 左倾 30° + 0.5 × 右倾 30°` 应当互相抵消，
+旧口径给出的却是「15° 的左倾」—— 增量为零的那一路在稀释别人的增量。这正是 §11.3 第 7 条 ⑤ 记的残余。
+
+core 侧改动（`anim_blend.rs` + 一处分派 + 导出，**纯 CPU、零 wgpu、无新文件**）：
+
+| 类型 / 函数 | 职责 |
+| --- | --- |
+| `sample_layer_pose_additive(clips, time, node_index, node_path)` | 加法层专用采样：把层内份额当**逐路增量系数**，返回「合成后的姿态 + 零增量基准」 |
+| `sample_layer_pose_additive_synced(clips, phase, ...)` | 相位锁版（扩展四十六口径：片段内时间 = `phase × 本片段时长`） |
+| `sample_layer_pose_additive_impl(clips, ..., time_of)` | 两份共用内核，`time_of` 决定每路用哪个时间采样（与覆盖路径同一套路） |
+| 合成口径 | 以**第一路有效片段的参考姿态**为零增量起点，逐路叠加：位置 `+= (pose − ref) × k`；旋转 `pose.rotation *= slerp(identity, pose×ref⁻¹, k)` 再 `normalize`；缩放 `pose.scale *= lerp(1, pose_i/ref_i, k)` 逐分量连乘 |
+| 单路快路径 | 只有一路有效片段时**原样返回那一路、零算术**，与扩展四十九之前逐位一致 |
+| 归一化 | 份额 `k = 本路权重 / 有效路权重和`，与覆盖路径一致：零权重、缺轨道的路不计入分母 |
+| `scene.rs` 分派 | 按 `(sync_phase, layer.mode)` 四态选路：`Additive` 走 `_additive` 两条，`Override` 走原两条；`apply_additive` 仍按层权重叠一次，一行未改 |
+
+**为什么旋转走 `slerp(identity, delta, k)` 而不是直接 `slerp(pose, ref, 1−k)`**：后者就是被废弃的平均口径。
+增量之间要「按份相加」，正确做法是先把每路折成相对零点的旋转增量、再按份额缩放到单位元附近连乘 ——
+这样两路反向等份的增量会回到单位旋转（抵消），而平均口径只会给出「一半幅度」。
+
+**为什么缩放用比值连乘**：扩展四十九之前的 `apply_additive` 就是把缩放折成「`pose / reference` 的比值增量」
+再用 `lerp(1, ratio, w)` 缩放，多路时保持同一套代数即可与单路结果严格一致（`k = 1` 时
+`lerp(1, ratio, 1) = ratio`）。参考缩放分量接近 0 时按 1 处理（`scale_ratio`），不做除零放大。
+
+**为什么零增量基准固定取第一路有效片段的参考**：`apply_additive` 的数学形式是 `base + (pose − reference)`，
+reference 只影响「零增量落在哪」，而层权重已经把整体幅度交给调用方。固定取第一路的好处是
+**顺序确定、结果可复现**（不随 HashMap 或脚本顺序漂移），且单路退化时自动等于旧路径。
+
+**层与脚本侧**：不加新脚本 API —— `add_anim_layer_additive` 建的层、`set_anim_layer_blend_2d` 挂的样本、
+`anim_layer_blend` 读的份额全部照旧，语义在 core 内被纠正。示例脚本
+`scripts/additive_blend_space_demo.rhai`（78 行）把 idle / run / atk 三路挂进**同一个加法层**，
+用 2D 空间 `(move.x, amp)` 四阶段扫过单路口 / 两路口 / 三路口 / 顶点。
+
+**边界**：
+
+- 只改「加法层多路份额」的含义，**覆盖层多路仍是姿态加权平均**（那是它的正确语义，未动）；
+- 增量仍以**片段首帧**为参考（与扩展四十九同口径），不做「参考帧可配」；
+- 各路增量按**线性**复合，不做惯性 / 弹簧 / 每路不同的核；
+- **零变化**：单路口走原样返回的快路径，不调加法层多路混合的场景（含全部覆盖层用例）激励路径未变，
+  既有渲染与动画结果逐位相同。
 
 ## 5. 渲染层：r3e-render
 
@@ -5736,6 +5794,59 @@ CPU 侧等价结论由 `linear_1d_interpolates_between_neighbours` / `linear_1d_
 渲染侧 `apply_blend_space` 一行未改、着色器未动，`R3E_VISUAL_REGRESSION=1 cargo test --workspace --all-features`
 89 套件 **1,296 passed / 0 failed**（`--all-features` **1,300 passed**），**基线图一张未重建**。
 
+### 8.37 加法层多路份额的探针证据（扩展五十）
+
+同一份 `assets/scene_anim.json`（实例 `tirger`，7 个片段），脚本 `scripts/additive_blend_space_demo.rhai`
+（78 行，不计入 Rust 行数）建**一层** `add`：`add_anim_layer_additive(inst, "add", idle_loop, 1.0)` +
+两路 `0.0` 的 `add_anim_layer_clip`（`run_loop` / `atk`），再挂 2D 空间 `(move.x, amp)`，三个样本铺成
+直角三角形 `idle_loop@(0,0)` / `run_loop@(2,0)` / `atk@(0,2)`。脚本按墙钟切四段扫参数：
+**(0,0) 单路口 → (1,0) 两路口 → (1,1) 三路口（重心落在 0/½/½）→ (0,2) 顶点单路**。
+
+```powershell
+cd D:\rust3d-engine
+target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/additive_blend_space_demo.rhai --run-seconds 3.6
+```
+
+`rc 0`，830 行日志，其中 **744 行 2D 探针**（阶段一 193 + 阶段二 219 + 阶段三 217 + 阶段四 115）。
+
+| 阶段 | 参数 | 脚本读回份额 | 说明 |
+| --- | --- | --- | --- |
+| 一 | `v=(0.00,0.00)` | `w=idle_loop=1.00` | 单路口：走**原样返回**快路径，加法层与覆盖层在此逐位一致 |
+| 二 | `v=(1.00,0.00)` | `w=run_loop=0.50,idle_loop=0.50` | 两路口：两份**增量**各半相加（不是把两条姿态平均成一个） |
+| 三 | `v=(1.00,1.00)` | `w=run_loop=0.50,atk=0.50` | 落三角形内部，重心 `idle=0`；`idle` 的零份额整条消失，不参与稀释 |
+| 四 | `v=(0.00,2.00)` | `w=atk=1.00` | 顶点：塌回单路口，验证不残留别路份额 |
+
+原始行（去掉 `[script]` 前缀）：
+
+```
+et=0.05984589830040932 2d(move.x,amp) n=3 tri=1 drop=0 v=(0.00,0.00) w=idle_loop=1.00
+et=1.0023266965290532  2d(move.x,amp) n=3 tri=1 drop=0 v=(1.00,0.00) w=run_loop=0.50,idle_loop=0.50
+et=2.001467696391046   2d(move.x,amp) n=3 tri=1 drop=0 v=(1.00,1.00) w=run_loop=0.50,atk=0.50
+et=3.0034570957068354  2d(move.x,amp) n=3 tri=1 drop=0 v=(0.00,2.00) w=atk=1.00
+```
+
+全 744 行的批量核对（脚本解析日志逐行验，不靠抽样）：
+
+- **份额和恒为 1**：`max |Σw − 1| = 0.0`，744/744 行通过；
+- **无 NaN**：744 行无一含 `nan`（旋转走 `slerp(identity, delta, k)` 后 `normalize`，除零会让这一列直接爆掉）；
+- **每阶段份额只有一组**：193 / 219 / 217 / 115 行内份额分别恒为 `idle=1.00`、`run=0.50+idle=0.50`、
+  `run=0.50+atk=0.50`、`atk=1.00` —— 参数不动则份额逐帧不动；
+- **`drop=0` 全程**：三样本位置互不重复，与扩展四十九的重复拒绝路径互不干扰。
+
+数值语义（真机只有份额、姿态差在单测里钉）：`additive_sums_rotation_deltas_not_pose_average` 用
+「A：绕 X 0→90°（增量 90°/s）、B：参考与姿态都绕 Y 80°（增量恒 0）」两路，`0.5 s` 处 A 自身增量 45°、
+乘 0.5 份额得 **22.5° 绕 X**，B 一路**一位不加**；若走被废弃的「姿态平均」，同一输入会得到 A/B 姿态的
+四元数平均（混轴、幅度更小），`additive_sums_scale_ratios_not_pose_average` 与
+`additive_normalizes_partial_weights` 分别钉住缩放比值连乘与部分权重重归一；
+`additive_single_clip_is_bitwise_unchanged` 钉单路口逐位不变，
+`additive_skips_zero_weight_and_missing_track` 钉零权重 / 缺轨道路不进分母，
+`additive_synced_uses_own_clip_duration` 钉相位锁版按各片段时长还原片段内时间，
+场景侧 `additive_layer_multiclip_uses_delta_semantics` 把 1D 混合空间 + 加法层这条真实链路串起来跑一遍。
+
+**覆盖层零变化**：所有覆盖层用例（`blend_override` 多路平均、扩展四十五 ~ 四十九的混合空间权重）
+代码路径一字未动、断言值一字未改，`cargo test --workspace` 89 套件 **1,303 passed / 0 failed**
+（`--all-features` **1,307 passed**），**视觉基线一张未重建**。
+
 ## 9. 端到端数据流
 
 ```
@@ -5898,7 +6009,8 @@ CPU 侧等价结论由 `linear_1d_interpolates_between_neighbours` / `linear_1d_
    形变不改变参数化，UV 没有独立自由度。
 7. **动画层的延伸**（扩展四十五已落地 1D / 2D 混合空间，见 §4.21 / §8.32；扩展四十六已落地层内相位同步，见 §4.22 / §8.33）：
    现在是「层内片段摆到参数轴上、按样本几何位置插值、1D / 2D / 3D 三档、32 样本上限、按名字合并归一、
-   1D 端点钳制、相位可锁（`LayerSync::Phase`）」，三维由扩展四十九落地（§4.25 / §8.36）。
+   1D 端点钳制、相位可锁（`LayerSync::Phase`）」，三维由扩展四十九落地（§4.25 / §8.36），
+   加法层与空间份额的组合语义由扩展五十厘清（多路份额叠的是增量，§4.26 / §8.37）。
    仍可加固处：
    ① ~~3D / 三维单纯形~~：已由扩展四十九落地（`BlendDim::Volumetric3D` + 四面体 Bowyer–Watson 剖分 +
    三级兜底，样本上限 16 → 32，「八向移动 × 三档速度」24 个样本进同一张图，见 §4.25 / §8.36）；
@@ -5914,8 +6026,10 @@ CPU 侧等价结论由 `linear_1d_interpolates_between_neighbours` / `linear_1d_
    `drift` 从 0.773 归到 0.000）；其中的**相位偏移量**（给某一路加 `+0.25` 做错步走）与**跨层（上下半身）对齐**
    已由扩展四十七补齐（`LayerClip.phase_offset` 折进 `[0,1)` + `AnimLayer.sync_source` 按层名跟随，链式、成环在设置侧被拒，
    见 §4.23 / §8.34）——相位同步组至此收尾；
-   ⑤ **与 `additive` 层的组合语义**：现在是「空间算出的份额乘到 additive 层上」，没有单独定义
-   （additive 层通常只该有一路片段，多路相加会让偏移量翻倍）。
+   ⑤ ~~与 `additive` 层的组合语义~~：已由扩展五十落地（加法层不再复用覆盖层的姿态加权平均，
+   多路份额改为「逐路增量各占几成」：位置线性累加、旋转 `slerp(identity, Δᵢ, kᵢ)` 连乘、缩放比值连乘，
+   单路有效片段时原样返回零算术；`0.5 × 左倾 30° + 0.5 × 右倾 30°` 现在会抵消而不是折成 15° 左倾，
+   见 §4.26 / §8.37）。
 
 ---
 
@@ -5983,6 +6097,7 @@ CPU 侧等价结论由 `linear_1d_interpolates_between_neighbours` / `linear_1d_
 | **四十八（已完成：片段自带播放速率 / 循环标志）** | **把「每路走多快、到头停不停」下放到片段**：层的 `speed` / `looping` 是整层一条时间轴，呼吸要慢、摇头要快就必然有一个不自然，而「到末帧停住」层级开关给不了（层一停整层不动）。在 `core/anim_blend.rs` 加 `ClipPlayback { speed, looping }`（速率 `0` 定格首帧、负值倒放、非有限按原速；`looping = false` 停末帧）与 `LayerClip.playback: Option<ClipPlayback>`（默认 `None`），`playback_time()` 在 `None` 时**原样返回层时间**（零变化支点），`Some` 时走 `speed` 缩放 + `crate::anim::wrap_time`（与层时间轴同一套取模 / 钳制）；`sample_layer_pose` 的 `time_of` 闭包改调该方法，与相位锁仍共用 `sample_layer_pose_impl`；`layer_report` / `sync_probe` 在设了参数时追加 `pb=<片段>=<速率>[:once]` 段；`Off` + 有播放参数的那一路 `drift` 期望相位取自身相位（避免把主动的不同速误报成滑步）。`Scene` 门面 4 个（`set_anim_layer_clip_playback` / `clear_anim_layer_clip_playback` / `anim_layer_clip_playback` / `anim_layer_clip_time`）、脚本 5 个（多一个 `anim_layer_clip_speed` 与 `anim_layer_clip_looping` 分开回显，`speed` 没设过返回 `-1` 因为 `0` 是合法定格）、编辑器 `AnimLayerPatch` 加 `clip_speed` / `clip_looping`（可单独下发，缺的一项沿用当前值）。只在 `LayerSync::Off` 下生效——相位锁下变速会破坏相位对齐（要变速调层 `speed`）。合计 **core +287 / 场景门面 +73 / 脚本 +67**，新增测试 241 行 + 示例脚本 86 行；`cargo test -p r3e-core anim_tests` **+4 passed**（`clip_playback_scales_and_wraps_time` / `clip_playback_changes_sampled_pose` / `clip_playback_only_shows_up_when_set` / `phase_lock_ignores_clip_playback`）、新套件 `clip_playback_api` **4 passed**、`anim_layer_rpc` **13 passed**（含新加的 `anim_layer_set_applies_clip_playback`）；真机三段探针（未设 / 1.5× 不循环 / 清除）：`run_t` 由 `= idle_t` → `1.5 × t` → 钳 `0.800` → 回 `= idle_t`，`drift` 由 0.383 → 0.000 → 1.544 | `core/anim_blend.rs` + `core/scene.rs` + `r3e-script/src/api.rs` + `r3e-app/src/editor.rs` + `r3e-editor/src/lib.rs`；新增 `crates/r3e-script/tests/clip_playback_api.rs` + `scripts/clip_playback_demo.rhai` | 无（`playback` 默认 `None` 走老闭包，像素基线未重建） |
 
 | **四十九（已完成：三维混合空间 · 四面体剖分）** | **把混合空间的第三根轴补上，让「八向移动 × 三档速度」这类真正的三维参数表能落进引擎**：`core/blend_space.rs` 的 `BlendDim` 加 `Volumetric3D`（`parse` 认 `3d` / `volumetric3d` / `volumetric_3d`），`BlendSample.at` 与 `BlendSpace.value` 从 `[f32; 2]` 升 `[f32; 3]`、`params` 升 `[String; 3]`（1D 的 `at[1..3]`、2D 的 `at[2]` 入库归零，低维语义一位不改），`MAX_BLEND_SAMPLES` **16 → 32**（八向 × 三档 24 个样本 + 待机 + 特例才装得下；求值最坏 O(n²) 在 32 时仍可忽略）；求值新增 `weights_at_3d`：**Bowyer–Watson 四面体剖分**（`tetrahedralize` 与 `hull_faces` 同一趟解析、共面点**不硬剖**、零体积四面体丢弃）+ **重心坐标插值**（`barycentric3`）+ **三级兜底**（四面体内部 → 最近凸包面三角形 `closest_on_triangle` → 最近样本 `distance3`），越界钳到凸包面而**不外插**；`merge` 仍按**片段名**求和，故一个片段占多个顶点时权重合并（`(0.3,0.3,0.3)` 处 `run_loop` 得 0.60）；`Scene` 4 个门面（`set_anim_layer_blend_space_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d` / `anim_layer_blend_dim`）、脚本 3 个绑定（`set_anim_layer_blend_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d`），`layer_report` 的三维段打 `3d(x,y,z) n= tet= drop= v=(…)`。详见 §4.25 / §8.36 | `core/blend_space.rs` **+897/-64**（942 → 1,775 行，内联 19 → 30 测，`volumetric_3d_*` 11 条）、`core/scene.rs` **+151/-1**（4 门面 + 1 测）、`core/anim_blend.rs` **+47**（2 测）、`script/api.rs` **+39/-2**、`script/tests/blend_space_api.rs` **+71/-3**（1 测）；新增 `scripts/blend_space_3d_demo.rhai`（76 行）。净 +1,067 src / +68 tests / +15 单测 / 0 新套件 | 无（**不挂空间或挂 1D / 2D 的场景零变化**：`weights_at_3d` 只在 `Volumetric3D` 才被调到，1D / 2D 求值代码一字未改、`brief()` 仍按维度打印（`v=0.50` 不会变成 `v=(0.50,0.00,0.00)`），`apply_blend_space` 未动、着色器未动，89 套件 1,296 passed / `--all-features` 1,300 passed，视觉基线一张未重建）。**真机三阶段**（`blend_space_3d_demo.rhai`，3.2 s / 680 行 3D 探针）：`n=4 tet=1 drop=1` 全段一致（四个不共面点撑一个四面体、同位置样本被拒）→ 沿 x 扫时 `run_loop` 权重与 `v.x` 在 185 行内零误差、`x=1.49` 钳成 1.00（`v` 存原值）→ 钻进 `(0.30,0.30,0.30)` 得 `idle=0.10 / atk=0.30 / run_loop=0.60`（四面体内部真插值，不是投影到面上）→ 踩 `(0,0,1)` 得 `run_loop=1.00`；680 行权重和 `max|Σw−1| = 0.0`、无 NaN。**边界**：四面体数随样本数增长（规则网格上大约每个小格五份）、只认欧氏空间（不做四元数 / 极坐标维度）、无非线性核与权重曲线、逐层遮罩仍按骨骼走而不按空间轴走、样本上限 32 仍需靠 §11.3 ③ 的紧凑列表再抬 |
+| **五十（已完成：加法层与混合空间的组合语义）** | **把「空间算出的份额」和「加法层叠增量」这两件事的接口讲清**：扩展四十九之前加法层复用覆盖层的 `sample_layer_pose`，多路份额被当成**姿态混合权重**——先平均姿态、再减平均参考，位置项因线性恰好等价，**旋转（四元数平均）与缩放（比值平均）被平均钝化**：`0.5 × 左倾 30° + 0.5 × 右倾 30°` 想表达抵消，旧口径给出「15° 左倾」。`core/anim_blend.rs` 新增 `sample_layer_pose_additive` / `sample_layer_pose_additive_synced` + 共用内核 `sample_layer_pose_additive_impl`：份额改为**逐路增量系数**（`k = 本路权重 / 有效路权重和`，零权重与缺轨道的路不进分母），以**第一路有效片段的参考姿态**为零增量起点，位置 `+= (pose − ref) × k`、旋转 `pose.rotation *= slerp(identity, pose×ref⁻¹, k)` 后 `normalize`、缩放 `pose.scale *= lerp(1, pose_i/ref_i, k)` 逐分量连乘；**单路有效片段走原样返回的快路径（零算术）**；`Scene::advance_anim` 按 `(sync_phase, LayerMode)` 四态分派，`Additive` 走两条新入口、`Override` 走原两条，`apply_additive` 一行未改；`lib.rs` 导出两个新函数。**不加新脚本 API**（`add_anim_layer_additive` / `set_anim_layer_blend_2d` / `anim_layer_blend` 照旧，语义在 core 内被纠正）。详见 §4.26 / §8.37 | `core/anim_blend.rs` **+298**（1,744 → 2,042 行，内联 29 → 35 测）、`core/scene.rs` **+102/-5**（四态分派 + 1 测）、`core/lib.rs` **+3/-2**（导出）；新增 `scripts/additive_blend_space_demo.rhai`（78 行）。净 +298 src / +7 单测 / 0 新套件 | 无（**不调加法层多路混合的场景零变化**：单路口走原样返回快路径，覆盖层 `blend_override` 多路平均与扩展四十五 ~ 四十九的混合空间求值路径一字未动、断言值一字未改，89 套件 1,303 passed / `--all-features` 1,307 passed，视觉基线一张未重建）。**真机四阶段**（`additive_blend_space_demo.rhai`，3.6 s / 830 行日志 / **744 行 2D 探针**）：一层 `add` 挂 idle / run / atk 三路 + 2D 空间 `(move.x,amp)` 直角三角形，`(0,0)` 得 `idle_loop=1.00`（单路口）→ `(1.00,0.00)` 得 `run=0.50+idle=0.50`（两路口）→ `(1.00,1.00)` 得 `run=0.50+atk=0.50`（重心 `idle=0`，零份额整条消失）→ `(0.00,2.00)` 得 `atk=1.00`（顶点）；744 行 `max\|Σw−1\| = 0.0`、无 NaN、`drop=0` 全程。**姿态数值**由单测钉：A 增量 90°/s 绕 X、B 增量恒 0 的两路在 0.5 s 处得 **22.5° 绕 X**（旧口径会得混轴平均），单路口 `additive_single_clip_is_bitwise_unchanged` 逐位不变。**边界**：只改加法层多路份额的含义（覆盖层仍是有意的姿态加权平均）；增量仍以**片段首帧**为参考、线性复合，不做参考帧可配 / 惯性核；真机探针只能看到份额，姿态差靠单测而非像素 |
 
 两条与顺序相关的说明：
 
@@ -6071,6 +6186,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 相位偏移量与跨层对齐（扩展四十七） | `cargo test -p r3e-core anim_tests` → **+4 passed**（`phase_offset_wraps_into_unit_range` / `zero_offset_keeps_legacy_arithmetic` / `sync_probe_keeps_drift_zero_with_offset` / `phase_source_follows_chain_and_breaks_cycles`）；`cargo test -p r3e-script --test layer_sync_group_api` → **5 passed**（新套件：`script_clip_phase_offset_shifts_only_that_path` / `script_clip_phase_offset_rejects_unknown_target` / `script_sync_source_aligns_upper_and_lower` / `script_sync_source_rejects_self_ghost_and_cycle` / `script_sync_group_api_returns_neutral_values_for_missing_target`）；`cargo test -p r3e-editor --test anim_layer_rpc` → **13 passed**（含新加的 `anim_layer_set_applies_phase_group_fields`）；core 场景侧 `anim_layer_clip_phase_offset_shifts_single_path` / `anim_layer_sync_source_aligns_across_layers` 两条随 `cargo test -p r3e-core` 全绿；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/phase_group_demo.rhai --run-seconds 3.2` → rc 0，835 行日志 / **749 行 `PHASE`**（`off=0.0` 223 行 + `off=0.5` 无源层 239 行 + `src=upper` 287 行）：阶段一**没有 `off=` / `src=` 段**（与四十六逐字一致）、阶段二 `t=1.112` 的 `run_loop` 回绕到 **0.024** 而 `idle_loop` 仍是 1.112（偏移进了采样时间）、阶段三本层相位 0.333 与 `sync_phase` 0.750 分叉且落点按 0.750 算、`t=1.091` 的 0.396 同时含跨层与半周期偏移（顺序为「先取源层相位、再加本路偏移」），全 749 行 `drift=0.000`；`$env:R3E_VISUAL_REGRESSION=1; cargo test --workspace --all-features` 88 套件 **1,276 passed / 0 failed**（扩展四十六收尾为 87 套件 1,263），**基线图未重建**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-features --all-targets -- -D warnings` 全绿 |
 | 片段自带播放速率 / 循环标志（扩展四十八） | `cargo test -p r3e-core anim_tests` → **+4 passed**（`clip_playback_scales_and_wraps_time` / `clip_playback_changes_sampled_pose` / `clip_playback_only_shows_up_when_set` / `phase_lock_ignores_clip_playback`）；`cargo test -p r3e-script --test clip_playback_api` → **4 passed**（新套件：`script_clip_playback_accelerates_only_that_path` / `script_clip_playback_handles_once_reverse_and_freeze` / `script_clip_playback_rejects_unknown_target` / `script_clip_playback_ignored_under_phase_lock`）；`cargo test -p r3e-editor --test anim_layer_rpc` → **13 passed**（含新加的 `anim_layer_set_applies_clip_playback`）；core 场景侧 4 个门面随 `cargo test -p r3e-core` 全绿，`app/editor.rs` 的 `anim_layer_set_applies_clip_playback` 随 `cargo test -p r3e-app` 全绿；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/clip_playback_demo.rhai --run-seconds 2.0` → rc 0，501 行日志 / **414 行 `CLIP`**（阶段一 85 + 阶段二 220 + 阶段三 109），其中 **221 行带 `pb=`**：阶段一（`t<0.5`）**没有 `pb=` 段**、`run_speed=-1.0 run_looping=true` 且 `run_t == idle_t == t`（与四十七逐字一致）；阶段二 `t=0.5` 起切 `pb=run_loop=1.50:once`，`t=1.002` 时本应 `run_t = 1.002 × 1.5 = 1.503`、超过片段末帧 `0.800` 故钳死为 `0.800`，而 `idle_t=1.002`，随后 220 帧 `run_t` 恒 **0.800**、`drift=0.000`（该路时间停住不影响相位锁的漂移口径）；阶段三 `t=1.5` 清除后 `pb=` 消失、`run_t` 逐位回到层时间（末帧 `t=1.995` 时 `run_t=1.995`，重新等于 `idle_t`）；`$env:R3E_VISUAL_REGRESSION=1; cargo test --workspace --all-features` 89 套件 **1,285 passed / 0 failed**（扩展四十七收尾为 88 套件 1,276），**基线图未重建**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-features --all-targets -- -D warnings` 全绿 |
 | 三维混合空间（扩展四十九） | `cargo test -p r3e-core blend_space` → lib 内联 **30 passed**（较扩展四十五的 19 增 11，`volumetric_3d_*` 系列：`volumetric_3d_single_tetra_has_exact_barycentric` / `volumetric_3d_vertex_and_edge_are_exact` / `volumetric_3d_outside_clamps_to_hull_face` / `volumetric_3d_cube_has_valid_tetrahedralization` / `volumetric_3d_coplanar_falls_back_to_nearest_sample` / `volumetric_3d_with_three_samples_still_normalizes` / `volumetric_3d_ignores_non_finite_value` / `volumetric_3d_brief_and_names` / `volumetric_3d_rejects_duplicate_position_on_all_axes` / `volumetric_3d_stays_on_layer_plane_at_layer_boundary` / `volumetric_3d_scales_to_24_samples`）；`cargo test -p r3e-core anim_tests` → **+2 passed**（`blend_space_3d_drives_clip_weights` / `layer_report_appends_3d_blend_segment`）；`cargo test -p r3e-script --test blend_space_api` → **5 passed**（含新加的 `script_3d_blend_space_drives_layer_weights`）；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_space_3d_demo.rhai --run-seconds 3.2 --show-bones` → rc 0，765 行日志 / **680 行 3D 段**，全段 `n=4 tet=1 drop=1`：沿 x 扫时 185 行 `run_loop` 权重与 `v.x` 零误差、107 行 `x>1` 钳到 1.00（`v` 保留原值）、`(0.30,0.30,0.30)` 得 `idle=0.10 / atk=0.30 / run_loop=0.60`（四面体内部真插值）、`(0,0,1)` 得 `run_loop=1.00`，680 行权重和 `max|Σw−1| = 0.0`、无 NaN；`cargo test --workspace` 89 套件 **1,296 passed / 0 failed**（扩展四十八收尾为 89 套件 1,285），`--all-features` 同 89 套件 **1,300 passed**；**基线图未重建**（1D / 2D 两条老路径逐位不变）；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-features --all-targets -- -D warnings` 全绿。**踩坑两条**：① §8.36 首版按记忆写了几个并不存在的 CPU 测试名，实测 `cargo test -- --list` 后逐条换成真名 —— 文档引用测试必须回查，不能凭印象；② 脚本行数第一版写成 61，`wc -l` 实测 **76** 行（含空行与注释），§3.2 与 §8.36 两处同步改正 |
+| 加法层与混合空间的组合语义（扩展五十） | `cargo test -p r3e-core additive` → **10 passed**（较扩展四十九的 3 增 7：`anim_blend.rs` 的 `additive_single_clip_is_bitwise_unchanged` / `additive_sums_rotation_deltas_not_pose_average` / `additive_sums_scale_ratios_not_pose_average` / `additive_normalizes_partial_weights` / `additive_skips_zero_weight_and_missing_track` / `additive_synced_uses_own_clip_duration` 共 6 条，`scene.rs` 的 `additive_layer_multiclip_uses_delta_semantics` 1 条）；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/additive_blend_space_demo.rhai --run-seconds 3.6` → rc 0，830 行日志 / **744 行 2D 探针**（193 + 219 + 217 + 115），四阶段份额 `idle_loop=1.00` → `run_loop=0.50,idle_loop=0.50` → `run_loop=0.50,atk=0.50` → `atk=1.00`，744 行 `max\|Σw−1\| = 0.0`、无一含 `nan`、全程 `drop=0`；`cargo test --workspace` 89 套件 **1,303 passed / 0 failed**（扩展四十九收尾为 89 套件 1,296），`--all-features` 同 89 套件 **1,307 passed**；`R3E_VISUAL_REGRESSION=1` 下亦 89 套件 **1,307 passed**、**基线图未重建**（覆盖层与单路口逐位不变）；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning。**契约点**：加法层份额的关键不在「加权平均」而在「谁进分母」——零份额与缺轨道的路不进有效路和，否则一条没被选中的路也会把增量稀释掉（`additive_skips_zero_weight_and_missing_track` 钉住这条） |
 
 ---
 
