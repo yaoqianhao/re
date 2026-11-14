@@ -526,7 +526,7 @@ AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）�
 | `crates/r3e-asset/src/lib.rs` | 贴图解码（`image` + tga/bmp 特性，按扩展名兜底）、材质因子提取、`mesh_parts` 分区输出 |
 | `crates/r3e-render/src/renderer.rs` | `MaterialCache`（材质 uniform + 贴图 view + 采样器）、bind group 1、按 `GpuPart` 逐段 `draw_indexed` |
 | `crates/r3e-render/src/shader.wgsl` | `group(1)` 材质 uniform 与贴图采样，albedo = 物件色 × 材质因子 × 贴图 |
-| `crates/r3e-app/src/app.rs` | 场景 `assets` 段导入 + 按声明 spawn（position/rotation/scale/`spawn:false`）、路径去重 |
+| `crates/r3e-runtime/src/app.rs` | 场景 `assets` 段导入 + 按声明 spawn（position/rotation/scale/`spawn:false`）、路径去重 |
 | `crates/r3e-core/src/scene.rs` | `from_json_str` 剥 UTF-8 BOM（PowerShell/记事本保存的场景不再解析失败） |
 
 ### 12.2 关键口径（后续不得回退）
@@ -566,7 +566,7 @@ P3 已落地：FBX 动画栈 → `AnimClip`，按骨架节点路径建节点树�
 | `crates/r3e-core/src/anim.rs` | `AnimClip`（名/时长/轨道）、`AnimTrack`（节点路径 + T/R/S 关键帧）、`AnimKey`、`AnimInstance`（时间轴 + 速度 + 循环 + `AnimBinding`） |
 | `crates/r3e-core/src/scene.rs` | `update_animations(dt)`、`play_anim/stop_anim/set_anim_speed/set_anim_time/anim_time/anim_names/add_anim_instance/prune_anim_bindings`；片段注册表 `register_anim_clip/anim_clip_names/set_anim_clip` |
 | `crates/r3e-asset/src/lib.rs` | 从 `scene.anim_stacks` 提取全部栈（`time_begin` 重基到 0）、从 `scene.nodes` 提取节点树（local TRS + parent 下标 + 路径） |
-| `crates/r3e-app/src/app.rs` | `spawn_asset_anim`：按节点路径建骨架节点树（`<资产名>/<节点路径>`）、按 `node_index` 绑轨道、建播放器；`--show-bones` 挂标记方块 |
+| `crates/r3e-runtime/src/app.rs` | `spawn_asset_anim`：按节点路径建骨架节点树（`<资产名>/<节点路径>`）、按 `node_index` 绑轨道、建播放器；`--show-bones` 挂标记方块 |
 | `crates/r3e-script/src/api.rs` | `anims/anim_of/anim_info/anim_clip/anim_clips/play_anim/stop_anim/set_anim_clip/set_anim_speed/set_anim_time/anim_time/set_anim_looping/anim_playing` |
 | `crates/r3e-app/src/main.rs` | `--dump-anim <fbx>`、`--anim-clip <名>`、`--show-bones` |
 | `scripts/anim_demo.rhai`、`assets/scene_anim.json` | 演示：每 3 秒轮播该资产 7 个片段，打印实例与片段信息 |
@@ -627,7 +627,7 @@ P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画�
 | `crates/r3e-render/src/mesh.rs` | 顶点属性 5 个（`0..=4`，`3 = Uint16x4`、`4 = Float32x4`）；`InstanceRaw` 加 `joint_base`（location 10），stride 96 |
 | `crates/r3e-render/src/shader.wgsl` | `@group(2) @binding(0) u_joints: array<mat4x4>`；`skin_matrix()` 做 LBS，权重全 0 时跳过取样（内置网格零成本） |
 | `crates/r3e-render/src/renderer.rs` | 关节 storage buffer + bind group + pipeline layout `group(2)`；`prepare_instances` 按 `scene.skin_of(mesh_node)` 填 `joint_base` 并上传本帧关节矩阵（溢出报错不静默截断） |
-| `crates/r3e-app/src/app.rs` | `bind_asset_skins`（静止姿态绑关节，按 `node_index` 对齐）、`log_skin_probe`（CPU 复算蒙皮质心 / 最大偏差，做无头验收） |
+| `crates/r3e-runtime/src/app.rs` | `bind_asset_skins`（静止姿态绑关节，按 `node_index` 对齐）、`log_skin_probe`（CPU 复算蒙皮质心 / 最大偏差，做无头验收） |
 | `crates/r3e-asset/examples/skin_probe.rs` | 口径探针：同一帧分别用 `bind_to_world⁻¹` 与静止姿态逆矩阵做 CPU 蒙皮，对比顶点位移，作为「逆绑定取静止姿态」的证据 |
 
 ### 14.2 关键口径（后续不得回退）
@@ -693,7 +693,7 @@ A 阶段的目标是「让外部资产也拥有包围盒」，它同时是阴影
 | `crates/r3e-core/src/mesh.rs` | `MeshData::aabb()` / `aabb_box()`；`MeshProvider` 新增 `mesh_aabb(key) -> Option<Aabb>`（默认 `None`） |
 | `crates/r3e-render/src/renderer.rs` | `MeshCache.bounds`（`HashMap<MeshRef, Option<Aabb>>`）+ `bounds()`；`prepare_instances` 里先过视锥再分配实例/关节槽位；`SKIN_CULL_MARGIN = 0.25`；`RenderStats` 增 `culled / cull_missing_bounds` |
 | `crates/r3e-physics/src/lib.rs` | `ColliderDesc::infer_with / from_node_with(node, bounds)`，`half_extents_from` 用真实 AABB × scale 推导 |
-| `crates/r3e-app/src/app.rs` | 资产库改为 `Rc<RefCell<Arc<AssetLibrary>>>`（可就地换库）；`refresh_assets_from_json` 比较 `assets` 声明后按需重导；`collect_asset_specs(scene, scene_path, cli)` 支持 `--assets-root`；启动/收尾打印剔除统计 |
+| `crates/r3e-runtime/src/app.rs` | 资产库改为 `Rc<RefCell<Arc<AssetLibrary>>>`（可就地换库）；`refresh_assets_from_json` 比较 `assets` 声明后按需重导；`collect_asset_specs(scene, scene_path, cli)` 支持 `--assets-root`；启动/收尾打印剔除统计 |
 | `crates/r3e-app/src/main.rs` | `--assets-root DIR` 解析与 USAGE |
 | `crates/r3e-asset/src/lib.rs` | `mesh_aabb` 直接返回导入时算好的 AABB（零拷贝） |
 
@@ -746,7 +746,7 @@ C 阶段解决的是「切片段会跳」这个观感问题：`set_anim_clip` �
 | `crates/r3e-core/src/anim.rs` | `NO_TRACK = u32::MAX`；`wrap_time(t, duration, looping)`（与时间轴取模同源）；`blend_transform(a, b, w)`（位置/缩放 lerp、旋转 slerp）；`AnimFade{clip, time, speed, looping, tracks, elapsed, duration}` + `weight()`（smoothstep）；`AnimInstance` 加 `fade: Option<AnimFade>`、`cross_fade(clip, duration)`、`fade_weight()`、`fade_source()`，`advance()` 里同步推进旧片段与 `elapsed`，到点自动 `fade = None` |
 | `crates/r3e-core/src/scene.rs` | `update_animations` 改为「按绑定取新旧两路采样 + 加权混合」；`find_anim_clip` 抽出复用；新增 `set_anim_clip_fade / anim_fade_weight / anim_fade_source`；`set_anim_clip` 保持硬切语义 |
 | `crates/r3e-script/src/api.rs` | 新增 `set_anim_clip_fade(实例, 片段, 秒)` / `anim_fade(实例)` / `anim_fade_from(实例)` |
-| `crates/r3e-app/src/app.rs` | `log_anim_probe` 输出 `fade=旧片段→新片段 xx%` 或 `fade=无` |
+| `crates/r3e-runtime/src/app.rs` | `log_anim_probe` 输出 `fade=旧片段→新片段 xx%` 或 `fade=无` |
 | `scripts/anim_state.rhai` | 三态演示（idle / run / atk）：按住左键跑、点击左键攻击、攻击播完回落待机，全部带 0.15–0.25s 淡入 |
 | `scripts/anim_demo.rhai` | 轮播改用 `set_anim_clip_fade(…, 0.35)`，过渡期间打印权重曲线 |
 

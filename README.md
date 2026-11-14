@@ -64,21 +64,26 @@ D:\rust3d-engine
 │   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
 │   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
 ├─ crates/
-│   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照
+│   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照（零引擎依赖）
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
 │   ├─ r3e-audio/             # 音频（rodio 后端 + 静默降级 + 混音门面 + 3D 空间化）
 │   ├─ r3e-editor/            # 编辑器 RPC 协议（EngineApi / dispatch）+ TCP 桥
 │   ├─ r3e-plugin/            # IDE 插件进程（工具 schema + 读写侧工具集，JSON-RPC over stdio）
-│   └─ r3e-app/               # 主循环、窗口事件、终端指令
+│   ├─ r3e-runtime/           # 运行时：窗口 / 事件循环 / 主循环 / 时间步 / headless（不认编辑器协议）
+│   ├─ r3e-editor-host/       # 编辑器宿主：把 RPC 服务端接进帧循环的唯一黏合层
+│   └─ r3e-app/               # 薄壳入口：日志 + argv 交运行时 + 按需挂编辑器桥（30 行）
+├─ xtask/                     # 工程门禁：verify / lint-size / check-tests / dep-check + 三个数据文件
 └─ docs/
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
     ├─ PHYSICS.md             # 物理子系统：三层开关、场景字段、脚本 API、内置规则
     └─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
 ```
 
-workspace 共 9 个 crate，各 crate 单向依赖：`app → editor / render / script / physics / audio → core`，核心层不认识 wgpu。
+workspace 共 11 个引擎 crate + 1 个 `xtask` 工具 crate，依赖单向：
+`app → editor-host → (editor, runtime) → render / script / physics / audio / asset → core`，核心层不认识 wgpu。
+`r3e-app` 已收敛成 30 行薄壳，`cargo xtask dep-check` 每次 verify 都会按 `xtask/dep_rules.json` 重算这条线。
 
 ---
 
@@ -1363,7 +1368,14 @@ cargo run -- --asset D:\_probe_glb\samples\ironsword.glb
 若 rustup 默认 host 是 msvc，只写 `stable` 会切到 msvc 工具链，导致 build script / proc-macro
 这些 host 产物去找 `link.exe` 而整片编译失败。
 
-四道门每次改动后都要过，本地跑法：
+四道行为门（格式 / 静态检查 / 单测 / 像素回归）外加三道**结构门**（文件规模 / 测试数不减 / 依赖方向），
+一次改动后都要过。日常只需记住一条：
+
+```powershell
+cargo xtask verify                             # = fmt + clippy + test + lint-size + check-tests + dep-check
+```
+
+拆开跑：
 
 ```powershell
 cargo fmt --all --check                        # 格式：只检查，不改文件
@@ -1372,6 +1384,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features rapier -- -D warnings
 cargo test --workspace                         # 默认特性
 cargo test --workspace --features rapier       # Rapier 物理后端
+
+cargo xtask lint-size                          # 单文件 ≤800 行，超标的 27 个登记在 xtask/size_debt.json，只许变小
+cargo xtask check-tests                        # 逐 crate 对照 xtask/tests_baseline.json，测试数只许涨不许跌
+cargo xtask dep-check                          # 依赖方向对照 xtask/dep_rules.json 的 allow 白名单（--strict 转硬门）
+cargo xtask gen-capabilities                   # 统计脚本/RPC/插件工具注册点（259 处，跑完即写报告）
 
 $env:R3E_VISUAL_REGRESSION = "1"               # 像素级回归（需要 GPU，见 §24）
 cargo test -p r3e-app --test visual_regression -- --nocapture
@@ -1382,8 +1399,13 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 `arc_with_non_send_sync`（`MeshProvider` 刻意不 `Send`，渲染主线程独占），以及
 `r3e-asset/src/lib.rs`、`r3e-asset/src/gltf_import.rs` 各一处 `too_many_arguments`（顶点装配 / 导入入口参数天然是平行数组）。
 
-CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，四道门对应
-`rustfmt` / `clippy -D warnings` / `test（默认 + rapier 两轮）` / `visual`（像素回归，拆两个 job），
+**三道结构门为什么存在**：它们以前只是文档里的约定（"别写超 800 行的文件"、"别删测试"、"别乱加依赖"），
+靠人自觉执行，于是每拆一个巨型 crate 就悄悄多一笔债。现在债有账本、基线有快照、规则有白名单，全在 `xtask/` 下进版本库：
+`size_debt.json`（27 个大文件及其当时的行数，涨一行即失败）、`tests_baseline.json`（逐 crate 测试数底线）、
+`dep_rules.json`（逐 crate 的允许依赖）。`verify` 把三道门串在 fmt/clippy/test 之后，本地一条命令 = CI 的 `gate` job。
+
+CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，六道门对应
+`rustfmt` / `gate（xtask 三道结构门，报告态）` / `clippy -D warnings` / `test（默认 + rapier 两轮）` / `visual`（像素回归，拆两个 job），
 都跑在 `windows-latest` 上
 （Linux runner 无法完成 MinGW 交叉链接，硬跑只会得到误导性的红），
 并用 PATH 里的 MinGW 覆盖 `.cargo/config.toml` 中的开发者本机绝对路径。
@@ -1813,7 +1835,7 @@ set_fxaa(true);
 | 层 | 位置 | 职责 |
 | --- | --- | --- |
 | 契约 | `crates/r3e-core/src/ui.rs` | `UiRect` / `resolve_rect` / `hit_test` / `UiInteraction`（hover + active + 有界事件队列 `MAX_UI_EVENTS_PER_FRAME = 64`） |
-| 驱动 | `crates/r3e-app/src/app.rs` | `update_ui_interaction()` 每帧喂光标与左键边沿；`cursor_over_ui()` 让相机让位 |
+| 驱动 | `crates/r3e-runtime/src/app.rs` | `update_ui_interaction()` 每帧喂光标与左键边沿；`cursor_over_ui()` 让相机让位 |
 | 读取 | `r3e-script` / `r3e-editor` | 脚本 10 个只读 API；编辑器 `ui.state` |
 
 **编辑器 RPC**（与 `scene.set_*` 同一套补丁风格，字段全可选）：
@@ -2134,7 +2156,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | --- | --- | --- |
 | 契约 | `crates/r3e-core/src/scene_stack.rs` | `SceneStack` / `StackEntry` / `RuntimeSnapshot` / `AnimRuntime` / `SceneArchive` / `SceneCommand`，纯数据 + 纯函数，唯一 IO 是存档读写盘 |
 | 传输 | `crates/r3e-editor/src/lib.rs` | `EngineApi` 五个方法（`scene_stack` / `scene_switch` / `scene_back` / `scene_archive_save` / `scene_archive_load`，默认 `unsupported`）+ dispatch 分支 + 参数校验 |
-| 宿主 | `crates/r3e-app/src/app.rs`、`crates/r3e-app/src/editor.rs` | `EngineApp::apply_pending_scene_command` 在帧首取命令并执行；`LocalEngineApi` 只做校验后塞槽，重活留在 app 侧完整上下文里 |
+| 宿主 | `crates/r3e-runtime/src/app.rs`、`crates/r3e-editor-host/src/api.rs` | `EngineApp::apply_pending_scene_command` 在帧首取命令并执行；`LocalEngineApi` 只做校验后塞槽，重活留在 app 侧完整上下文里 |
 
 契约放在 core、传输只做校验、执行留在宿主——与前面十七个扩展同一套路数：
 **core 不知道渲染器存在，editor 不知道场景怎么装，只有 app 两边都摸得到。**
@@ -2235,7 +2257,7 @@ else                { fade_anim_layer(inst, "upper", 0.0, 0.25); }
 | --- | --- | --- |
 | `crates/r3e-core/src/scene_stack.rs` | 27 | 快照 5（默认值对齐新场景 / JSON 往返 / 覆写开关与时间 / 未知实例跳过 / 拒绝未来版本）、存档 6（捕获源 + 运行时 / 纯数据模式省运行时 / 往返恢复场景与时钟 / 接受裸场景文件 / 版本与坏 JSON 拒绝 / 磁盘往返）、栈 11（空栈 / push 成当前 / back-forward 只移游标 / 回退后 push 截断前向分支 / 超限丢最老 / find 从当前往回 / jump 越界 / pop 移动游标 / unique_name 加后缀 / capture 保留源与运行时 / clear）、命令 5（标签稳定 / 路径跟随变体 / 只有 SaveArchive 不换世界 / 文本逐字携带 / capture_current 只刷栈顶） |
 | `crates/r3e-script/src/lib.rs` | 7 | 真跑 Rhai：切场景排入 `Switch`、路径去空白与空白拒绝、单槽拒绝第二条且不覆盖、空串存档语义、栈读取函数跟着共享句柄、命令跨 rebuild 存活、宿主取用同一槽 |
-| `crates/r3e-app/src/editor.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
+| `crates/r3e-editor-host/src/api.rs` | 4 | 默认存档路径后缀 / 相对路径解析（绝对与原样保留）/ 落到场景目录 / 存档写盘后带运行时状态读回 |
 | `crates/r3e-editor/src/lib.rs` | 7 | `scene.stack` 的 `limit` 透传与缺省、`scene.switch` 空路径拒绝、`scene.back` 无参、`scene.archive.save` 的路径语义、`scene.archive.load` 必须给路径、五个方法默认 `unsupported` |
 
 `cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed。
@@ -2337,7 +2359,7 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 | `crates/r3e-render/tests/local_shadow_shader.rs` | 6 | 解析 `shader.wgsl` 比对 `array<mat4x4<f32>, 24>` / `array<vec4<f32>, 16>` 字面量、`@group(3)` 的 5/6/7 三处绑定、`point_shadow_face` 六分支与 CPU 同序 |
 | `crates/r3e-script/tests/local_shadow_api.rs` | 6 | 写入读回、意愿与实际分离、键不存在返回 `false`、槽满时第 5 盏不投影、`shadow_bias` 夹取 |
 | `crates/r3e-editor/src/lib.rs` | 1 | `light.set` 补丁透传 `cast_shadow` / `shadow_bias` |
-| `crates/r3e-app/src/editor.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
+| `crates/r3e-editor-host/src/api.rs` | 1 | 探针字段 `local_shadow_casters` / `local_shadow_layers` 可读 |
 
 `cargo test --workspace` 当时为 59 个套件 / 870 passed / 0 failed。
 
