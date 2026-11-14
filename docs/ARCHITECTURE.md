@@ -154,7 +154,7 @@ rust3d-engine/
 | r3e-editor | 3,027 | 1,656 | 95 | `lib.rs`（协议 + `EngineApi`/`EnvironmentPatch`/`EnvironmentMapPatch`/`SsaoPatch`/`AnimLayerPatch`/`AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-app | 7,007 | 230 | 61 | `app.rs`（含 `drive_spatial_audio` / `sync_env_probe` / `capture_frame_now` / `bind_asset_skins` 绑定时对齐蒙皮基准）/ `editor.rs`（`EngineApi` 实现）/ `main.rs`；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| **合计** | **69,988** | **14,769** | **1,307** | **约 7.00 万行 Rust + 1,512 行 WGSL（扩展五十未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 89 个套件 / 1,303 passed / 0 failed，`--all-features` 同 89 套件 / 1,307 passed（多 4 条 `rapier` 专属）** |
+| **合计** | **70,609** | **15,028** | **1,328** | **约 7.06 万行 Rust + 1,512 行 WGSL（扩展五十二未动着色器，WGSL 行数不变，按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 90 个套件 / 1,324 passed / 0 failed，`--all-features` 同 90 套件 / 1,328 passed（多 4 条 `rapier` 专属）** |
 
 行数口径（本节合计行按 `crates/**/src/**/*.rs` / `crates/**/tests/**/*.rs` 实测重算，表内逐 crate 数字停在扩展二十七那一版，仅作相对参考）：`src` / `tests` 均为**含空行与注释的物理行数**，「src 行数」列只数 `.rs`（含 `examples/`），
 着色器（1,512 行 WGSL，全在 `r3e-render`，按 `crates/**/src/**/*.wgsl` 实测）单列在合计行；随扩展二十七（主通道实例收集单次遍历）收尾一次性重算，
@@ -290,6 +290,25 @@ Bowyer–Watson 剖分与重心插值 / 最近线段兜底 / `brief` 与 `weight
 `--all-features` 同 89 套件 1,285 passed；带 `R3E_VISUAL_REGRESSION=1` 亦 89 套件 1,285 passed 且**基线图未重建**
 （`tests` 相较上轮记录的 14,460 为 +241，正好是新套件的物理行数；`src` 净 +549 = anim_blend 282 + scene 73 + api 67 +
 editor 112 + editor/lib 16 − 9 行删除，与 `git diff --numstat` 一致），
+扩展五十二（速率随样本插值）再增量 **+360 src / +185 tests / +12 单测 / +1 新套件 / 0 WGSL**
+（无新源文件、零着色器改动、像素基线未重建：`core/blend_space.rs` **+170/-2**（`BlendSample.speed` 默认 `1.0`；
+`set_sample_speed` / `has_speed_variation` / `speed_at` / `speed_at_3d` / `sample_speed_of`（私有）;
+`brief` 在有变速样本时尾部追加 `spd=`，内联测试 5 条 `sample_speed_defaults_to_exactly_one` /
+`speed_follows_weighted_average` / `sample_speed_rejects_unknown_non_finite_and_clamps_negative` /
+`brief_appends_speed_only_when_varied` / `speed_reads_only_the_mixed_in_samples`）、
+`core/anim_blend.rs` **+134/-2**（新 `blend_speed_scale`；`advance` 的推进速率改成「层 `speed` × 插值倍率」，
+**倍率恰为 `1.0` 时直接走老算式**，非循环钳制判据同步从 `self.speed` 换成实际速率 `rate`，
+内联测试 4 条 `speed_scale_is_one_when_no_sample_is_retimed` / `advance_matches_legacy_when_no_sample_is_retimed` /
+`advance_scales_layer_time_by_interpolated_speed` / `layer_speed_multiplies_interpolated_scale`）、
+`core/scene.rs` **+34**（2 个门面 `set_anim_layer_blend_sample_speed` / `anim_layer_blend_speed`）、
+`script/api.rs` **+26**（2 个同名绑定）、`script/tests/blend_speed_api.rs` **185 行 / 3 测**（新套件：
+`script_sample_speed_rejects_missing_sample` / `script_sample_speed_drives_layer_time` /
+`script_blend_line_reports_speed_only_when_varied`）；
+`scripts/blend_speed_demo.rhai` 83 行不计入 Rust 行数），
+收尾实测 **70,609 src / 15,028 tests / 1,328 单测 / 90 套件 1,324 passed / 0 failed**，
+`--all-features` 同 90 套件 1,328 passed；带 `R3E_VISUAL_REGRESSION=1` 亦 90 套件 1,324 passed 且**基线图未重建**
+（`tests` 相较上轮记录的 14,843 为 +185，正好是新套件 `blend_speed_api.rs` 的物理行数；`src` 净 +360 = blend_space 168 +
+anim_blend 132 + scene 34 + api 26，与 `git diff --numstat` 一致），
 扩展五十一（混合空间剖分缓存与延迟提交）再增量 **+261 src / +74 tests / +9 单测 / 0 新套件 / 0 WGSL**
 （无新源文件、零着色器改动、像素基线未重建：`core/blend_space.rs` **+229/-18**（1,775 → 1,987 行）（`BlendSpace.stale`
 脏标记 + `is_stale` / `build_pending` 两个公开入口；`compute_triangles` / `compute_tetra` 从「写进 `self`」改成「算完返回」，
@@ -1797,6 +1816,47 @@ reference 只影响「零增量落在哪」，而层权重已经把整体幅度�
 - 脏标记是**粗粒度**的：任何一个样本变动都会让整张表重剖，不区分「加一个」与「清空重铺」；
 - **零变化**：不碰样本表的场景（含全部覆盖层 / 加法层既有用例）剖分永远处于已提交状态，权重、姿态、像素逐位相同。
 
+### 4.28 速率随样本插值：让「走 → 跑」的步频连续（扩展五十二）
+
+**份额决定「姿态怎么混」，速率决定「这一段动作走多快」，两条线此前互不相干。** 速率只有两档可用：层 `speed`
+（整层一条时间轴，§7.3）与 `LayerClip.playback.speed`（每路一个常数，§4.24）。一层挂 `idle_loop` / `run_loop`
+两路、由一维速度空间分份额时，玩家轻推摇杆（份额 0.05）与推到底（份额 1.0）用的是**同一个**常数速率：
+要么慢步永远慢，要么一离开端点步频就跳到疾行。扩展五十二把速率挂到**样本**上，按与权重同源的插值算出来。
+
+| 新增 / 改动 | 职责 |
+| --- | --- |
+| `BlendSample.speed: f32` | 每个样本自己的播放速率，默认 `1.0`（原速）；`add_sample` / `add_sample_3d` 一律写 `1.0`，要变速走 `set_sample_speed` |
+| `BlendSpace::set_sample_speed(clip, speed) -> bool` | 按片段名改速率：非有限直接拒（`NaN` 速率会把层时间推成 `NaN`，画面只表现为「不动」，最难查）、空名拒、负值**钳到 `0`**（定格，不倒放）、同名多份样本一起改 |
+| `BlendSpace::has_speed_variation() -> bool` | 样本表里是否有任何一路不是原速（`|speed − 1| > EPS`）——**零变化的开关** |
+| `BlendSpace::speed_at()` / `speed_at_3d(at)` | 按当前坐标插值：取 `weights_at_3d` 的合并后权重 `wᵢ`，速率 = `Σ wᵢ·sᵢ / Σ wᵢ`（权重已归一，除只防浮点累加误差）；一份权重都没有 → `1.0` |
+| `AnimLayer::blend_speed_scale() -> f32` | 层侧门面：没挂空间 / 空间无变速 → `1.0`（**连权重都不查**，快路径），否则 `speed_at()` |
+| `AnimLayer::advance(dt)` | 推进速率 = 层 `speed` × 倍率；**倍率恰为 `1.0` 时走老算式**（`self.speed`，不多乘那一下），非循环的钳制判据同步从 `self.speed` 换成实际速率 `rate` |
+| `Scene::set_anim_layer_blend_sample_speed` / `anim_layer_blend_speed` | 门面；`None` = 层不存在或没挂空间，`Some(false)` = 片段在该空间里没有样本 / 速率非有限 |
+| `brief()` | 有变速样本时尾部追加 `spd=1.23`；全原速时**不追加**，回显逐字符不变 |
+
+**为什么是加权平均，而不是「取最近样本的速率」**：份额已经把「这个瞬时姿态由几份样本各出几成」说清了，速率只要跟着同一组
+份额走，就保证「姿态混到 30% 跑步」时步频也正好是 30%——取最近样本会让速率在剖分边界上跳一下，而姿态不跳，表现为脚飘。
+平均也在端点自然塌回单样本速率（份额 `1.0` / `0.0`），不需要额外分支。
+
+**为什么倍率为 `1.0` 就切回老算式**：`x * 1.0` 在 IEEE 下本就精确，这里不是修精度，而是把「未变速路径不参与」写成代码可见的事实——
+省一次乘是次要的，主要是防止后来者往 `rate` 上叠逻辑（比如全局时间缩放）时悄悄改掉老路径的行为。
+`advance_matches_legacy_when_no_sample_is_retimed` 用 `to_bits()` 钉住这条。
+
+**为什么不复用 `LayerClip.playback.speed`**：那是「每路一个常数」，而扩展五十二要的是「同一片段在参数轴不同区间不同步频」——
+求值侧按名字合并权重之后已经分不清是哪一份样本，所以速率只能挂在样本级，插值完才落到层时间。
+
+**边界**：
+
+- 速率是**标量平均**，不是关于参数的曲线：「慢走 → 快走 → 跑」要三段不同斜率，现在只能靠多挂样本（多一档 = 多一个样本 + 一个速率），
+  不是分段线性，也不是各轴不同量纲；
+- 只作用于**层时间推进**，不改姿态采样的相位口径：`sample_time` / `LayerSync::Phase` / `LayerClip.playback` 全部照旧，
+  所以速率变了姿态形状不会跳（相位锁下倍率仍生效——那是「整层节奏加快」，与相位对齐不冲突）；
+- 负速率钳到 `0`（定格）而不是倒放：倒放走 `ClipPlayback.speed` 的负值分支，两条路径不混；
+- 空间被 `clear_samples` 清空后 `has_speed_variation()` 为假，倍率回到 `1.0`；
+- **零变化**：`has_speed_variation()` 为假时 `advance` 的算式、`brief` 的字符、权重与像素基线全部与扩展五十一逐位相同。
+
+后续：无（把速率升级成「关于参数的曲线」记在 §11.3 第 7 条第 ③ 项残余里）。
+
 ## 5. 渲染层：r3e-render
 
 ### 5.1 GPU 数据布局
@@ -2991,7 +3051,7 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `anim_layer_info(实例, 层)` | 整层快照（模式 / 权重 / 有效权重 / 遮罩 / 片段与归一权重 / 时间 / 速度 / 循环 / 播放中） |
 | `anim_layer_weight(实例, 层)` / `anim_layer_clips(实例, 层)` | 有效权重（含过渡）/ 层内片段名列表 |
 
-**1D / 2D / 3D 混合空间（扩展四十五，扩展四十九补三维）**
+**1D / 2D / 3D 混合空间（扩展四十五，扩展四十九补三维，扩展五十二补采样速率）**
 
 给层挂一张"参数 → 权重"的图，脚本只推参数（跑多快、看向哪、在哪一档速度），权重由样本几何算出来
 （core 侧契约见 §4.21 / §4.25）。样本上限 32 / 空间；坐标重复、片段名解析不到、非有限坐标都会被拒并计入 `drop=`。
@@ -3007,6 +3067,8 @@ pub fn reload_if_changed(&mut self) -> bool {
 | `set_anim_layer_blend_value_3d(实例, 层, x, y, z)` | 每帧推三元参数；任一非有限整体拒 |
 | `clear_anim_layer_blend(实例, 层)` | 摘掉空间回到手写权重；层内权重**冻结不跳变**，要改就接着调 `set_anim_layer_clip_weight` |
 | `anim_layer_blend(实例, 层)` | 单行回显 `1d(speed) n=2 drop=0 v=0.50 w=idle=0.50,walk=0.50`、`3d(move.x,move.y,speed) n=24 tet=71 drop=0 v=(0.00,1.00,2.00) w=...`，没挂空间返回空串 |
+| `set_anim_layer_blend_sample_speed(实例, 层, 片段, 倍率)` | 扩展五十二：给该样本自己的播放速率（默认 `1.0`）；片段不在空间里 / 倍率非有限返回 `false`，负值钳到 `0`，同名样本一起改 |
+| `anim_layer_blend_speed(实例, 层)` | 扩展五十二：当前按份额插值出的层速率倍率（未挂空间 / 全原速都是 `1.0`）；有变速时 `anim_layer_blend` 回显尾部追加 `spd=` |
 | `set_anim_layer_clip_weight(实例, 层, 片段, w)` | 手写层内某一路片段权重（摘掉空间后接管用；整层重新归一，`w <= 0` 时该路不参与） |
 
 **层内相位同步（扩展四十六）**
@@ -5955,6 +6017,46 @@ target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_
 一次重剖都不发生；`cargo test --workspace` 89 套件 **1,312 passed / 0 failed**（`--all-features` **1,316 passed**），
 **视觉基线一张未重建**。
 
+
+### 8.39 速率随样本插值的探针证据（扩展五十二）
+
+`scripts/blend_speed_demo.rhai`（83 行）把 `idle_loop` / `run_loop` 挂进同一层一维 `speed` 轴，`run_loop` 的样本速率先设
+`1.7`、第四阶段再改成 `2.4`，每帧回显 `anim_layer_blend`（份额与 `spd=`）与 `anim_layer_blend_speed`：
+
+| 阶段 | 墙钟 | 探针行 | `v` | 份额 | `spd` |
+| --- | --- | --- | --- | --- | --- |
+| 一 全原速 | `et < 1.0` | 179 | `0.00` | `idle_loop=1.00` | `1.00` |
+| 二 半程插值 | `1.0 ~ 2.0` | 217 | `0.50` | `idle_loop=0.50,run_loop=0.50` | `1.35` |
+| 三 端点（速率 1.7） | `2.0 ~ 3.0` | 215 | `1.00` | `run_loop=1.00` | `1.70` |
+| 四 端点（速率改 2.4） | `3.0 ~ 4.0` | 213 | `1.00` | `run_loop=1.00` | `2.40` |
+| 五 回半程 | `>= 4.0` | 297 | `0.50` | `idle_loop=0.50,run_loop=0.50` | `1.70` |
+
+表里的 `spd` 按两位小数列示：脚本侧 `anim_layer_blend_speed` 返回 Rhai `f64`，f32 提升后原样打印成
+`1.350000023841858`；`brief()` 里的 `spd=` 才是 `{:.2}` 的 `1.35`（与 `v=` / 权重同一种格式）。两者是
+同一个数的两种落字方式，探针比对时按两位小数看。
+
+全 1,121 行的批量核对（`--run-seconds 6.0`；帧数随负载浮动，两次实测 1,121 / 1,294，逐行验、不靠抽样）：
+
+- **倍率确实是加权平均**：阶段二 `1.0 × 0.5 + 1.7 × 0.5 = 1.35`、阶段五 `1.0 × 0.5 + 2.4 × 0.5 = 1.70`，
+  两处都对得上「样本速率 × 当前份额」；
+- **只改样本速率、不动参数，倍率立刻跟着变**：阶段三 → 阶段四 `v` 恒为 `1.00`、份额恒为 `run_loop=1.00`，
+  `spd` 从 `1.70` 变 `2.40`；再回到半程（阶段五）又变回 `1.70`——倍率始终是「当前份额 × 当前样本速率」的即时结果，
+  没有跨帧缓存；
+- **份额和恒为 1**：`max |Σw − 1| = 0.0`，1,121/1,121 行通过；
+- **无 NaN**：1,121 行无一含 `nan`（非有限速率在 `set_sample_speed` 就被拒，进不了样本表）；
+- **`drop=0` 全程**：两个样本位置互不重复，样本没有被拒过；
+- **全原速时不出现 `spd=`**：`on_start` 里设速率之前的两行回显（`1d(speed) n=2 drop=0 v=0.00 w=idle_loop=1.00`）
+  尾部没有 `spd=`，回显字符长度与扩展五十一逐字符相同——这条由 `brief_appends_speed_only_when_varied` 钉住。
+
+**倍率对层时间的作用由单测钉住，真机只负责证明倍率的取值**：`advance_scales_layer_time_by_interpolated_speed`
+让层在倍率 `2.0` 下 `advance(0.25)`，层时间必须推进 `0.5`；`layer_speed_multiplies_interpolated_scale` 再叠一层
+`speed = 1.5`，`advance(0.1)` 推 `0.3`（`1.5 × 2.0 × 0.1`）。日志侧读不到层时间（探针读的是片段时间），
+所以这两条不靠截图说话。
+
+**零变化**：不调 `set_anim_layer_blend_sample_speed` 的场景，`has_speed_variation()` 恒假 → `advance` 走老算式、
+`brief` 不多一个字符；`cargo test --workspace` 90 套件 **1,324 passed / 0 failed**（`--all-features` **1,328 passed**），
+**视觉基线一张未重建**。
+
 ## 9. 端到端数据流
 
 ```
@@ -6032,7 +6134,7 @@ target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_
 | 透明 | alpha blend + 半透明批次**按相机深度由远及近**排序（扩展十九），半透明不写深度、最后绘制 | 排序粒度是**实例**（世界位置到相机的距离平方，稳定排序），不做逐三角形 / 逐像素排序，也无 OIT；同一网格内的相交半透明、或一个物件内部自遮挡仍可能出错；不透明与半透明之间靠深度测试、半透明之间靠绘制顺序 |
 | 剔除 | 视锥剔除（AABB × 6 平面）+ **遮挡剔除**（扩展二十二：上一帧深度金字塔 + 两阶段 AABB 判定，缺省关闭）；两者都按场景树层级预筛（扩展二十九视锥 / 扩展三十遮挡：子树盒被判不可见则整枝跳过） | 逐实例用网格局部 AABB 变换到世界后与视锥测试，蒙皮网格按 `SKIN_CULL_MARGIN`（0.25）放大包围盒避免形变越界被误剔；取不到包围盒时保守绘制（树里登记 `fail_open_bounds` 巨盒，所在整枝都不许剪）。遮挡剔除只剔**不透明**批次（半透明不写深度，判了也不准），金字塔低频读回（默认 4 帧）因而滞后几帧，且只按 AABB 粗判——细长物 / 栅栏类遮挡体效果有限；层级预筛只省「被剪枝里的实例判定」，扁平场景（实例都挂在根下）净收益为 0；无 GPU 遮挡查询、无「连续 N 帧才剔」的迟滞 |
 | 物理 | 默认关闭；`builtin` 后端仅刚体 vs 地面平面；`rapier` 后端（`--features rapier`）为完整刚体动力学 | `builtin` 下物件互不碰撞、无旋转动力学、无地形碰撞，物件不会堆叠或翻滚；切到 `rapier` 才有互撞 / 堆叠 / 翻滚 / 碰撞事件 / CCD，但**仍无关节、无布娃娃、无角色控制器**，也**没有地形/网格三角面碰撞体**（只有 box / sphere / capsule / cylinder 四种基本体） |
-| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，26 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，后者的 patch 带 `sync` / `phaseOffset` / `syncSource` / `clip_speed` / `clip_looping` 五个字段，见 §4.11 / §4.22 / §4.23 / §8.15）；**形变（扩展三十六 ~ 四十二：blend shape）支持位置 / 法线 / 切线增量、每实例上限 12 个形状（三组 `vec4` 权重）、逐实例形状集（掩码 → 紧凑槽序号列表，≤12 个槽）、互斥组按和归一**（§4.20 / §5.29）；**1D / 2D / 3D 混合空间（扩展四十五 + 四十九：层内片段摆到参数轴上，1D 线性插值与端点钳制 + 2D Bowyer–Watson 剖分与重心插值 + 3D 四面体剖分与三级兜底、32 样本 / 空间、按名字合并归一，10 个 `anim_layer_blend*` 脚本 API，见 §4.21 / §4.25 / §8.32 / §8.36）；**相位锁与相位组（扩展四十六 / 四十七：层内每路按 `相位 × 本片段时长` 采样、单路可加错步偏移、层可跟随另一层的相位，5 + 5 个脚本 API，见 §4.22 / §4.23 / §8.33 / §8.34）；**片段自带播放参数（扩展四十八：每路片段可设 `speed`（负值倒放、`0` 定格首帧）与 `looping`（`false` 到末帧停住），只在未开相位锁的层生效，5 个脚本 API，见 §4.24 / §8.35）；仍无 IK、无根运动提取、无混合空间的逐层遮罩（遮罩按骨骼走，不按空间轴走）**
+| 动画 | 脚本改 transform + FBX 节点级 TRS 动画（P3）+ 线性混合蒙皮（P4）+ 交叉淡入/脚本状态机（阶段三 C）+ 分层混合树（十八 A：最多 8 层、override / additive、骨骼遮罩） | 有关键帧插值、速度/循环/片段切换、smoothstep 双片段加权混合（位置/缩放 lerp、旋转 slerp）、脚本层状态机；分层侧有骨骼遮罩（`BoneMask`）、每层权重淡入淡出、`override` / `additive` 两种合成模式，26 个 `anim_layer*` 脚本 API 与 2 条编辑器 RPC（`scene.anim_layers` / `scene.anim_layer_set`，后者的 patch 带 `sync` / `phaseOffset` / `syncSource` / `clip_speed` / `clip_looping` 五个字段，见 §4.11 / §4.22 / §4.23 / §8.15）；**形变（扩展三十六 ~ 四十二：blend shape）支持位置 / 法线 / 切线增量、每实例上限 12 个形状（三组 `vec4` 权重）、逐实例形状集（掩码 → 紧凑槽序号列表，≤12 个槽）、互斥组按和归一**（§4.20 / §5.29）；**1D / 2D / 3D 混合空间（扩展四十五 + 四十九：层内片段摆到参数轴上，1D 线性插值与端点钳制 + 2D Bowyer–Watson 剖分与重心插值 + 3D 四面体剖分与三级兜底、32 样本 / 空间、按名字合并归一，10 个 `anim_layer_blend*` 脚本 API；扩展五十二再让每个样本自带速率、层时间推进 = 层 `speed` × 份额加权倍率（走 → 跑步频连续），见 §4.21 / §4.25 / §4.28 / §8.32 / §8.36 / §8.39）；**相位锁与相位组（扩展四十六 / 四十七：层内每路按 `相位 × 本片段时长` 采样、单路可加错步偏移、层可跟随另一层的相位，5 + 5 个脚本 API，见 §4.22 / §4.23 / §8.33 / §8.34）；**片段自带播放参数（扩展四十八：每路片段可设 `speed`（负值倒放、`0` 定格首帧）与 `looping`（`false` 到末帧停住），只在未开相位锁的层生效，5 个脚本 API，见 §4.24 / §8.35）；仍无 IK、无根运动提取、无混合空间的逐层遮罩（遮罩按骨骼走，不按空间轴走）**
 | 拾取 | **屏幕射线拾取**（扩展三十四）：脚本按像素坐标 / 光标位置取最近命中物件，或取同一射线上全部命中列表（含节点号、名字、距离、交点），几何用网格局部 AABB × 世界矩阵（见 §5.26） | 判定粒度是**包围盒**，不是三角形——凹形 / 镂空资产会出现「点在洞里也算命中」；不要求刚体、也不走物理（与 `raycast` 两条独立通路，`raycast` 只答物理世界）；取不到包围盒的网格视为透明，不做单位盒兜底；隐藏节点不参与；UI 遮挡需脚本自己用 `ui_hit` 先判；线性遍历全部可见节点，无空间加速结构 |
 | 多相机 | 单相机 + 1 台阴影正交相机（渲染器内部，非场景可操作对象） | 无分屏、无后视镜；阴影相机不可由脚本直接摆位 |
 | 场景 | **一个进程一个场景**（扩展十八 B）：启动读一份场景文件，脚本 / RPC 只能**申请切换**，由宿主在帧首把世界整个换掉；`SceneStack` 上限 16 层，存档 = 场景声明 + 运行时快照（见 §4.12） | 没有并行场景、没有异步加载与加载画面（切场景当帧同步做完，大场景有一次帧尖峰）；快照**不含**刚体位姿（物理按声明重建，动态刚体靠脚本 `on_start` 重跑）与脚本变量 / 随机种子；栈超限丢最老一层；回退只移游标、不删层，但没有 `scene.forward` RPC |
@@ -6132,8 +6234,10 @@ target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_
    ③ ~~样本自带播放速率 / 循环标志~~：已由扩展四十八落地（`ClipPlayback { speed, looping }` /
    `LayerClip.playback`，每路片段自己的时间缩放与「到末帧停住」，速率 `0` 定格、负值倒放，
    只在 `LayerSync::Off` 下生效以免破坏相位对齐，见 §4.24 / §8.35）。
-   **残余**：仍是「一个片段一个速率」——同一片段在参数轴上不同区间要不同步频（走 → 跑的加速感）
-   还没做，那需要「按参数区间配多份样本 + 速率随样本插值」，与 ① 的维数问题同源，暂缓；
+   扩展五十二再补「速率随样本插值」（`BlendSample.speed` + `set_anim_layer_blend_sample_speed`，
+   层时间推进 = 层 `speed` × 各样本速率按当前权重的加权平均，走 → 跑的步频因此连续，见 §4.28 / §8.39）。
+   **残余**：速率仍是「一个样本一个标量」，不做「关于参数的速率曲线」（要支持同一段动作三段变速，
+   得把速率升级成 `Vec<(t, speed)>` 并按同一条剖分采样，收益要到这种密度才明显），也不做每轴不同量纲；
    ~~④ 同步组与相位锁~~：已由扩展四十六落地（`LayerSync::Phase`，每路按 `相位 × 本片段时长` 采样，
    `drift` 从 0.773 归到 0.000）；其中的**相位偏移量**（给某一路加 `+0.25` 做错步走）与**跨层（上下半身）对齐**
    已由扩展四十七补齐（`LayerClip.phase_offset` 折进 `[0,1)` + `AnimLayer.sync_source` 按层名跟随，链式、成环在设置侧被拒，
@@ -6211,6 +6315,7 @@ target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_
 | **四十九（已完成：三维混合空间 · 四面体剖分）** | **把混合空间的第三根轴补上，让「八向移动 × 三档速度」这类真正的三维参数表能落进引擎**：`core/blend_space.rs` 的 `BlendDim` 加 `Volumetric3D`（`parse` 认 `3d` / `volumetric3d` / `volumetric_3d`），`BlendSample.at` 与 `BlendSpace.value` 从 `[f32; 2]` 升 `[f32; 3]`、`params` 升 `[String; 3]`（1D 的 `at[1..3]`、2D 的 `at[2]` 入库归零，低维语义一位不改），`MAX_BLEND_SAMPLES` **16 → 32**（八向 × 三档 24 个样本 + 待机 + 特例才装得下；求值最坏 O(n²) 在 32 时仍可忽略）；求值新增 `weights_at_3d`：**Bowyer–Watson 四面体剖分**（`tetrahedralize` 与 `hull_faces` 同一趟解析、共面点**不硬剖**、零体积四面体丢弃）+ **重心坐标插值**（`barycentric3`）+ **三级兜底**（四面体内部 → 最近凸包面三角形 `closest_on_triangle` → 最近样本 `distance3`），越界钳到凸包面而**不外插**；`merge` 仍按**片段名**求和，故一个片段占多个顶点时权重合并（`(0.3,0.3,0.3)` 处 `run_loop` 得 0.60）；`Scene` 4 个门面（`set_anim_layer_blend_space_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d` / `anim_layer_blend_dim`）、脚本 3 个绑定（`set_anim_layer_blend_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d`），`layer_report` 的三维段打 `3d(x,y,z) n= tet= drop= v=(…)`。详见 §4.25 / §8.36 | `core/blend_space.rs` **+897/-64**（942 → 1,775 行，内联 19 → 30 测，`volumetric_3d_*` 11 条）、`core/scene.rs` **+151/-1**（4 门面 + 1 测）、`core/anim_blend.rs` **+47**（2 测）、`script/api.rs` **+39/-2**、`script/tests/blend_space_api.rs` **+71/-3**（1 测）；新增 `scripts/blend_space_3d_demo.rhai`（76 行）。净 +1,067 src / +68 tests / +15 单测 / 0 新套件 | 无（**不挂空间或挂 1D / 2D 的场景零变化**：`weights_at_3d` 只在 `Volumetric3D` 才被调到，1D / 2D 求值代码一字未改、`brief()` 仍按维度打印（`v=0.50` 不会变成 `v=(0.50,0.00,0.00)`），`apply_blend_space` 未动、着色器未动，89 套件 1,296 passed / `--all-features` 1,300 passed，视觉基线一张未重建）。**真机三阶段**（`blend_space_3d_demo.rhai`，3.2 s / 680 行 3D 探针）：`n=4 tet=1 drop=1` 全段一致（四个不共面点撑一个四面体、同位置样本被拒）→ 沿 x 扫时 `run_loop` 权重与 `v.x` 在 185 行内零误差、`x=1.49` 钳成 1.00（`v` 存原值）→ 钻进 `(0.30,0.30,0.30)` 得 `idle=0.10 / atk=0.30 / run_loop=0.60`（四面体内部真插值，不是投影到面上）→ 踩 `(0,0,1)` 得 `run_loop=1.00`；680 行权重和 `max|Σw−1| = 0.0`、无 NaN。**边界**：四面体数随样本数增长（规则网格上大约每个小格五份）、只认欧氏空间（不做四元数 / 极坐标维度）、无非线性核与权重曲线、逐层遮罩仍按骨骼走而不按空间轴走、样本上限 32 仍需靠 §11.3 ③ 的紧凑列表再抬 |
 | **五十（已完成：加法层与混合空间的组合语义）** | **把「空间算出的份额」和「加法层叠增量」这两件事的接口讲清**：扩展四十九之前加法层复用覆盖层的 `sample_layer_pose`，多路份额被当成**姿态混合权重**——先平均姿态、再减平均参考，位置项因线性恰好等价，**旋转（四元数平均）与缩放（比值平均）被平均钝化**：`0.5 × 左倾 30° + 0.5 × 右倾 30°` 想表达抵消，旧口径给出「15° 左倾」。`core/anim_blend.rs` 新增 `sample_layer_pose_additive` / `sample_layer_pose_additive_synced` + 共用内核 `sample_layer_pose_additive_impl`：份额改为**逐路增量系数**（`k = 本路权重 / 有效路权重和`，零权重与缺轨道的路不进分母），以**第一路有效片段的参考姿态**为零增量起点，位置 `+= (pose − ref) × k`、旋转 `pose.rotation *= slerp(identity, pose×ref⁻¹, k)` 后 `normalize`、缩放 `pose.scale *= lerp(1, pose_i/ref_i, k)` 逐分量连乘；**单路有效片段走原样返回的快路径（零算术）**；`Scene::advance_anim` 按 `(sync_phase, LayerMode)` 四态分派，`Additive` 走两条新入口、`Override` 走原两条，`apply_additive` 一行未改；`lib.rs` 导出两个新函数。**不加新脚本 API**（`add_anim_layer_additive` / `set_anim_layer_blend_2d` / `anim_layer_blend` 照旧，语义在 core 内被纠正）。详见 §4.26 / §8.37 | `core/anim_blend.rs` **+298**（1,744 → 2,042 行，内联 29 → 35 测）、`core/scene.rs` **+102/-5**（四态分派 + 1 测）、`core/lib.rs` **+3/-2**（导出）；新增 `scripts/additive_blend_space_demo.rhai`（78 行）。净 +298 src / +7 单测 / 0 新套件 | 无（**不调加法层多路混合的场景零变化**：单路口走原样返回快路径，覆盖层 `blend_override` 多路平均与扩展四十五 ~ 四十九的混合空间求值路径一字未动、断言值一字未改，89 套件 1,303 passed / `--all-features` 1,307 passed，视觉基线一张未重建）。**真机四阶段**（`additive_blend_space_demo.rhai`，3.6 s / 830 行日志 / **744 行 2D 探针**）：一层 `add` 挂 idle / run / atk 三路 + 2D 空间 `(move.x,amp)` 直角三角形，`(0,0)` 得 `idle_loop=1.00`（单路口）→ `(1.00,0.00)` 得 `run=0.50+idle=0.50`（两路口）→ `(1.00,1.00)` 得 `run=0.50+atk=0.50`（重心 `idle=0`，零份额整条消失）→ `(0.00,2.00)` 得 `atk=1.00`（顶点）；744 行 `max\|Σw−1\| = 0.0`、无 NaN、`drop=0` 全程。**姿态数值**由单测钉：A 增量 90°/s 绕 X、B 增量恒 0 的两路在 0.5 s 处得 **22.5° 绕 X**（旧口径会得混轴平均），单路口 `additive_single_clip_is_bitwise_unchanged` 逐位不变。**边界**：只改加法层多路份额的含义（覆盖层仍是有意的姿态加权平均）；增量仍以**片段首帧**为参考、线性复合，不做参考帧可配 / 惯性核；真机探针只能看到份额，姿态差靠单测而非像素 |
 | **五十一（已完成：混合空间剖分缓存）** | **把「改样本」和「重剖」拆开：改样本只置脏，提交点付一次钱**。扩展四十五起 `add_sample` 每加一个样本就整表重跑一次 Bowyer–Watson，编辑器铺 24 个样本要付 24 次全量重剖，中间那 23 次结果没人看。`core/blend_space.rs` 加 `BlendSpace.stale` 脏标记 + `is_stale()` / `build_pending()` 两个公开入口（脏才重剖、已最新返回 `false` 不重复付钱）；`compute_triangles` / `compute_tetra` 从「算完写进 `self`」改成「算完返回 `Vec`」，新增 `live_topology() -> Topology<'_>`（三份 `Cow`：已提交借字段 / 挂起现场算，`type Topology<'a>` 压 clippy 复杂度）；`weights_2d` / `weights_3d` / `nearest_face_weights` 改为吃外部传入的拓扑 —— **求值侧永远不读陈旧剖分**，所以延迟提交对权重是**逐位无影响的纯省钱**；`AnimLayer::apply_blend_space` 把 `blend_space.as_ref()` 升 `as_mut()` 并调一次 `build_pending()`，于是 **advance 即提交点**，脚本侧不必记得手动提交；`clear_samples` 一并清脏（空样本表与空剖分天然一致）。`Scene` 2 个门面（`anim_layer_blend_stale` / `build_anim_layer_blend_pending`）、脚本 2 个绑定（`anim_layer_blend_stale` / `build_anim_layer_blend`）。详见 §4.27 / §8.38 | `core/blend_space.rs` **+229/-18**（1,775 → 1,987 行，内联 30 → 37 测，`deferred_*` / `stale_*` / `build_pending_*` 7 条）、`core/anim_blend.rs` **+5/-1**（提交点）、`core/scene.rs` **+19**（2 门面）、`script/api.rs` **+27**（2 绑定）、`script/tests/blend_space_api.rs` **+74**（2 测）；新增 `scripts/blend_cache_demo.rhai`（114 行）。净 +261 src / +74 tests / +9 单测 / 0 新套件 | 无（**不碰样本表的场景零变化**：剖分永远处于已提交态，`live_topology` 走 `Cow::Borrowed` 分支、一次重剖都不发生；覆盖层 / 加法层既有用例的权重与姿态逐位相同，89 套件 1,312 passed / `--all-features` 1,316 passed，视觉基线一张未重建）。**真机四阶段**（`blend_cache_demo.rhai`，3.6 s / 784 行日志 / **777 行 2D 探针**）：四角空间 4 样本装配后 `stale=true`、**挂起期回显与提交后逐字符相同**（`n=4 tri=2 drop=0 w=idle_loop=0.50,atk2=0.50`，「挂起的是缓存不是语义」）→ 显式提交 `true` 再 `false`（只付一次钱）→ 补样本后 `stale=true` **只出现 1 帧**（`et≈1.001`，该帧 `tri` 已由 `live_topology` 现场算出 3）→ 随后 advance 自动提交，`tri` 从 2 长到 3 且不再回落；800 行 `max\|Σw−1\| = 0.0`、无 NaN、`drop=0` 全程。**边界**：缓存的是剖分不是权重（`weights_at` 仍每次现算）、不做 Bowyer–Watson 增量插入 / 删除（要维护半边结构与翻转栈）、脏标记粗粒度（加一个样本与清空重铺付一样的钱）、挂起期每帧求值会重算一次临时拓扑（故装配结束应提交一次） |
+| **五十二（已完成：速率随样本插值）** | **把「每路一个常数速率」换成「速率跟着参数插」**：扩展四十八的速率是 `LayerClip.playback.speed`（每路一个常数），同一片段在参数轴不同区间要不同步频（走 → 跑的加速感）因此做不到——份额 0.05 与 1.0 用同一个速率，轻推摇杆也会跳成疾行。`core/blend_space.rs` 的 `BlendSample` 加 `speed: f32`（默认 `1.0`）+ `set_sample_speed` / `has_speed_variation` / `speed_at` / `speed_at_3d`（速率 = `Σ wᵢ·sᵢ / Σ wᵢ`，与权重同源）；`AnimLayer::blend_speed_scale` 给出层倍率，`advance` 的推进速率改成「层 `speed` × 倍率」，**倍率恰为 1.0 时走老算式**（零变化）；`Scene` 两个门面 + 两个脚本 API；`brief` 有变速时尾部追加 `spd=`。真机五阶段探针 1,294 行：倍率 `1.00 / 1.35 / 1.70 / 2.40 / 1.70`，逐行与「份额 × 样本速率」对得上，`drop=0`、无 NaN，见 §4.28 / §8.39 | `core/blend_space.rs` +170/-2、`core/anim_blend.rs` +134/-2、`core/scene.rs` +34、`script/api.rs` +26、新套件 `blend_speed_api.rs` 185 行 3 测 | 纯增量：不调新 API 的场景层时间推进逐位不变，姿态采样与相位口径零改动 |
 
 两条与顺序相关的说明：
 
@@ -6301,6 +6406,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 三维混合空间（扩展四十九） | `cargo test -p r3e-core blend_space` → lib 内联 **30 passed**（较扩展四十五的 19 增 11，`volumetric_3d_*` 系列：`volumetric_3d_single_tetra_has_exact_barycentric` / `volumetric_3d_vertex_and_edge_are_exact` / `volumetric_3d_outside_clamps_to_hull_face` / `volumetric_3d_cube_has_valid_tetrahedralization` / `volumetric_3d_coplanar_falls_back_to_nearest_sample` / `volumetric_3d_with_three_samples_still_normalizes` / `volumetric_3d_ignores_non_finite_value` / `volumetric_3d_brief_and_names` / `volumetric_3d_rejects_duplicate_position_on_all_axes` / `volumetric_3d_stays_on_layer_plane_at_layer_boundary` / `volumetric_3d_scales_to_24_samples`）；`cargo test -p r3e-core anim_tests` → **+2 passed**（`blend_space_3d_drives_clip_weights` / `layer_report_appends_3d_blend_segment`）；`cargo test -p r3e-script --test blend_space_api` → **5 passed**（含新加的 `script_3d_blend_space_drives_layer_weights`）；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_space_3d_demo.rhai --run-seconds 3.2 --show-bones` → rc 0，765 行日志 / **680 行 3D 段**，全段 `n=4 tet=1 drop=1`：沿 x 扫时 185 行 `run_loop` 权重与 `v.x` 零误差、107 行 `x>1` 钳到 1.00（`v` 保留原值）、`(0.30,0.30,0.30)` 得 `idle=0.10 / atk=0.30 / run_loop=0.60`（四面体内部真插值）、`(0,0,1)` 得 `run_loop=1.00`，680 行权重和 `max|Σw−1| = 0.0`、无 NaN；`cargo test --workspace` 89 套件 **1,296 passed / 0 failed**（扩展四十八收尾为 89 套件 1,285），`--all-features` 同 89 套件 **1,300 passed**；**基线图未重建**（1D / 2D 两条老路径逐位不变）；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-features --all-targets -- -D warnings` 全绿。**踩坑两条**：① §8.36 首版按记忆写了几个并不存在的 CPU 测试名，实测 `cargo test -- --list` 后逐条换成真名 —— 文档引用测试必须回查，不能凭印象；② 脚本行数第一版写成 61，`wc -l` 实测 **76** 行（含空行与注释），§3.2 与 §8.36 两处同步改正 |
 | 加法层与混合空间的组合语义（扩展五十） | `cargo test -p r3e-core additive` → **10 passed**（较扩展四十九的 3 增 7：`anim_blend.rs` 的 `additive_single_clip_is_bitwise_unchanged` / `additive_sums_rotation_deltas_not_pose_average` / `additive_sums_scale_ratios_not_pose_average` / `additive_normalizes_partial_weights` / `additive_skips_zero_weight_and_missing_track` / `additive_synced_uses_own_clip_duration` 共 6 条，`scene.rs` 的 `additive_layer_multiclip_uses_delta_semantics` 1 条）；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/additive_blend_space_demo.rhai --run-seconds 3.6` → rc 0，830 行日志 / **744 行 2D 探针**（193 + 219 + 217 + 115），四阶段份额 `idle_loop=1.00` → `run_loop=0.50,idle_loop=0.50` → `run_loop=0.50,atk=0.50` → `atk=1.00`，744 行 `max\|Σw−1\| = 0.0`、无一含 `nan`、全程 `drop=0`；`cargo test --workspace` 89 套件 **1,303 passed / 0 failed**（扩展四十九收尾为 89 套件 1,296），`--all-features` 同 89 套件 **1,307 passed**；`R3E_VISUAL_REGRESSION=1` 下亦 89 套件 **1,307 passed**、**基线图未重建**（覆盖层与单路口逐位不变）；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning。**契约点**：加法层份额的关键不在「加权平均」而在「谁进分母」——零份额与缺轨道的路不进有效路和，否则一条没被选中的路也会把增量稀释掉（`additive_skips_zero_weight_and_missing_track` 钉住这条） |
 | 混合空间剖分缓存（扩展五十一） | `cargo test -p r3e-core blend_space` → lib 内联 **37 passed**（较扩展四十九的 30 增 7，`deferred_*` / `stale_*` / `build_pending_*` 系列：`add_sample_defers_triangulation` / `deferred_weights_bitwise_equal_to_committed_2d` / `deferred_weights_bitwise_equal_to_committed_3d` / `build_pending_commits_once` / `stale_space_still_refuses_extrapolation` / `clear_samples_drops_stale_mark` / `brief_reports_committed_topology_while_stale`）；`cargo test -p r3e-script --test blend_space_api` → **7 passed**（含新加的 `script_blend_stale_flag_and_manual_build` / `script_blend_stale_keeps_weights_and_pose_unchanged`）；真机探针 `target/x86_64-pc-windows-gnu/debug/r3e.exe assets/scene_anim.json scripts/blend_cache_demo.rhai --run-seconds 3.6` → rc 0，885 行日志 / **800 行 2D 探针**（211 + 238 + 233 + 118）：装配 4 样本后 `stale=true`、**挂起期回显与提交后逐字符相同**（`n=4 tri=2 drop=0 w=idle_loop=0.50,atk2=0.50`）、显式提交 `true`→`false`、补样本后 `stale=true` 只出现 1 帧（`et≈1.001`，同帧 `tri` 已由临时拓扑算出 3）、随后 advance 自动提交致 `tri` 2 → 3 不再回落，800 行 `max\|Σw−1\| = 0.0`、无 NaN、`drop=0` 全程；`cargo test --workspace` 89 套件 **1,312 passed / 0 failed**（扩展五十收尾为 89 套件 1,303），`--all-features` 同 89 套件 **1,316 passed**；**基线图未重建**（不碰样本表的场景剖分恒处于已提交态，`live_topology` 走 `Cow::Borrowed`、一次重剖都不发生）；`cargo fmt --all -- --check` 0 diff、`cargo clippy --workspace --all-features --all-targets -- -D warnings` 0 warning。**设计取舍**：挂起期的求值不能读 `self.triangles`（那是空的），否则「延迟提交」会变成「第一帧权重错」；用 `live_topology` 的 `Cow` 让「借用」与「现场算」共用一条求值路径，代价是挂起期每帧重算一次临时拓扑 —— 因此提交点放进了 `apply_blend_space`，让第一帧 advance 兜住忘记显式提交的脚本 |
+| 速率随样本插值（扩展五十二） | `cargo test -p r3e-core --lib blend_space` → **49 passed**、`cargo test -p r3e-core --lib anim_blend` → **39 passed**（新 `advance_*` / `speed_scale_*` / `layer_speed_*` 4 条）、`cargo test -p r3e-script --test blend_speed_api` → **3 passed**（新套件：`script_sample_speed_rejects_missing_sample` / `script_sample_speed_drives_layer_time` / `script_blend_line_reports_speed_only_when_varied`），真机五阶段探针见 §8.39 |
 
 ---
 

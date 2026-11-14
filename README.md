@@ -60,6 +60,7 @@ D:\rust3d-engine
 │   ├─ clip_playback_demo.rhai # 片段播放参数（三段：原速 / 2 倍速非循环停末帧 / 清除回原速）
 │   ├─ blend_space_3d_demo.rhai # 三维混合空间（四面体权重插值 + 越界钳到凸包面 + 重复样本被拒）
 │   ├─ blend_cache_demo.rhai  # 剖分缓存（装配期只置脏标记 + 显式提交 + 补样本后自动提交）
+│   ├─ blend_speed_demo.rhai  # 速率随样本插值（一维速度空间：倍率跟着份额连续变，改样本速率立刻改步频）
 │   ├─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
 │   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
 │   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
@@ -2061,6 +2062,7 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 三维混合空间 | 扩展四十九另加 3 个（`set_anim_layer_blend_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d`），摘空间与回显复用上面的 `clear_anim_layer_blend` / `anim_layer_blend`，见 [§33](#33-三维混合空间扩展四十九) |
 | 剖分缓存 | 扩展五十一另加 2 个（`anim_layer_blend_stale(inst, layer)` / `build_anim_layer_blend(inst, layer)`），见 [§35](#35-混合空间剖分缓存扩展五十一) |
 | 加法层组合语义 | 扩展五十**不新增 API**：`add_anim_layer_additive` 建的多路层，空间分来的份额改为「各路增量的几成」（单路口快路径不变，覆盖层不受影响），见 [§34](#34-加法层与混合空间的组合语义扩展五十) |
+| 样本速率 | 扩展五十二另加 2 个（`set_anim_layer_blend_sample_speed(inst, layer, clip, speed)` / `anim_layer_blend_speed(inst, layer)`），见 [§36](#36-速率随样本插值扩展五十二) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -2888,8 +2890,10 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
   再往上抬要配采样策略（剪枝 / 分层），不是改个常量的事；
 - ~~**无 3D 混合空间**~~：已由扩展四十九解决（`BlendDim::Volumetric3D` + Bowyer–Watson 四面体剖分，见 §33）；
 - ~~**样本不携带开关**~~：已由扩展四十八解决——播放速率 / 循环标志下放到**每一路片段**
-  （`ClipPlayback { speed, looping }` + `LayerClip.playback`，见 §32）。**残余**：仍是「一个片段一个速率」，
-  同一片段在参数轴上不同区间要不同步频（走 → 跑的加速感）还没做，那需要「按参数区间配多份样本 + 速率随样本插值」；
+  （`ClipPlayback { speed, looping }` + `LayerClip.playback`，见 §32）。~~**残余**：仍是「一个片段一个速率」，
+  同一片段在参数轴上不同区间要不同步频（走 → 跑的加速感）还没做，那需要「按参数区间配多份样本 + 速率随样本插值」~~
+  → 已由扩展五十二解决（`BlendSample.speed` + 按份额加权插值成层倍率，见 §36）；
+  **残余**只剩「倍率作用于整层时间轴，不做逐路重定时」；
 - ~~**无相位同步**~~：已由扩展四十六解决（`LayerSync::Phase`，见 §30）；
   ~~**相位偏移量 / 跨层对齐**~~：已由扩展四十七补齐（`LayerClip.phase_offset` + `AnimLayer.sync_source`，见 §31）；
 - **与 additive 层的组合语义未定义**：空间份额直接乘到 additive 层上，多路相加会让偏移量翻倍。
@@ -3136,7 +3140,8 @@ rc 0，501 行日志中 **414 行 `CLIP`**，其中 **221 行带 `pb=`**：
 ### 32.4 已知边界
 
 - **一个片段一个速率**：不做"速率随参数区间变化"（`walk→run` 的步频是两条片段各自的 `speed`，
-  不是同一条片段在参数轴上插值速率）；
+  不是同一条片段在参数轴上插值速率——这一条已由扩展五十二从另一头补上：层里挂多份样本各自带速率、
+  按份额插值成层倍率（见 §36），但倍率仍作用于整层时间轴，不是逐路重定时）；
 - **不改层时间轴**：`AnimLayer.time` / `speed` / `looping` / `playing` 一字未动，播放参数只决定"这一路用哪个时间采"；
 - **只在 `Off` 下生效**：`Phase` 层不读 `playback`（回显照旧返回设定值，允许先配好、再切策略）；
 - **不碰 `fade` / 权重 / 遮罩 / additive**：权重归一与合成口径不变，参数只作用于时间；
@@ -3442,6 +3447,102 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 
 该节收尾为 **89 个套件 / 1,312 passed / 0 failed**（扩展五十为 89 套件 1,303），
 `--all-features` 同 89 套件 **1,316 passed**；`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
+
+## 36. 速率随样本插值（扩展五十二）
+
+份额决定姿态怎么混，速率决定这段动作走多快。此前速率只有两档：层 `speed`（整层一条时间轴）与
+`LayerClip.playback.speed`（每路一个常数，见 §32）。一层里挂 `idle_loop` / `run_loop` 由速度轴分份额时，
+两者共用同一个常数：轻推摇杆 `0.05` 与推到底 `1.0` 步频一样 —— 要么慢步永远慢，要么一离开端点步频就跳到疾行。
+本次把速率挂到**样本**上，按与权重同源的插值算出来。
+
+### 36.1 口径
+
+| 环节 | 口径 |
+| --- | --- |
+| `BlendSample.speed` | 样本自带速率，**默认 `1.0`**（`add_sample*` 一律写 `1.0`，要变速走 `set_sample_speed`） |
+| 插值方式 | 与权重同源：取 `weights_at_3d` 的合并后权重 `w_i`，倍率 = `Σ w_i·s_i / Σ w_i`（权重已归一，除只为防浮点） |
+| 落点 | `AnimLayer::blend_speed_scale` → `advance` 的推进速率 = 层 `speed` × 倍率；**倍率恰为 `1.0` 时直接走老算式**（不乘那一下） |
+| 零变化开关 | `BlendSpace::has_speed_variation()`：样本全 `1.0` 时连权重都不查、不碰剖分，不调新 API 的场景一次额外求值都不发生 |
+| 越界 | 沿用权重那套钳制：参数在区间 / 凸包外时份额落到边界样本，倍率随之取边界样本速率，**不外插** |
+| 零份额样本 | 不进分母也不进分子（`speed_reads_only_the_mixed_in_samples` 用 2D 网格钉住） |
+| 入参收敛 | 非有限速率整笔拒绝（`NaN` 会把层时间推成 `NaN`，画面只是"不动"，最难查）；负值钳 `0`（定格不倒放）；空名 / 未知片段返 `false` 且样本表不变；**同名多份一起改** |
+| 大小写 | 片段名大小写不敏感，取样本表里第一个同名样本的速率（合并后已分不清是哪一份） |
+| 回显 `brief()` | 有变速样本时尾部追加 `spd=1.35`（`{:.2}`，与 `v=` / 权重同格式）；**全原速时一个字符都不多** |
+| 非循环钳制 | `looping = false` 停末帧的判据从 `self.speed` 换成实际速率 `rate`，倍率 0 时也停得住 |
+| 不动的部分 | 姿态采样、相位锁（§30/§31）、逐路 `playback`（§32）口径全不动 —— 倍率只推**层时间**，不改"用哪个时间采每一路" |
+
+要点：**变速发生在层时间轴上，不在逐路采样上**。所以相位对齐不会被破坏，姿态也不会因为"某一路变快"而抖；
+代价是层内所有路一起变快（见 36.4）。
+
+### 36.2 新 API
+
+| API | 说明 |
+| --- | --- |
+| `set_anim_layer_blend_sample_speed(inst, layer, clip, speed) -> bool` | 设该片段对应样本的速率。命中至少一个样本 `true`；非有限 / 空名 / 未知片段 / 没挂空间 `false` |
+| `anim_layer_blend_speed(inst, layer) -> float` | 当前参数下插出来的倍率。没挂空间 / 无样本 / 全原速返回 `1.0`（不是 `-1`：`1.0` 是合法的"原速"） |
+
+样例脚本：`scripts/blend_speed_demo.rhai`（83 行，五阶段：全原速 → 半程 → 端点 `1.7` → 端点改 `2.4` → 回半程）。
+
+### 36.3 真机探针
+
+```powershell
+cargo test -p r3e-core blend_space                        # 42 条（本次 +5）
+cargo test -p r3e-core anim_blend                         # 本次 +4（倍率与层时间）
+cargo test -p r3e-script --test blend_speed_api            # 3 条（新套件）
+target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_speed_demo.rhai --run-seconds 6 --show-bones
+```
+
+`rc 0`，1,121 行日志（帧数随负载浮动，两次实测 1,121 / 1,294），其中全 1,121 行参与批量核对：
+
+```
+[script] 设 run 速率 1.7 → true
+[script] 当前插出倍率 spd=1
+[script] et=… spd=1.350000023841858 1d(speed) n=2 drop=0 v=0.50 w=idle_loop=0.50,run_loop=0.50 spd=1.35
+```
+
+（数值随帧浮动，此处只示意形状：脚本侧的 `anim_layer_blend_speed` 是 Rhai `f64`，f32 提升后原样打印；
+`brief()` 里的 `spd=` 才是 `{:.2}`。同一个数的两种落字方式，比对按两位小数看。）
+
+| 阶段 | 墙钟 | 行数 | `v` | 份额 | `spd` |
+| --- | --- | --- | --- | --- | --- |
+| 一 全原速 | `et < 1.0` | 179 | `0.00` | `idle_loop=1.00` | `1.00` |
+| 二 半程插值 | `1.0 ~ 2.0` | 217 | `0.50` | `idle_loop=0.50, run_loop=0.50` | `1.35` |
+| 三 端点（速率 `1.7`） | `2.0 ~ 3.0` | 215 | `1.00` | `run_loop=1.00` | `1.70` |
+| 四 端点（速率改 `2.4`） | `3.0 ~ 4.0` | 213 | `1.00` | `run_loop=1.00` | `2.40` |
+| 五 回半程 | `>= 4.0` | 297 | `0.50` | `idle_loop=0.50, run_loop=0.50` | `1.70` |
+
+逐行核对（不抽样）：
+
+- **倍率真是加权平均**：阶段二 `1.0×0.5 + 1.7×0.5 = 1.35`、阶段五 `1.0×0.5 + 2.4×0.5 = 1.70`；
+- **只改样本速率、参数不动，倍率立刻变**：阶段三 → 四 `v` 恒 `1.00`、份额恒 `run_loop=1.00`，`spd` 由 `1.70` 变 `2.40`，
+  回到半程又变回 `1.70` —— 没有跨帧缓存；
+- **份额和恒为 1**：`max |Σw − 1| = 0.0`，1,121/1,121 行通过；
+- **无 `nan`**、**`drop=0` 全程**（两个样本位置互不重复）；
+- **全原速时没有 `spd=`**：`on_start` 里设速率之前的两行回显
+  （`1d(speed) n=2 drop=0 v=0.00 w=idle_loop=1.00`）尾部无 `spd=`，字符长度与扩展五十一逐字符相同。
+
+倍率对层时间的作用由单测钉住、真机只证明"倍率取值对不对"：日志读不到层时间，所以不靠截图说话。
+
+### 36.4 已知边界
+
+- **作用于整层时间轴**：倍率乘在 `AnimLayer.time` 的推进上，层内所有路一起变快，**不做逐路重定时**；
+- **不参与姿态**：只推时间，不改权重 / 遮罩 / additive 合成（§34 口径不动）；
+- **不倒放**：负速率钳到 `0`（定格），倒放仍归 `LayerClip.playback.speed`（§32）；
+- **只按名字设**：`set_sample_speed` 以片段名为键，同名多份样本无法分别给不同速率；
+- **`speed_at` 每次现算**：跟 `weights_at` 一样不缓存，也没有跨帧平滑 —— 份额跳变时倍率当帧就跳，
+  要平滑请对参数本身做过渡（`fade_anim_layer` / 参数插值），本扩展不做倍率的额外滤波；
+- **`brief()` 会变长**：一旦有变速样本，`spd=` 就常驻该空间回显，grep 既有 `1d(speed) … w=` 全串的脚本需要放宽。
+
+### 36.5 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/blend_space.rs` | 5（内联，42 ← 37） | `sample_speed_defaults_to_exactly_one`（逐位 `1.0`）/ `speed_follows_weighted_average` / `sample_speed_rejects_unknown_non_finite_and_clamps_negative` / `brief_appends_speed_only_when_varied` / `speed_reads_only_the_mixed_in_samples` |
+| `crates/r3e-core/src/anim_blend.rs` | 4 | `speed_scale_is_one_when_no_sample_is_retimed` / `advance_matches_legacy_when_no_sample_is_retimed`（十帧累计 `time` 与不挂空间的老层**逐位**相同）/ `advance_scales_layer_time_by_interpolated_speed` / `layer_speed_multiplies_interpolated_scale` |
+| `crates/r3e-script/tests/blend_speed_api.rs` | 3（新套件） | 速率经绑定层透传并改变层时间、回显缺省 `1.0`、未知目标返 `false` 且状态不动 |
+
+该节收尾为 **90 个套件 / 1,324 passed / 0 failed**（扩展五十一为 89 套件 1,312），
+`--all-features` 同 90 套件 **1,328 passed**；零 wgpu / 零着色器改动，`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
 
 ---
 
