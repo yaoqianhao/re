@@ -9,8 +9,6 @@ AIGC:
     ReservedCode2: U+pj9KT2xscmIHCzAuSN9AmjPyy/B7/Bu1oAJj+qxnIsjkWrhuTu5hRLupQsdazDkP7TA8yHWUyveuVb0t22NZXZU9FWVXnnNlVfudtWdsicm056lgmaBP0zKP36AaHZbS7IPn9bzaJvc6i//q/yhFh2FMvumOpPo6vPdfTcWIjH9bcvX6l1BW3SXqc=
 ---
 
-
-
 # r3e —— Rust 3D 游戏引擎（文本可编程）
 
 一个用 Rust 写的最小可用 3D 引擎内核：场景与行为全部由**文本**描述，
@@ -61,6 +59,7 @@ D:\rust3d-engine
 │   ├─ blend_space_3d_demo.rhai # 三维混合空间（四面体权重插值 + 越界钳到凸包面 + 重复样本被拒）
 │   ├─ blend_cache_demo.rhai  # 剖分缓存（装配期只置脏标记 + 显式提交 + 补样本后自动提交）
 │   ├─ blend_speed_demo.rhai  # 速率随样本插值（一维速度空间：倍率跟着份额连续变，改样本速率立刻改步频）
+│   ├─ blend_incremental_demo.rhai # 增量剖分（四角铺好后每秒盒内补一点，看 inc 涨而 full 不动）
 │   ├─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
 │   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
 │   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
@@ -2063,6 +2062,7 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 剖分缓存 | 扩展五十一另加 2 个（`anim_layer_blend_stale(inst, layer)` / `build_anim_layer_blend(inst, layer)`），见 [§35](#35-混合空间剖分缓存扩展五十一) |
 | 加法层组合语义 | 扩展五十**不新增 API**：`add_anim_layer_additive` 建的多路层，空间分来的份额改为「各路增量的几成」（单路口快路径不变，覆盖层不受影响），见 [§34](#34-加法层与混合空间的组合语义扩展五十) |
 | 样本速率 | 扩展五十二另加 2 个（`set_anim_layer_blend_sample_speed(inst, layer, clip, speed)` / `anim_layer_blend_speed(inst, layer)`），见 [§36](#36-速率随样本插值扩展五十二) |
+| 增量剖分 | 扩展五十三另加 1 个（`anim_layer_blend_build_stats(inst, layer)` → `inc=3 full=1`：续算与整表各走了几次），见 [§37](#37-增量剖分扩展五十三) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -3431,8 +3431,10 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 
 - 缓存的是**剖分**（拓扑），不是权重：`weights_at` 每次现算，没做权重缓存；
 - **不做 Bowyer–Watson 增量插入 / 删除**：提交时仍是整表重剖，省的是「样本改一次剖一次」，
-  而不是「重剖本身的代价」；
-- 脏标记是**粗粒度**的：任何样本改动都让整张表重剖，没有「只补一个三角形」；
+  而不是「重剖本身的代价」——**插入这半边已由扩展五十三补上**（现场续用、只插新点，见 [§37](#37-增量剖分扩展五十三)），
+  删除仍走整表；
+- 脏标记是**粗粒度**的：任何样本改动都让整张表重剖，没有「只补一个三角形」——扩展五十三把"一次提交"的
+  代价降到"新增点数"，脏标记粒度本身未动；
 - 挂起期每帧求值要现算一份临时拓扑（`live_topology` 的 `Cow::Borrowed` / `Cow::Owned` 两条路），
   样本表很大且**长时间**挂起时这份重复计算会一直在；显式 `build_anim_layer_blend` 就是为了让它尽早结束；
 - **零变化**：不碰样本表的场景剖分永远处于已提交态，`live_topology` 走 `Cow::Borrowed`，一次重剖都不发生。
@@ -3543,6 +3545,110 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 
 该节收尾为 **90 个套件 / 1,324 passed / 0 failed**（扩展五十一为 89 套件 1,312），
 `--all-features` 同 90 套件 **1,328 passed**；零 wgpu / 零着色器改动，`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
+
+## 37. 增量剖分（扩展五十三）
+
+> 上一节（§35）让「加样本」不必当场重剖，但**这次提交仍按整表计价**：清空重铺 4 个点与再补第 5 个点付一样多的钱。
+> 本节把剖分现场留下来，**盒内补点只插新点**，其余一概不动。
+
+### 37.1 做法
+
+| 环节 | 扩展五十一口径 | 扩展五十三口径 |
+| --- | --- | --- |
+| 提交点 | `add_sample*` 置 `stale`，第一帧 advance / 显式 `build_anim_layer_blend` 付一次 | 同上（脏标记机制不变） |
+| 这一"次"付什么钱 | **整表** Bowyer–Watson：清空 → 建超图形 → 全部样本从头插入 | **只插新增的那几个点**；老现场（超图形 + 已插入前缀 + 仍含超顶点的单元表）复用 |
+| 何时退回整表 | — | 四条作废判据：维度不符或 1D / 现场不自洽、已插入前缀与样本表**逐点 `to_bits()`** 对不上（外部直接改公开的 `samples`）、超级图形参数（中心 / 边长）变了（老现场的坏单元判据全失效）、整体变共线或共面 |
+| 账本 | 无 | `inc=`（续算次数）/ `full=`（整表次数），`anim_layer_blend_build_stats` 回显 |
+| 输出 | 剥超顶点 + 丢退化 + 排序 | **同一个 `finish`**，逐位相同 |
+
+三段拆分（`core/blend_space.rs`）：
+
+| 段 | 2D | 3D | 干什么 |
+| --- | --- | --- | --- |
+| seed | `seed_2d` | `seed_3d` | 按点集建超级三角形 / 超级四面体，超顶点仍占 `verts` 尾部槽位 |
+| insert | `insert_2d` | `insert_3d` | 扫当前单元表，挑出外接圆 / 外接球含新点的坏单元，消内边 / 内面，与新点重连 |
+| finish | `finish_2d` | `finish_3d` | 剥超顶点、丢退化、按下标排序（两条路共用） |
+
+`full_2d` / `full_3d` 变成三段串联并顺手返回现场，所以「整表」与「续算」走**同一段插入与收尾代码**，
+不存在两套算术各自漂移的可能。
+
+要点：**省的是「重复插已插过的点」，不是「省掉正确性」**。现场里存的不是"结论"，而是"插到哪儿了"——
+把新点接着插进同一个单元表，与从头插一遍在 Bowyer–Watson 下是同一序列的后缀，输出因此逐位相同。
+
+### 37.2 新 API
+
+| API | 说明 |
+| --- | --- |
+| `anim_layer_blend_build_stats(inst, layer) -> String` | 剖分账本 `inc=N full=M`。没挂空间回空串；只用于观察，不参与求值 |
+
+两个数都是**累计**：一次会话里替几次提交、其中几次是整表重剖，一眼看出增量路是否真被用上
+（`incremental_path_is_actually_used` 就是为了防「测试零成本通过」而设的）。
+
+样例脚本：`scripts/blend_incremental_demo.rhai`（124 行，四阶段：四角铺满 → 补棱中点 → 再补棱中点 → 补体心）。
+
+### 37.3 真机探针
+
+```powershell
+cargo test -p r3e-core blend_space                          # 58 条（本次 +9）
+cargo test -p r3e-script --test blend_space_api              # 9 条（本次 +2）
+target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_incremental_demo.rhai --run-seconds 3.0
+```
+
+`rc 0`，788 行日志，其中 **701 行 2D 权重回显**（帧数随负载浮动）：
+
+```
+[script] et=0.083 2d(move.x,amp) n=4 tri=2 drop=0 v=(0.01,0.01) w=idle_loop=1.00
+[script] et=1.001 补棱中点后 2d(move.x,amp) n=5 tri=3 drop=0 v=(0.50,-1.00) w=run_loop=1.00
+[script] 账本 inc=1 full=1
+[script] et=2.001 再补棱中点后 2d(move.x,amp) n=6 tri=4 drop=0 v=(0.00,0.00) w=run_loop=0.50,atk=0.50
+[script] 账本 inc=2 full=1
+[script] et=3.001 补体心后 2d(move.x,amp) n=7 tri=6 drop=0 v=(0.00,0.00) w=idle_loop=0.62,atk=0.38
+[script] 账本 inc=3 full=1
+```
+
+| 阶段 | 动作 | `n` | `tri` | 账本 |
+| --- | --- | --- | --- | --- |
+| `on_start` | 四角装配 + 一次提交 | 4 | 2 | `inc=0 full=1` |
+| `et≈1.0` | 补棱中点 `run_loop @ (0,-1)` | 5 | 3 | `inc=1 full=1` |
+| `et≈2.0` | 补棱中点 `atk @ (0,1)` | 6 | 4 | `inc=2 full=1` |
+| `et≈3.0` | 补体心 `idle_loop @ (0,0)` | 7 | 6 | `inc=3 full=1` |
+
+逐行核对（不抽样）：
+
+- **`full` 恒为 `1`**：三次补点全走续算。按扩展五十一口径这里会是 `4`（每次提交一次整表），
+  再往前（扩展五十一之前）光铺 4 个角就要 4 次；
+- **`tri` 长对了**：`2 → 3 → 4 → 6`。最后一步净 +2 是因为体心落在两个三角形的外接圆里——坏单元消掉、
+  边界重连成 4 个新三角形。这个数与「先加好 7 个点再一次性重剖」一致，由单测逐表比钉住；
+- **权重不变形**：701 行 `max |Σw − 1| = 0.0`，`v=(0.50,-1.00)` 命中样本角得 `run_loop=1.00`；
+- **无 `nan`**、**`drop=0` 全程**（补的点都在盒内、位置互不重复）。
+
+权重逐位相等的证明在单测里：`incremental_2d_weights_bitwise_equal_to_full` / `_3d`（按 `to_bits()` 比，
+浮点边界上也不许差一位）、`incremental_2d_matches_full_rebuild` / `_3d`（逐表比三角形 / 四面体集合）、
+`incremental_path_is_actually_used`（账本真涨了）。作废路径四条：
+`bounds_growth_forces_full_rebuild_but_same_result` / `external_point_mutation_forces_full_rebuild` /
+`linear_1d_never_uses_incremental_path` / `clear_samples_drops_incremental_scene`。
+
+### 37.4 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/blend_space.rs` | 9（内联，58 ← 49） | `incremental_2d_matches_full_rebuild` / `incremental_3d_matches_full_rebuild`（逐表比）/ `incremental_2d_weights_bitwise_equal_to_full` / `incremental_3d_weights_bitwise_equal_to_full`（按位比）/ `incremental_path_is_actually_used`（账本真涨）/ `bounds_growth_forces_full_rebuild_but_same_result` / `external_point_mutation_forces_full_rebuild`（两条作废路）/ `linear_1d_never_uses_incremental_path` / `clear_samples_drops_incremental_scene` |
+| `crates/r3e-script/tests/blend_space_api.rs` | 2（累计 9） | `script_blend_build_stats_counts_incremental_commits` / `script_blend_incremental_matches_full_on_weights_line` |
+
+该节收尾为 **90 个套件 / 1,335 passed / 0 failed**（扩展五十二为 90 套件 1,324），
+`--all-features` 同 90 套件 **1,339 passed**；零 wgpu / 零着色器改动，`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
+
+### 37.5 已知边界
+
+- **只插不删**：`clear_samples` 直接作废现场；删单个样本仍是「删 + 整表重剖」——要擦除得先重算影响域，
+  半边结构 + 翻栈才撑得起来；
+- **单点插入是重扫，不是最优定位**：`insert_2d` / `insert_3d` 扫当前单元表挑坏单元，均摊 O(n)/点，
+  没做 Walk / 位置哈希那套 O(log n) 定位；
+- **不做半边结构与翻栈**：按「重扫 + 消内边」实现，代码量小、与 `finish` 共用，代价是常数大一些；
+- **账本只记次数不记耗时**：`inc=` / `full=` 是给人看"增量路有没有被用上"，不是性能计数器；
+- **1D 没有「增量」一说**：1D 根本不剖分；
+- **作废判据盯着位模式**：`samples` 是公开字段，直接改一个坐标不会动 `stale`，所以比对必须逐点 `to_bits()`
+  而不只是比长度——否则旧拓扑配新点、权重会静默错位。
 
 ---
 
