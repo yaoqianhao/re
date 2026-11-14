@@ -1,7 +1,9 @@
 name: CI
 
-# 四道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）
-# -> 像素回归（visual / visual-gpu）。任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
+# 五道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 工程门禁（gate：lint-size / check-tests / dep-check）
+# -> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）-> 像素回归（visual / visual-gpu）。
+# 任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
+# gate 那三道是「结构债」刹车（cargo xtask，见 docs/AI_ROADMAP_EXECUTION.md §3.1），dep-check 在 v0 只报告不阻塞。
 #
 # 像素那道为什么拆成两个 job：托管 runner 没有显卡，只能验基准图自洽（visual）；真正拦像素漂移的是
 # 带 GPU 的自建 runner（visual-gpu，R3E_VISUAL_STRICT=1，跳过即失败）。配置方法见 docs/CI_GPU_RUNNER.md。
@@ -34,6 +36,28 @@ jobs:
           components: rustfmt
       - name: cargo fmt --check
         run: cargo fmt --all --check
+
+  gate:
+    name: 工程门禁（lint-size / check-tests / dep-check）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      # 这三道门是「结构债」的刹车：文件变大、单测变少、依赖方向反转，都要在 CI 上红。
+      - name: lint-size（单文件 ≤800 行，白名单只许减不许加）
+        run: cargo xtask lint-size
+      - name: check-tests（每个 crate 单测数不得低于基线）
+        run: cargo xtask check-tests
+      # dep-check v0 只报告：存量违规要在 M0 各 Sprint 里逐条还，现在阻塞会逼人绕过门禁。
+      - name: dep-check（报告态，--strict 才阻塞）
+        continue-on-error: true
+        run: cargo xtask dep-check
 
   clippy:
     name: clippy (-D warnings, ${{ matrix.features || 'default' }})

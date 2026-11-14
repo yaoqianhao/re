@@ -14,7 +14,6 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
 use r3e_audio::{Audio, DistanceModel, MAX_SPATIAL_SOURCES};
@@ -40,124 +39,8 @@ use serde_json::{json, Value};
 /// 引擎信息里的引擎名（与 Cargo 包名、窗口标题保持一致）。
 const ENGINE_NAME: &str = "r3e";
 
-/// 帧时间窗口的容量：约 4 秒 @60fps。
-///
-/// 太短会让 p99 落在噪声上（一帧抖动就顶满），太长则改完场景要等好几秒才看得到
-/// 分位变化。120 帧是两者之间的折中。
-pub const FRAME_TIME_WINDOW: usize = 120;
-
-/// 最近若干帧的 CPU 帧时间分布（毫秒），`engine.stats` 的 `frame.frame_ms` 就是它。
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct FrameTimeStats {
-    /// 窗口里实际有多少个样本（启动初期远小于容量）。
-    pub samples: usize,
-    /// 最近一帧的耗时。
-    pub last_ms: f32,
-    pub p50_ms: f32,
-    pub p95_ms: f32,
-    pub p99_ms: f32,
-    pub max_ms: f32,
-}
-
-impl FrameTimeStats {
-    /// 从一批样本算出分布。
-    ///
-    /// 分位用 nearest-rank（`ceil(p·n)` 后取该名次），不是插值：样本量小的时候
-    /// 插值会造出「没有一帧真的这么慢」的数字，回归基线比的是实际观测值。
-    pub fn from_samples(samples: &[f32]) -> Self {
-        if samples.is_empty() {
-            return Self::default();
-        }
-        let mut sorted = samples.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let pick = |p: f32| -> f32 {
-            let n = sorted.len();
-            let rank = ((p * n as f32).ceil() as usize).clamp(1, n);
-            sorted[rank - 1]
-        };
-        Self {
-            samples: sorted.len(),
-            last_ms: samples[samples.len() - 1],
-            p50_ms: pick(0.50),
-            p95_ms: pick(0.95),
-            p99_ms: pick(0.99),
-            max_ms: sorted[sorted.len() - 1],
-        }
-    }
-}
-
-/// 固定容量的帧时间环形缓冲：满了就覆盖最旧的样本。
-#[derive(Debug, Clone)]
-pub struct FrameTimeWindow {
-    buf: Vec<f32>,
-    next: usize,
-    /// 最近一次采到的帧时间。
-    ///
-    /// 不能靠 `buf.last()` 得到它：环形缓冲写满后物理顺序是「覆盖顺序」，
-    /// 末元素不再是最后发生的那一帧。`last_ms` 在面板上表示「当前帧耗时」，
-    /// 必须与采样时刻一致，所以单独记一份。
-    last: Option<f32>,
-}
-
-impl FrameTimeWindow {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(capacity.max(1)),
-            next: 0,
-            last: None,
-        }
-    }
-
-    pub fn push(&mut self, ms: f32) {
-        if !ms.is_finite() || ms < 0.0 {
-            return;
-        }
-        if self.buf.len() < self.buf.capacity() {
-            self.buf.push(ms);
-        } else {
-            let cap = self.buf.len();
-            self.buf[self.next % cap] = ms;
-        }
-        self.next = self.next.wrapping_add(1);
-        self.last = Some(ms);
-    }
-
-    pub fn snapshot(&self) -> FrameTimeStats {
-        let mut stats = FrameTimeStats::from_samples(&self.buf);
-        if let Some(last) = self.last {
-            stats.last_ms = last;
-        }
-        stats
-    }
-}
-
-impl Default for FrameTimeWindow {
-    fn default() -> Self {
-        Self::new(FRAME_TIME_WINDOW)
-    }
-}
-
-/// 把截图目标路径规范成绝对路径：相对路径按进程当前目录解析。
-///
-/// `capture.frame` 对外承诺「返回绝对路径」，所以进来先在宿主侧定死基准，
-/// 免得下游拿到 `captures\\a.png` 这种相对串还得再猜一次基准目录。
-fn absolute_path(path: &Path) -> Result<PathBuf, RpcFailure> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    std::env::current_dir()
-        .map(|cwd| cwd.join(path))
-        .map_err(|err| RpcFailure::engine(format!("无法解析相对路径的基准目录: {err}")))
-}
-
-/// 默认截图文件名：毫秒时间戳，连续截图不会互相覆盖。
-fn default_capture_name() -> String {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or(0);
-    format!("capture_{stamp}.png")
-}
+use r3e_runtime::capture::{absolute_path, capture_to_file, default_capture_name};
+use r3e_runtime::time::FrameTimeStats;
 
 /// 主线程上的 [`EngineApi`] 实现。
 ///
@@ -375,39 +258,23 @@ impl EngineApi for LocalEngineApi<'_> {
             ));
         };
         let target = match path.map(str::trim).filter(|p| !p.is_empty()) {
-            Some(raw) => absolute_path(Path::new(raw))?,
+            Some(raw) => absolute_path(Path::new(raw)).map_err(RpcFailure::engine)?,
             None => self.capture_dir.join(default_capture_name()),
         };
-        if target.is_dir() {
-            return Err(RpcFailure::invalid_params(format!(
-                "截图路径是目录而不是文件: {}",
-                target.display()
-            )));
-        }
-
-        let captured = {
+        // 落盘链路与 `--capture-frame` 共用 runtime 里的那一份：回归基线图与
+        // 编辑器截的图必须是同一口径（同一段离屏渲染 + 空文件自检），否则
+        // 「基准」和「实际」拍的根本不是一件事。
+        let info = {
             let scene = self.scene.borrow();
-            renderer.capture_frame(&scene).map_err(RpcFailure::engine)?
+            capture_to_file(renderer, &scene, &target).map_err(RpcFailure::engine)?
         };
-        r3e_asset::write_png_rgba(&target, captured.width, captured.height, &captured.rgba8)
-            .map_err(|err| RpcFailure::engine(format!("截图落盘失败: {err}")))?;
-        let bytes = std::fs::metadata(&target)
-            .map(|meta| meta.len())
-            .map_err(|err| RpcFailure::engine(format!("截图落盘后读元数据失败: {err}")))?;
-        if bytes == 0 {
-            return Err(RpcFailure::engine(format!(
-                "截图文件为空（{}），已按失败上报",
-                target.display()
-            )));
-        }
-
         Ok(json!({
-            "path": target.display().to_string(),
-            "width": captured.width,
-            "height": captured.height,
-            "bytes": bytes,
-            "pixels": captured.byte_len(),
-            "format": format!("{:?}", captured.format),
+            "path": info.path.display().to_string(),
+            "width": info.width,
+            "height": info.height,
+            "bytes": info.bytes,
+            "pixels": info.pixel_bytes(),
+            "format": info.format,
         }))
     }
 
@@ -1407,7 +1274,7 @@ impl EngineApi for LocalEngineApi<'_> {
                         "当前没有场景文件路径，请显式给出 `path`",
                     ));
                 }
-                crate::app::default_archive_path(std::path::Path::new(&self.scene_label))
+                r3e_runtime::app::default_archive_path(std::path::Path::new(&self.scene_label))
             }
         };
         if let Some(dir) = target.parent() {
@@ -1900,6 +1767,7 @@ mod tests {
     use r3e_core::anim::{AnimBinding, AnimInstance};
     use r3e_core::light::{MAX_LOCAL_SHADOW_BIAS, MIN_LIGHT_RANGE};
     use r3e_core::{AnimClip, AnimKey, AnimTrack, InputState};
+    use r3e_runtime::time::FrameTimeWindow;
     use std::sync::Arc;
 
     type Fixture = (Rc<RefCell<Scene>>, Rc<RefCell<Physics>>, ScriptHost);
@@ -3596,9 +3464,9 @@ mod scene_route_tests {
     //! 图形设备，交给 `cargo run` 的手动回归与 r3e-core 的纯函数单测覆盖。
 
     use super::resolve_request_path;
-    use crate::app::default_archive_path;
     use r3e_core::scene_stack::SceneArchive;
     use r3e_core::Scene;
+    use r3e_runtime::app::default_archive_path;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("r3e-scene-route-{tag}"));

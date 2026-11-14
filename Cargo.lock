@@ -2277,21 +2277,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
- "gilrs",
- "glam 0.34.1",
- "log",
- "pollster",
  "r3e-asset",
- "r3e-audio",
- "r3e-core",
- "r3e-editor",
- "r3e-physics",
+ "r3e-editor-host",
  "r3e-render",
- "r3e-script",
- "rhai",
- "serde_json",
- "wgpu",
- "winit",
+ "r3e-runtime",
 ]
 
 [[package]]
@@ -2339,6 +2328,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-editor-host"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "log",
+ "r3e-asset",
+ "r3e-audio",
+ "r3e-core",
+ "r3e-editor",
+ "r3e-physics",
+ "r3e-render",
+ "r3e-runtime",
+ "r3e-script",
+ "rhai",
+ "serde_json",
+]
+
+[[package]]
 name = "r3e-physics"
 version = "0.1.0"
 dependencies = [
@@ -2368,6 +2375,27 @@ dependencies = [
  "naga",
  "pollster",
  "r3e-core",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "r3e-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gilrs",
+ "glam 0.34.1",
+ "log",
+ "pollster",
+ "r3e-asset",
+ "r3e-audio",
+ "r3e-core",
+ "r3e-physics",
+ "r3e-render",
+ "r3e-script",
+ "rhai",
+ "serde_json",
  "wgpu",
  "winit",
 ]
@@ -3978,6 +4006,13 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "zerocopy"

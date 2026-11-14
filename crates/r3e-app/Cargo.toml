@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "r3e 可执行入口：只做日志初始化、命令行转发与编辑器桥挂载的薄壳"
 # 本包只有 r3e 一个 bin；显式声明默认目标，避免将来新增辅助 bin
 # 或从包目录直接 `cargo run` 时出现目标歧义。
 default-run = "r3e"
@@ -15,23 +16,19 @@ path = "src/main.rs"
 [features]
 default = []
 # 把 Rapier 物理后端编进二进制：`cargo run --features rapier -- --physics on --physics-backend rapier`
-rapier = ["r3e-physics/rapier"]
+rapier = ["r3e-runtime/rapier"]
 
 [dependencies]
-r3e-core.workspace = true
-r3e-asset.workspace = true
-r3e-audio.workspace = true
-r3e-render.workspace = true
-r3e-physics.workspace = true
-r3e-script.workspace = true
-r3e-editor.workspace = true
-rhai.workspace = true
-serde_json.workspace = true
-winit.workspace = true
-wgpu.workspace = true
-gilrs.workspace = true
-pollster.workspace = true
-glam.workspace = true
-log.workspace = true
-env_logger.workspace = true
+# main.rs 是薄壳：窗口、主循环、时间步在 r3e-runtime，编辑器桥在 r3e-editor-host。
+# 本包不再直接依赖 wgpu / winit / gilrs 或任何子系统 crate，
+# 依赖方向由 xtask dep-check 守住（薄壳约束）。
+r3e-runtime.workspace = true
+r3e-editor-host.workspace = true
 anyhow.workspace = true
+env_logger.workspace = true
+
+[dev-dependencies]
+# 仅 tests/ 直接用到的 crate：视觉回归比对走 r3e-asset::visual_regression，
+# 探针渲染走 r3e-render。它们只服务测试，不进二进制。
+r3e-asset.workspace = true
+r3e-render.workspace = true

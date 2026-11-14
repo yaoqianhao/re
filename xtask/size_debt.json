@@ -1,0 +1,33 @@
+{
+  "_comment": "单文件行数债务白名单（limit=800）。base 为该文件登记时的实测行数；只许下降不许上涨——文件长大即门禁失败。拆到 ≤800 行后请把该条删掉，让阈值直接管住它。",
+  "limit": 800,
+  "files": {
+    "crates/r3e-asset/src/air_import.rs": 2010,
+    "crates/r3e-asset/src/gltf_import.rs": 1037,
+    "crates/r3e-asset/src/lib.rs": 1865,
+    "crates/r3e-audio/src/lib.rs": 1375,
+    "crates/r3e-core/src/air.rs": 928,
+    "crates/r3e-core/src/anim_blend.rs": 2178,
+    "crates/r3e-core/src/blend_space.rs": 2759,
+    "crates/r3e-core/src/envmap.rs": 1288,
+    "crates/r3e-core/src/input.rs": 974,
+    "crates/r3e-core/src/light.rs": 1728,
+    "crates/r3e-core/src/morph.rs": 1652,
+    "crates/r3e-core/src/occlusion.rs": 1147,
+    "crates/r3e-core/src/scene.rs": 4052,
+    "crates/r3e-core/src/scene_stack.rs": 963,
+    "crates/r3e-core/src/text.rs": 1111,
+    "crates/r3e-core/src/ui.rs": 1652,
+    "crates/r3e-editor-host/src/api.rs": 3552,
+    "crates/r3e-editor/src/lib.rs": 2597,
+    "crates/r3e-physics/src/lib.rs": 1929,
+    "crates/r3e-plugin/src/tools.rs": 1405,
+    "crates/r3e-render/src/postfx.rs": 817,
+    "crates/r3e-render/src/renderer.rs": 5582,
+    "crates/r3e-render/src/text.rs": 869,
+    "crates/r3e-render/src/ui.rs": 1112,
+    "crates/r3e-runtime/src/app.rs": 3523,
+    "crates/r3e-script/src/api.rs": 4070,
+    "crates/r3e-script/src/lib.rs": 2021
+  }
+}

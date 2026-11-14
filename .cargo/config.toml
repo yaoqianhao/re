@@ -6,6 +6,10 @@
 [source.crates-io]
 registry = "sparse+https://index.crates.io/"
 
+[alias]
+# 仓库级工程门禁，用法：cargo xtask verify / lint-size / check-tests / dep-check
+xtask = "run --package xtask --"
+
 [build]
 target = "x86_64-pc-windows-gnu"
 

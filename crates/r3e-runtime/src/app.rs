@@ -22,13 +22,14 @@ use r3e_core::{
     AnimDecl, MeshAabbCache, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene,
     SceneArchive, SceneCommand, SceneStack, SkinInstance, StackEntry, UiInteraction,
 };
-use r3e_editor::RpcServer;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::ui::UiImageProvider;
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
 
-use crate::editor::{FrameTimeWindow, LocalEngineApi, FRAME_TIME_WINDOW};
+use crate::capture::{absolute_path, capture_to_file};
+use crate::port::{EditorService, EngineAccess};
+use crate::time::{FrameTimeWindow, FRAME_TIME_WINDOW};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -127,6 +128,54 @@ const PAD_AXIS_MAP: [Option<Axis>; PAD_AXIS_COUNT] = [
 ];
 
 /// 命令行物理选项。`None` 表示「该层不发言」，交由场景文件与默认值决定。
+/// headless 固定步长：60Hz。
+///
+/// 与常见显示刷新一致，脚本里按帧累积的行为（cd 计时、动画采样）在无头与有窗
+/// 两条路径上走同一套数值，不会因为无头跑得快而得到不同的物理轨迹。
+pub const HEADLESS_FIXED_DT: f32 = 1.0 / 60.0;
+
+/// 无窗口运行的结果。
+///
+/// `fingerprint` 是「这一帧的世界长什么样」的摘要：M0 之后所有解耦改动都可以靠
+/// 「600 帧后指纹不变」来证明自己只改了结构、没改行为。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeadlessReport {
+    /// 实际推进的逻辑帧数（暂停跳过的不算）。
+    pub frames: u64,
+    /// 模拟累计时间（秒），等于 `frames × dt`。
+    pub sim_seconds: f64,
+    /// 结束时场景里的物件数。
+    pub scene_nodes: usize,
+    /// 结束时活动相机位置。
+    pub camera: [f32; 3],
+    /// 世界指纹（FNV-1a over 帧数 / 时间 / 相机 / 物件数）。
+    pub fingerprint: u64,
+}
+
+impl std::fmt::Display for HeadlessReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "headless: {} 帧 / {:.3}s | 物件 {} | 相机 ({:.3}, {:.3}, {:.3}) | fingerprint {:016x}",
+            self.frames,
+            self.sim_seconds,
+            self.scene_nodes,
+            self.camera[0],
+            self.camera[1],
+            self.camera[2],
+            self.fingerprint
+        )
+    }
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv_mix(hash: &mut u64, value: u64) {
+    *hash ^= value;
+    *hash = hash.wrapping_mul(FNV_PRIME);
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CliOptions {
     pub physics: Option<bool>,
@@ -176,6 +225,11 @@ pub struct CliOptions {
     ///
     /// 至少 1 帧：首帧里后处理的累积目标与字形图集还没热起来，拍下来不稳定。
     pub capture_after: Option<u32>,
+    /// `--headless-frames <n>`：不开窗口、不建 GPU 资源，按固定步长空跑 n 帧后退出。
+    ///
+    /// 这是 M0 的可验证地基：CI 与本地都能在**没有显卡**的机器上验证
+    /// 「脚本 → 物理 → 世界矩阵」这条链路真的在推进，而不是只验证「能编译」。
+    pub headless_frames: Option<u64>,
 }
 
 impl CliOptions {
@@ -284,8 +338,16 @@ pub struct EngineApp {
     probe_skin_snapshot: Vec<(String, Vec3)>,
     /// 请求在本次事件处理结束后退出事件循环。
     exit_pending: bool,
-    /// 编辑器 RPC 服务端；`--rpc-port` 未指定（或绑定失败）时为 `None`。
-    rpc: Option<RpcServer>,
+    /// 编辑器请求服务端；`--rpc-port` 未指定（或绑定失败）时为 `None`。
+    ///
+    /// 主循环只认 [`EditorService`] 端口：它不知道对面是 TCP + JSON-RPC，
+    /// 也不知道协议版本——那两件事属于 `r3e-editor-host`，不属于运行时。
+    editor: Option<Box<dyn EditorService>>,
+    /// 固定步长（秒）：`Some` = headless / 测试模式，`None` = 按墙钟计时。
+    ///
+    /// 无窗口运行必须**可复现**：同一份场景 + 同一个脚本跑 600 帧，两次数值轨迹
+    /// 要逐位相同，否则「无头跑通了」只是一句口号。墙钟 dt 做不到这一点。
+    fixed_dt: Option<f32>,
     /// 每帧最多消化的编辑器请求数，避免编辑器洪泛把一帧拖成几百毫秒。
     rpc_max_per_frame: usize,
     /// `--window-size WxH`：窗口物理像素尺寸；`None` = 1280x720 逻辑尺寸。
@@ -305,7 +367,73 @@ pub struct EngineApp {
 }
 
 impl EngineApp {
-    pub fn new(scene_path: PathBuf, script_path: PathBuf, cli: CliOptions) -> Self {
+    /// 是否挂了编辑器宿主（headless 启动时据此提醒「桥不会被消费」）。
+    pub fn has_editor(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// 当前固定步长；`None` 表示按墙钟计时（有窗口的常规运行）。
+    pub fn fixed_step(&self) -> Option<f32> {
+        self.fixed_dt
+    }
+
+    /// 无窗口运行：不建窗口、不建 GPU 资源，按固定步长推进 `frames` 帧。
+    ///
+    /// 这是 M0 的「可验证地基」——CI 机器（包括完全没有显卡的机器）也能证明
+    /// 「脚本 tick → 场景命令 → 世界矩阵」这条链路真的在推进，而不是只证明
+    /// 「能编译」。不画帧，所以不依赖 `renderer`；物理与脚本照常跑。
+    ///
+    /// 返回的 [`HeadlessReport`] 里带世界指纹：解耦类改动只要「600 帧后指纹不变」
+    /// 就能证明自己只改了结构、没改行为。
+    pub fn run_headless(&mut self, frames: u64, dt: f32) -> HeadlessReport {
+        self.fixed_dt = Some(dt.max(0.0));
+        log::info!("headless 启动: {frames} 帧 × {:.4}s", dt);
+        for _ in 0..frames {
+            // 截图 / 退出等「跑到某一帧就收摊」的请求，在无头模式下同样生效。
+            if self.exit_pending {
+                log::info!("headless 提前结束于第 {} 帧", self.frame_index);
+                break;
+            }
+            self.step_and_render();
+        }
+        let (scene_nodes, camera) = {
+            let scene = self.scene.borrow();
+            (
+                scene.len(),
+                [
+                    scene.camera.position.x,
+                    scene.camera.position.y,
+                    scene.camera.position.z,
+                ],
+            )
+        };
+        let mut fingerprint = FNV_OFFSET;
+        fnv_mix(&mut fingerprint, self.frame_index);
+        fnv_mix(&mut fingerprint, self.time.to_bits());
+        fnv_mix(&mut fingerprint, scene_nodes as u64);
+        for axis in camera {
+            fnv_mix(&mut fingerprint, u64::from(axis.to_bits()));
+        }
+        HeadlessReport {
+            frames: self.frame_index,
+            sim_seconds: self.time,
+            scene_nodes,
+            camera,
+            fingerprint,
+        }
+    }
+
+    /// 装配一个运行时。
+    ///
+    /// `editor` 由调用方（`r3e` 薄壳 / `r3e-editor-host` 的使用方）注入：
+    /// 运行时只把 `--rpc-port` 当作一个数值透传，不解释协议、不开端口，
+    /// 每帧按上限把 [`EngineAccess`] 喂给实现了 [`EditorService`] 的对象。
+    pub fn new(
+        scene_path: PathBuf,
+        script_path: PathBuf,
+        cli: CliOptions,
+        editor: Option<Box<dyn EditorService>>,
+    ) -> Self {
         let scene_src = std::fs::read_to_string(&scene_path).unwrap_or_else(|e| {
             log::warn!(
                 "读取场景 {} 失败（{e}），使用内置兜底场景",
@@ -480,30 +608,6 @@ impl EngineApp {
         };
         let now = Instant::now();
 
-        // 编辑器桥：只在显式给了 `--rpc-port` 时启动。绑定失败不阻断启动——
-        // 端口被占是常见的开发期状况，引擎本身不应该因此起不来。
-        let rpc = match cli.rpc_port {
-            Some(port) => match RpcServer::bind(port, cli.rpc_token.clone()) {
-                Ok(server) => {
-                    log::info!(
-                        "编辑器桥已监听 {}（令牌：{}）",
-                        server.local_addr(),
-                        if cli.rpc_token.is_some() {
-                            "已启用"
-                        } else {
-                            "未设置"
-                        }
-                    );
-                    Some(server)
-                }
-                Err(e) => {
-                    log::error!("编辑器桥监听 127.0.0.1:{port} 失败（{e}），本次运行不提供 RPC");
-                    None
-                }
-            },
-            None => None,
-        };
-
         Self {
             scene_path,
             script_path,
@@ -541,7 +645,8 @@ impl EngineApp {
             probe_snapshot: Vec::new(),
             probe_skin_snapshot: Vec::new(),
             exit_pending: false,
-            rpc,
+            editor,
+            fixed_dt: None,
             rpc_max_per_frame: cli.rpc_max_per_frame.unwrap_or(8).max(1),
             window_size: cli.window_size,
             capture_frame: cli.capture_frame.clone(),
@@ -576,12 +681,14 @@ impl EngineApp {
         }
     }
 
-    /// 消化本帧待处理的编辑器请求：一条请求 = 一次 `dispatch`，结果由连接线程回写。
+    /// 消化本帧待处理的编辑器请求：一条请求 = 一次调度，结果由服务端回写。
     ///
     /// 每帧最多 `rpc_max_per_frame` 条，避免编辑器的高频请求把一帧拖成几百毫秒；
-    /// 剩下的留在服务端有界队列里，溢出时 RPC 线程会明确回 `BUSY` 而不是无限堆内存。
+    /// 剩下的留在服务端有界队列里，溢出时服务端会明确回 `BUSY` 而不是无限堆内存。
     fn drain_editor_jobs(&mut self) {
-        let Some(server) = self.rpc.as_ref() else {
+        // 服务端临时摘下：`EngineAccess` 要 `&mut self.scripts` / `&mut self.renderer`，
+        // 而服务端就住在 `self` 里。摘出来即独占，归还时没有别名借用。
+        let Some(mut service) = self.editor.take() else {
             return;
         };
         let fps = if self.last_dt_ms > 0.0 {
@@ -589,18 +696,17 @@ impl EngineApp {
         } else {
             0.0
         };
+        // 先算好落盘目录：`capture_dir()` 借用整个 `self`，不能和下面
+        // `self.renderer.as_mut()` 同时出现在同一个结构体字面量里。
+        let capture_dir = self.capture_dir();
         for _ in 0..self.rpc_max_per_frame {
-            let Some(job) = server.try_recv() else { break };
-            // 先算好落盘目录：`capture_dir()` 借用整个 `self`，不能和下面
-            // `self.renderer.as_mut()` 同时出现在同一个结构体字面量里。
-            let capture_dir = self.capture_dir();
-            let mut api = LocalEngineApi {
+            let access = EngineAccess {
                 scene: &self.scene,
                 physics: &self.physics,
                 scripts: &mut self.scripts,
                 renderer: self.renderer.as_mut(),
                 frame_ms: self.frame_times.snapshot(),
-                capture_dir,
+                capture_dir: capture_dir.clone(),
                 scene_label: self.scene_path.display().to_string(),
                 script_label: self.script_path.display().to_string(),
                 frames: self.frame_index,
@@ -608,8 +714,12 @@ impl EngineApp {
                 uptime_ms: (self.time * 1000.0).round() as u64,
                 paused: self.paused,
             };
-            job.run(&mut api);
+            // `poll_one` 返回 false 表示「没有待办了」，本帧到此为止。
+            if !service.poll_one(access) {
+                break;
+            }
         }
+        self.editor = Some(service);
     }
 
     /// `capture.frame` 不传 path 时的落盘目录：场景文件旁的 `captures/`。
@@ -639,34 +749,30 @@ impl EngineApp {
 
     /// `--capture-frame`：跑到 `--capture-after` 帧后截一张图并退出。
     ///
-    /// 刻意复用编辑器 `capture.frame` 的同一条链路（`LocalEngineApi::capture_frame`
-    /// → 离屏渲染 → `write_png_rgba` → 空文件自检），而不是另写一份落盘逻辑：
-    /// 回归用例拍到的图必须与编辑器 / RPC 拍到的是同一口径，否则「基线」就没有意义。
+    /// 复用 [`crate::capture::capture_to_file`]——回归用例拍到的图必须与编辑器
+    /// `capture.frame` 拍到的是同一口径（同一段离屏渲染 + 落盘 + 空文件自检），
+    /// 否则「基线」就没有意义。所以这条链路住在 runtime，而不是编辑器宿主里。
     fn capture_frame_now(&mut self, path: &Path) {
         self.capture_done = true;
-        let fps = if self.last_dt_ms > 0.0 {
-            1000.0 / self.last_dt_ms
-        } else {
-            0.0
+        let target = match absolute_path(path) {
+            Ok(target) => target,
+            Err(err) => {
+                log::error!("[capture] 第 {} 帧截图失败: {err}", self.frame_index);
+                self.exit_pending = true;
+                std::process::exit(2);
+            }
         };
-        let capture_dir = self.capture_dir();
-        let requested = path.display().to_string();
-        let mut api = LocalEngineApi {
-            scene: &self.scene,
-            physics: &self.physics,
-            scripts: &mut self.scripts,
-            renderer: self.renderer.as_mut(),
-            frame_ms: self.frame_times.snapshot(),
-            capture_dir,
-            scene_label: self.scene_path.display().to_string(),
-            script_label: self.script_path.display().to_string(),
-            frames: self.frame_index,
-            fps,
-            uptime_ms: (self.time * 1000.0).round() as u64,
-            paused: self.paused,
+        // 渲染器与场景是不同字段，可以同时借；没有渲染器（无窗口 / GPU 未就绪）
+        // 一律按失败上报，绝不能让 exit(0) 掩盖「一张图都没拍出来」。
+        let result = match self.renderer.as_mut() {
+            Some(renderer) => {
+                let scene = self.scene.borrow();
+                capture_to_file(renderer, &scene, &target)
+            }
+            None => Err("渲染器未初始化（窗口 / GPU 未就绪），当前进程无法截图".to_string()),
         };
-        match r3e_editor::EngineApi::capture_frame(&mut api, Some(&requested)) {
-            Ok(value) => {
+        match result {
+            Ok(info) => {
                 // 一起打出本帧的绘制统计：像素基线挂掉时，先要能区分
                 // 「画了但颜色不对」和「一个 draw 都没提交」。
                 let draws = self
@@ -691,16 +797,19 @@ impl EngineApp {
                     })
                     .unwrap_or_default();
                 log::info!(
-                    "[capture] 第 {} 帧截图完成: {}{}",
+                    "[capture] 第 {} 帧截图完成: {}x{} {} bytes -> {}{}",
                     self.frame_index,
-                    serde_json::to_string(&value).unwrap_or_else(|_| requested.clone()),
+                    info.width,
+                    info.height,
+                    info.bytes,
+                    info.path.display(),
                     draws
                 )
             }
             Err(err) => {
                 // 截图失败必须是非零退出码：回归脚本靠退出码 + 文件存在性区分
                 // 「本机没有 GPU，跳过」和「拍了但坏了」。
-                log::error!("[capture] 第 {} 帧截图失败: {err:?}", self.frame_index);
+                log::error!("[capture] 第 {} 帧截图失败: {err}", self.frame_index);
                 self.exit_pending = true;
                 std::process::exit(2);
             }
@@ -717,9 +826,14 @@ impl EngineApp {
         self.poll_gamepad();
 
         let now = Instant::now();
-        let mut dt = (now - self.last_frame).as_secs_f32();
+        let measured = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
-        dt = dt.clamp(0.0, 0.1);
+        // 固定步优先：headless / 回归用例要的是「同一输入必然同一输出」，
+        // 墙钟 dt 会把机器负载带进物理与动画，同一份基线在不同机器上跑不出同一结果。
+        let dt = match self.fixed_dt {
+            Some(fixed) => fixed.max(0.0),
+            None => measured.clamp(0.0, 0.1),
+        };
         self.last_dt_ms = dt * 1000.0;
         // P0-4：帧时间样本进环形缓冲。dt 是「上一帧提交到本帧开始」的真实间隔，
         // 天然含了上一帧的渲染与 present，所以分位数反映的是端到端节奏而不是某一段。
