@@ -914,6 +914,102 @@ fn sample_layer_pose_impl(
     acc.map(|(pose, reference, _)| LayerSample { pose, reference })
 }
 
+/// 加法层的采样（扩展五十）：把层内份额当「逐路增量系数」，而不是「姿态混合权重」。
+///
+/// 覆盖层多路混合是加权平均——份额 0.6 / 0.4 就该得到"六成 A 四成 B 的那个姿态"。
+/// 加法层叠加的是**增量**（`片段姿态 - 该片段首帧`），多路份额是"各增量各占几成"，
+/// 所以 `0.5·左倾 + 0.5·右倾` 的正确结果是**两次增量相互抵消**，而不是"一半幅度的左倾"。
+/// 旧路径 [`sample_layer_pose`] 把两条姿态各自按份额平均后再求差：位置项因线性恰好等价，
+/// 旋转项（四元数平均）与缩放项（比值平均）都会被平均钝化，故加法层单独走这份实现。
+///
+/// 合成口径：以**第一路有效片段的参考姿态**为零增量基准，把每路的增量按归一化份额
+/// 作用到基准上（位置线性累加、旋转用 `slerp(identity, delta_i, k_i)` 连乘、缩放用比值增量连乘），
+/// 返回「合成后的姿态 + 基准参考」，调用方照旧 [`apply_additive`] 叠一次层权重。
+///
+/// 单路有效片段时**原样返回那一路**（不做任何算术），与扩展四十九之前逐位一致。
+pub fn sample_layer_pose_additive(
+    clips: &[LayerClip],
+    time: f32,
+    node_index: u32,
+    node_path: &str,
+) -> Option<LayerSample> {
+    sample_layer_pose_additive_impl(clips, node_index, node_path, |lc| lc.playback_time(time))
+}
+
+/// 相位锁版本，见 [`sample_layer_pose_additive`] / [`sample_layer_pose_synced`]。
+pub fn sample_layer_pose_additive_synced(
+    clips: &[LayerClip],
+    phase: f32,
+    node_index: u32,
+    node_path: &str,
+) -> Option<LayerSample> {
+    sample_layer_pose_additive_impl(clips, node_index, node_path, |lc| lc.synced_time(phase))
+}
+
+/// 加法层采样共用实现：`time_of` 决定每路片段用哪个时间采样。
+fn sample_layer_pose_additive_impl(
+    clips: &[LayerClip],
+    node_index: u32,
+    node_path: &str,
+    mut time_of: impl FnMut(&LayerClip) -> f32,
+) -> Option<LayerSample> {
+    let mut parts: Vec<(Transform, Transform, f32)> = Vec::new();
+    let mut total = 0.0f32;
+    for lc in clips {
+        let weight = if lc.weight.is_finite() {
+            lc.weight.max(0.0)
+        } else {
+            0.0
+        };
+        if weight <= 0.0 {
+            continue;
+        }
+        let Some(track) = lc
+            .clip
+            .track_of(node_index, node_path)
+            .and_then(|idx| lc.clip.tracks.get(idx as usize))
+        else {
+            continue;
+        };
+        let Some(pose) = track.sample(time_of(lc)) else {
+            continue;
+        };
+        // 参考姿态取首帧，与覆盖路径同口径：加法层叠加的是「相对首帧的增量」
+        let reference = track.keys.first().map(|k| k.transform()).unwrap_or(pose);
+        parts.push((pose, reference, weight));
+        total += weight;
+    }
+
+    match parts.len() {
+        0 => None,
+        // 单路：原样返回，零算术 —— 单路口加法层与扩展四十九之前逐位一致
+        1 => Some(LayerSample {
+            pose: parts[0].0,
+            reference: parts[0].1,
+        }),
+        _ => {
+            let reference = parts[0].1;
+            // 从「零增量」姿态起步（= 第一路的参考），再逐路把增量按份额叠上去
+            let mut pose = reference;
+            for (part_pose, part_ref, weight) in &parts {
+                let k = weight / total;
+                pose.position += (part_pose.position - part_ref.position) * k;
+
+                let delta = part_pose.rotation * part_ref.rotation.inverse();
+                pose.rotation = (pose.rotation * Quat::slerp(Quat::IDENTITY, delta, k)).normalize();
+
+                let ratio = Vec3::new(
+                    scale_ratio(part_pose.scale.x, part_ref.scale.x),
+                    scale_ratio(part_pose.scale.y, part_ref.scale.y),
+                    scale_ratio(part_pose.scale.z, part_ref.scale.z),
+                );
+                pose.scale *= Vec3::ONE.lerp(ratio, k);
+            }
+            Some(LayerSample { pose, reference })
+        }
+    }
+}
+
 /// 覆盖式混合：`w = 0` 全取 `base`，`w = 1` 全取 `top`。
 ///
 /// 与 [`crate::anim::blend_transform`] 同口径（旋转走 slerp，避免 180° 附近塌缩）。
@@ -1338,6 +1434,208 @@ mod tests {
             s.pose.position
         );
         assert!((s.reference.position.x).abs() < 1e-4, "参考姿态取首帧");
+    }
+
+    /// 一段双关键帧轨道：位置 / 旋转 / 缩放各自从 `from` 走到 `to`。
+    fn ramp_track(
+        index: u32,
+        path: &str,
+        from: (Vec3, Quat, Vec3),
+        to: (Vec3, Quat, Vec3),
+    ) -> AnimTrack {
+        AnimTrack {
+            node_path: path.to_string(),
+            node_index: index,
+            keys: vec![
+                AnimKey {
+                    time: 0.0,
+                    position: from.0,
+                    rotation: from.1,
+                    scale: from.2,
+                },
+                AnimKey {
+                    time: 1.0,
+                    position: to.0,
+                    rotation: to.1,
+                    scale: to.2,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn additive_single_clip_is_bitwise_unchanged() {
+        // 单路口加法层必须与扩展四十九之前逐位一致：新路径在这条上「零算术」
+        let only = clip(
+            "bob",
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (
+                    Vec3::new(1.0, 2.0, 3.0),
+                    Quat::IDENTITY,
+                    Vec3::new(1.0, 1.0, 1.0),
+                ),
+                (
+                    Vec3::new(4.0, 5.0, 6.0),
+                    Quat::from_rotation_z(0.6),
+                    Vec3::new(2.0, 2.0, 2.0),
+                ),
+            )],
+        );
+        let clips = vec![LayerClip::new(only, 1.0)];
+        let old = sample_layer_pose(&clips, 0.5, 1, "root/arm").expect("覆盖路径应采到");
+        let new = sample_layer_pose_additive(&clips, 0.5, 1, "root/arm").expect("加法路径应采到");
+        assert_eq!(old.pose.position, new.pose.position);
+        assert_eq!(old.pose.rotation, new.pose.rotation);
+        assert_eq!(old.pose.scale, new.pose.scale);
+        assert_eq!(old.reference.position, new.reference.position);
+        assert_eq!(old.reference.rotation, new.reference.rotation);
+        assert_eq!(old.reference.scale, new.reference.scale);
+    }
+
+    #[test]
+    fn additive_sums_rotation_deltas_not_pose_average() {
+        // A：绕 X 从 0 转到 90°（增量 90°）；B：参考与姿态都是绕 Y 80°（增量 0）。
+        // 加法语义下 B 不该稀释 A —— 合成增量应是「半个 A 的 90°」= 45° 绕 X。
+        // 覆盖语义会把两条姿态先平均（45° 的混轴旋转）再减平均参考，得到的是别的姿态。
+        let a = clip(
+            "a",
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE),
+                (
+                    Vec3::ZERO,
+                    Quat::from_rotation_x(90f32.to_radians()),
+                    Vec3::ONE,
+                ),
+            )],
+        );
+        let hold = Quat::from_rotation_y(80f32.to_radians());
+        let b = clip(
+            "b",
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (Vec3::ZERO, hold, Vec3::ONE),
+                (Vec3::ZERO, hold, Vec3::ONE),
+            )],
+        );
+        let clips = vec![LayerClip::new(a, 0.5), LayerClip::new(b, 0.5)];
+
+        let add = sample_layer_pose_additive(&clips, 1.0, 1, "root/arm").expect("应采到姿态");
+        let want = Quat::from_rotation_x(45f32.to_radians()) * Vec3::Z;
+        let got = add.pose.rotation * Vec3::Z;
+        assert!(
+            (got - want).length() < 1e-4,
+            "合成增量应为 45° 绕 X，实际 {got:?} 应为 {want:?}"
+        );
+        assert!(
+            (add.reference.rotation * Vec3::Z - Vec3::Z).length() < 1e-4,
+            "参考取第一路的首帧（identity）"
+        );
+
+        let old = sample_layer_pose(&clips, 1.0, 1, "root/arm").expect("覆盖路径应采到");
+        assert!(
+            (old.pose.rotation * Vec3::Z - got).length() > 0.05,
+            "覆盖路径把增量钝化了，结果本应与加法路径明显不同"
+        );
+    }
+
+    #[test]
+    fn additive_sums_scale_ratios_not_pose_average() {
+        // A：1 → 4（×4）；B：参考与姿态都是 2（增量 ×1）。
+        // 加法：参考缩放 1 × lerp(1,4,.5) × lerp(1,1,.5) = 2.5
+        let a = clip(
+            "a",
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE),
+                (Vec3::ZERO, Quat::IDENTITY, Vec3::splat(4.0)),
+            )],
+        );
+        let two = Vec3::splat(2.0);
+        let b = clip(
+            "b",
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (Vec3::ZERO, Quat::IDENTITY, two),
+                (Vec3::ZERO, Quat::IDENTITY, two),
+            )],
+        );
+        let clips = vec![LayerClip::new(a, 0.5), LayerClip::new(b, 0.5)];
+        let add = sample_layer_pose_additive(&clips, 1.0, 1, "root/arm").expect("应采到姿态");
+        assert!(
+            (add.pose.scale.x - 2.5).abs() < 1e-4,
+            "比值增量应是 1 × 2 × 1 = 2.5，实际 {:?}",
+            add.pose.scale
+        );
+    }
+
+    #[test]
+    fn additive_normalizes_partial_weights() {
+        // 权重 1 / 3 → 份额 0.25 / 0.75，增量按份额分
+        let a = clip("a", vec![track_at(1, "root/arm", Vec3::new(4.0, 0.0, 0.0))]);
+        let b = clip("b", vec![track_at(1, "root/arm", Vec3::ZERO)]);
+        let clips = vec![LayerClip::new(a, 1.0), LayerClip::new(b, 3.0)];
+        let s = sample_layer_pose_additive(&clips, 1.0, 1, "root/arm").expect("应采到姿态");
+        assert!(
+            (s.pose.position.x - 1.0).abs() < 1e-4,
+            "0.25 × 4 = 1，实际 {:?}",
+            s.pose.position
+        );
+        assert!((s.reference.position.length()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn additive_skips_zero_weight_and_missing_track() {
+        let arm = clip("a", vec![track_at(1, "root/arm", Vec3::new(4.0, 0.0, 0.0))]);
+        // 权重 0 的那路不参与（否则会被当成"零增量"稀释掉唯一有效路）
+        let clips = vec![LayerClip::new(arm.clone(), 1.0), LayerClip::new(arm, 0.0)];
+        let s = sample_layer_pose_additive(&clips, 1.0, 1, "root/arm").expect("应采到姿态");
+        assert!(
+            (s.pose.position.x - 4.0).abs() < 1e-4,
+            "{:?}",
+            s.pose.position
+        );
+        // 轨道缺失时返回 None，调用方保留主姿态
+        assert!(sample_layer_pose_additive(&clips, 1.0, 2, "root/leg").is_none());
+    }
+
+    #[test]
+    fn additive_synced_uses_own_clip_duration() {
+        // 相位锁：A（1 s）与 B（4 s）在同一相位 0.5 各自采样到 0.5 s 与 2.0 s
+        let a = clip_of(
+            "a",
+            1.0,
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE),
+                (Vec3::splat(10.0), Quat::IDENTITY, Vec3::ONE),
+            )],
+        );
+        let b = clip_of(
+            "b",
+            4.0,
+            vec![ramp_track(
+                1,
+                "root/arm",
+                (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE),
+                (Vec3::splat(10.0), Quat::IDENTITY, Vec3::ONE),
+            )],
+        );
+        let clips = vec![LayerClip::new(a, 1.0), LayerClip::new(b, 1.0)];
+        let s = sample_layer_pose_additive_synced(&clips, 0.5, 1, "root/arm").expect("应采到姿态");
+        // A 在 0.5 s 增量 5；B 在 2.0 s 越界钳到 10 → 0.5×5 + 0.5×10 = 7.5
+        assert!(
+            (s.pose.position.x - 7.5).abs() < 1e-4,
+            "相位锁下每路按自己时长折算，实际 {:?}",
+            s.pose.position
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim_blend::{
     apply_additive, blend_override, effective_phase, phase_source, sample_layer_pose,
-    sample_layer_pose_synced, sync_probe_with, AnimLayer, BoneMask, LayerMode, LayerSync,
-    MAX_ANIM_LAYERS,
+    sample_layer_pose_additive, sample_layer_pose_additive_synced, sample_layer_pose_synced,
+    sync_probe_with, AnimLayer, BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS,
 };
 use crate::blend_space::BlendSpace;
 use crate::light::{self, LocalLight};
@@ -1249,11 +1249,28 @@ impl Scene {
                     if effective <= 0.0 {
                         continue;
                     }
-                    let sample = match sync_phase {
-                        Some(phase) => {
+                    // 扩展五十：加法层与覆盖层吃同一份份额，但算的不是一回事——
+                    // 覆盖层要把多路姿态按份额平均成"那个姿态"，加法层要把多路**增量**按份额叠加。
+                    // 故加法层走 sample_layer_pose_additive（单路时零算术，逐位不变）。
+                    let sample = match (sync_phase, layer.mode) {
+                        (Some(phase), LayerMode::Additive) => sample_layer_pose_additive_synced(
+                            &layer.clips,
+                            phase,
+                            b.node_index,
+                            &b.path,
+                        ),
+                        (Some(phase), LayerMode::Override) => {
                             sample_layer_pose_synced(&layer.clips, phase, b.node_index, &b.path)
                         }
-                        None => sample_layer_pose(&layer.clips, layer_time, b.node_index, &b.path),
+                        (None, LayerMode::Additive) => sample_layer_pose_additive(
+                            &layer.clips,
+                            layer_time,
+                            b.node_index,
+                            &b.path,
+                        ),
+                        (None, LayerMode::Override) => {
+                            sample_layer_pose(&layer.clips, layer_time, b.node_index, &b.path)
+                        }
                     };
                     let Some(sample) = sample else {
                         continue;
@@ -2843,6 +2860,86 @@ mod anim_tests {
         // 主片段 x=5；加法层在 0.5s 的相对增量是 (0,0,1)，按 0.5 权重叠成 z=0.5
         assert!((p.x - 5.0).abs() < 1e-4, "{p:?}");
         assert!((p.z - 0.5).abs() < 1e-4, "加法层应叠加相对增量，实际 {p:?}");
+    }
+
+    #[test]
+    fn additive_layer_multiclip_uses_delta_semantics() {
+        // 扩展五十：加法层多路份额合的是「增量」，不是「姿态平均」。
+        // A：arm 绕 X 0 → 90°（增量 90°）；B：参考与姿态都绕 Y 80°（增量 0）。
+        // 采样点 0.5 s 时 A 自身增量已是 45°，再乘 0.5 份额 → 22.5° 绕 X；
+        // B 增量恒为零，不该把 A 的增量稀释成混轴姿态（覆盖路径会）。
+        let rot_track = |deg: f32| AnimTrack {
+            node_path: "root/arm".to_string(),
+            node_index: 1,
+            keys: vec![
+                AnimKey {
+                    time: 0.0,
+                    position: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                AnimKey {
+                    time: 1.0,
+                    position: Vec3::ZERO,
+                    rotation: Quat::from_rotation_x(deg.to_radians()),
+                    scale: Vec3::ONE,
+                },
+            ],
+        };
+        let hold = Quat::from_rotation_y(80f32.to_radians());
+        let hold_track = AnimTrack {
+            node_path: "root/arm".to_string(),
+            node_index: 1,
+            keys: vec![
+                AnimKey {
+                    time: 0.0,
+                    position: Vec3::ZERO,
+                    rotation: hold,
+                    scale: Vec3::ONE,
+                },
+                AnimKey {
+                    time: 1.0,
+                    position: Vec3::ZERO,
+                    rotation: hold,
+                    scale: Vec3::ONE,
+                },
+            ],
+        };
+
+        let (mut scene, arm, _leg) = layer_scene();
+        let a = AnimClip {
+            name: "a".to_string(),
+            duration: 1.0,
+            tracks: vec![rot_track(90.0)],
+        };
+        let b = AnimClip {
+            name: "b".to_string(),
+            duration: 1.0,
+            tracks: vec![hold_track],
+        };
+        let mut layer =
+            AnimLayer::new("add", std::sync::Arc::new(a), 1.0).with_mode(LayerMode::Additive);
+        assert!(layer.add_clip(std::sync::Arc::new(b), 1.0));
+        // 用 1D 混合空间把两路份额拉到 0.5 / 0.5（不手写权重，走真实驱动链路）
+        let mut space = crate::blend_space::BlendSpace::new_1d("w");
+        assert!(space.add_sample("a", [0.0, 0.0]));
+        assert!(space.add_sample("b", [1.0, 0.0]));
+        space.set_value_1d(0.5);
+        layer.blend_space = Some(space);
+        assert!(scene.add_anim_layer("demo/walk", layer));
+
+        scene.update_animations(0.5);
+        let t = scene.get(arm).unwrap().transform;
+        assert!(
+            (t.position.x - 5.0).abs() < 1e-4,
+            "主片段位置不受影响：{t:?}"
+        );
+        let want = Quat::from_rotation_x(22.5f32.to_radians()) * Vec3::Z;
+        let got = t.rotation * Vec3::Z;
+        assert!(
+            (got - want).length() < 1e-3,
+            "加法层多路应合成 22.5° 绕 X 的增量，实际 {got:?} 应为 {want:?}"
+        );
     }
 
     #[test]
