@@ -57,6 +57,8 @@ D:\rust3d-engine
 │   ├─ blend_space_demo.rhai  # 1D / 2D 混合空间（推参数看权重插值 + 越界钳制 + 重复样本被拒）
 │   ├─ layer_sync_demo.rhai   # 层内相位同步（前 1 秒 off 后切 phase，看两路 drift 归零）
 │   ├─ phase_group_demo.rhai  # 相位同步组（错步偏移 + 跨层对齐，三段切换看落点搬家）
+│   ├─ clip_playback_demo.rhai # 片段播放参数（三段：原速 / 2 倍速非循环停末帧 / 清除回原速）
+│   ├─ blend_space_3d_demo.rhai # 三维混合空间（四面体权重插值 + 越界钳到凸包面 + 重复样本被拒）
 │   ├─ shadow_demo.rhai       # 阴影演示（光源扫动 + 强度呼吸 + 右键开关）
 │   ├─ ssao_demo.rhai         # SSAO 演示（强度呼吸 + 1/2/3 切半径 + 4/5 切样本 + 右键开关）
 │   └─ local_shadow_demo.rhai # 局部光源阴影演示（点光绕圈 + 聚光摆头，0.5s 打印投影盏数）
@@ -2055,6 +2057,7 @@ additive : pose = base + (layer_pose - reference) * w     // reference = 片段�
 | 相位锁 | 扩展四十六另加 5 个（`set_anim_layer_sync` / `set_anim_layer_sync_mode` / `anim_layer_sync` / `anim_layer_phase` / `anim_layer_sync_probe`），见 [§30](#30-层内相位同步扩展四十六) |
 | 相位同步组 | 扩展四十七另加 5 个（`set_anim_layer_clip_phase_offset` / `anim_layer_clip_phase_offset` / `set_anim_layer_sync_source` / `anim_layer_sync_source` / `anim_layer_sync_phase`），见 [§31](#31-相位同步组偏移量与跨层对齐扩展四十七) |
 | 片段播放参数 | 扩展四十八另加 5 个（`set_anim_layer_clip_playback` / `clear_anim_layer_clip_playback` / `anim_layer_clip_speed` / `anim_layer_clip_looping` / `anim_layer_clip_time`），见 [§32](#32-片段自带播放速率与循环标志扩展四十八) |
+| 三维混合空间 | 扩展四十九另加 3 个（`set_anim_layer_blend_3d` / `add_anim_layer_blend_sample_3d` / `set_anim_layer_blend_value_3d`），摘空间与回显复用上面的 `clear_anim_layer_blend` / `anim_layer_blend`，见 [§33](#33-三维混合空间扩展四十九) |
 
 遮罩串的归一化口径（写进去什么，`anim_layer_mask` 就回显什么，方便热重载后比对）：
 
@@ -2831,7 +2834,7 @@ cargo test -p r3e-render gfx                     # 23 条内联单测（枚举 /
 就要重算一遍，参数一旦二维（八向移动的 x/y）还得自己拼三角形。混合空间把这段算术搬进引擎：
 给层挂一个参数空间，往里摆样本（片段 + 坐标），每帧只推参数值，权重由几何位置算出来。
 
-实现落在 `crates/r3e-core/src/blend_space.rs`（942 行 / 19 条单测，纯 CPU、不碰 wgpu），
+实现落在 `crates/r3e-core/src/blend_space.rs`（扩展四十五时 942 行 / 19 条单测，扩展四十九补三维后 1,775 行 / 30 条，纯 CPU、不碰 wgpu），
 层与场景侧挂在 `anim_blend.rs` 与 `scene.rs`，脚本绑定在 `api.rs`。这是数据不是句柄：
 `BlendSpace` 的 `dim` / `params` / `samples` / `value` / `triangles` / `rejected` 全部公开，渲染侧一行没改。
 
@@ -2865,8 +2868,8 @@ cargo test -p r3e-render gfx                     # 23 条内联单测（枚举 /
 ### 29.3 真机探针
 
 ```powershell
-cargo test -p r3e-core blend_space                 # 19 条算法单测（排序 / 钳制 / 剖分 / 重心 / 兜底 / 拒收）
-cargo test -p r3e-script --test blend_space_api     # 4 条脚本行为
+cargo test -p r3e-core blend_space                 # 30 条算法单测（排序 / 钳制 / 剖分 / 重心 / 兜底 / 拒收，含 3D 11 条）
+cargo test -p r3e-script --test blend_space_api     # 5 条脚本行为（1D / 2D / 3D / 摘空间 / 缺目标）
 target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_space_demo.rhai --run-seconds 3
 ```
 
@@ -2877,8 +2880,9 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 ### 29.4 已知边界
 
 - **2D 剖分每次 `add_sample` 整表重建**：运行时频繁改样本的编辑器场景可改增量插入 + 脏标记；
-- **上限 16 样本 / 空间**（`MAX_BLEND_SAMPLES`）：真做 3D（八向 × 三档速）不够用，撞顶要抬常量；
-- **无 3D 混合空间**：三层速度档目前靠「2D 空间 × 层权重」叠两层表达，不是三维单纯形；
+- **上限 32 样本 / 空间**（`MAX_BLEND_SAMPLES`，扩展四十九由 16 抬到 32）：三维四面体数随样本数增长，
+  再往上抬要配采样策略（剪枝 / 分层），不是改个常量的事；
+- ~~**无 3D 混合空间**~~：已由扩展四十九解决（`BlendDim::Volumetric3D` + Bowyer–Watson 四面体剖分，见 §33）；
 - ~~**样本不携带开关**~~：已由扩展四十八解决——播放速率 / 循环标志下放到**每一路片段**
   （`ClipPlayback { speed, looping }` + `LayerClip.playback`，见 §32）。**残余**：仍是「一个片段一个速率」，
   同一片段在参数轴上不同区间要不同步频（走 → 跑的加速感）还没做，那需要「按参数区间配多份样本 + 速率随样本插值」；
@@ -3143,6 +3147,107 @@ rc 0，501 行日志中 **414 行 `CLIP`**，其中 **221 行带 `pb=`**：
 
 该节收尾为 **89 个套件 / 1,285 passed / 0 failed**（扩展四十七为 88 套件 1,276），
 `R3E_VISUAL_REGRESSION=1` 下同 89 套件 1,285 passed 且**基线图未重建**。
+
+---
+
+## 33. 三维混合空间（扩展四十九）
+
+§29 的混合空间只有 1D / 2D 两档参数。「八向移动 × 三档速度」是三个自变量（`move.x` / `move.y` / `speed`），
+用两层 2D 空间叠：上层 `(x, y)` 归一后和恒 1、下层速度档归一后和恒 1，两者相加为 2，还得手乘一个速度系数；
+每加一档速度就要多挂一层、多维护一组系数。扩展四十九把第三轴做进同一张图：
+`BlendDim::Volumetric3D` + Bowyer–Watson **四面体剖分**，24 个样本（八向 × 三档）一张图解决，
+脚本里只剩一句 `set_anim_layer_blend_3d(...)` + 一句 `set_anim_layer_blend_value_3d(x, y, speed)`。
+
+实现仍在 `crates/r3e-core/src/blend_space.rs`（三维落地后 **1,775 行 / 30 条内联单测**，纯 CPU、零 wgpu），
+层与场景侧挂在 `anim_blend.rs` / `scene.rs`，脚本绑定在 `api.rs`。**层内 `apply_blend_space` 一行未改** ——
+三维空间吐给层的还是「片段名 → 权重、和为 1」，所以**渲染侧零改动**：没有新 uniform、没碰着色器、
+不调新 API 的场景像素逐位不变。
+
+### 33.1 求值规则
+
+| 情形 | 结果 |
+| --- | --- |
+| 样本数 ≥ 4 且不共面 | 体剖分成若干四面体；参数落到哪个四面体内就用它的**重心坐标**当权重（`volumetric_3d_single_tetra_has_exact_barycentric`） |
+| 四个不共面点的最小配置 | 恰好 **1 个**四面体（探针里 `tet=1`），内部点四顶点重心，权重和恒 1 |
+| 参数在凸包**外** | 权重**钳制**到最近的**凸包面**上，不外插（`volumetric_3d_outside_clamps_to_hull_face`）；`v` 仍存原值，只有权重被钳 —— `v=(1.49,0,0)` 得到 `run_loop=1.00` 而不是 1.49 |
+| 参数正好在顶点 / 棱上 | 与顶点样本逐位一致；权重为 0 的片段**整条从结果里消失**，不打成 `=0.00`（`volumetric_3d_vertex_and_edge_are_exact`） |
+| 同一片段占多个顶点 | 按**片段名合并**求和（`merge`）：四面体内部 `(0.30,0.30,0.30)` 里 `run_loop` 占两个顶点，合并成 0.60 |
+| 样本少于 4 个 / 全部共面 | **不硬剖**，退「最近样本拿 1.0」（`volumetric_3d_coplanar_falls_back_to_nearest_sample`），`brief()` 里 `tet=0` 把这件事显式暴露 —— 要精确插值就给足四个不共面的样本 |
+| 3 个样本 | 仍归一（`volumetric_3d_with_three_samples_still_normalizes`），只是走兜底 |
+| 重复位置样本 | 挂样本时就被**拒收并计数**（`drop`），不是"接受后由合并抹平"（`volumetric_3d_rejects_duplicate_position_on_all_axes`） |
+| 非有限参数（NaN / inf） | 拒收，保留旧值（`volumetric_3d_ignores_non_finite_value`） |
+| 在 1D / 2D 空间上调 `_3d` 入口 | 等价于原入口：`add_sample(clip, [x, y])` 就是 `add_sample_3d(clip, [x, y, 0.0])` 的壳，`set_value(x, y)` 就是 `set_value_3d(x, y, 0.0)` 的壳（`set_value_1d(x)` 同理 = `set_value(x, 0.0)`），高位分量被维度归一吃掉 |
+
+剖分的实现细节（f64 中间量、`VOLUME_EPS=1e-12`、超级四面体包含性校验、凸包面顺手留用、定向统一）见
+`docs/ARCHITECTURE.md` §4.25；真机逐行取证见 §8.36。这里只记用户可见口径。
+
+### 33.2 脚本 API
+
+| API | 作用 |
+| --- | --- |
+| `set_anim_layer_blend_3d(inst, layer, "move.x", "move.y", "speed")` | 给层挂三维参数空间，后三个参数是**参数名字符串**。返回 `true` |
+| `add_anim_layer_blend_sample_3d(inst, layer, clip, x, y, z)` | 摆一个样本。重复位置 / 非有限坐标返回 `false` 并计数 |
+| `set_anim_layer_blend_value_3d(inst, layer, x, y, z)` | 每帧推参数三元组；权重由引擎算，不用自己归一 |
+| `clear_anim_layer_blend(inst, layer)` | 摘掉空间（三维复用这个，没另起函数），层回到手写权重 |
+| `anim_layer_blend(inst, layer)` | 回显，三维空间打印成 `3d(move.x,move.y,speed) n=4 tet=1 drop=1 v=(0.30,0.30,0.30) w=atk=0.30,run_loop=0.60,idle_loop=0.10` |
+
+`tet=` 是体剖分出的四面体数（`0` = 没剖起来，走兜底），`drop=` 是累计被拒的样本数 —— 一行日志就能看出
+空间是"真在插值"还是"塌成最近样本"。
+
+### 33.3 真机探针
+
+```powershell
+cargo test -p r3e-core blend_space                  # 30 条算法单测（1D 19 + 3D 11）
+cargo test -p r3e-core anim_tests                   # +2 条：三维空间驱动层权重 / 层报告附 3D 段
+cargo test -p r3e-script --test blend_space_api     # 5 条脚本行为
+target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_space_3d_demo.rhai --run-seconds 3.2 --show-bones
+```
+
+演示脚本 `scripts\blend_space_3d_demo.rhai`（76 行）拿 `assets\scene_anim.json` 的 `tirger/idle_loop`（7 片段），
+挂一层 `move`：`3d(move.x, move.y, speed)`，四个**不共面**样本 `idle_loop@(0,0,0)` / `run_loop@(1,0,0)` /
+`atk@(0,1,0)` / `run_loop@(0,0,1)`，外加一条故意重复的 `idle_loop@(0,0,0)` 验拒绝路径。三段墙钟切换：
+沿 x 轴扫 → 钻进四面体内部 `(0.30,0.30,0.30)` → 踩 `+z` 顶点。
+
+`rc 0`，765 行日志，其中 **680 行 3D 探针**（阶段一 292 + 阶段二 234 + 阶段三 154），全段 `n=4 tet=1 drop=1`：
+
+| 阶段 | 参数 | 读回权重 | 说明 |
+| --- | --- | --- | --- |
+| 一 | `v=(0.45,0,0)` | `idle_loop=0.55, run_loop=0.45` | 棱上线性，严格 `1−x / x` |
+| 一 | `v=(1.00,0,0)` | `run_loop=1.00` | 顶点，`idle_loop` 整条消失（零权重不打印） |
+| 一 | `v=(1.49,0,0)` | `run_loop=1.00` | 越界：权重钳在顶点，不外插 |
+| 二 | `v=(0.30,0.30,0.30)` | `idle_loop=0.10, atk=0.30, run_loop=0.60` | 四面体**内部**真插值，`run_loop` 两顶点合并成 0.60 |
+| 三 | `v=(0,0,1)` | `run_loop=1.00` | `+z` 顶点，塌成单路 |
+
+批量核对（680 行逐行，不抽样）：权重和 `max|Σw − 1| = 0.0`；无 NaN；阶段一 **185 行**落在四面体内
+（`x ≤ 1`）且 `run_loop` 权重与 `v.x` 在两位小数内零误差；**107 行**越界（`x ∈ (1.00, 1.49]`）权重只有
+`run_loop=1.00`；阶段二 234 行、阶段三 154 行各自权重**逐帧不动**（参数不动则权重不抖）。
+
+**1D / 2D 零变化**：同一二进制、同一份资产、跑 §29 的老脚本 `blend_space_demo.rhai`，与 §29.3 的表逐行对上
+（`1d(speed) n=2 drop=0` / `2d(aim.x,aim.y) n=3 tri=1 drop=1`，权重与越界钳制一字不差）——
+上限 16 → 32 与样本坐标升三维没有改变任何旧结果。
+
+### 33.4 已知边界
+
+- **上限 32 样本 / 空间**（`MAX_BLEND_SAMPLES`）：八向 × 三档 = 24 尚有余量；四面体数最坏 `O(n²)`，
+  再往上抬要配采样策略（剪枝 / 分层）或直接分图，不是改个常量的事；
+- **只做体剖分，不做曲面混合**：每轴不同量纲（速度 vs 方向）不会自动归一，量纲由调用方换算后喂进来；
+- **共面 / 少于四样本不硬剖**：退最近样本（`tet=0`），只有"最近一路"，不会给一个看着平滑其实错的值；
+- **不做 4D 及以上**；
+- **一份样本一份片段**：同一片段可在多个顶点出现（按名合并），但"同一片段在参数轴上不同区间要不同步频"
+  仍靠 §32 的 `ClipPlayback` 按路配，不随三维参数插值；
+- **不碰权重归一 / 遮罩 / additive**：三维只决定层内片段权重，层间合成口径与 §22 一致。
+
+### 33.5 测试覆盖
+
+| 位置 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `crates/r3e-core/src/blend_space.rs` | 11（内联，累计 30） | 四面体精确重心 / 顶点与棱 / 越界钳到凸包面 / 立方体剖分有效性 / 共面退最近样本 / 三样本仍归一 / 非有限拒收 / `brief()` 与维度解析 / 三维重复位置拒收 / 速度档边界（`z=0` 或 `1`）不串档 / 24 样本可剖 |
+| `crates/r3e-core/src/anim_blend.rs` | 2 | 三维空间驱动层内片段权重、层报告追加 `3D` 段 |
+| `crates/r3e-core/src/scene.rs` | 1 | 场景门面 `_3d` 入口改权重只动目标层 |
+| `crates/r3e-script/tests/blend_space_api.rs` | 1（累计 5） | `script_3d_blend_space_drives_layer_weights`：绑定层透传三元组、权重进层、摘空间后回手写权重 |
+
+该节收尾为 **89 个套件 / 1,296 passed / 0 failed**（扩展四十八为 89 套件 1,285），
+`--all-features` 同 89 套件 **1,300 passed**；`R3E_VISUAL_REGRESSION=1` 下**基线图未重建**。
 
 ---
 
