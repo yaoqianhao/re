@@ -176,6 +176,57 @@ pub struct BlendSpace {
     /// 求值不走「陈旧拓扑」，而是在挂起时现场算一份临时拓扑（见 `live_topology`），
     /// 所以这个标记只影响**什么时候付重建的钱**，不影响**算出来的权重**。
     stale: bool,
+    /// 增量剖分的续算现场（扩展五十三）。
+    ///
+    /// 装着「不含样本表、只属于剖分算法内部」的东西：超级图形顶点与它的
+    /// 中心 / 量程、已插入到第几个样本、当前（仍含超顶点的）三角形 / 四面体表。
+    /// `None` = 没有可续算的现场（空间是空的 / 样本退化 / 参数被外部改过 / 刚清过）。
+    ///
+    /// 它的存在与否**不影响权重**：能续算就续算，不能就整表重剖，两条路的输出逐位相同
+    /// （同一个算法、同一份输入、同一个插入顺序，见 `rebuild` 的判据）。
+    cache: Option<Box<TopologyCache>>,
+    /// 真正走增量的次数（扩展五十三，只用于探针 / 编辑器观察，不参与语义）。
+    incremental_builds: usize,
+    /// 整表重剖的次数（同上，用于对照「增量到底省了几次」）。
+    full_builds: usize,
+}
+
+/// 增量剖分的续算现场（扩展五十三）。
+///
+/// 两种维度各一份：Bowyer–Watson 本身是「超图形 + 逐点插入」，所以只要把
+/// 「当前三角 / 四面体表（含超顶点）」和「超级图形参数」留住，补进来的样本
+/// 可以接着往这张表里插，而不必把老样本再插一遍。
+///
+/// 为什么必须留超级图形而不是只留输出：输出（`triangles` / `tetra`）已经剥离了
+/// 超顶点、丢掉了退化单元并排过序，**丢了续算需要的全部现场**。而续算必须与
+/// 「一次性重剖」走同一条路径，超级图形得是同一个（同一份点集算出来的中心与量程）。
+#[derive(Debug, Clone, PartialEq)]
+enum TopologyCache {
+    /// 2D 三角剖分现场。
+    Planar {
+        /// 顶点表：前 `inserted` 个是样本点，尾部 3 个是超三角形顶点。
+        verts: Vec<[f32; 2]>,
+        /// 当前三角形表（下标指向 `verts`，含超顶点）。
+        tris: Vec<[usize; 3]>,
+        /// 已插入的样本点数。
+        inserted: usize,
+        /// 超三角形的圆心与量程（复用判据：与当前点集算出来的一致才允许续算）。
+        cx: f32,
+        cy: f32,
+        span: f32,
+    },
+    /// 3D 四面体剖分现场。
+    Volumetric {
+        /// 顶点表：前 `inserted` 个是样本点，尾部 4 个是超四面体顶点。
+        verts: Vec<[f32; 3]>,
+        /// 当前四面体表（下标指向 `verts`，含超顶点）。
+        tetra: Vec<[usize; 4]>,
+        /// 已插入的样本点数。
+        inserted: usize,
+        /// 超四面体的中心与边长系数（复用判据同上）。
+        center: [f32; 3],
+        scale: f32,
+    },
 }
 
 impl BlendSpace {
@@ -191,6 +242,9 @@ impl BlendSpace {
             hull_faces: Vec::new(),
             rejected: 0,
             stale: false,
+            cache: None,
+            incremental_builds: 0,
+            full_builds: 0,
         }
     }
 
@@ -206,6 +260,9 @@ impl BlendSpace {
             hull_faces: Vec::new(),
             rejected: 0,
             stale: false,
+            cache: None,
+            incremental_builds: 0,
+            full_builds: 0,
         }
     }
 
@@ -221,6 +278,9 @@ impl BlendSpace {
             hull_faces: Vec::new(),
             rejected: 0,
             stale: false,
+            cache: None,
+            incremental_builds: 0,
+            full_builds: 0,
         }
     }
 
@@ -361,6 +421,8 @@ impl BlendSpace {
         self.hull_faces.clear();
         // 空样本表与空剖分是一致的，没有「待重建」这回事。
         self.stale = false;
+        // 扩展五十三：续算现场一并作废（它描述的是某一份具体的样本前缀）。
+        self.cache = None;
     }
 
     /// 设定当前参数（1D / 2D 入口，`z` 由维度归一吃掉）。非有限值整体拒绝（保持原值）。
@@ -397,24 +459,209 @@ impl BlendSpace {
         self.triangles.clear();
         self.tetra.clear();
         self.hull_faces.clear();
-        // 先落标记：下面有多个早退分支（样本不足 / 共线 / 共面），
+        // 先落标记：下面有多个早退分支（样本不足 / 共线 / 共面 / 包围盒扩张），
         // 每个分支产出的都是「与当前样本表一致的剖分」，所以出口只有一条。
         self.stale = false;
-        match self.dim {
-            BlendDim::Linear1D => {}
+        // 扩展五十三：能续算就只插新样本（细粒度脏标记），不能就整表重剖。
+        // 两条路的输出逐位相同——都是同一个 Bowyer–Watson、同一份输入、同一个插入顺序。
+        if self.resume_incremental() {
+            self.incremental_builds = self.incremental_builds.saturating_add(1);
+            return;
+        }
+        self.full_builds = self.full_builds.saturating_add(1);
+        let Self {
+            samples,
+            triangles,
+            tetra,
+            hull_faces,
+            cache,
+            dim,
+            ..
+        } = self;
+        match dim {
+            BlendDim::Linear1D => {
+                // 1D 的「剖分」是区间端点，没有增量一说，现场一律作废。
+                *cache = None;
+            }
             BlendDim::Planar2D => {
-                if self.samples.len() < 3 {
+                if samples.len() < 3 {
+                    *cache = None;
                     return;
                 }
-                self.triangles = self.compute_triangles();
+                let points: Vec<[f32; 2]> = samples.iter().map(|s| [s.at[0], s.at[1]]).collect();
+                let (tris, next) = full_2d(&points);
+                *triangles = tris;
+                *cache = next.map(Box::new);
             }
             BlendDim::Volumetric3D => {
-                if self.samples.len() < 4 {
+                if samples.len() < 4 {
+                    *cache = None;
                     return;
                 }
-                let (tetra, faces) = self.compute_tetra();
-                self.tetra = tetra;
-                self.hull_faces = faces;
+                let points: Vec<[f32; 3]> = samples.iter().map(|s| s.at).collect();
+                let (tets, faces, next) = full_3d(&points);
+                *tetra = tets;
+                *hull_faces = faces;
+                *cache = next.map(Box::new);
+            }
+        }
+    }
+
+    /// 试着在既有续算现场上只插新样本（扩展五十三）。返回是否真的走了增量。
+    ///
+    /// 现场不可用时返回 `false` 并就地作废（`cache = None`），由 `rebuild` 整表重剖。
+    /// 「不可用」包含四种：维度不符 / 现场与样本前缀对不上（外部直接改过 `samples`）/
+    /// 新样本把包围盒撑大了（超级图形得换）/ 整体变成共线或共面（不存在有效剖分）。
+    fn resume_incremental(&mut self) -> bool {
+        if self.dim == BlendDim::Linear1D {
+            self.cache = None;
+            return false;
+        }
+        let Self {
+            samples,
+            triangles,
+            tetra,
+            hull_faces,
+            cache,
+            ..
+        } = self;
+        let res = match cache.as_mut() {
+            Some(b) => Self::resume_with(b, samples, triangles, tetra, hull_faces),
+            None => Err(()),
+        };
+        match res {
+            Ok(hit) => hit,
+            Err(()) => {
+                *cache = None;
+                false
+            }
+        }
+    }
+
+    /// `resume_incremental` 的实现体：不借用 `self`，把现场与目标表分开传。
+    ///
+    /// `Ok(true)` = 续算成功（或现场已是最新、只需复算输出）；`Err(())` = 现场作废。
+    fn resume_with(
+        cache: &mut TopologyCache,
+        samples: &[BlendSample],
+        triangles: &mut Vec<[u16; 3]>,
+        tetra: &mut Vec<[u16; 4]>,
+        hull_faces: &mut Vec<[u16; 3]>,
+    ) -> Result<bool, ()> {
+        let n = samples.len();
+        match cache {
+            TopologyCache::Planar {
+                verts,
+                tris,
+                inserted,
+                cx,
+                cy,
+                span,
+            } => {
+                let old = *inserted;
+                // 现场自洽性 + 「已插入前缀与样本表逐位相同」。
+                if old < 3 || old > n || verts.len() != old + 3 {
+                    return Err(());
+                }
+                for k in 0..old {
+                    let (a, b) = (verts[k], samples[k].at);
+                    if a[0].to_bits() != b[0].to_bits() || a[1].to_bits() != b[1].to_bits() {
+                        return Err(());
+                    }
+                }
+                if old == n {
+                    // 现场已剖到最后一个样本：只复算输出（脏标记可能有、也可能没有）。
+                    *triangles = finish_2d(verts, tris, n);
+                    return Ok(true);
+                }
+                let fresh: Vec<[f32; 2]> = samples.iter().map(|s| [s.at[0], s.at[1]]).collect();
+                if all_collinear(&fresh) {
+                    return Err(());
+                }
+                let (ncx, ncy, nspan) = super_2d(&fresh);
+                if ncx.to_bits() != cx.to_bits()
+                    || ncy.to_bits() != cy.to_bits()
+                    || nspan.to_bits() != span.to_bits()
+                {
+                    // 包围盒涨了 → 超级三角形得跟着变，老现场的坏三角形判定全部失效。
+                    return Err(());
+                }
+                for (i, p) in fresh.iter().enumerate().skip(old) {
+                    // 超顶点在 verts 尾部，新样本点要占它们原来的位置：
+                    // 摘下超顶点 → 放新点 → 接回（下标整体 +1），三角形里的超下标同步 +1。
+                    let sup = verts.split_off(i);
+                    verts.push(*p);
+                    verts.extend_from_slice(&sup);
+                    for t in tris.iter_mut() {
+                        for v in t.iter_mut() {
+                            if *v >= i {
+                                *v += 1;
+                            }
+                        }
+                    }
+                    insert_2d(verts, tris, *p, i);
+                }
+                *inserted = n;
+                *triangles = finish_2d(verts, tris, n);
+                Ok(true)
+            }
+            TopologyCache::Volumetric {
+                verts,
+                tetra: tets,
+                inserted,
+                center,
+                scale,
+            } => {
+                let old = *inserted;
+                if old < 4 || old > n || verts.len() != old + 4 {
+                    return Err(());
+                }
+                for k in 0..old {
+                    let (a, b) = (verts[k], samples[k].at);
+                    if a[0].to_bits() != b[0].to_bits()
+                        || a[1].to_bits() != b[1].to_bits()
+                        || a[2].to_bits() != b[2].to_bits()
+                    {
+                        return Err(());
+                    }
+                }
+                if old == n {
+                    let (o, h) = finish_3d(verts, tets, n);
+                    *tetra = o;
+                    *hull_faces = h;
+                    return Ok(true);
+                }
+                let fresh: Vec<[f32; 3]> = samples.iter().map(|s| s.at).collect();
+                if all_coplanar(&fresh) {
+                    return Err(());
+                }
+                let (nc, ns) = super_3d_params(&fresh);
+                if nc[0].to_bits() != center[0].to_bits()
+                    || nc[1].to_bits() != center[1].to_bits()
+                    || nc[2].to_bits() != center[2].to_bits()
+                    || ns.to_bits() != scale.to_bits()
+                {
+                    return Err(());
+                }
+                for (i, p) in fresh.iter().enumerate().skip(old) {
+                    // 同 2D：摘下 4 个超顶点、放新点、接回（下标 +1），四面体里超下标同步 +1。
+                    let sup = verts.split_off(i);
+                    verts.push(*p);
+                    verts.extend_from_slice(&sup);
+                    for t in tets.iter_mut() {
+                        for v in t.iter_mut() {
+                            if *v >= i {
+                                *v += 1;
+                            }
+                        }
+                    }
+                    insert_3d(verts, tets, *p, i);
+                }
+                *inserted = n;
+                let (o, h) = finish_3d(verts, tets, n);
+                *tetra = o;
+                *hull_faces = h;
+                Ok(true)
             }
         }
     }
@@ -425,6 +672,24 @@ impl BlendSpace {
     /// 但每次求值都要重算一遍，所以装配期结束后应 `build_pending` 一次。
     pub fn is_stale(&self) -> bool {
         self.stale
+    }
+
+    /// 真正走增量的提交次数（扩展五十三）。只用于观察 / 探针，不参与语义。
+    ///
+    /// 它与 `full_builds` 是「同一批 `build_pending` 里的两条路各走了几次」：
+    /// 编辑器一格格补样本时前者涨、包围盒扩张或外部改表时后者涨。
+    pub fn incremental_builds(&self) -> usize {
+        self.incremental_builds
+    }
+
+    /// 整表重剖的提交次数（扩展五十三）。
+    pub fn full_builds(&self) -> usize {
+        self.full_builds
+    }
+
+    /// 提交次数对照，返回 `(增量, 整表)`（扩展五十三）。
+    pub fn build_stats(&self) -> (usize, usize) {
+        (self.incremental_builds, self.full_builds)
     }
 
     /// 把挂起的样本一次性提交成剖分（扩展五十一）。返回是否真的重建了。
@@ -948,13 +1213,11 @@ fn in_circumcircle(verts: &[[f32; 2]], tri: [usize; 3], p: [f32; 2]) -> bool {
     px * px + py * py <= r2 * (1.0 + 1e-6) + EPS
 }
 
-/// Bowyer–Watson 三角剖分：返回顶点下标三元组（`u16`，样本上限 16 足够）。
-fn triangulate(points: &[[f32; 2]]) -> Vec<[u16; 3]> {
-    let n = points.len();
-    if n < 3 || all_collinear(points) {
-        return Vec::new();
-    }
-    let mut verts: Vec<[f32; 2]> = points.to_vec();
+/// 超级三角形的参数：中心与量程（扩展五十三抽出）。
+///
+/// 单独抽出来是为了给「续算现场能不能复用」做判据：同一份点集算出的中心与量程
+/// 逐位相同，续算才和一次性重剖走同一条路径；点集一变（包围盒涨了）就必须整表重剖。
+fn super_2d(points: &[[f32; 2]]) -> (f32, f32, f32) {
     let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
     let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
     for p in points {
@@ -965,38 +1228,60 @@ fn triangulate(points: &[[f32; 2]]) -> Vec<[u16; 3]> {
     }
     let span = (max_x - min_x).max(max_y - min_y).max(1.0) * SUPER_SCALE;
     let (cx, cy) = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
+    (cx, cy, span)
+}
+
+/// 建 2D 续算现场：顶点表（样本点 + 尾部 3 个超顶点）与初始超三角形。
+fn seed_2d(points: &[[f32; 2]]) -> TopologyCache {
+    let (cx, cy, span) = super_2d(points);
+    let mut verts: Vec<[f32; 2]> = points.to_vec();
     let super_base = verts.len();
     verts.push([cx - 2.0 * span, cy - span]);
     verts.push([cx, cy + 2.0 * span]);
     verts.push([cx + 2.0 * span, cy - span]);
-
-    let mut tris: Vec<[usize; 3]> = vec![[super_base, super_base + 1, super_base + 2]];
-    for (i, point) in verts.iter().enumerate().take(n) {
-        let p = *point;
-        let mut kept: Vec<[usize; 3]> = Vec::new();
-        let mut edges: Vec<(usize, usize)> = Vec::new();
-        for tri in tris.drain(..) {
-            if in_circumcircle(&verts, tri, p) {
-                for k in 0..3 {
-                    let (a, b) = (tri[k], tri[(k + 1) % 3]);
-                    // 内部边会在两个「坏三角形」里各出现一次（方向相反），双双消掉。
-                    match edges.iter().position(|e| e.0 == b && e.1 == a) {
-                        Some(pos) => {
-                            edges.remove(pos);
-                        }
-                        None => edges.push((a, b)),
-                    }
-                }
-            } else {
-                kept.push(tri);
-            }
-        }
-        for (a, b) in edges {
-            kept.push([a, b, i]);
-        }
-        tris = kept;
+    let tris = vec![[super_base, super_base + 1, super_base + 2]];
+    TopologyCache::Planar {
+        verts,
+        tris,
+        inserted: 0,
+        cx,
+        cy,
+        span,
     }
+}
 
+/// 往 2D 现场里插一个样本点（Bowyer–Watson 一轮：找出所有「外接圆含该点」的三角形，
+/// 消掉它们的内边，再用剩下的边与该点连成新三角形）。
+///
+/// `i` 必须等于 `p` 在 `verts` 里的下标；`verts` 已含该点（含尾部超顶点）。
+fn insert_2d(verts: &mut [[f32; 2]], tris: &mut Vec<[usize; 3]>, p: [f32; 2], i: usize) {
+    let mut kept: Vec<[usize; 3]> = Vec::new();
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for tri in tris.drain(..) {
+        if in_circumcircle(verts, tri, p) {
+            for k in 0..3 {
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                // 内部边会在两个「坏三角形」里各出现一次（方向相反），双双消掉。
+                match edges.iter().position(|e| e.0 == b && e.1 == a) {
+                    Some(pos) => {
+                        edges.remove(pos);
+                    }
+                    None => edges.push((a, b)),
+                }
+            }
+        } else {
+            kept.push(tri);
+        }
+    }
+    for (a, b) in edges {
+        kept.push([a, b, i]);
+    }
+    *tris = kept;
+}
+
+/// 2D 现场收尾：剥掉超顶点、丢掉退化三角形、按下标排序
+/// （输出顺序依赖插入顺序，排序后同一组样本恒得同一份三角形表）。
+fn finish_2d(verts: &[[f32; 2]], tris: &[[usize; 3]], n: usize) -> Vec<[u16; 3]> {
     let mut out: Vec<[u16; 3]> = Vec::new();
     for tri in tris {
         if tri.iter().any(|v| *v >= n) {
@@ -1007,9 +1292,40 @@ fn triangulate(points: &[[f32; 2]]) -> Vec<[u16; 3]> {
         }
         out.push([tri[0] as u16, tri[1] as u16, tri[2] as u16]);
     }
-    // 输出顺序稳定化：剖分的插入顺序依赖样本顺序，排序后同一组样本恒得同一份三角形表。
     out.sort();
     out
+}
+
+/// 一次性 2D 剖分 + 顺手留下续算现场（扩展五十三）。
+///
+/// 「样本不足 / 全部共线」时不存在有效剖分，同时也没有可续算的现场（`None`）——
+/// 这两种状态下补进来的点有可能让整体变得可剖分，只能从零开始。
+fn full_2d(points: &[[f32; 2]]) -> (Vec<[u16; 3]>, Option<TopologyCache>) {
+    let n = points.len();
+    if n < 3 || all_collinear(points) {
+        return (Vec::new(), None);
+    }
+    let mut cache = seed_2d(points);
+    let TopologyCache::Planar { verts, tris, .. } = &mut cache else {
+        return (Vec::new(), None);
+    };
+    for i in 0..n {
+        let p = verts[i];
+        insert_2d(verts, tris, p, i);
+    }
+    let out = finish_2d(verts, tris, n);
+    if let TopologyCache::Planar { inserted, .. } = &mut cache {
+        *inserted = n;
+    }
+    (out, Some(cache))
+}
+
+/// Bowyer–Watson 三角剖分：返回顶点下标三元组（`u16`，样本上限 16 足够）。
+///
+/// 一次性口径（`rebuild` 的整表路径与 `live_topology` 的临时拓扑都走它）。
+/// 增量口径见 `full_2d` + `insert_2d`：两者共用同一套分步函数，输出逐位相同。
+fn triangulate(points: &[[f32; 2]]) -> Vec<[u16; 3]> {
+    full_2d(points).0
 }
 
 // ---------------- 三维：四面体剖分（扩展四十九） ----------------
@@ -1283,16 +1599,11 @@ fn face_key(f: [usize; 3]) -> [usize; 3] {
     k
 }
 
-/// 四面体剖分（Bowyer–Watson 三维）：返回（四面体顶点下标, 凸包面）。
+/// 超四面体的参数：中心与边长系数（扩展五十三抽出，理由同 2D 的 `super_2d`）。
 ///
-/// 与 2D 版本同构，只是「坏三角形 → 坏四面体」、外接圆 → 外接球、
-/// 边去重 → 面对消（内部面在两个坏四面体里各出现一次，双双消掉）。
-/// 四面体统一成「有向体积为正」的顶点顺序，`in_sphere` 的正负号判定才成立。
-fn tetrahedralize(points: &[[f32; 3]]) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
-    let n = points.len();
-    if n < 4 || all_coplanar(points) {
-        return (Vec::new(), Vec::new());
-    }
+/// 中心取包围盒中心、系数从 `extent * SUPER_SCALE` 起步，最大翻 8 次直到把全部点包住。
+/// 同一份点集算出来的中心与系数逐位相同，才是「续算 == 一次性重剖」的前提。
+fn super_3d_params(points: &[[f32; 3]]) -> ([f32; 3], f32) {
     let mut min = [f32::MAX; 3];
     let mut max = [f32::MIN; 3];
     for p in points {
@@ -1310,20 +1621,9 @@ fn tetrahedralize(points: &[[f32; 3]]) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
         .max(max[1] - min[1])
         .max(max[2] - min[2])
         .max(1.0);
-
     // 超级四面体：正四面体四角，边长系数 L。L = 2·extent 时经典构造能包住整个包围盒
     // （最远的对角点满足 x+y+z = 1.5·extent < L），这里仍做一次包含性校验，不满足就翻倍。
-    let mut verts: Vec<[f32; 3]> = points.to_vec();
-    let base = verts.len();
     let mut scale = extent * SUPER_SCALE;
-    let super_of = |c: [f32; 3], l: f32| {
-        [
-            [c[0] - l, c[1] - l, c[2] - l],
-            [c[0] + l, c[1] + l, c[2] - l],
-            [c[0] + l, c[1] - l, c[2] + l],
-            [c[0] - l, c[1] + l, c[2] + l],
-        ]
-    };
     let mut quad = super_of(center, scale);
     for _ in 0..8 {
         let ok = points
@@ -1335,42 +1635,72 @@ fn tetrahedralize(points: &[[f32; 3]]) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
         scale *= 2.0;
         quad = super_of(center, scale);
     }
-    for v in quad {
+    (center, scale)
+}
+
+/// 以 `c` 为中心、边长系数 `l` 的正四面体四角。
+fn super_of(c: [f32; 3], l: f32) -> [[f32; 3]; 4] {
+    [
+        [c[0] - l, c[1] - l, c[2] - l],
+        [c[0] + l, c[1] + l, c[2] - l],
+        [c[0] + l, c[1] - l, c[2] + l],
+        [c[0] - l, c[1] + l, c[2] + l],
+    ]
+}
+
+/// 建 3D 续算现场：顶点表（样本点 + 尾部 4 个超顶点）与初始超四面体。
+fn seed_3d(points: &[[f32; 3]]) -> TopologyCache {
+    let (center, scale) = super_3d_params(points);
+    let mut verts: Vec<[f32; 3]> = points.to_vec();
+    let base = verts.len();
+    for v in super_of(center, scale) {
         verts.push(v);
     }
+    let tetra = vec![[base, base + 1, base + 2, base + 3]];
+    TopologyCache::Volumetric {
+        verts,
+        tetra,
+        inserted: 0,
+        center,
+        scale,
+    }
+}
 
-    let mut tets: Vec<[usize; 4]> = vec![[base, base + 1, base + 2, base + 3]];
-    for i in 0..n {
-        let p = verts[i];
-        let mut kept: Vec<[usize; 4]> = Vec::new();
-        let mut face_count: HashMap<[usize; 3], usize> = HashMap::new();
-        for t in tets {
-            if in_sphere(&verts, t, p) {
-                // 坏四面体的 4 个面全部参与对消
-                for omit in 0..4 {
-                    let f = [t[(omit + 1) % 4], t[(omit + 2) % 4], t[(omit + 3) % 4]];
-                    *face_count.entry(face_key(f)).or_insert(0) += 1;
-                }
-            } else {
-                kept.push(t);
+/// 往 3D 现场里插一个样本点（Bowyer–Watson 三维一轮：「坏四面体 → 面对消」）。
+///
+/// `i` 必须等于 `p` 在 `verts` 里的下标；`verts` 已含该点（含尾部超顶点）。
+fn insert_3d(verts: &mut [[f32; 3]], tets: &mut Vec<[usize; 4]>, p: [f32; 3], i: usize) {
+    let mut kept: Vec<[usize; 4]> = Vec::new();
+    let mut face_count: HashMap<[usize; 3], usize> = HashMap::new();
+    for t in tets.drain(..) {
+        if in_sphere(verts, t, p) {
+            // 坏四面体的 4 个面全部参与对消
+            for omit in 0..4 {
+                let f = [t[(omit + 1) % 4], t[(omit + 2) % 4], t[(omit + 3) % 4]];
+                *face_count.entry(face_key(f)).or_insert(0) += 1;
             }
-        }
-        for (f, count) in face_count {
-            if count != 1 {
-                continue;
-            }
-            let mut t = [f[0], f[1], f[2], i];
-            if signed_volume6(verts[t[0]], verts[t[1]], verts[t[2]], verts[t[3]]) < 0.0 {
-                t.swap(1, 2);
-            }
+        } else {
             kept.push(t);
         }
-        tets = kept;
     }
+    for (f, count) in face_count {
+        if count != 1 {
+            continue;
+        }
+        let mut t = [f[0], f[1], f[2], i];
+        if signed_volume6(verts[t[0]], verts[t[1]], verts[t[2]], verts[t[3]]) < 0.0 {
+            t.swap(1, 2);
+        }
+        kept.push(t);
+    }
+    *tets = kept;
+}
 
+/// 3D 现场收尾：剥掉超顶点、丢掉退化四面体、排序；凸包面 = 只被一个四面体用到的面。
+fn finish_3d(verts: &[[f32; 3]], tets: &[[usize; 4]], n: usize) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
     let mut out: Vec<[u16; 4]> = Vec::new();
     let mut face_seen: HashMap<[usize; 3], usize> = HashMap::new();
-    for t in &tets {
+    for t in tets {
         if t.iter().any(|v| *v >= n) {
             continue;
         }
@@ -1392,6 +1722,39 @@ fn tetrahedralize(points: &[[f32; 3]]) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
     // 输出顺序稳定化：HashMap 迭代顺序不固定，排序后同一组样本恒得同一份剖分表。
     out.sort();
     hull.sort();
+    (out, hull)
+}
+
+/// 一次性 3D 剖分 + 顺手留下续算现场（扩展五十三）。退化（点数不足 / 全部共面）时无现场。
+fn full_3d(points: &[[f32; 3]]) -> (Vec<[u16; 4]>, Vec<[u16; 3]>, Option<TopologyCache>) {
+    let n = points.len();
+    if n < 4 || all_coplanar(points) {
+        return (Vec::new(), Vec::new(), None);
+    }
+    let mut cache = seed_3d(points);
+    let TopologyCache::Volumetric { verts, tetra, .. } = &mut cache else {
+        return (Vec::new(), Vec::new(), None);
+    };
+    for i in 0..n {
+        let p = verts[i];
+        insert_3d(verts, tetra, p, i);
+    }
+    let (out, hull) = finish_3d(verts, tetra, n);
+    if let TopologyCache::Volumetric { inserted, .. } = &mut cache {
+        *inserted = n;
+    }
+    (out, hull, Some(cache))
+}
+
+/// 四面体剖分（Bowyer–Watson 三维）：返回（四面体顶点下标, 凸包面）。
+///
+/// 与 2D 版本同构，只是「坏三角形 → 坏四面体」、外接圆 → 外接球、
+/// 边去重 → 面对消（内部面在两个坏四面体里各出现一次，双双消掉）。
+/// 四面体统一成「有向体积为正」的顶点顺序，`in_sphere` 的正负号判定才成立。
+///
+/// 一次性口径；增量口径见 `full_3d` + `insert_3d`（共用分步函数，输出逐位相同）。
+fn tetrahedralize(points: &[[f32; 3]]) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
+    let (out, hull, _) = full_3d(points);
     (out, hull)
 }
 
@@ -2150,5 +2513,247 @@ mod tests {
             (centre - expect).abs() < 1e-4,
             "w={w2:?} centre={centre} expect={expect}"
         );
+    }
+
+    // ---------------- 扩展五十三：增量剖分（细粒度脏标记） ----------------
+
+    /// 2D 网格样本：前四个点先把包围盒打满，之后的点都落在盒内——
+    /// 这些点不会让超级三角形变，所以每次提交都能续算。
+    fn grid_2d() -> Vec<(&'static str, [f32; 2])> {
+        vec![
+            ("p00", [0.0, 0.0]),
+            ("p20", [2.0, 0.0]),
+            ("p02", [0.0, 2.0]),
+            ("p22", [2.0, 2.0]),
+            ("p10", [1.0, 0.0]),
+            ("p01", [0.0, 1.0]),
+            ("p11", [1.0, 1.0]),
+            ("p21", [2.0, 1.0]),
+            ("p12", [1.0, 2.0]),
+        ]
+    }
+
+    /// 3D 网格样本：前 8 个是立方体角点（第 4 个点还共面，剖分要到第 5 个点才成立），
+    /// 之后补棱中点与体心。立方体 8 点共球是退化剖分，正好考验「增量与全量是否一致」。
+    fn grid_3d() -> Vec<(&'static str, [f32; 3])> {
+        vec![
+            ("c000", [0.0, 0.0, 0.0]),
+            ("c200", [2.0, 0.0, 0.0]),
+            ("c020", [0.0, 2.0, 0.0]),
+            ("c220", [2.0, 2.0, 0.0]),
+            ("c002", [0.0, 0.0, 2.0]),
+            ("c202", [2.0, 0.0, 2.0]),
+            ("c022", [0.0, 2.0, 2.0]),
+            ("c222", [2.0, 2.0, 2.0]),
+            ("m111", [1.0, 1.0, 1.0]),
+            ("m100", [1.0, 0.0, 0.0]),
+            ("m010", [0.0, 1.0, 0.0]),
+            ("m001", [0.0, 0.0, 1.0]),
+            ("m110", [1.0, 1.0, 0.0]),
+            ("m101", [1.0, 0.0, 1.0]),
+            ("m011", [0.0, 1.0, 1.0]),
+        ]
+    }
+
+    #[test]
+    fn incremental_2d_matches_full_rebuild() {
+        // 每加一个样本就提交一次：增量输出必须与「一次性全加再重剖」逐位相同。
+        let grid = grid_2d();
+        let mut step = BlendSpace::new_2d("x", "y");
+        for (k, (name, at)) in grid.iter().enumerate() {
+            assert!(step.add_sample(*name, *at));
+            assert!(step.build_pending());
+            let mut once = BlendSpace::new_2d("x", "y");
+            for (n2, a2) in grid.iter().take(k + 1) {
+                assert!(once.add_sample(*n2, *a2));
+            }
+            once.rebuild();
+            assert_eq!(
+                step.triangles,
+                once.triangles,
+                "{} 个样本时增量剖分与整表重剖不一致",
+                step.sample_count()
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_2d_weights_bitwise_equal_to_full() {
+        let grid = grid_2d();
+        let mut step = BlendSpace::new_2d("x", "y");
+        for (name, at) in &grid {
+            assert!(step.add_sample(*name, *at));
+            assert!(step.build_pending());
+        }
+        let mut once = BlendSpace::new_2d("x", "y");
+        for (name, at) in &grid {
+            assert!(once.add_sample(*name, *at));
+        }
+        once.rebuild();
+        // 网格内部 5×5 探针：权重逐位相同（不是「近似」——同算法同输入必须一模一样）。
+        for k in 0..25 {
+            let at = [(k % 5) as f32 * 0.5, (k / 5) as f32 * 0.5];
+            let a = step.weights_at(at);
+            let b = once.weights_at(at);
+            assert_eq!(a.len(), b.len(), "{at:?} 上权重条数不一致");
+            for ((na, wa), (nb, wb)) in a.iter().zip(b.iter()) {
+                assert_eq!(na, nb, "{at:?} 上权重条目顺序不一致");
+                assert_eq!(
+                    wa.to_bits(),
+                    wb.to_bits(),
+                    "{at:?} 上 {na} 的权重不逐位相同"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_3d_matches_full_rebuild() {
+        let grid = grid_3d();
+        let mut step = BlendSpace::new_3d("x", "y", "z");
+        for (k, (name, at)) in grid.iter().enumerate() {
+            assert!(step.add_sample_3d(*name, *at));
+            assert!(step.build_pending());
+            let mut once = BlendSpace::new_3d("x", "y", "z");
+            for (n2, a2) in grid.iter().take(k + 1) {
+                assert!(once.add_sample_3d(*n2, *a2));
+            }
+            once.rebuild();
+            assert_eq!(
+                step.tetra,
+                once.tetra,
+                "{} 个样本时增量四面体剖分与整表重剖不一致",
+                step.sample_count()
+            );
+            assert_eq!(step.hull_faces, once.hull_faces, "凸包面不一致");
+        }
+    }
+
+    #[test]
+    fn incremental_3d_weights_bitwise_equal_to_full() {
+        let grid = grid_3d();
+        let mut step = BlendSpace::new_3d("x", "y", "z");
+        for (name, at) in &grid {
+            assert!(step.add_sample_3d(*name, *at));
+            assert!(step.build_pending());
+        }
+        let mut once = BlendSpace::new_3d("x", "y", "z");
+        for (name, at) in &grid {
+            assert!(once.add_sample_3d(*name, *at));
+        }
+        once.rebuild();
+        for k in 0..27 {
+            let at = [(k % 3) as f32, ((k / 3) % 3) as f32, (k / 9) as f32];
+            let a = step.weights_at_3d(at);
+            let b = once.weights_at_3d(at);
+            assert_eq!(a.len(), b.len(), "{at:?} 上权重条数不一致");
+            for ((na, wa), (nb, wb)) in a.iter().zip(b.iter()) {
+                assert_eq!(na, nb, "{at:?} 上权重条目顺序不一致");
+                assert_eq!(
+                    wa.to_bits(),
+                    wb.to_bits(),
+                    "{at:?} 上 {na} 的权重不逐位相同"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_path_is_actually_used() {
+        // 包围盒打满之后补点，每次提交都该是续算；只在第一次装配时整表建场。
+        let mut s = BlendSpace::new_2d("x", "y");
+        for (name, at) in [("a", [0.0, 0.0]), ("b", [2.0, 0.0])] {
+            assert!(s.add_sample(name, at));
+        }
+        assert!(s.build_pending()); // 两点：不构成剖分，但整表路径照样跑一次
+        for (name, at) in [("c", [0.0, 2.0]), ("d", [2.0, 2.0])] {
+            assert!(s.add_sample(name, at));
+        }
+        assert!(s.build_pending()); // 补第 3、4 个点：包围盒变大，只能整表
+        let base = s.build_stats();
+        for (name, at) in [("e", [1.0, 0.0]), ("f", [0.0, 1.0]), ("g", [1.0, 1.0])] {
+            assert!(s.add_sample(name, at));
+            assert!(s.build_pending());
+        }
+        let after = s.build_stats();
+        assert_eq!(after.0, base.0 + 3, "盒内补点应走增量续算");
+        assert_eq!(after.1, base.1, "盒内补点不该再整表重剖");
+        assert_eq!(s.triangle_count(), 6, "4×4 单元网格应得 6 个三角形");
+    }
+
+    #[test]
+    fn bounds_growth_forces_full_rebuild_but_same_result() {
+        let mut s = BlendSpace::new_2d("x", "y");
+        for (name, at) in [("a", [0.0, 0.0]), ("b", [1.0, 0.0]), ("c", [0.0, 1.0])] {
+            assert!(s.add_sample(name, at));
+        }
+        assert!(s.build_pending());
+        assert_eq!(s.build_stats(), (0, 1));
+        // 新点把包围盒从 1 撑到 4：超级三角形得跟着换，老现场的判定全部失效。
+        assert!(s.add_sample("d", [4.0, 4.0]));
+        assert!(s.build_pending());
+        assert_eq!(s.build_stats(), (0, 2), "包围盒扩张时只能整表重剖");
+
+        let mut once = BlendSpace::new_2d("x", "y");
+        for (name, at) in [
+            ("a", [0.0, 0.0]),
+            ("b", [1.0, 0.0]),
+            ("c", [0.0, 1.0]),
+            ("d", [4.0, 4.0]),
+        ] {
+            assert!(once.add_sample(name, at));
+        }
+        once.rebuild();
+        assert_eq!(s.triangles, once.triangles, "回退整表后结果仍须与全量一致");
+    }
+
+    #[test]
+    fn external_point_mutation_forces_full_rebuild() {
+        // `samples` 是公开字段：外部直接改了坐标，续算现场就与样本表对不上，
+        // 必须作废重剖，而不是拿着旧现场往新点上插。
+        let mut s = space_2d();
+        assert!(s.build_pending());
+        let base = s.build_stats();
+        s.samples[1].at = [1.5, 0.0, 0.0];
+        s.rebuild();
+        assert_eq!(s.build_stats(), (base.0, base.1 + 1));
+
+        let mut once = BlendSpace::new_2d("move.x", "move.y");
+        assert!(once.add_sample("idle", [0.0, 0.0]));
+        assert!(once.add_sample("right", [1.5, 0.0]));
+        assert!(once.add_sample("forward", [0.0, 1.0]));
+        assert!(once.add_sample("quad", [1.0, 1.0]));
+        once.rebuild();
+        assert_eq!(s.triangles, once.triangles);
+    }
+
+    #[test]
+    fn clear_samples_drops_incremental_scene() {
+        let mut s = space_2d();
+        assert!(s.build_pending());
+        let base = s.build_stats();
+        s.clear_samples();
+        for (name, at) in [("a", [0.0, 0.0]), ("b", [1.0, 0.0]), ("c", [0.0, 1.0])] {
+            assert!(s.add_sample(name, at));
+        }
+        assert!(s.build_pending());
+        assert_eq!(
+            s.build_stats(),
+            (base.0, base.1 + 1),
+            "清空后没有现场可用，只能整表重剖"
+        );
+        assert_eq!(s.triangle_count(), 1);
+    }
+
+    #[test]
+    fn linear_1d_never_uses_incremental_path() {
+        // 1D 的「剖分」是区间端点，没有续算概念：每次都记为整表提交。
+        let mut s = space_1d();
+        assert!(s.build_pending());
+        assert!(s.add_sample("sprint", [3.0, 0.0]));
+        assert!(s.build_pending());
+        assert_eq!(s.build_stats(), (0, 2));
+        assert!(s.triangles.is_empty());
+        assert!(s.tetra.is_empty());
     }
 }

@@ -2145,6 +2145,16 @@ impl Scene {
         Some(space.build_pending())
     }
 
+    /// 剖分提交账本（扩展五十三）：`(增量续算次数, 整表重剖次数)`。
+    /// 编辑器 / 探针靠它确认「补点真的走了续算」，而不是每次都整表重来。
+    pub fn anim_layer_blend_build_stats(
+        &self,
+        instance: &str,
+        layer: &str,
+    ) -> Option<(usize, usize)> {
+        Some(self.blend_space_of(instance, layer)?.build_stats())
+    }
+
     /// 按样本设层速率（扩展五十二）：改了之后这层的时间推进就跟着参数走了。
     ///
     /// `instance` / `clip_name` 的解析口径与 `add_anim_layer_blend_sample` 一致

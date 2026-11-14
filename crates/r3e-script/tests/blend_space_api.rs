@@ -401,3 +401,126 @@ fn script_blend_stale_keeps_weights_and_pose_unchanged() {
         "挂起时姿态应与会话提交后一致，实际 {x}"
     );
 }
+
+// ---------------- 扩展五十三：增量剖分账本 ----------------
+
+fn seed_corners(f: &mut Fixture) {
+    assert!(f.bool_of(r#"add_anim_layer("demo/walk", "move", "idle", 1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_clip("demo/walk", "move", "atk", 0.0)"#));
+    assert!(f.bool_of(r#"set_anim_layer_blend_2d("demo/walk", "move", "move.x", "move.y")"#));
+    let corners = [
+        ("idle", -1.0, -1.0),
+        ("atk", 1.0, -1.0),
+        ("idle", -1.0, 1.0),
+        ("atk", 1.0, 1.0),
+    ];
+    for (clip, x, y) in corners {
+        let src =
+            format!(r#"add_anim_layer_blend_sample("demo/walk", "move", "{clip}", {x:?}, {y:?})"#);
+        assert!(f.bool_of(&src), "加角点样本失败: {src}");
+    }
+}
+
+#[test]
+fn script_blend_build_stats_reports_incremental_and_full() {
+    let mut f = fixture();
+    // 没挂空间：空串（探针里不用先判空间存不存在）
+    assert_eq!(
+        f.string_of(r#"anim_layer_blend_build_stats("demo/walk", "move")"#),
+        ""
+    );
+    assert_eq!(
+        f.string_of(r#"anim_layer_blend_build_stats("nobody", "nope")"#),
+        ""
+    );
+
+    seed_corners(&mut f);
+    assert!(f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    assert_eq!(
+        f.string_of(r#"anim_layer_blend_build_stats("demo/walk", "move")"#),
+        "inc=0 full=1",
+        "首次装配只能整表建场"
+    );
+
+    // 盒内补点：包围盒不变 → 续算，不再整表
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "idle", 0.0, -1.0)"#));
+    assert!(f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    assert_eq!(
+        f.string_of(r#"anim_layer_blend_build_stats("demo/walk", "move")"#),
+        "inc=1 full=1"
+    );
+
+    // 新点把包围盒从 1 撑到 3：超级三角形要换，只能整表重剖
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "atk", 3.0, 3.0)"#));
+    assert!(f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    assert_eq!(
+        f.string_of(r#"anim_layer_blend_build_stats("demo/walk", "move")"#),
+        "inc=1 full=2",
+        "包围盒扩张时必须整表重剖"
+    );
+
+    // 扩张后的盒内继续补点：又能回到续算
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "idle", 1.0, 1.5)"#));
+    assert!(f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    assert_eq!(
+        f.string_of(r#"anim_layer_blend_build_stats("demo/walk", "move")"#),
+        "inc=2 full=2"
+    );
+}
+
+#[test]
+fn script_blend_incremental_matches_full_on_weights_line() {
+    // 同一组样本，一条路「加一个提交一次」，另一条路「全加完提交一次」：
+    // 回显行（样本数 / 三角形数 / 参数值 / 两位小数权重）必须逐字符相同。
+    let pts = [
+        ("idle", -1.0, -1.0),
+        ("atk", 1.0, -1.0),
+        ("idle", -1.0, 1.0),
+        ("atk", 1.0, 1.0),
+        ("atk", 0.0, -1.0),
+        ("idle", 0.0, 1.0),
+    ];
+
+    let mut inc = fixture();
+    seed_corners(&mut inc);
+    assert!(inc.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    for (clip, x, y) in &pts[4..] {
+        let src =
+            format!(r#"add_anim_layer_blend_sample("demo/walk", "move", "{clip}", {x:?}, {y:?})"#);
+        assert!(inc.bool_of(&src), "增量补点失败: {src}");
+        assert!(inc.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    }
+    assert_eq!(
+        inc.string_of(r#"anim_layer_blend_build_stats("demo/walk", "move")"#),
+        "inc=2 full=1"
+    );
+
+    let mut full = fixture();
+    seed_corners(&mut full);
+    for (clip, x, y) in &pts[4..] {
+        let src =
+            format!(r#"add_anim_layer_blend_sample("demo/walk", "move", "{clip}", {x:?}, {y:?})"#);
+        assert!(full.bool_of(&src));
+    }
+    assert!(full.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+
+    for (x, y) in [
+        (0.0, -1.0),
+        (0.0, 0.0),
+        (-0.5, 0.25),
+        (0.75, -0.75),
+        (1.0, 1.0),
+    ] {
+        let src = format!(r#"set_anim_layer_blend_value("demo/walk", "move", {x:?}, {y:?})"#);
+        assert!(inc.bool_of(&src));
+        assert!(full.bool_of(&src));
+        let a = inc.string_of(r#"anim_layer_blend("demo/walk", "move")"#);
+        let b = full.string_of(r#"anim_layer_blend("demo/walk", "move")"#);
+        assert_eq!(a, b, "({x},{y}) 上增量与整表回显不一致");
+    }
+
+    // 姿态也一致（权重相同 → 骨骼落点相同）
+    inc.advance(0.0);
+    full.advance(0.0);
+    assert_eq!(inc.pos_x("arm"), full.pos_x("arm"));
+}

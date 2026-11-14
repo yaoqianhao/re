@@ -1207,6 +1207,19 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 剖分提交账本（扩展五十三）：回显 `"inc=3 full=1"`（增量续算次数 / 整表重剖次数）。
+    // 没挂空间返回空串——探针里不用先判空间存不存在，空串天然不等于任何期望值。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_blend_build_stats",
+        move |inst: &str, layer: &str| -> String {
+            match c.scene.borrow().anim_layer_blend_build_stats(inst, layer) {
+                Some((inc, full)) => format!("inc={inc} full={full}"),
+                None => String::new(),
+            }
+        },
+    );
+
     // 立刻提交挂起的剖分（扩展五十一）：`true` = 这次真的重建了，`false` = 本来就最新
     // （编辑器装配完马上要画线框 / 探针要读剖分表时用，省得等一帧）。
     let c = ctx.clone();
