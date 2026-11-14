@@ -2145,6 +2145,40 @@ impl Scene {
         Some(space.build_pending())
     }
 
+    /// 按样本设层速率（扩展五十二）：改了之后这层的时间推进就跟着参数走了。
+    ///
+    /// `instance` / `clip_name` 的解析口径与 `add_anim_layer_blend_sample` 一致
+    /// （片段名可只写实例前缀段，入库用规范名，大小写不敏感）。
+    ///
+    /// `None` = 层不存在或没挂空间；`Some(false)` = 片段在空间里没有样本
+    /// （或速率非有限）。空间里没有该样本时**不改**任何东西——这是编辑器最常见的
+    /// 「先 set 后 add」顺序错，静默生效反而查不出问题。
+    pub fn set_anim_layer_blend_sample_speed(
+        &mut self,
+        instance: &str,
+        layer: &str,
+        clip_name: &str,
+        speed: f32,
+    ) -> Option<bool> {
+        let clip = self.find_anim_clip(instance, clip_name);
+        let layer_ref = anim_layer_mut(self.anim_instance_mut(instance)?, layer)?;
+        let space = layer_ref.blend_space.as_mut()?;
+        Some(match clip {
+            Some(c) => space.set_sample_speed(&c.name, speed),
+            // 解析不到片段时仍允许按原始名字命中原名样本（片段可能已被卸载，
+            // 但样本表还在——此时按名字改速率是合理的，不该整条失败）。
+            None => space.set_sample_speed(clip_name, speed),
+        })
+    }
+
+    /// 当前按样本插值出的层速率倍率（扩展五十二）。没挂空间返回 `None`。
+    ///
+    /// 全原速（没有变速样本）时返回 `Some(1.0)`——探针据此判断「这一层到底有没有在变速」，
+    /// 不必自己扫样本表。
+    pub fn anim_layer_blend_speed(&self, instance: &str, layer: &str) -> Option<f32> {
+        self.blend_space_of(instance, layer).map(|s| s.speed_at())
+    }
+
     /// 按「实例名前缀 + 片段名（大小写不敏感）」解析出可切换片段。
     fn find_anim_clip(&self, instance: &str, clip_name: &str) -> Option<std::sync::Arc<AnimClip>> {
         let inst_key = self

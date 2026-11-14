@@ -667,15 +667,38 @@ impl AnimLayer {
         normalize_weights(&self.clips.iter().map(|c| c.weight).collect::<Vec<_>>())
     }
 
+    /// 混合空间按样本插值出的速率倍率（扩展五十二）。
+    ///
+    /// - 没挂空间 → `1.0`
+    /// - 空间里没有任何变速样本 → `1.0`（**连权重都不查**，这是零变化的开关）
+    /// - 否则 → `speed_at()`，即各样本速率按当前权重的加权平均
+    ///
+    /// 它只乘在层时间推进上（`advance`），不参与姿态合成：采样仍走
+    /// [`Self::sample_time`] 那一套，所以相位锁 / 逐路 `playback` 的口径都不动。
+    pub fn blend_speed_scale(&self) -> f32 {
+        match self.blend_space.as_ref() {
+            Some(space) if space.has_speed_variation() => space.speed_at(),
+            _ => 1.0,
+        }
+    }
+
     /// 推进层时间与权重过渡。
     pub fn advance(&mut self, dt: f32) {
         if self.playing && dt != 0.0 {
-            self.time += dt * self.speed;
+            // 扩展五十二：推进速率 = 层 `speed` × 空间按样本插值出的倍率。
+            // 倍率恰为 1.0 时**直接走老算式**（不乘那一下），保证未变速场景逐位不变。
+            let scale = self.blend_speed_scale();
+            let rate = if scale == 1.0 {
+                self.speed
+            } else {
+                self.speed * scale
+            };
+            self.time += dt * rate;
             if !self.looping {
                 let duration = self.duration().max(MIN_LAYER_DURATION);
                 if self.time >= duration {
                     self.time = duration;
-                } else if self.time <= 0.0 && self.speed < 0.0 {
+                } else if self.time <= 0.0 && rate < 0.0 {
                     self.time = 0.0;
                 }
             }
@@ -2042,5 +2065,114 @@ mod tests {
         let times = layer.clip_times_at(0.5);
         assert!((times[0] - 0.5).abs() < 1e-6, "{times:?}");
         assert!((times[1] - 0.25).abs() < 1e-6, "{times:?}");
+    }
+
+    // ---------------- 扩展五十二：速率随样本插值 ----------------
+
+    /// walk@1.0 / run@2.0 的一维速度空间，样本速率默认全 1.0（未变速）。
+    fn speed_layer() -> AnimLayer {
+        type Space = crate::blend_space::BlendSpace;
+        let mut layer = AnimLayer::new("move", clip("walk", vec![]), 1.0);
+        assert!(layer.add_clip(clip("run", vec![]), 1.0));
+        let mut space = Space::new_1d("speed");
+        assert!(space.add_sample("walk", [1.0, 0.0]));
+        assert!(space.add_sample("run", [2.0, 0.0]));
+        layer.blend_space = Some(space);
+        layer
+    }
+
+    #[test]
+    fn speed_scale_is_one_when_no_sample_is_retimed() {
+        let mut layer = speed_layer();
+        assert_eq!(layer.blend_speed_scale(), 1.0);
+        // 参数推到底也还是 1.0：没有变速样本就没有倍率来源
+        layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_value_1d(2.0);
+        assert!(layer.apply_blend_space());
+        assert_eq!(layer.blend_speed_scale(), 1.0);
+        // 不挂空间的层同样恒为 1.0
+        layer.blend_space = None;
+        assert_eq!(layer.blend_speed_scale(), 1.0);
+    }
+
+    #[test]
+    fn advance_matches_legacy_when_no_sample_is_retimed() {
+        // 零变化验收：挂了速度空间但一个样本都没变速时，
+        // 十帧累计的 time 必须与完全不挂空间的老层**逐位**相同。
+        let mut with_space = speed_layer();
+        let mut legacy = AnimLayer::new("move", clip("walk", vec![]), 1.0);
+        assert!(legacy.add_clip(clip("run", vec![]), 1.0));
+        for _ in 0..10 {
+            with_space.advance(1.0 / 60.0);
+            legacy.advance(1.0 / 60.0);
+        }
+        assert_eq!(
+            with_space.time.to_bits(),
+            legacy.time.to_bits(),
+            "全原速时不该多乘那一下"
+        );
+        assert!(with_space.time > 0.0);
+    }
+
+    #[test]
+    fn advance_scales_layer_time_by_interpolated_speed() {
+        let mut layer = speed_layer();
+        assert!(layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_sample_speed("run", 2.0));
+        // 参数落在 walk 上：run 权重 0 → 倍率 1.0，时间照老样子推进
+        layer.advance(0.25);
+        assert!((layer.time - 0.25).abs() < 1e-6, "{}", layer.time);
+
+        // 参数推到 run 端点：倍率 2.0 → 同样 dt 走两倍时间
+        layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_value_1d(2.0);
+        assert!(layer.apply_blend_space());
+        assert!((layer.blend_speed_scale() - 2.0).abs() < 1e-5);
+        layer.advance(0.25);
+        assert!((layer.time - 0.75).abs() < 1e-5, "{}", layer.time);
+
+        // 中间位置：倍率按权重插值（walk 1.0 / run 2.0 各半 → 1.5）
+        layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_value_1d(1.5);
+        assert!(layer.apply_blend_space());
+        assert!(
+            (layer.blend_speed_scale() - 1.5).abs() < 1e-5,
+            "{}",
+            layer.blend_speed_scale()
+        );
+        layer.advance(0.25);
+        assert!((layer.time - 1.125).abs() < 1e-5, "{}", layer.time);
+    }
+
+    #[test]
+    fn layer_speed_multiplies_interpolated_scale() {
+        // 层自身 speed 与空间倍率相乘：sprint 层的 1.5 × 空间 2.0 = 3.0 倍速
+        let mut layer = speed_layer();
+        layer.speed = 1.5;
+        assert!(layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_sample_speed("run", 2.0));
+        layer
+            .blend_space
+            .as_mut()
+            .expect("刚设过")
+            .set_value_1d(2.0);
+        assert!(layer.apply_blend_space());
+        layer.advance(0.1);
+        assert!((layer.time - 0.3).abs() < 1e-5, "{}", layer.time);
     }
 }

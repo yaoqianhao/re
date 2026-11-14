@@ -1220,6 +1220,32 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 按样本设速率（扩展五十二）：`clip` 在该层空间里有样本才改得动（`true`）。
+    // 改了之后层时间推进 = 层 speed × 「各样本速率按当前权重的加权平均」，
+    // 于是走→跑的步频跟着参数连续变化，而不是两段硬切。
+    let c = ctx.clone();
+    engine.register_fn(
+        "set_anim_layer_blend_sample_speed",
+        move |inst: &str, layer: &str, clip: &str, speed: f64| -> bool {
+            c.scene
+                .borrow_mut()
+                .set_anim_layer_blend_sample_speed(inst, layer, clip, speed as f32)
+                .unwrap_or(false)
+        },
+    );
+
+    // 当前按样本插值出的层速率倍率（扩展五十二）。没挂空间返回 1.0（C7 探针不用先判存在）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_blend_speed",
+        move |inst: &str, layer: &str| -> f64 {
+            c.scene
+                .borrow()
+                .anim_layer_blend_speed(inst, layer)
+                .unwrap_or(1.0) as f64
+        },
+    );
+
     // ---------------- 层内相位同步（扩展四十六） ----------------
     //
     // 用法：走 / 跑这类长短不一的片段同处一层时，开相位锁让两路按同一相位采样

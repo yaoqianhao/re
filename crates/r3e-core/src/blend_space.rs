@@ -128,6 +128,13 @@ pub struct BlendSample {
     pub at: [f32; 3],
     /// 该坐标上的片段名（与 `AnimClip::name` 同名，大小写不敏感匹配）。
     pub clip: String,
+    /// 该样本自己的播放速率（扩展五十二）：层速率 = 层 `speed` × 本值按权重加权平均。
+    ///
+    /// 默认 `1.0`——所有样本都保持 1.0 时加权结果恒为 1.0（`x / x` 精确得 1.0），
+    /// 层时间的推进与扩展五十二之前**逐位一致**。这是本扩展「零变化」验收的支点。
+    /// 典型用途：1D 空间 `speed` 轴上 `idle@0`（1.0）到 `run@1`（1.35），
+    /// 玩家推摇杆时步频跟着参数连续加快，而不是在「走」「跑」两段之间硬切。
+    pub speed: f32,
 }
 
 /// 求值要用的拓扑三元组 `(三角形, 四面体, 凸包面)`。
@@ -324,7 +331,12 @@ impl BlendSpace {
             self.rejected += 1;
             return false;
         }
-        self.samples.push(BlendSample { at, clip });
+        self.samples.push(BlendSample {
+            at,
+            clip,
+            // 扩展五十二：样本速率默认 1.0（原速）。要变速走 `set_sample_speed`。
+            speed: 1.0,
+        });
         // 扩展五十一：这里**不立刻重建剖分**，只置脏标记。
         // 编辑器装配 24 个样本时，原来的「每加一个重剖一次」是 24 次整表 Bowyer–Watson，
         // 现在是「首次求值 / 首次 advance 时重剖一次」。求值侧不读陈旧拓扑
@@ -505,6 +517,77 @@ impl BlendSpace {
                 self.weights_3d(&tetra, &faces, p)
             }
         }
+    }
+
+    /// 按片段名设该样本的播放速率（扩展五十二）。返回是否命中至少一个样本。
+    ///
+    /// 非有限速率直接拒绝（返回 `false`，样本表不变）：`NaN` 速率会把层时间推进成 `NaN`，
+    /// 之后整层姿态全 `NaN`，而画面只是「不动」——这类错最难查，入口处就挡掉。
+    ///
+    /// 同名多个样本（同一动作在参数轴上录了两段）会被一起改：
+    /// 求值侧按名字合并权重，速率也只能是「这份名字对应的一组样本」级别的量。
+    pub fn set_sample_speed(&mut self, clip: &str, speed: f32) -> bool {
+        if !speed.is_finite() {
+            return false;
+        }
+        let target = clip.trim();
+        if target.is_empty() {
+            return false;
+        }
+        let mut hit = false;
+        for sample in &mut self.samples {
+            if sample.clip == target || sample.clip.eq_ignore_ascii_case(target) {
+                sample.speed = speed.max(0.0);
+                hit = true;
+            }
+        }
+        hit
+    }
+
+    /// 样本表里是否有任何一路不是原速（扩展五十二）。
+    ///
+    /// 这是「零变化」的开关：全 1.0 时层时间推进完全不用查权重、不碰剖分，
+    /// 于是不调新 API 的场景连一次额外求值都不会发生。
+    pub fn has_speed_variation(&self) -> bool {
+        self.samples.iter().any(|s| (s.speed - 1.0).abs() > EPS)
+    }
+
+    /// 当前参数下按样本插值出的速率（扩展五十二；无样本 → 1.0）。
+    pub fn speed_at(&self) -> f32 {
+        self.speed_at_3d(self.value)
+    }
+
+    /// 指定坐标下按样本插值出的速率（扩展五十二）。
+    ///
+    /// 算法与权重同源：取 `weights_at_3d` 的**合并后权重** `w_i`，速率 = `Σ w_i·s_i / Σ w_i`。
+    /// 权重本身已归一（`Σw = 1`），所以这就是加权平均；除以 `Σw` 只是防浮点。
+    /// 同名片段取样本表里**第一个**同名样本的速率（合并后已分不清是哪一个）。
+    pub fn speed_at_3d(&self, at: [f32; 3]) -> f32 {
+        let weights = self.weights_at_3d(at);
+        if weights.is_empty() {
+            return 1.0;
+        }
+        let mut acc = 0.0_f32;
+        let mut sum = 0.0_f32;
+        for (name, weight) in &weights {
+            if let Some(speed) = self.sample_speed_of(name) {
+                acc += weight * speed;
+                sum += weight;
+            }
+        }
+        if sum <= EPS {
+            // 权重全在这里被 `merge` 丢掉了（理论上进不来），保守回原速。
+            return 1.0;
+        }
+        acc / sum
+    }
+
+    /// 按片段名找样本速率（大小写不敏感，取第一个同名样本）。
+    fn sample_speed_of(&self, clip: &str) -> Option<f32> {
+        self.samples
+            .iter()
+            .find(|s| s.clip.eq_ignore_ascii_case(clip))
+            .map(|s| s.speed)
     }
 
     /// 一维求值：排序后找区间，线性插值；区间外钳制到端点。
@@ -689,8 +772,11 @@ impl BlendSpace {
     /// 形如 `1d(speed) n=3 v=1.50` / `2d(move.x,move.y) n=4 tri=2 v=(0.50,-0.50)` /
     /// `3d(move.x,move.y,speed) n=24 tet=71 drop=0 v=(0.00,1.00,2.00)`，
     /// 与 `layer_report` 的 `k=v` 风格一致，便于 grep。
+    ///
+    /// 扩展五十二：样本里有变速时尾部追加 `spd=1.23`（当前加权速率）。全原速时
+    /// **不追加**，回显逐字符不变——探针与既有断言因此不受影响。
     pub fn brief(&self) -> String {
-        match self.dim {
+        let base = match self.dim {
             BlendDim::Linear1D => format!(
                 "1d({}) n={} drop={} v={:.2}",
                 self.params[0],
@@ -720,6 +806,11 @@ impl BlendSpace {
                 self.value[1],
                 self.value[2]
             ),
+        };
+        if self.has_speed_variation() {
+            format!("{base} spd={:.2}", self.speed_at())
+        } else {
+            base
         }
     }
 
@@ -1982,5 +2073,82 @@ mod tests {
         let line = s.brief();
         assert!(line.contains("tri=2"), "{line}");
         assert!(line.contains("n=4"), "{line}");
+    }
+
+    // ---------------- 扩展五十二：速率随样本插值 ----------------
+
+    #[test]
+    fn sample_speed_defaults_to_exactly_one() {
+        let s = space_1d();
+        assert!(!s.has_speed_variation(), "默认不该带变速");
+        // 零变化支点：全原速时加权结果必须**逐位**等于 1.0（Σw·1 / Σw）。
+        assert_eq!(s.speed_at().to_bits(), 1.0_f32.to_bits());
+    }
+
+    #[test]
+    fn speed_follows_weighted_average() {
+        let mut s = space_1d();
+        assert!(s.set_sample_speed("run", 1.5));
+        assert!(s.has_speed_variation());
+        s.set_value(0.0, 0.0);
+        assert!((s.speed_at() - 1.0).abs() < 1e-6, "{}", s.speed_at());
+        s.set_value(2.0, 0.0);
+        assert!((s.speed_at() - 1.5).abs() < 1e-6, "{}", s.speed_at());
+        // x=1.5 落在 walk(1.0) / run(1.5) 正中间 → 加权 (1.0+1.5)/2
+        s.set_value(1.5, 0.0);
+        let mid = s.speed_at();
+        assert!((mid - 1.25).abs() < 1e-5, "中点应是加权平均：{mid}");
+        // x=1 正好踩在 walk 上，run 权重为 0 → 回到原速
+        s.set_value(1.0, 0.0);
+        assert!((s.speed_at() - 1.0).abs() < 1e-6, "{}", s.speed_at());
+    }
+
+    #[test]
+    fn sample_speed_rejects_unknown_non_finite_and_clamps_negative() {
+        let mut s = space_1d();
+        assert!(!s.set_sample_speed("ghost", 1.5), "没有样本就不该改得动");
+        assert!(!s.set_sample_speed("run", f32::NAN), "NaN 速率必须挡住");
+        assert!(!s.set_sample_speed("run", f32::INFINITY));
+        assert!(!s.has_speed_variation(), "拒绝之后样本表不该有任何变化");
+        assert!(s.set_sample_speed("RUN", 0.5), "名字大小写不敏感");
+        assert!((s.samples[2].speed - 0.5).abs() < 1e-6, "{:?}", s.samples);
+        assert!(s.set_sample_speed("run", -2.0));
+        assert_eq!(s.samples[2].speed, 0.0, "负速率钳到 0，不做倒放");
+    }
+
+    #[test]
+    fn brief_appends_speed_only_when_varied() {
+        let mut s = space_1d();
+        assert!(!s.brief().contains("spd="), "全原速时回显逐字符不变");
+        assert!(s.set_sample_speed("run", 2.0));
+        let line = s.brief();
+        assert!(line.contains("spd="), "{line}");
+    }
+
+    #[test]
+    fn speed_reads_only_the_mixed_in_samples() {
+        // 2D 网格：站在右端点时只有 right 有权重，速率必须恰是它自己的。
+        let mut s = space_2d();
+        assert!(s.set_sample_speed("right", 2.0));
+        s.set_value(1.0, 0.0);
+        let w = s.weights_at([1.0, 0.0]);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!((s.speed_at() - 2.0).abs() < 1e-5, "{}", s.speed_at());
+        // 内部点：速率必须严格等于「各样本速率 × 各自权重」的加权和——
+        // 不逐位钉死某个数字（中心点落在哪一侧三角形的对角线上由剖分决定），
+        // 而是拿同一时刻的权重反算期望值，这样断言与剖分实现解耦。
+        s.set_value(0.5, 0.5);
+        let centre = s.speed_at();
+        let w2 = s.weights_at([0.5, 0.5]);
+        let right_w = w2
+            .iter()
+            .find(|(n, _)| n == "right")
+            .map(|(_, w)| *w)
+            .unwrap_or(0.0);
+        let expect = right_w * 2.0 + (1.0 - right_w) * 1.0;
+        assert!(
+            (centre - expect).abs() < 1e-4,
+            "w={w2:?} centre={centre} expect={expect}"
+        );
     }
 }
