@@ -2126,6 +2126,25 @@ impl Scene {
         self.anim_layer(instance, layer)?.blend_space.as_ref()
     }
 
+    /// 混合空间的剖分是否挂起（扩展五十一）。没挂空间返回 `None`。
+    ///
+    /// `true` = 样本加进来了但剖分还没提交。求值仍然精确（现场算临时拓扑），
+    /// 编辑器据这个标记决定「要不要现在就画线框」——挂起时 `triangles()` 是空的。
+    pub fn anim_layer_blend_stale(&self, instance: &str, layer: &str) -> Option<bool> {
+        self.blend_space_of(instance, layer).map(|s| s.is_stale())
+    }
+
+    /// 把挂起的剖分一次性提交（扩展五十一）。没挂空间返回 `None`。
+    ///
+    /// 返回 `Some(true)` = 这次真的重建了、`Some(false)` = 本来就最新（没付钱）。
+    /// 逐帧 advance 里也会自动提交一次（`AnimLayer::apply_blend_space`），
+    /// 这个入口是给「批量装配完立刻画线框 / 立刻探针」的编辑器与脚本用的。
+    pub fn build_anim_layer_blend_pending(&mut self, instance: &str, layer: &str) -> Option<bool> {
+        let inst = self.anim_instance_mut(instance)?;
+        let space = anim_layer_mut(inst, layer)?.blend_space.as_mut()?;
+        Some(space.build_pending())
+    }
+
     /// 按「实例名前缀 + 片段名（大小写不敏感）」解析出可切换片段。
     fn find_anim_clip(&self, instance: &str, clip_name: &str) -> Option<std::sync::Arc<AnimClip>> {
         let inst_key = self

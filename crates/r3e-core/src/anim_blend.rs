@@ -537,9 +537,13 @@ impl AnimLayer {
     /// 否则权重会残留成「越走越多路」。空间里出现、层里没有的片段名直接忽略
     /// （它的权重份额会被 `normalize_weights` 重新分配，不会让整层整体变暗）。
     pub fn apply_blend_space(&mut self) -> bool {
-        let Some(space) = self.blend_space.as_ref() else {
+        let Some(space) = self.blend_space.as_mut() else {
             return false;
         };
+        // 扩展五十一：这里是剖分挂起（脏标记）的**提交点**——批量 `add_sample` 之后
+        // 第一帧 advance 才付一次整表重建，之后每帧 `build_pending()` 都是空操作。
+        // 求值侧不依赖这次提交（挂起时现场算临时拓扑），所以它对权重逐位无影响。
+        space.build_pending();
         let weights = space.weights();
         if weights.is_empty() {
             return false;

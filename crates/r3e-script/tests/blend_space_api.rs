@@ -327,3 +327,77 @@ fn script_blend_api_returns_neutral_values_for_missing_target() {
     let line = f.string_of(r#"anim_layer_blend("demo/walk", "move")"#);
     assert!(line.starts_with("1d(speed) n=0 drop=1 v=0.00"), "{line}");
 }
+
+// ---------------- 扩展五十一：剖分缓存（脏标记 + 延迟提交） ----------------
+
+#[test]
+fn script_blend_stale_flag_and_manual_build() {
+    let mut f = fixture();
+    assert!(f.bool_of(r#"add_anim_layer("demo/walk", "move", "idle", 1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_clip("demo/walk", "move", "atk", 0.0)"#));
+
+    // 没挂空间：标记恒 false，手动提交也返回 false（探针不用先判空）
+    assert!(!f.bool_of(r#"anim_layer_blend_stale("demo/walk", "move")"#));
+    assert!(!f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+
+    assert!(f.bool_of(r#"set_anim_layer_blend_2d("demo/walk", "move", "move.x", "move.y")"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "idle", -1.0, -1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "atk", 1.0, -1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "idle", -1.0, 1.0)"#));
+
+    // 加完样本：挂起中
+    assert!(f.bool_of(r#"anim_layer_blend_stale("demo/walk", "move")"#));
+
+    // 手动提交：第一次真的重建，第二次不重复付钱
+    assert!(f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+    assert!(!f.bool_of(r#"anim_layer_blend_stale("demo/walk", "move")"#));
+    assert!(!f.bool_of(r#"build_anim_layer_blend("demo/walk", "move")"#));
+
+    // 再补一个样本 → 又挂起，逐帧 advance 会替我们提交
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "atk", 1.0, 1.0)"#));
+    assert!(f.bool_of(r#"anim_layer_blend_stale("demo/walk", "move")"#));
+    f.advance(0.0);
+    assert!(
+        !f.bool_of(r#"anim_layer_blend_stale("demo/walk", "move")"#),
+        "advance 应把挂起的剖分提交掉"
+    );
+
+    // 缺失目标仍是中性值
+    assert!(!f.bool_of(r#"anim_layer_blend_stale("demo/walk", "nope")"#));
+    assert!(!f.bool_of(r#"build_anim_layer_blend("nobody", "nope")"#));
+}
+
+#[test]
+fn script_blend_stale_keeps_weights_and_pose_unchanged() {
+    // 挂起只推迟「建剖分」，不能推迟「算权重」——回显与姿态都得先对。
+    let mut f = fixture();
+    assert!(f.bool_of(r#"add_anim_layer("demo/walk", "move", "idle", 1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_clip("demo/walk", "move", "atk", 0.0)"#));
+    assert!(f.bool_of(r#"set_anim_layer_blend_2d("demo/walk", "move", "move.x", "move.y")"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "idle", -1.0, -1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "atk", 1.0, -1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "idle", -1.0, 1.0)"#));
+    assert!(f.bool_of(r#"add_anim_layer_blend_sample("demo/walk", "move", "atk", 1.0, 1.0)"#));
+    assert!(f.bool_of(r#"set_anim_layer_blend_value("demo/walk", "move", 0.5, 0.5)"#));
+
+    // 挂起状态下回显：拓扑数字已是最终值，权重也已是最终权重
+    let stale_line = f.string_of(r#"anim_layer_blend("demo/walk", "move")"#);
+    assert!(
+        stale_line.contains("tri=2"),
+        "挂起时也要报出 2 个三角形: {stale_line}"
+    );
+    assert!(f.bool_of(r#"anim_layer_blend_stale("demo/walk", "move")"#));
+
+    // advance 提交剖分后再看：回显逐字相同
+    f.advance(0.5);
+    let committed_line = f.string_of(r#"anim_layer_blend("demo/walk", "move")"#);
+    assert_eq!(stale_line, committed_line, "提交前后回显应逐字相同");
+
+    // 姿态同口径：v=(0.5,0.5) 落在 atk 那侧的三角形里，atk=0.75、idle=0.25；
+    // t=0.5 时 idle 的 arm 在 0、atk 的 arm 在 50 → 37.5
+    let x = f.pos_x("arm");
+    assert!(
+        (x - 37.5).abs() < 1e-3,
+        "挂起时姿态应与会话提交后一致，实际 {x}"
+    );
+}

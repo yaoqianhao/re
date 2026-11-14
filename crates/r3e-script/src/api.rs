@@ -1193,6 +1193,33 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
         },
     );
 
+    // 剖分挂起标记（扩展五十一）：批量 `add_anim_layer_blend_sample*` 之后为 `true`，
+    // 下一帧 advance（或显式 `build_anim_layer_blend`）之后回到 `false`。
+    // 没挂空间返回 `false`——探针里不用先判空间存不存在。
+    let c = ctx.clone();
+    engine.register_fn(
+        "anim_layer_blend_stale",
+        move |inst: &str, layer: &str| -> bool {
+            c.scene
+                .borrow()
+                .anim_layer_blend_stale(inst, layer)
+                .unwrap_or(false)
+        },
+    );
+
+    // 立刻提交挂起的剖分（扩展五十一）：`true` = 这次真的重建了，`false` = 本来就最新
+    // （编辑器装配完马上要画线框 / 探针要读剖分表时用，省得等一帧）。
+    let c = ctx.clone();
+    engine.register_fn(
+        "build_anim_layer_blend",
+        move |inst: &str, layer: &str| -> bool {
+            c.scene
+                .borrow_mut()
+                .build_anim_layer_blend_pending(inst, layer)
+                .unwrap_or(false)
+        },
+    );
+
     // ---------------- 层内相位同步（扩展四十六） ----------------
     //
     // 用法：走 / 跑这类长短不一的片段同处一层时，开相位锁让两路按同一相位采样

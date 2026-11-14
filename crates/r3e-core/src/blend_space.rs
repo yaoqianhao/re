@@ -52,6 +52,7 @@
 //!   （权重 1），`brief()` 里 `tet=0` 一眼可见——要精确插值就给至少四个不共面的样本。
 
 use crate::anim_blend::normalize_weights;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// 单个混合空间最多容纳的样本数。
@@ -129,6 +130,15 @@ pub struct BlendSample {
     pub clip: String,
 }
 
+/// 求值要用的拓扑三元组 `(三角形, 四面体, 凸包面)`。
+///
+/// 扩展五十一：`Borrowed` = 直接借缓存，`Owned` = 剖分挂起时现场算的一份临时表。
+type Topology<'a> = (
+    Cow<'a, [[u16; 3]]>,
+    Cow<'a, [[u16; 4]]>,
+    Cow<'a, [[u16; 3]]>,
+);
+
 /// 1D / 2D / 3D 混合空间。
 ///
 /// 字段全公开：它是**数据**而不是句柄，编辑器快照与存档要能直接读写。
@@ -153,6 +163,12 @@ pub struct BlendSpace {
     hull_faces: Vec<[u16; 3]>,
     /// 被拒绝的样本数（非法坐标 / 重复位置），只用于日志，语义是「累计」。
     rejected: usize,
+    /// 剖分是否落后于样本表（扩展五十一的脏标记）。
+    ///
+    /// `add_sample` 之后置 `true`、`rebuild` / `build_pending` 之后置 `false`。
+    /// 求值不走「陈旧拓扑」，而是在挂起时现场算一份临时拓扑（见 `live_topology`），
+    /// 所以这个标记只影响**什么时候付重建的钱**，不影响**算出来的权重**。
+    stale: bool,
 }
 
 impl BlendSpace {
@@ -167,6 +183,7 @@ impl BlendSpace {
             tetra: Vec::new(),
             hull_faces: Vec::new(),
             rejected: 0,
+            stale: false,
         }
     }
 
@@ -181,6 +198,7 @@ impl BlendSpace {
             tetra: Vec::new(),
             hull_faces: Vec::new(),
             rejected: 0,
+            stale: false,
         }
     }
 
@@ -195,6 +213,7 @@ impl BlendSpace {
             tetra: Vec::new(),
             hull_faces: Vec::new(),
             rejected: 0,
+            stale: false,
         }
     }
 
@@ -221,12 +240,21 @@ impl BlendSpace {
     }
 
     /// 三角剖分出的三角形个数（1D / 3D 恒为 0）。
+    ///
+    /// 扩展五十一：剖分挂起时现场算一份再报数——回显 / 探针看到的数字与提交后一致，
+    /// 不会出现「刚加完样本 `tri=0`」这种会误导编辑器的中间态。
     pub fn triangle_count(&self) -> usize {
+        if self.stale {
+            return self.compute_triangles().len();
+        }
         self.triangles.len()
     }
 
     /// 体剖分出的四面体个数（1D / 2D 恒为 0；扩展四十九）。
     pub fn tetra_count(&self) -> usize {
+        if self.stale {
+            return self.compute_tetra().0.len();
+        }
         self.tetra.len()
     }
 
@@ -236,11 +264,15 @@ impl BlendSpace {
     }
 
     /// 剖分结果（只读，编辑器画线框用）。
+    ///
+    /// 扩展五十一：这是**缓存**，剖分挂起（`is_stale()`）时为空——
+    /// 画线框前先 `build_pending()`；只要数字不求拓扑时用 `triangle_count()`。
     pub fn triangles(&self) -> &[[u16; 3]] {
         &self.triangles
     }
 
     /// 体剖分结果（只读，调试 / 编辑器画四面体用；扩展四十九）。
+    /// 与 `triangles` 同理：挂起时为空，画之前先 `build_pending()`。
     pub fn tetra(&self) -> &[[u16; 4]] {
         &self.tetra
     }
@@ -293,7 +325,11 @@ impl BlendSpace {
             return false;
         }
         self.samples.push(BlendSample { at, clip });
-        self.rebuild();
+        // 扩展五十一：这里**不立刻重建剖分**，只置脏标记。
+        // 编辑器装配 24 个样本时，原来的「每加一个重剖一次」是 24 次整表 Bowyer–Watson，
+        // 现在是「首次求值 / 首次 advance 时重剖一次」。求值侧不读陈旧拓扑
+        // （挂起时现场算临时拓扑，见 `live_topology`），所以这是纯粹的**省钱**，不是语义变更。
+        self.stale = true;
         true
     }
 
@@ -311,6 +347,8 @@ impl BlendSpace {
         self.triangles.clear();
         self.tetra.clear();
         self.hull_faces.clear();
+        // 空样本表与空剖分是一致的，没有「待重建」这回事。
+        self.stale = false;
     }
 
     /// 设定当前参数（1D / 2D 入口，`z` 由维度归一吃掉）。非有限值整体拒绝（保持原值）。
@@ -339,31 +377,93 @@ impl BlendSpace {
     }
 
     /// 重建剖分（2D 走三角、3D 走四面体）。
-    /// `add_sample` / `clear_samples` 已自动调用，只在直接改 `samples` 后需要。
+    ///
+    /// `add_sample` 不再自动调用它（扩展五十一：只置脏标记），批量装配时由
+    /// `build_pending` 一次性提交、或由 `AnimLayer::apply_blend_space` 每帧提交一次；
+    /// 直接改 `samples` 之后也要手动调一次。
     pub fn rebuild(&mut self) {
         self.triangles.clear();
         self.tetra.clear();
         self.hull_faces.clear();
+        // 先落标记：下面有多个早退分支（样本不足 / 共线 / 共面），
+        // 每个分支产出的都是「与当前样本表一致的剖分」，所以出口只有一条。
+        self.stale = false;
         match self.dim {
             BlendDim::Linear1D => {}
             BlendDim::Planar2D => {
                 if self.samples.len() < 3 {
                     return;
                 }
-                let points: Vec<[f32; 2]> =
-                    self.samples.iter().map(|s| [s.at[0], s.at[1]]).collect();
-                self.triangles = triangulate(&points);
+                self.triangles = self.compute_triangles();
             }
             BlendDim::Volumetric3D => {
                 if self.samples.len() < 4 {
                     return;
                 }
-                let points: Vec<[f32; 3]> = self.samples.iter().map(|s| s.at).collect();
-                let (tetra, faces) = tetrahedralize(&points);
+                let (tetra, faces) = self.compute_tetra();
                 self.tetra = tetra;
                 self.hull_faces = faces;
             }
         }
+    }
+
+    /// 剖分是否落后于样本表（扩展五十一的脏标记）。
+    ///
+    /// `true` = 样本加进来还没提交剖分。此时求值仍然**精确**（现场算临时拓扑），
+    /// 但每次求值都要重算一遍，所以装配期结束后应 `build_pending` 一次。
+    pub fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    /// 把挂起的样本一次性提交成剖分（扩展五十一）。返回是否真的重建了。
+    ///
+    /// 已是最新时直接返回 `false`（不重复付整表重建的钱）——这正是「批量 add N 个样本
+    /// 只重剖 1 次」的实现口径。
+    pub fn build_pending(&mut self) -> bool {
+        if !self.stale {
+            return false;
+        }
+        self.rebuild();
+        true
+    }
+
+    /// 算一份 2D 三角剖分（不写回缓存）。
+    fn compute_triangles(&self) -> Vec<[u16; 3]> {
+        if self.dim != BlendDim::Planar2D || self.samples.len() < 3 {
+            return Vec::new();
+        }
+        let points: Vec<[f32; 2]> = self.samples.iter().map(|s| [s.at[0], s.at[1]]).collect();
+        triangulate(&points)
+    }
+
+    /// 算一份 3D 体剖分 + 凸包面（不写回缓存）。
+    fn compute_tetra(&self) -> (Vec<[u16; 4]>, Vec<[u16; 3]>) {
+        if self.dim != BlendDim::Volumetric3D || self.samples.len() < 4 {
+            return (Vec::new(), Vec::new());
+        }
+        let points: Vec<[f32; 3]> = self.samples.iter().map(|s| s.at).collect();
+        tetrahedralize(&points)
+    }
+
+    /// 求值要用的拓扑：挂起时现场算（不写回），否则借缓存。
+    ///
+    /// 这是「脏标记不改变结果」的那一半：临时拓扑与 `rebuild` 产出的是**同一套算法、
+    /// 同一份输入**，所以权重逐位相同。挂起状态下只是把重建的钱挪到求值时刻，
+    /// 不会退回最近边 / 最近面兜底。
+    fn live_topology(&self) -> Topology<'_> {
+        if !self.stale {
+            return (
+                Cow::Borrowed(&self.triangles),
+                Cow::Borrowed(&self.tetra),
+                Cow::Borrowed(&self.hull_faces),
+            );
+        }
+        let (tetra, faces) = self.compute_tetra();
+        (
+            Cow::Owned(self.compute_triangles()),
+            Cow::Owned(tetra),
+            Cow::Owned(faces),
+        )
     }
 
     /// 当前参数下的权重（按名字合并、降序无关、和为 1）。
@@ -394,8 +494,16 @@ impl BlendSpace {
         ]);
         match self.dim {
             BlendDim::Linear1D => self.weights_1d(p[0]),
-            BlendDim::Planar2D => self.weights_2d([p[0], p[1]]),
-            BlendDim::Volumetric3D => self.weights_3d(p),
+            // 扩展五十一：拓扑从 `live_topology` 取——挂起时是临时算的，
+            // 与提交后借到的是同一套算法同一份输入，权重逐位相同。
+            BlendDim::Planar2D => {
+                let (triangles, _, _) = self.live_topology();
+                self.weights_2d(&triangles, [p[0], p[1]])
+            }
+            BlendDim::Volumetric3D => {
+                let (_, tetra, faces) = self.live_topology();
+                self.weights_3d(&tetra, &faces, p)
+            }
         }
     }
 
@@ -441,13 +549,13 @@ impl BlendSpace {
     /// 此时两侧三角形都包含它。这里把两侧结果一起交给 `merge` 归一（等价于取平均），
     /// 于是四向样本的中心得到「各 0.25」，而不是「先被遍历到的那一对各 0.5」——
     /// 后者会让玩家在中心附近微动时姿态在对角之间跳变。
-    fn weights_2d(&self, p: [f32; 2]) -> Vec<(String, f32)> {
+    fn weights_2d(&self, triangles: &[[u16; 3]], p: [f32; 2]) -> Vec<(String, f32)> {
         let n = self.samples.len();
         if n == 1 {
             return merge(&[(self.samples[0].clip.as_str(), 1.0)]);
         }
         let mut hits: Vec<(&str, f32)> = Vec::new();
-        for tri in &self.triangles {
+        for tri in triangles {
             let idx = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
             if idx.iter().any(|i| *i >= n) {
                 continue;
@@ -496,13 +604,18 @@ impl BlendSpace {
     ///
     /// 与 2D 同一思路：点可能同时属于多个四面体（正好落在网格面上），两侧结果一并
     /// 交给 `merge` 归一，避免玩家在两面之间微动时姿态跳变。
-    fn weights_3d(&self, p: [f32; 3]) -> Vec<(String, f32)> {
+    fn weights_3d(
+        &self,
+        tetra: &[[u16; 4]],
+        faces: &[[u16; 3]],
+        p: [f32; 3],
+    ) -> Vec<(String, f32)> {
         let n = self.samples.len();
         if n == 1 {
             return merge(&[(self.samples[0].clip.as_str(), 1.0)]);
         }
         let mut hits: Vec<(&str, f32)> = Vec::new();
-        for t in &self.tetra {
+        for t in tetra {
             let idx = [t[0] as usize, t[1] as usize, t[2] as usize, t[3] as usize];
             if idx.iter().any(|i| *i >= n) {
                 continue;
@@ -520,7 +633,7 @@ impl BlendSpace {
         if !hits.is_empty() {
             return merge(&hits);
         }
-        if let Some(w) = self.nearest_face_weights(p) {
+        if let Some(w) = self.nearest_face_weights(faces, p) {
             return w;
         }
         self.nearest_sample_weights(p)
@@ -530,10 +643,10 @@ impl BlendSpace {
     ///
     /// 只遍历凸包面（重建时算好，量级 O(样本数)），不遍历内部面：
     /// 凸包外的点最近的支撑一定落在凸包边界上。
-    fn nearest_face_weights(&self, p: [f32; 3]) -> Option<Vec<(String, f32)>> {
+    fn nearest_face_weights(&self, faces: &[[u16; 3]], p: [f32; 3]) -> Option<Vec<(String, f32)>> {
         let n = self.samples.len();
         let mut best: Option<(f32, [f32; 3], [u16; 3])> = None;
-        for f in &self.hull_faces {
+        for f in faces {
             let idx = [f[0] as usize, f[1] as usize, f[2] as usize];
             if idx.iter().any(|i| *i >= n) {
                 continue;
@@ -590,7 +703,7 @@ impl BlendSpace {
                 self.params[0],
                 self.params[1],
                 self.samples.len(),
-                self.triangles.len(),
+                self.triangle_count(),
                 self.rejected,
                 self.value[0],
                 self.value[1]
@@ -601,7 +714,7 @@ impl BlendSpace {
                 self.params[1],
                 self.params[2],
                 self.samples.len(),
-                self.tetra.len(),
+                self.tetra_count(),
                 self.rejected,
                 self.value[0],
                 self.value[1],
@@ -1771,5 +1884,103 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---------------- 扩展五十一：剖分缓存（脏标记 + 延迟提交） ----------------
+
+    #[test]
+    fn add_sample_defers_triangulation() {
+        let s = space_2d();
+        // 加完样本剖分并未提交，但报出的三角形数已经是最终值（现场算一份）
+        assert!(s.is_stale(), "add_sample 只应置脏标记");
+        assert_eq!(s.triangle_count(), 2, "挂起时报数也要与提交后一致");
+        assert!(
+            s.triangles().is_empty(),
+            "挂起时缓存表是空的——画线框前必须 build_pending"
+        );
+    }
+
+    #[test]
+    fn build_pending_commits_once() {
+        let mut s = space_2d();
+        assert!(s.is_stale());
+        assert!(s.build_pending(), "第一次提交应真的重建");
+        assert!(!s.is_stale());
+        assert_eq!(s.triangles().len(), 2);
+        assert!(!s.build_pending(), "已是最新时不该再付重建的钱");
+    }
+
+    #[test]
+    fn deferred_weights_bitwise_equal_to_committed_2d() {
+        // 挂起状态下求值走的是现场临时拓扑，必须与提交后借缓存逐位相同。
+        let s = space_2d();
+        for p in [[0.0, 0.0], [1.0, 1.0], [0.5, 0.5], [0.3, 0.7], [-2.0, 0.4]] {
+            let before = s.weights_at(p);
+            let mut committed = s.clone();
+            committed.build_pending();
+            assert!(!committed.is_stale());
+            let after = committed.weights_at(p);
+            assert_eq!(before.len(), after.len(), "v={p:?}");
+            for ((n1, w1), (n2, w2)) in before.iter().zip(after.iter()) {
+                assert_eq!(n1, n2, "v={p:?} 名字顺序应一致");
+                assert_eq!(w1.to_bits(), w2.to_bits(), "v={p:?} 权重应逐位相同");
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_weights_bitwise_equal_to_committed_3d() {
+        let mut s = BlendSpace::new_3d("move.x", "move.y", "speed");
+        assert!(s.add_sample_3d("idle", [0.0, 0.0, 0.0]));
+        assert!(s.add_sample_3d("walk", [1.0, 0.0, 1.0]));
+        assert!(s.add_sample_3d("run", [2.0, 0.0, 2.0]));
+        assert!(s.add_sample_3d("side", [0.0, 1.0, 1.0]));
+        assert!(s.add_sample_3d("up", [0.0, 0.0, 2.0]));
+        assert!(s.is_stale());
+        assert_eq!(s.tetra_count(), 2, "五个不共面样本应给出两个四面体");
+
+        for p in [[0.0, 0.0, 0.0], [1.5, 0.2, 1.5], [0.3, 0.3, 0.8]] {
+            let before = s.weights_at_3d(p);
+            let mut committed = s.clone();
+            committed.build_pending();
+            let after = committed.weights_at_3d(p);
+            assert_eq!(before.len(), after.len(), "v={p:?}");
+            for ((n1, w1), (n2, w2)) in before.iter().zip(after.iter()) {
+                assert_eq!(n1, n2, "v={p:?}");
+                assert_eq!(w1.to_bits(), w2.to_bits(), "v={p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn stale_space_still_refuses_extrapolation() {
+        // 挂起不能让兜底退化：凸包外的点仍要落到最近面 / 最近样本上，权重和为 1。
+        let s = space_2d();
+        assert!(s.is_stale());
+        let w = s.weights_at([5.0, 5.0]);
+        assert!(!w.is_empty() && (sum_of(&w) - 1.0).abs() < 1e-4, "{w:?}");
+        for (_, weight) in &w {
+            assert!(weight.is_finite() && *weight >= 0.0, "{w:?}");
+        }
+    }
+
+    #[test]
+    fn clear_samples_drops_stale_mark() {
+        // 清空样本等于「剖分已与样本表一致（都是空）」，不该留下待提交的脏标记。
+        let mut s = space_2d();
+        assert!(s.is_stale());
+        s.clear_samples();
+        assert!(!s.is_stale());
+        assert_eq!(s.triangle_count(), 0);
+        assert!(!s.build_pending());
+    }
+
+    #[test]
+    fn brief_reports_committed_topology_while_stale() {
+        // 回显不该出现「刚加完样本 tri=0」这种误导编辑器的中间态。
+        let s = space_2d();
+        let line = s.brief();
+        assert!(line.contains("tri=2"), "{line}");
+        assert!(line.contains("n=4"), "{line}");
     }
 }
