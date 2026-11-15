@@ -31,24 +31,25 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
                 ..Default::default()
             }
             .sanitized();
-            let mut scene = c.scene.borrow_mut();
-            match scene.texts.iter_mut().find(|t| t.key == key) {
-                Some(slot) => {
-                    // 颜色沿用新给的，其余样式（对齐 / 换行）保持不变
-                    let align = slot.align;
-                    let wrap = slot.wrap;
-                    let line_height = slot.line_height;
-                    *slot = text;
-                    slot.align = align;
-                    slot.wrap = wrap;
-                    slot.line_height = line_height;
-                    false
+            c.write(|scene| {
+                match scene.texts.iter_mut().find(|t| t.key == key) {
+                    Some(slot) => {
+                        // 颜色沿用新给的，其余样式（对齐 / 换行）保持不变
+                        let align = slot.align;
+                        let wrap = slot.wrap;
+                        let line_height = slot.line_height;
+                        *slot = text;
+                        slot.align = align;
+                        slot.wrap = wrap;
+                        slot.line_height = line_height;
+                        false
+                    }
+                    None => {
+                        scene.texts.push(text);
+                        true
+                    }
                 }
-                None => {
-                    scene.texts.push(text);
-                    true
-                }
-            }
+            })
         },
     );
 
@@ -129,25 +130,26 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("text_remove", move |key: &str| -> bool {
-        let mut scene = c.scene.borrow_mut();
-        let before = scene.texts.len();
-        scene.texts.retain(|t| t.key != key);
-        scene.texts.len() != before
+        c.write(|scene| {
+            let before = scene.texts.len();
+            scene.texts.retain(|t| t.key != key);
+            scene.texts.len() != before
+        })
     });
 
     let c = ctx.clone();
     engine.register_fn("text_clear", move || {
-        c.scene.borrow_mut().texts.clear();
+        c.write(|s| s.texts.clear());
     });
 
     let c = ctx.clone();
     engine.register_fn("text_exists", move |key: &str| -> bool {
-        c.scene.borrow().texts.iter().any(|t| t.key == key)
+        c.doc.borrow().texts.iter().any(|t| t.key == key)
     });
 
     let c = ctx.clone();
     engine.register_fn("text_content", move |key: &str| -> String {
-        c.scene
+        c.doc
             .borrow()
             .texts
             .iter()
@@ -158,12 +160,12 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("text_count", move || -> i64 {
-        c.scene.borrow().texts.len() as i64
+        c.doc.borrow().texts.len() as i64
     });
 
     let c = ctx.clone();
     engine.register_fn("text_keys", move || -> Array {
-        c.scene
+        c.doc
             .borrow()
             .texts
             .iter()
@@ -174,12 +176,12 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 文本通道总开关：关掉后渲染层整帧跳过文本 pass（3D 主通道行为不变）。
     let c = ctx.clone();
     engine.register_fn("set_text_enabled", move |on: bool| {
-        c.scene.borrow_mut().text_enabled = on;
+        c.write(|s| s.text_enabled = on);
     });
 
     let c = ctx.clone();
     engine.register_fn("text_enabled", move || -> bool {
-        c.scene.borrow().text_enabled
+        c.doc.borrow().text_enabled
     });
 
     // 宽度 / 高度估算：不加载字体文件的近似值，脚本排版预算用（不是最终像素宽度）。

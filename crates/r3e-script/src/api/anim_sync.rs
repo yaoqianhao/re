@@ -16,9 +16,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_sync",
         move |inst: &str, layer: &str, enabled: bool| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_sync(inst, layer, enabled)
+            c.write(|s| s.set_anim_layer_sync(inst, layer, enabled))
         },
     );
 
@@ -31,25 +29,20 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             let Some(sync) = LayerSync::parse(mode) else {
                 return false;
             };
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_sync_strategy(inst, layer, sync)
+            c.write(|s| s.set_anim_layer_sync_strategy(inst, layer, sync))
         },
     );
 
     // 回显：层是否开着相位锁（层不存在返回 false）。
     let c = ctx.clone();
     engine.register_fn("anim_layer_sync", move |inst: &str, layer: &str| -> bool {
-        c.scene
-            .borrow()
-            .anim_layer_sync(inst, layer)
-            .unwrap_or(false)
+        c.doc.borrow().anim_layer_sync(inst, layer).unwrap_or(false)
     });
 
     // 层相位（0..1，层不存在返回 0）。
     let c = ctx.clone();
     engine.register_fn("anim_layer_phase", move |inst: &str, layer: &str| -> f64 {
-        c.scene
+        c.doc
             .borrow()
             .anim_layer_phase(inst, layer)
             .map(f64::from)
@@ -62,7 +55,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_sync_probe",
         move |inst: &str, layer: &str| -> String {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_sync_probe(inst, layer)
                 .unwrap_or_default()
@@ -80,9 +73,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_clip_phase_offset",
         move |inst: &str, layer: &str, clip: &str, offset: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_clip_phase_offset(inst, layer, clip, f32_of(offset))
+            c.write(|s| s.set_anim_layer_clip_phase_offset(inst, layer, clip, f32_of(offset)))
         },
     );
 
@@ -91,7 +82,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_clip_phase_offset",
         move |inst: &str, layer: &str, clip: &str| -> f64 {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_clip_phase_offset(inst, layer, clip)
                 .map(f64::from)
@@ -110,9 +101,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             } else {
                 Some(source)
             };
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_sync_source(inst, layer, source)
+            c.write(|s| s.set_anim_layer_sync_source(inst, layer, source))
         },
     );
 
@@ -121,7 +110,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_sync_source",
         move |inst: &str, layer: &str| -> String {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_sync_source(inst, layer)
                 .unwrap_or_default()
@@ -133,7 +122,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_sync_phase",
         move |inst: &str, layer: &str| -> f64 {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_sync_phase(inst, layer)
                 .map(f64::from)
@@ -148,13 +137,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_clip_playback",
         move |inst: &str, layer: &str, clip: &str, speed: f64, looping: bool| -> bool {
-            c.scene.borrow_mut().set_anim_layer_clip_playback(
-                inst,
-                layer,
-                clip,
-                f32_of(speed),
-                looping,
-            )
+            c.write(|s| s.set_anim_layer_clip_playback(inst, layer, clip, f32_of(speed), looping))
         },
     );
 
@@ -163,9 +146,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "clear_anim_layer_clip_playback",
         move |inst: &str, layer: &str, clip: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .clear_anim_layer_clip_playback(inst, layer, clip)
+            c.write(|s| s.clear_anim_layer_clip_playback(inst, layer, clip))
         },
     );
 
@@ -174,7 +155,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_clip_speed",
         move |inst: &str, layer: &str, clip: &str| -> f64 {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_clip_playback(inst, layer, clip)
                 .map(|(speed, _)| f64::from(speed))
@@ -187,7 +168,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_clip_looping",
         move |inst: &str, layer: &str, clip: &str| -> bool {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_clip_playback(inst, layer, clip)
                 .map(|(_, looping)| looping)
@@ -200,7 +181,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_clip_time",
         move |inst: &str, layer: &str, clip: &str| -> f64 {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_clip_time(inst, layer, clip)
                 .map(f64::from)

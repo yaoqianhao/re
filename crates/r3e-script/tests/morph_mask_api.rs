@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use r3e_core::{InputState, ObjectDesc, Scene};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 
@@ -18,12 +19,14 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let scene = Rc::new(RefCell::new(Scene::new()));
+    let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     scene
         .borrow_mut()
-        .spawn(ObjectDesc {
-            name: "face".to_string(),
-            ..Default::default()
+        .write(|s| {
+            s.spawn(ObjectDesc {
+                name: "face".to_string(),
+                ..Default::default()
+            })
         })
         .expect("spawn 应成功");
     let physics = Rc::new(RefCell::new(Physics::new()));

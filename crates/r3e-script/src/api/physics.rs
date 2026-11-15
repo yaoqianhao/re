@@ -13,8 +13,8 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn("attach_body", move |name: &str, kind: &str, mass: f64| -> bool {
         // 脚本里常见「create_node → attach_body」连写，此时节点的世界矩阵还没刷新，
         // 直接读 world_position() 会拿到原点，刚体就会落在错误位置（查询也会跟着偏）。
-        c.scene.borrow_mut().update_world_transforms();
-        let scene = c.scene.borrow();
+        c.write(|s| s.update_world_transforms());
+        let scene = c.doc.borrow();
         let Some(node) = scene.find(name) else {
             println!("[script] attach_body: 物件 `{name}` 不存在");
             return false;
@@ -38,27 +38,24 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
                 return false;
             }
         };
-        if let Some(n) = c.scene.borrow_mut().get_mut(id) {
-            n.body = Some(handle.0);
-        }
+        c.write(|s| {
+            if let Some(n) = s.get_mut(id) {
+                n.body = Some(handle.0);
+            }
+        });
         true
     });
 
     let c = ctx.clone();
     engine.register_fn("detach_body", move |name: &str| -> bool {
         let id = {
-            let scene = c.scene.borrow();
+            let scene = c.doc.borrow();
             let Some(node) = scene.find(name) else {
                 return false;
             };
             node.id
         };
-        let handle = c
-            .scene
-            .borrow_mut()
-            .get_mut(id)
-            .and_then(|n| n.body.take())
-            .map(BodyHandle);
+        let handle = c.write(|s| s.get_mut(id).and_then(|n| n.body.take()).map(BodyHandle));
         if let Some(h) = handle {
             c.physics.borrow_mut().destroy_body(h);
             true
@@ -72,7 +69,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         "body_impulse",
         move |name: &str, x: f64, y: f64, z: f64| -> bool {
             let handle = {
-                let scene = c.scene.borrow();
+                let scene = c.doc.borrow();
                 match scene.find(name).and_then(|n| n.body) {
                     Some(h) => BodyHandle(h),
                     None => return false,
@@ -282,7 +279,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("body_set_ccd", move |name: &str, on: bool| -> bool {
         let handle = {
-            let scene = c.scene.borrow();
+            let scene = c.doc.borrow();
             match scene.find(name).and_then(|n| n.body) {
                 Some(h) => BodyHandle(h),
                 None => {
@@ -302,7 +299,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("body_ccd", move |name: &str| -> bool {
         let handle = {
-            let scene = c.scene.borrow();
+            let scene = c.doc.borrow();
             match scene.find(name).and_then(|n| n.body) {
                 Some(h) => BodyHandle(h),
                 None => return false,

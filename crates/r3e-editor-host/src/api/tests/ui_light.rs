@@ -123,9 +123,11 @@ fn ui_list_and_remove_round_trip() {
 #[test]
 fn ui_state_reports_pointer_interaction() {
     let (scene, physics, mut scripts) = fixture();
-    scene.borrow_mut().ui.push(UiElement {
-        key: "btn".to_string(),
-        ..Default::default()
+    scene.borrow_mut().write(|s| {
+        s.ui.push(UiElement {
+            key: "btn".to_string(),
+            ..Default::default()
+        })
     });
     // 直接把光标按在元素上（默认 100x100 从左上角起算），模拟一帧按下。
     {

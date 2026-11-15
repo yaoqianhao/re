@@ -26,6 +26,7 @@ use r3e_core::ui_text;
 use r3e_core::{AnimLayer, BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
+use r3e_doc::Document;
 use r3e_editor::{
     AnimLayerPatch, AudioSpatialPatch, EngineApi, EngineInfo, EnvironmentMapPatch,
     EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, NodeBrief, PhysicsInfo,
@@ -48,7 +49,7 @@ use r3e_runtime::time::FrameTimeStats;
 /// 所有方法都在事件循环线程调用，所以可以直接 `borrow_mut` 场景与物理，
 /// 既不需要锁，也不会出现「RPC 线程改场景、渲染线程正在读」的撕裂。
 pub struct LocalEngineApi<'a> {
-    pub scene: &'a Rc<RefCell<Scene>>,
+    pub scene: &'a Rc<RefCell<Document>>,
     pub physics: &'a Rc<RefCell<Physics>>,
     pub scripts: &'a mut ScriptHost,
     /// 渲染器：`engine.stats` 读它的 `RenderStats`，`capture.frame` 用它离屏出图。

@@ -11,7 +11,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 脚本侧只操作实例，不直接碰轨道；`anim_of(node)` 用于从骨骼节点反查它属于哪个实例。
     let c = ctx.clone();
     engine.register_fn("anims", move || -> Array {
-        c.scene
+        c.doc
             .borrow()
             .anim_names()
             .into_iter()
@@ -21,12 +21,12 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("anim_count", move || -> i64 {
-        c.scene.borrow().animations.len() as i64
+        c.doc.borrow().animations.len() as i64
     });
 
     let c = ctx.clone();
     engine.register_fn("anim_of", move |node: &str| -> String {
-        let s = c.scene.borrow();
+        let s = c.doc.borrow();
         let Some(id) = s.find_id(node) else {
             return String::new();
         };
@@ -40,27 +40,27 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("play_anim", move |name: &str| -> bool {
-        c.scene.borrow_mut().play_anim(name)
+        c.write(|s| s.play_anim(name))
     });
 
     let c = ctx.clone();
     engine.register_fn("stop_anim", move |name: &str| -> bool {
-        c.scene.borrow_mut().stop_anim(name)
+        c.write(|s| s.stop_anim(name))
     });
 
     let c = ctx.clone();
     engine.register_fn("set_anim_speed", move |name: &str, speed: f64| -> bool {
-        c.scene.borrow_mut().set_anim_speed(name, f32_of(speed))
+        c.write(|s| s.set_anim_speed(name, f32_of(speed)))
     });
 
     let c = ctx.clone();
     engine.register_fn("set_anim_time", move |name: &str, t: f64| -> bool {
-        c.scene.borrow_mut().set_anim_time(name, f32_of(t))
+        c.write(|s| s.set_anim_time(name, f32_of(t)))
     });
 
     let c = ctx.clone();
     engine.register_fn("anim_time", move |name: &str| -> f64 {
-        c.scene
+        c.doc
             .borrow()
             .anim_time(name)
             .map(|t| t as f64)
@@ -71,19 +71,19 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_looping",
         move |name: &str, looping: bool| -> bool {
-            match c.scene.borrow_mut().anim_instance_mut(name) {
+            c.write(|s| match s.anim_instance_mut(name) {
                 Some(inst) => {
                     inst.looping = looping;
                     true
                 }
                 None => false,
-            }
+            })
         },
     );
 
     let c = ctx.clone();
     engine.register_fn("anim_playing", move |name: &str| -> bool {
-        c.scene
+        c.doc
             .borrow()
             .anim_instance(name)
             .map(|a| a.playing)
@@ -100,9 +100,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         if target_count <= 0 {
             return false;
         }
-        c.scene
-            .borrow_mut()
-            .bind_morph_by_name(name, target_count as usize)
+        c.write(|s| s.bind_morph_by_name(name, target_count as usize))
     });
 
     let c = ctx.clone();
@@ -112,15 +110,13 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             if index < 0 {
                 return false;
             }
-            c.scene
-                .borrow_mut()
-                .set_morph_weight_by_name(name, index as usize, f32_of(weight))
+            c.write(|s| s.set_morph_weight_by_name(name, index as usize, f32_of(weight)))
         },
     );
 
     let c = ctx.clone();
     engine.register_fn("morph_reset", move |name: &str| -> bool {
-        c.scene.borrow_mut().reset_morph(name)
+        c.write(|s| s.reset_morph(name))
     });
 
     let c = ctx.clone();
@@ -128,7 +124,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         if index < 0 {
             return -1.0;
         }
-        c.scene
+        c.doc
             .borrow()
             .morph_weight_by_name(name, index as usize)
             .map(|w| w as f64)
@@ -137,7 +133,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("morph_count", move |name: &str| -> i64 {
-        c.scene
+        c.doc
             .borrow()
             .morph_target_count(name)
             .map(|n| n as i64)
@@ -147,7 +143,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 权重是否全部为 0（渲染层据此跳过整段形变路径）。
     let c = ctx.clone();
     engine.register_fn("morph_active", move |name: &str| -> bool {
-        let s = c.scene.borrow();
+        let s = c.doc.borrow();
         s.find_id(name)
             .and_then(|node| s.morph_of(node))
             .map(|m| m.is_active())
@@ -171,9 +167,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             } else {
                 group as u8
             };
-            c.scene
-                .borrow_mut()
-                .set_morph_exclusive_by_name(name, index as usize, slot)
+            c.write(|s| s.set_morph_exclusive_by_name(name, index as usize, slot))
         },
     );
 
@@ -182,11 +176,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         if index < 0 {
             return -1;
         }
-        match c
-            .scene
-            .borrow()
-            .morph_exclusive_by_name(name, index as usize)
-        {
+        match c.doc.borrow().morph_exclusive_by_name(name, index as usize) {
             Some(group) => group as i64,
             None => -1,
         }
@@ -199,7 +189,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             return -1.0;
         }
         match c
-            .scene
+            .doc
             .borrow()
             .morph_normalized_weight_by_name(name, index as usize)
         {
@@ -219,11 +209,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         if !(0..=u32::MAX as i64).contains(&mask) {
             return -1;
         }
-        match c
-            .scene
-            .borrow_mut()
-            .set_morph_mask_by_name(name, mask as u32)
-        {
+        match c.write(|s| s.set_morph_mask_by_name(name, mask as u32)) {
             Some(effective) => effective as i64,
             None => -1,
         }
@@ -231,7 +217,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("morph_mask", move |name: &str| -> i64 {
-        match c.scene.borrow().morph_mask_by_name(name) {
+        match c.doc.borrow().morph_mask_by_name(name) {
             Some(mask) => mask as i64,
             None => -1,
         }
@@ -245,9 +231,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             if index < 0 {
                 return false;
             }
-            c.scene
-                .borrow_mut()
-                .set_morph_shape_enabled_by_name(name, index as usize, enabled)
+            c.write(|s| s.set_morph_shape_enabled_by_name(name, index as usize, enabled))
         },
     );
 
@@ -256,7 +240,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         if index < 0 {
             return false;
         }
-        c.scene
+        c.doc
             .borrow()
             .morph_shape_enabled_by_name(name, index as usize)
             .unwrap_or(false)
@@ -264,7 +248,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("anim_info", move |name: &str| -> String {
-        let s = c.scene.borrow();
+        let s = c.doc.borrow();
         match s.anim_instance(name) {
             Some(a) => format!(
                 "{} / 片段 {} / {} 轨道 / 时长 {:.2}s / 当前 {:.2}s / 速度 {} / {} / {}",
@@ -283,7 +267,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("anim_clip", move |name: &str| -> String {
-        c.scene
+        c.doc
             .borrow()
             .anim_instance(name)
             .map(|a| a.clip.name.clone())
@@ -293,7 +277,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 切片段：同一骨架的不同动作共用一个实例，避免重复 spawn 节点树。
     let c = ctx.clone();
     engine.register_fn("set_anim_clip", move |inst: &str, clip: &str| -> bool {
-        c.scene.borrow_mut().set_anim_clip(inst, clip)
+        c.write(|s| s.set_anim_clip(inst, clip))
     });
 
     // 带交叉淡入地切片段：`dur` 秒内旧动作逐渐淡出，避免 idle→run 这类切换硬跳。
@@ -301,16 +285,14 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_clip_fade",
         move |inst: &str, clip: &str, dur: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_clip_fade(inst, clip, dur as f32)
+            c.write(|s| s.set_anim_clip_fade(inst, clip, dur as f32))
         },
     );
 
     // 过渡进度（新动作权重，1.0 = 已完成/无过渡），供脚本做状态机与日志验收。
     let c = ctx.clone();
     engine.register_fn("anim_fade", move |inst: &str| -> f64 {
-        c.scene
+        c.doc
             .borrow()
             .anim_fade_weight(inst)
             .map(|w| w as f64)
@@ -320,12 +302,12 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 正在淡出的旧动作名（无过渡为空串）。
     let c = ctx.clone();
     engine.register_fn("anim_fade_from", move |inst: &str| -> String {
-        c.scene.borrow().anim_fade_source(inst)
+        c.doc.borrow().anim_fade_source(inst)
     });
 
     let c = ctx.clone();
     engine.register_fn("anim_clips", move |prefix: &str| -> Array {
-        c.scene
+        c.doc
             .borrow()
             .anim_clip_names(prefix)
             .into_iter()

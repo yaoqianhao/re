@@ -10,12 +10,12 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("local_light_count", move || -> i64 {
-        c.scene.borrow().lights.len() as i64
+        c.doc.borrow().lights.len() as i64
     });
 
     let c = ctx.clone();
     engine.register_fn("local_light_keys", move || -> Array {
-        c.scene
+        c.doc
             .borrow()
             .lights
             .iter()
@@ -25,7 +25,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("local_light_exists", move |key: &str| -> bool {
-        c.scene.borrow().local_light(key).is_some()
+        c.doc.borrow().local_light(key).is_some()
     });
 
     // 一盏灯的完整快照：
@@ -33,7 +33,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 键不存在返回空 map（`map.is_empty()` 即可判空，不必先 exists）。
     let c = ctx.clone();
     engine.register_fn("local_light", move |key: &str| -> Map {
-        let scene = c.scene.borrow();
+        let scene = c.doc.borrow();
         let Some(l) = scene.local_light(key) else {
             return Map::new();
         };
@@ -79,7 +79,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 单字段便捷读取（HUD 用）：不存在时返回 0 / 空串，也能当「没有这盏灯」的信号。
     let c = ctx.clone();
     engine.register_fn("local_light_intensity", move |key: &str| -> f64 {
-        c.scene
+        c.doc
             .borrow()
             .local_light(key)
             .map(|l| l.intensity as f64)
@@ -88,7 +88,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("local_light_kind", move |key: &str| -> String {
-        c.scene
+        c.doc
             .borrow()
             .local_light(key)
             .map(|l| l.kind.name().to_string())
@@ -98,7 +98,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 投影意愿（场景里 `cast_shadow` 的原值），与「本帧实际投影」是两件事。
     let c = ctx.clone();
     engine.register_fn("local_light_cast_shadow", move |key: &str| -> bool {
-        c.scene
+        c.doc
             .borrow()
             .local_light(key)
             .map(|l| l.cast_shadow)
@@ -109,7 +109,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 关掉局部光源时不投影，直接 0——脚本做「阴影预算是否吃满」的 HUD 很省事。
     let c = ctx.clone();
     engine.register_fn("local_shadow_caster_count", move || -> i64 {
-        let scene = c.scene.borrow();
+        let scene = c.doc.borrow();
         if !scene.lights_enabled {
             return 0;
         }
@@ -122,7 +122,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "local_light_irradiance",
         move |x: f64, y: f64, z: f64| -> f64 {
-            let scene = c.scene.borrow();
+            let scene = c.doc.borrow();
             if !scene.lights_enabled {
                 return 0.0;
             }
@@ -204,7 +204,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("ui_hit", move |x: f64, y: f64| -> String {
         let ui = c.ui_interaction.borrow();
-        let scene = c.scene.borrow();
+        let scene = c.doc.borrow();
         hit_test_key(&scene.ui, ui.screen(), f32_of(x), f32_of(y))
             .map(str::to_string)
             .unwrap_or_default()

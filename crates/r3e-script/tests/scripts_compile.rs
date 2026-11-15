@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use r3e_core::{InputState, Scene};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 
@@ -41,7 +42,7 @@ fn every_demo_script_compiles() {
 
     let mut failures = Vec::new();
     for path in &paths {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+        let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
         let mut host = ScriptHost::new(scene, physics, input);

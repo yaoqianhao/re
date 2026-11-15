@@ -211,30 +211,31 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("ui_remove", move |key: &str| -> bool {
-        let mut scene = c.scene.borrow_mut();
-        let before = scene.ui.len();
-        scene.ui.retain(|el| el.key != key);
-        scene.ui.len() != before
+        c.write(|scene| {
+            let before = scene.ui.len();
+            scene.ui.retain(|el| el.key != key);
+            scene.ui.len() != before
+        })
     });
 
     let c = ctx.clone();
     engine.register_fn("ui_clear", move || {
-        c.scene.borrow_mut().ui.clear();
+        c.write(|s| s.ui.clear());
     });
 
     let c = ctx.clone();
     engine.register_fn("ui_exists", move |key: &str| -> bool {
-        c.scene.borrow().ui.iter().any(|el| el.key == key)
+        c.doc.borrow().ui.iter().any(|el| el.key == key)
     });
 
     let c = ctx.clone();
     engine.register_fn("ui_count", move || -> i64 {
-        c.scene.borrow().ui.len() as i64
+        c.doc.borrow().ui.len() as i64
     });
 
     let c = ctx.clone();
     engine.register_fn("ui_keys", move || -> Array {
-        c.scene
+        c.doc
             .borrow()
             .ui
             .iter()
@@ -259,22 +260,20 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // UI 通道总开关：关掉后渲染层整帧跳过 UI pass（3D / 文本行为不变）。
     let c = ctx.clone();
     engine.register_fn("set_ui_enabled", move |on: bool| {
-        c.scene.borrow_mut().ui_enabled = on;
+        c.write(|s| s.ui_enabled = on);
     });
 
     let c = ctx.clone();
-    engine.register_fn("ui_enabled", move || -> bool {
-        c.scene.borrow().ui_enabled
-    });
+    engine.register_fn("ui_enabled", move || -> bool { c.doc.borrow().ui_enabled });
 
     // 文本与 UI 的层次：false（默认）= 文本在上；true = UI 盖住文本。
     let c = ctx.clone();
     engine.register_fn("set_ui_above_text", move |on: bool| {
-        c.scene.borrow_mut().ui_above_text = on;
+        c.write(|s| s.ui_above_text = on);
     });
 
     let c = ctx.clone();
     engine.register_fn("ui_above_text", move || -> bool {
-        c.scene.borrow().ui_above_text
+        c.doc.borrow().ui_above_text
     });
 }

@@ -8,6 +8,7 @@ description = "r3e 编辑器宿主：把 EngineApi 协议桥接到运行时借�
 
 [dependencies]
 r3e-core.workspace = true
+r3e-doc.workspace = true
 r3e-asset.workspace = true
 r3e-audio.workspace = true
 r3e-render.workspace = true

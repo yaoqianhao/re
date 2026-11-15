@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::{AnimClip, AnimKey, AnimTrack, ObjectDesc, Scene, Vec3};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 use rhai::Dynamic;
@@ -18,7 +19,7 @@ use rhai::Dynamic;
 const INST: &str = "demo/walk";
 
 struct Fixture {
-    scene: Rc<RefCell<Scene>>,
+    scene: Rc<RefCell<Document>>,
     host: ScriptHost,
 }
 
@@ -65,7 +66,7 @@ fn fixture() -> Fixture {
     scene.register_anim_clip("demo/walk", Arc::new(walk));
     scene.register_anim_clip("demo/run", Arc::new(walk_clip("run", 4.0)));
 
-    let scene = Rc::new(RefCell::new(scene));
+    let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
     let host = ScriptHost::new(scene.clone(), physics, input);
@@ -106,7 +107,7 @@ impl Fixture {
     }
 
     fn advance(&self, dt: f32) {
-        self.scene.borrow_mut().update_animations(dt);
+        self.scene.borrow_mut().write(|s| s.update_animations(dt));
     }
 
     /// 一维速度空间：walk@0 / run@1，两路片段都已在层里。

@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::{AnimClip, AnimKey, AnimTrack, ObjectDesc, Scene, Vec3};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 use rhai::Dynamic;
@@ -21,7 +22,7 @@ use rhai::Dynamic;
 const INST: &str = "demo/walk";
 
 struct Fixture {
-    scene: Rc<RefCell<Scene>>,
+    scene: Rc<RefCell<Document>>,
     host: ScriptHost,
 }
 
@@ -88,7 +89,7 @@ fn fixture() -> Fixture {
     // 主实例的 leg 节点留在场景里但不参与绑定，只为让骨架名看起来完整。
     let _ = leg;
 
-    let scene = Rc::new(RefCell::new(scene));
+    let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
     let host = ScriptHost::new(scene.clone(), physics, input);
@@ -121,7 +122,7 @@ impl Fixture {
     }
 
     fn advance(&self, dt: f32) {
-        self.scene.borrow_mut().update_animations(dt);
+        self.scene.borrow_mut().write(|s| s.update_animations(dt));
     }
 
     fn pos_x(&self, node: &str) -> f32 {

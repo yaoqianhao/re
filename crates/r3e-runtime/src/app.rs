@@ -22,6 +22,7 @@ use r3e_core::{
     AnimDecl, MeshAabbCache, MeshData, MeshProvider, MeshRef, NodeId, ObjectDesc, Scene,
     SceneArchive, SceneCommand, SceneStack, SkinInstance, StackEntry, UiInteraction,
 };
+use r3e_doc::Document;
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::ui::UiImageProvider;
 use r3e_render::Renderer;
@@ -270,7 +271,7 @@ pub struct EngineApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
 
-    scene: Rc<RefCell<Scene>>,
+    scene: Rc<RefCell<Document>>,
     physics: Rc<RefCell<Physics>>,
     scripts: ScriptHost,
     /// 音频门面（非空间化）。无设备时内部已是静默后端，这里是同一份句柄的 app 侧引用，
@@ -492,7 +493,7 @@ impl EngineApp {
             physics.ground()
         );
 
-        let scene = Rc::new(RefCell::new(scene));
+        let scene = Rc::new(RefCell::new(Document::new(scene)));
         let physics = Rc::new(RefCell::new(physics));
         let input = Rc::new(RefCell::new(InputState::default()));
 
@@ -536,16 +537,17 @@ impl EngineApp {
         // 资产节点：按资产内节点路径 spawn，重名自动加 `#N` 后缀
         let asset_nodes: Rc<RefCell<Vec<NodeId>>> = Rc::new(RefCell::new(Vec::new()));
         if !assets.borrow().is_empty() {
-            let mut scene_mut = scene.borrow_mut();
-            let spawned = spawn_asset_nodes(
-                &mut scene_mut,
-                &assets.borrow(),
-                &asset_specs.borrow(),
-                &mut asset_nodes.borrow_mut(),
-                cli.show_bones,
-            );
-            log::info!("资产节点已 spawn: {spawned} 个");
-            scene_mut.update_world_transforms();
+            scene.borrow_mut().write(|scene| {
+                let spawned = spawn_asset_nodes(
+                    scene,
+                    &assets.borrow(),
+                    &asset_specs.borrow(),
+                    &mut asset_nodes.borrow_mut(),
+                    cli.show_bones,
+                );
+                log::info!("资产节点已 spawn: {spawned} 个");
+                scene.update_world_transforms();
+            });
         }
 
         // 扩展三十六：带形变形状的资产网格统一登记绑定（含场景 `objects` 里
@@ -553,8 +555,9 @@ impl EngineApp {
         // 脚本数不出来，所以在这里一次定好；权重初值全 0，像素与无形变能力时逐位相同。
         {
             let library = assets.borrow().clone();
-            let mut scene_mut = scene.borrow_mut();
-            let bound = attach_morph_bindings(&mut scene_mut, &library);
+            let bound = scene
+                .borrow_mut()
+                .write(|scene| attach_morph_bindings(scene, &library));
             if bound > 0 {
                 log::info!("形变绑定已登记: {bound} 个网格");
             }
@@ -865,25 +868,31 @@ impl EngineApp {
             self.apply_camera_input(dt);
 
             {
-                let mut scene = self.scene.borrow_mut();
-                scene.time = self.time as f32;
-                scene.frame = self.frame_index;
+                let time = self.time as f32;
+                let frame = self.frame_index;
+                self.scene.borrow_mut().write(|scene| {
+                    scene.time = time;
+                    scene.frame = frame;
+                });
             }
 
             // 2.5) 动画：先推进播放器并把局部 TRS 写回节点，再进行物理与世界矩阵
             // （顺序与 docs/ASSETS.md 4.4 一致：脚本之后、物理之前）
-            self.scene.borrow_mut().update_animations(dt);
+            self.scene.borrow_mut().write(|s| s.update_animations(dt));
 
             // 3) 物理：先把场景里声明了 physics 的物件绑成刚体，再推进模拟
             self.sync_physics_bindings();
             {
                 let mut physics = self.physics.borrow_mut();
-                let mut scene = self.scene.borrow_mut();
-                physics.step(dt, &mut scene);
+                self.scene
+                    .borrow_mut()
+                    .write(|scene| physics.step(dt, scene));
             }
 
             // 4) 重算世界矩阵
-            self.scene.borrow_mut().update_world_transforms();
+            self.scene
+                .borrow_mut()
+                .write(|s| s.update_world_transforms());
         }
 
         // 音频空间化（§12 第十项）：听者跟着活动相机走、声源位置从绑定节点灌，
@@ -1505,38 +1514,41 @@ impl EngineApp {
         }
         self.physics_gen = gen;
 
-        let mut scene = self.scene.borrow_mut();
-        let ids: Vec<NodeId> = scene
-            .iter()
-            .filter(|n| n.physics.is_some())
-            .map(|n| n.id)
-            .collect();
-        if ids.is_empty() {
-            return;
-        }
-
-        let mut physics = self.physics.borrow_mut();
-        let mut bound = 0usize;
+        let scene_rc = Rc::clone(&self.scene);
+        let physics_rc = Rc::clone(&self.physics);
+        let mut physics = physics_rc.borrow_mut();
         let assets = self.assets.borrow().clone();
-        for id in ids {
-            // 物理与渲染同源：碰撞体形状/尺寸都从 AIR 网格几何推出，
-            // 内置图元与外部资产走同一条路（S4 去来源分支）。
-            let node_mesh = scene
-                .get(id)
-                .and_then(|node| node_mesh_data(&assets, node.mesh));
-            let Some(desc) = scene
-                .get(id)
-                .and_then(|node| BodyDesc::from_node_with(node, node_mesh.as_ref()))
-            else {
-                continue;
-            };
-            if let Some(handle) = physics.try_create_body(id, desc) {
-                if let Some(node) = scene.get_mut(id) {
-                    node.body = Some(handle.0);
-                }
-                bound += 1;
+        let mut bound = 0usize;
+        scene_rc.borrow_mut().write(|scene| {
+            let ids: Vec<NodeId> = scene
+                .iter()
+                .filter(|n| n.physics.is_some())
+                .map(|n| n.id)
+                .collect();
+            if ids.is_empty() {
+                return;
             }
-        }
+
+            for id in ids {
+                // 物理与渲染同源：碰撞体形状/尺寸都从 AIR 网格几何推出，
+                // 内置图元与外部资产走同一条路（S4 去来源分支）。
+                let node_mesh = scene
+                    .get(id)
+                    .and_then(|node| node_mesh_data(&assets, node.mesh));
+                let Some(desc) = scene
+                    .get(id)
+                    .and_then(|node| BodyDesc::from_node_with(node, node_mesh.as_ref()))
+                else {
+                    continue;
+                };
+                if let Some(handle) = physics.try_create_body(id, desc) {
+                    if let Some(node) = scene.get_mut(id) {
+                        node.body = Some(handle.0);
+                    }
+                    bound += 1;
+                }
+            }
+        });
         if bound > 0 {
             log::info!("物理已绑定 {bound} 个场景刚体");
         }
@@ -1605,52 +1617,53 @@ impl EngineApp {
             return;
         }
 
-        let mut scene = self.scene.borrow_mut();
-        let camera = &mut scene.camera;
+        self.scene.borrow_mut().write(|scene| {
+            let camera = &mut scene.camera;
 
-        // 手柄右摇杆：环绕转视角
-        if rx != 0.0 || ry != 0.0 {
-            camera.orbit(-rx * PAD_ORBIT_SPEED * dt, ry * PAD_ORBIT_SPEED * dt);
-        }
+            // 手柄右摇杆：环绕转视角
+            if rx != 0.0 || ry != 0.0 {
+                camera.orbit(-rx * PAD_ORBIT_SPEED * dt, ry * PAD_ORBIT_SPEED * dt);
+            }
 
-        // 手柄扳机：RT 拉近 / LT 推远
-        if zoom != 0.0 {
-            let offset = camera.position - camera.target;
-            let len = (offset.length() * (1.0 - zoom * PAD_ZOOM_SPEED * dt)).clamp(0.8, 80.0);
-            camera.position = camera.target + offset.normalize_or_zero() * len;
-        }
+            // 手柄扳机：RT 拉近 / LT 推远
+            if zoom != 0.0 {
+                let offset = camera.position - camera.target;
+                let len = (offset.length() * (1.0 - zoom * PAD_ZOOM_SPEED * dt)).clamp(0.8, 80.0);
+                camera.position = camera.target + offset.normalize_or_zero() * len;
+            }
 
-        let forward = (camera.target - camera.position).normalize_or_zero();
-        let right = forward.cross(Vec3::Y).normalize_or_zero();
-        let mut delta = Vec3::ZERO;
+            let forward = (camera.target - camera.position).normalize_or_zero();
+            let right = forward.cross(Vec3::Y).normalize_or_zero();
+            let mut delta = Vec3::ZERO;
 
-        if keys.forward {
-            delta += forward;
-        }
-        if keys.back {
-            delta -= forward;
-        }
-        if keys.right {
-            delta += right;
-        }
-        if keys.left {
-            delta -= right;
-        }
-        if keys.up {
-            delta += Vec3::Y;
-        }
-        if keys.down {
-            delta -= Vec3::Y;
-        }
+            if keys.forward {
+                delta += forward;
+            }
+            if keys.back {
+                delta -= forward;
+            }
+            if keys.right {
+                delta += right;
+            }
+            if keys.left {
+                delta -= right;
+            }
+            if keys.up {
+                delta += Vec3::Y;
+            }
+            if keys.down {
+                delta -= Vec3::Y;
+            }
 
-        // 左摇杆：模拟量直接叠加（不归一化，保留推杆幅度）
-        let move_vec = delta.normalize_or_zero() + right * lx + forward * ly;
-        if move_vec.length_squared() > 1e-6 {
-            let mag = move_vec.length().min(1.0);
-            let step = move_vec.normalize() * MOVE_SPEED * mag * dt;
-            camera.position += step;
-            camera.target += step;
-        }
+            // 左摇杆：模拟量直接叠加（不归一化，保留推杆幅度）
+            let move_vec = delta.normalize_or_zero() + right * lx + forward * ly;
+            if move_vec.length_squared() > 1e-6 {
+                let mag = move_vec.length().min(1.0);
+                let step = move_vec.normalize() * MOVE_SPEED * mag * dt;
+                camera.position += step;
+                camera.target += step;
+            }
+        });
     }
 
     /// 轮询手柄：先排空事件队列，再抓取当前状态快照写入输入层。
@@ -1862,22 +1875,23 @@ impl EngineApp {
             return;
         }
 
-        let mut scene = self.scene.borrow_mut();
-        let cam = &mut scene.camera;
-        if left {
-            // 向右拖 -> 视角向右转
-            cam.orbit(-dx * MOUSE_ORBIT_SENS, dy * MOUSE_ORBIT_SENS);
-        }
-        if right {
-            // 抓取式平移：画面跟随光标
-            let forward = (cam.target - cam.position).normalize_or_zero();
-            let right_v = forward.cross(Vec3::Y).normalize_or_zero();
-            let up_v = right_v.cross(forward).normalize_or_zero();
-            let k = (cam.position - cam.target).length().max(0.5) * MOUSE_PAN_SENS;
-            let offset = -right_v * dx * k + up_v * dy * k;
-            cam.position += offset;
-            cam.target += offset;
-        }
+        self.scene.borrow_mut().write(|scene| {
+            let cam = &mut scene.camera;
+            if left {
+                // 向右拖 -> 视角向右转
+                cam.orbit(-dx * MOUSE_ORBIT_SENS, dy * MOUSE_ORBIT_SENS);
+            }
+            if right {
+                // 抓取式平移：画面跟随光标
+                let forward = (cam.target - cam.position).normalize_or_zero();
+                let right_v = forward.cross(Vec3::Y).normalize_or_zero();
+                let up_v = right_v.cross(forward).normalize_or_zero();
+                let k = (cam.position - cam.target).length().max(0.5) * MOUSE_PAN_SENS;
+                let offset = -right_v * dx * k + up_v * dy * k;
+                cam.position += offset;
+                cam.target += offset;
+            }
+        });
     }
 
     fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
@@ -2082,7 +2096,9 @@ impl EngineApp {
         self.scripts.rebuild_scene(&json)?;
 
         let restored = match &archive.runtime {
-            Some(runtime) if runtime.is_compatible() => runtime.apply(&mut self.scene.borrow_mut()),
+            Some(runtime) if runtime.is_compatible() => {
+                self.scene.borrow_mut().write(|s| runtime.apply(s))
+            }
             _ => 0,
         };
 
@@ -2502,11 +2518,12 @@ impl ApplicationHandler for EngineApp {
                     MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 60.0,
                 };
                 self.input.borrow_mut().scroll += amount;
-                let mut scene = self.scene.borrow_mut();
-                let cam = &mut scene.camera;
-                let offset = cam.position - cam.target;
-                let len = (offset.length() - amount * 0.6).clamp(0.8, 80.0);
-                cam.position = cam.target + offset.normalize_or_zero() * len;
+                self.scene.borrow_mut().write(|scene| {
+                    let cam = &mut scene.camera;
+                    let offset = cam.position - cam.target;
+                    let len = (offset.length() - amount * 0.6).clamp(0.8, 80.0);
+                    cam.position = cam.target + offset.normalize_or_zero() * len;
+                });
             }
             WindowEvent::RedrawRequested => {
                 self.watch_files();

@@ -32,7 +32,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("pick_at", move |x: f64, y: f64| -> Map {
         let screen = c.ui_interaction.borrow().screen();
-        let scene = c.scene.borrow();
+        let scene = c.doc.borrow();
         let bounds = c.pick_bounds.borrow();
         let provider = PickBounds::new(&bounds);
         let hit = pick_from_screen(&scene, &provider, f32_of(x), f32_of(y), screen.0, screen.1);
@@ -47,7 +47,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
             (input.mouse_x, input.mouse_y)
         };
         let screen = c.ui_interaction.borrow().screen();
-        let scene = c.scene.borrow();
+        let scene = c.doc.borrow();
         let bounds = c.pick_bounds.borrow();
         let provider = PickBounds::new(&bounds);
         let hit = pick_from_screen(&scene, &provider, mx, my, screen.0, screen.1);
@@ -59,7 +59,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn("pick_all_at", move |x: f64, y: f64| -> Array {
         let screen = c.ui_interaction.borrow().screen();
-        let scene = c.scene.borrow();
+        let scene = c.doc.borrow();
         let bounds = c.pick_bounds.borrow();
         let provider = PickBounds::new(&bounds);
         let hits =

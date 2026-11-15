@@ -44,41 +44,47 @@ pub(super) fn ui_set(api: &mut LocalEngineApi<'_>, patch: UiPatch) -> Result<Val
         None => None,
     };
 
-    let mut scene = api.scene.borrow_mut();
-    let existing = ui::find(&scene.ui, &patch.key).cloned();
-    let inserted = existing.is_none();
-    let mut element = existing.unwrap_or_else(|| UiElement {
-        key: patch.key.clone(),
-        ..UiElement::default()
-    });
-    apply_ui_patch(&mut element, &patch, kind, anchor);
-    // 用 `upsert`（裸全量覆盖）而不是 `upsert_styled`：RPC 的语义是「给了才改」，
-    // 改动已经在 clone 上做完了；`merge_same_key` 会强制沿用旧的
-    // `layer` / `visible` / `uv`，那是脚本每帧重发位置时该有的行为，放在这里会把
-    // 编辑器对层级 / 可见性的修改吞掉。
-    let outcome = ui::upsert(&mut scene.ui, element.sanitized());
-    if outcome == UiUpsert::Rejected {
-        return Err(RpcFailure::invalid_params(format!(
-            "UI 元素已达上限 {}，无法新增",
-            ui::MAX_UI_ELEMENTS
-        )));
-    }
-    let value = ui::find(&scene.ui, &patch.key)
-        .map(ui_element_value)
-        .unwrap_or(Value::Null);
-    Ok(json!({
-        "key": patch.key,
-        "inserted": inserted,
-        "replaced": outcome == UiUpsert::Replaced,
-        "count": scene.ui.len(),
-        "element": value,
-    }))
+    api.scene
+        .borrow_mut()
+        .write(|scene| -> Result<Value, RpcFailure> {
+            let existing = ui::find(&scene.ui, &patch.key).cloned();
+            let inserted = existing.is_none();
+            let mut element = existing.unwrap_or_else(|| UiElement {
+                key: patch.key.clone(),
+                ..UiElement::default()
+            });
+            apply_ui_patch(&mut element, &patch, kind, anchor);
+            // 用 `upsert`（裸全量覆盖）而不是 `upsert_styled`：RPC 的语义是「给了才改」，
+            // 改动已经在 clone 上做完了；`merge_same_key` 会强制沿用旧的
+            // `layer` / `visible` / `uv`，那是脚本每帧重发位置时该有的行为，放在这里会把
+            // 编辑器对层级 / 可见性的修改吞掉。
+            let outcome = ui::upsert(&mut scene.ui, element.sanitized());
+            if outcome == UiUpsert::Rejected {
+                return Err(RpcFailure::invalid_params(format!(
+                    "UI 元素已达上限 {}，无法新增",
+                    ui::MAX_UI_ELEMENTS
+                )));
+            }
+            let value = ui::find(&scene.ui, &patch.key)
+                .map(ui_element_value)
+                .unwrap_or(Value::Null);
+            Ok(json!({
+                "key": patch.key,
+                "inserted": inserted,
+                "replaced": outcome == UiUpsert::Replaced,
+                "count": scene.ui.len(),
+                "element": value,
+            }))
+        })
 }
 
 pub(super) fn ui_remove(api: &mut LocalEngineApi<'_>, key: &str) -> Result<Value, RpcFailure> {
-    let mut scene = api.scene.borrow_mut();
-    let removed = ui::remove(&mut scene.ui, key);
-    Ok(json!({ "key": key, "removed": removed, "count": scene.ui.len() }))
+    api.scene
+        .borrow_mut()
+        .write(|scene| -> Result<Value, RpcFailure> {
+            let removed = ui::remove(&mut scene.ui, key);
+            Ok(json!({ "key": key, "removed": removed, "count": scene.ui.len() }))
+        })
 }
 
 pub(super) fn ui_state(api: &mut LocalEngineApi<'_>) -> Result<Value, RpcFailure> {

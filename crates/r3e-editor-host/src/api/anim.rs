@@ -69,7 +69,7 @@ pub(super) fn scene_anim_layer_set(
         })?),
         None => None,
     };
-    let mut scene = api.scene.borrow_mut();
+    api.scene.borrow_mut().write(|scene| -> Result<Value, RpcFailure> {
     if scene.anim_instance(&patch.instance).is_none() {
         return Err(RpcFailure::invalid_params(format!(
             "没有名为 `{}` 的动画实例",
@@ -160,4 +160,5 @@ pub(super) fn scene_anim_layer_set(
     Ok(json!({
         "layer": anim_layer_value(&patch.instance, layer),
     }))
+    })
 }

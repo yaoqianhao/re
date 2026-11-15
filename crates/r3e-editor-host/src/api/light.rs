@@ -41,85 +41,97 @@ pub(super) fn light_set(
         None => None,
     };
 
-    let mut scene = api.scene.borrow_mut();
-    let existing = scene.local_light(&patch.key).cloned();
-    let inserted = existing.is_none();
-    let mut light = existing.unwrap_or_else(|| LocalLight {
-        key: patch.key.clone(),
-        ..LocalLight::default()
-    });
-    if let Some(v) = kind {
-        light.kind = v;
-    }
-    if let Some(v) = patch.pos {
-        light.pos = v;
-    }
-    if let Some(v) = patch.dir {
-        light.dir = v;
-    }
-    if let Some(v) = patch.color {
-        light.color = v;
-    }
-    if let Some(v) = patch.intensity {
-        light.intensity = v;
-    }
-    if let Some(v) = patch.range {
-        light.range = v;
-    }
-    if let Some(v) = patch.inner_deg {
-        light.inner_deg = v;
-    }
-    if let Some(v) = patch.outer_deg {
-        light.outer_deg = v;
-    }
-    if let Some(v) = patch.cast_shadow {
-        light.cast_shadow = v;
-    }
-    if let Some(v) = patch.shadow_bias {
-        light.shadow_bias = v;
-    }
-    let applied = light.sanitized();
-    // `upsert_local_light` 满载时只拒绝「新增」，同 key 覆盖照常生效——
-    // 因此这里的失败一定是容量问题，报错文案直接点明上限。
-    if !scene.upsert_local_light(applied) {
-        return Err(RpcFailure::invalid_params(format!(
-            "局部光源已达上限 {MAX_LOCAL_LIGHTS}，无法新增；请先删除或复用已有 key"
-        )));
-    }
-    let value = scene
-        .local_light(&patch.key)
-        .map(local_light_value)
-        .unwrap_or(Value::Null);
-    Ok(json!({
-        "key": patch.key,
-        "inserted": inserted,
-        "count": scene.lights.len(),
-        "light": value,
-    }))
+    api.scene
+        .borrow_mut()
+        .write(|scene| -> Result<Value, RpcFailure> {
+            let existing = scene.local_light(&patch.key).cloned();
+            let inserted = existing.is_none();
+            let mut light = existing.unwrap_or_else(|| LocalLight {
+                key: patch.key.clone(),
+                ..LocalLight::default()
+            });
+            if let Some(v) = kind {
+                light.kind = v;
+            }
+            if let Some(v) = patch.pos {
+                light.pos = v;
+            }
+            if let Some(v) = patch.dir {
+                light.dir = v;
+            }
+            if let Some(v) = patch.color {
+                light.color = v;
+            }
+            if let Some(v) = patch.intensity {
+                light.intensity = v;
+            }
+            if let Some(v) = patch.range {
+                light.range = v;
+            }
+            if let Some(v) = patch.inner_deg {
+                light.inner_deg = v;
+            }
+            if let Some(v) = patch.outer_deg {
+                light.outer_deg = v;
+            }
+            if let Some(v) = patch.cast_shadow {
+                light.cast_shadow = v;
+            }
+            if let Some(v) = patch.shadow_bias {
+                light.shadow_bias = v;
+            }
+            let applied = light.sanitized();
+            // `upsert_local_light` 满载时只拒绝「新增」，同 key 覆盖照常生效——
+            // 因此这里的失败一定是容量问题，报错文案直接点明上限。
+            if !scene.upsert_local_light(applied) {
+                return Err(RpcFailure::invalid_params(format!(
+                    "局部光源已达上限 {MAX_LOCAL_LIGHTS}，无法新增；请先删除或复用已有 key"
+                )));
+            }
+            let value = scene
+                .local_light(&patch.key)
+                .map(local_light_value)
+                .unwrap_or(Value::Null);
+            Ok(json!({
+                "key": patch.key,
+                "inserted": inserted,
+                "count": scene.lights.len(),
+                "light": value,
+            }))
+        })
 }
 
 pub(super) fn light_remove(api: &mut LocalEngineApi<'_>, key: &str) -> Result<Value, RpcFailure> {
-    let mut scene = api.scene.borrow_mut();
-    let removed = scene.remove_local_light(key);
-    Ok(json!({ "key": key, "removed": removed, "count": scene.lights.len() }))
+    api.scene
+        .borrow_mut()
+        .write(|scene| -> Result<Value, RpcFailure> {
+            let removed = scene.remove_local_light(key);
+            Ok(json!({ "key": key, "removed": removed, "count": scene.lights.len() }))
+        })
 }
 
 pub(super) fn light_clear(api: &mut LocalEngineApi<'_>) -> Result<Value, RpcFailure> {
-    let mut scene = api.scene.borrow_mut();
-    let removed = scene.clear_local_lights();
-    Ok(json!({ "removed": removed, "count": 0 }))
+    api.scene
+        .borrow_mut()
+        .write(|scene| -> Result<Value, RpcFailure> {
+            let removed = scene.clear_local_lights();
+            Ok(json!({ "removed": removed, "count": 0 }))
+        })
 }
 
 pub(super) fn light_set_enabled(
     api: &mut LocalEngineApi<'_>,
     enabled: Option<bool>,
 ) -> Result<Value, RpcFailure> {
-    let mut scene = api.scene.borrow_mut();
-    if let Some(on) = enabled {
-        scene.lights_enabled = on;
-    }
-    Ok(json!({
-        "enabled": scene.lights_enabled,
-        "count": scene.lights.len(),
-    }))
+    api.scene
+        .borrow_mut()
+        .write(|scene| -> Result<Value, RpcFailure> {
+            if let Some(on) = enabled {
+                scene.lights_enabled = on;
+            }
+            Ok(json!({
+                "enabled": scene.lights_enabled,
+                "count": scene.lights.len(),
+            }))
+        })
 }

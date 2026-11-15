@@ -13,7 +13,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 空串或 `"*"` 表示整副骨架（默认）——骨骼按路径后缀匹配，`"arm"` 命中 `root/spine/arm`。
     let c = ctx.clone();
     engine.register_fn("anim_layers", move |inst: &str| -> Array {
-        c.scene
+        c.doc
             .borrow()
             .anim_layer_names(inst)
             .into_iter()
@@ -23,7 +23,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("anim_layer_count", move |inst: &str| -> i64 {
-        c.scene
+        c.doc
             .borrow()
             .anim_layer_count(inst)
             .map(|n| n as i64)
@@ -34,7 +34,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_info",
         move |inst: &str, layer: &str| -> String {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_report(inst, layer)
                 .unwrap_or_else(|| format!("实例 `{inst}` 上没有名为 `{layer}` 的层"))
@@ -44,7 +44,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 有效权重（含进行中的过渡），0 = 层此刻完全不参与合成。
     let c = ctx.clone();
     engine.register_fn("anim_layer_weight", move |inst: &str, layer: &str| -> f64 {
-        c.scene
+        c.doc
             .borrow()
             .anim_layer_effective_weight(inst, layer)
             .map(|w| w as f64)
@@ -56,13 +56,9 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "add_anim_layer",
         move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
-            c.scene.borrow_mut().add_anim_layer_by_clip(
-                inst,
-                layer,
-                clip,
-                f32_of(weight),
-                LayerMode::Override,
-            )
+            c.write(|s| {
+                s.add_anim_layer_by_clip(inst, layer, clip, f32_of(weight), LayerMode::Override)
+            })
         },
     );
 
@@ -71,13 +67,9 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "add_anim_layer_additive",
         move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
-            c.scene.borrow_mut().add_anim_layer_by_clip(
-                inst,
-                layer,
-                clip,
-                f32_of(weight),
-                LayerMode::Additive,
-            )
+            c.write(|s| {
+                s.add_anim_layer_by_clip(inst, layer, clip, f32_of(weight), LayerMode::Additive)
+            })
         },
     );
 
@@ -85,9 +77,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_weight",
         move |inst: &str, layer: &str, weight: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_weight(inst, layer, f32_of(weight))
+            c.write(|s| s.set_anim_layer_weight(inst, layer, f32_of(weight)))
         },
     );
 
@@ -96,9 +86,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "fade_anim_layer",
         move |inst: &str, layer: &str, weight: f64, dur: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .fade_anim_layer(inst, layer, f32_of(weight), dur as f32)
+            c.write(|s| s.fade_anim_layer(inst, layer, f32_of(weight), dur as f32))
         },
     );
 
@@ -110,7 +98,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
                 println!("[script] 未知叠加模式 `{mode}`（可用：override / additive）");
                 return false;
             };
-            c.scene.borrow_mut().set_anim_layer_mode(inst, layer, mode)
+            c.write(|s| s.set_anim_layer_mode(inst, layer, mode))
         },
     );
 
@@ -119,7 +107,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
         "set_anim_layer_mask",
         move |inst: &str, layer: &str, spec: &str| -> bool {
             let mask = parse_bone_mask(spec);
-            c.scene.borrow_mut().set_anim_layer_mask(inst, layer, mask)
+            c.write(|s| s.set_anim_layer_mask(inst, layer, mask))
         },
     );
 
@@ -128,7 +116,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_mask",
         move |inst: &str, layer: &str| -> String {
-            let s = c.scene.borrow();
+            let s = c.doc.borrow();
             match s.anim_layer(inst, layer) {
                 Some(l) if l.mask.is_pass_all() => "*".to_string(),
                 Some(l) => {
@@ -145,9 +133,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_speed",
         move |inst: &str, layer: &str, speed: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_speed(inst, layer, f32_of(speed))
+            c.write(|s| s.set_anim_layer_speed(inst, layer, f32_of(speed)))
         },
     );
 
@@ -155,7 +141,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_clips",
         move |inst: &str, layer: &str| -> Array {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer(inst, layer)
                 .map(|l| l.clip_names().into_iter().map(Dynamic::from).collect())
@@ -168,9 +154,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "add_anim_layer_clip",
         move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .add_anim_layer_clip(inst, layer, clip, f32_of(weight))
+            c.write(|s| s.add_anim_layer_clip(inst, layer, clip, f32_of(weight)))
         },
     );
 
@@ -179,9 +163,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_clip_weight",
         move |inst: &str, layer: &str, clip: &str, weight: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_clip_weight(inst, layer, clip, f32_of(weight))
+            c.write(|s| s.set_anim_layer_clip_weight(inst, layer, clip, f32_of(weight)))
         },
     );
 
@@ -190,7 +172,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_clip",
         move |inst: &str, layer: &str, clip: &str| -> bool {
-            c.scene.borrow_mut().set_anim_layer_clip(inst, layer, clip)
+            c.write(|s| s.set_anim_layer_clip(inst, layer, clip))
         },
     );
 
@@ -198,23 +180,19 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "remove_anim_layer_clip",
         move |inst: &str, layer: &str, clip: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .remove_anim_layer_clip(inst, layer, clip)
+            c.write(|s| s.remove_anim_layer_clip(inst, layer, clip))
         },
     );
 
     let c = ctx.clone();
     engine.register_fn(
         "remove_anim_layer",
-        move |inst: &str, layer: &str| -> bool {
-            c.scene.borrow_mut().remove_anim_layer(inst, layer)
-        },
+        move |inst: &str, layer: &str| -> bool { c.write(|s| s.remove_anim_layer(inst, layer)) },
     );
 
     let c = ctx.clone();
     engine.register_fn("clear_anim_layers", move |inst: &str| -> bool {
-        c.scene.borrow_mut().clear_anim_layers(inst)
+        c.write(|s| s.clear_anim_layers(inst))
     });
 
     // ---------------- 1D / 2D / 3D 混合空间（扩展四十五 / 四十九） ----------------
@@ -229,9 +207,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_blend_1d",
         move |inst: &str, layer: &str, param: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_blend_space_1d(inst, layer, param)
+            c.write(|s| s.set_anim_layer_blend_space_1d(inst, layer, param))
         },
     );
 
@@ -240,9 +216,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_blend_2d",
         move |inst: &str, layer: &str, px: &str, py: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_blend_space_2d(inst, layer, px, py)
+            c.write(|s| s.set_anim_layer_blend_space_2d(inst, layer, px, py))
         },
     );
 
@@ -251,9 +225,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_blend_3d",
         move |inst: &str, layer: &str, px: &str, py: &str, pz: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_blend_space_3d(inst, layer, px, py, pz)
+            c.write(|s| s.set_anim_layer_blend_space_3d(inst, layer, px, py, pz))
         },
     );
 
@@ -262,9 +234,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "clear_anim_layer_blend",
         move |inst: &str, layer: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .clear_anim_layer_blend_space(inst, layer)
+            c.write(|s| s.clear_anim_layer_blend_space(inst, layer))
         },
     );
 
@@ -273,10 +243,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "add_anim_layer_blend_sample",
         move |inst: &str, layer: &str, clip: &str, x: f64, y: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .add_anim_layer_blend_sample(inst, layer, clip, [x as f32, y as f32])
-                .unwrap_or(false)
+            c.write(|s| {
+                s.add_anim_layer_blend_sample(inst, layer, clip, [x as f32, y as f32])
+                    .unwrap_or(false)
+            })
         },
     );
 
@@ -285,10 +255,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "add_anim_layer_blend_sample_3d",
         move |inst: &str, layer: &str, clip: &str, x: f64, y: f64, z: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .add_anim_layer_blend_sample_3d(inst, layer, clip, [x as f32, y as f32, z as f32])
-                .unwrap_or(false)
+            c.write(|s| {
+                s.add_anim_layer_blend_sample_3d(inst, layer, clip, [x as f32, y as f32, z as f32])
+                    .unwrap_or(false)
+            })
         },
     );
 
@@ -297,10 +267,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_blend_value",
         move |inst: &str, layer: &str, x: f64, y: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_blend_value(inst, layer, x as f32, y as f32)
-                .unwrap_or(false)
+            c.write(|s| {
+                s.set_anim_layer_blend_value(inst, layer, x as f32, y as f32)
+                    .unwrap_or(false)
+            })
         },
     );
 
@@ -309,10 +279,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_blend_value_3d",
         move |inst: &str, layer: &str, x: f64, y: f64, z: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_blend_value_3d(inst, layer, x as f32, y as f32, z as f32)
-                .unwrap_or(false)
+            c.write(|s| {
+                s.set_anim_layer_blend_value_3d(inst, layer, x as f32, y as f32, z as f32)
+                    .unwrap_or(false)
+            })
         },
     );
 
@@ -321,7 +291,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_blend",
         move |inst: &str, layer: &str| -> String {
-            let s = c.scene.borrow();
+            let s = c.doc.borrow();
             let Some(brief) = s.anim_layer_blend_brief(inst, layer) else {
                 return String::new();
             };
@@ -343,7 +313,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_blend_stale",
         move |inst: &str, layer: &str| -> bool {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_blend_stale(inst, layer)
                 .unwrap_or(false)
@@ -356,7 +326,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_blend_build_stats",
         move |inst: &str, layer: &str| -> String {
-            match c.scene.borrow().anim_layer_blend_build_stats(inst, layer) {
+            match c.doc.borrow().anim_layer_blend_build_stats(inst, layer) {
                 Some((inc, full)) => format!("inc={inc} full={full}"),
                 None => String::new(),
             }
@@ -369,10 +339,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "build_anim_layer_blend",
         move |inst: &str, layer: &str| -> bool {
-            c.scene
-                .borrow_mut()
-                .build_anim_layer_blend_pending(inst, layer)
-                .unwrap_or(false)
+            c.write(|s| {
+                s.build_anim_layer_blend_pending(inst, layer)
+                    .unwrap_or(false)
+            })
         },
     );
 
@@ -383,10 +353,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "set_anim_layer_blend_sample_speed",
         move |inst: &str, layer: &str, clip: &str, speed: f64| -> bool {
-            c.scene
-                .borrow_mut()
-                .set_anim_layer_blend_sample_speed(inst, layer, clip, speed as f32)
-                .unwrap_or(false)
+            c.write(|s| {
+                s.set_anim_layer_blend_sample_speed(inst, layer, clip, speed as f32)
+                    .unwrap_or(false)
+            })
         },
     );
 
@@ -395,7 +365,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "anim_layer_blend_speed",
         move |inst: &str, layer: &str| -> f64 {
-            c.scene
+            c.doc
                 .borrow()
                 .anim_layer_blend_speed(inst, layer)
                 .unwrap_or(1.0) as f64

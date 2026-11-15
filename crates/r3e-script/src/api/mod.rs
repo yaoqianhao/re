@@ -14,6 +14,7 @@ use glam::{Vec3, Vec4};
 use r3e_audio::{Audio, DistanceModel, SpatialSettings};
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::postfx::TonemapMode;
+use r3e_doc::Document;
 
 use r3e_core::text::{estimate_text_height, estimate_text_width, sanitize_size};
 use r3e_core::ui::{
@@ -41,10 +42,22 @@ pub struct Clock {
     pub fps: f64,
 }
 
+impl ScriptContext {
+    /// 唯一的场景写入口：脚本 API 的所有写操作都必须经这里。
+    ///
+    /// 等价于 `doc.borrow_mut().write(..)`；集中成一处是为了让 api 层各域写法一致，
+    /// 也让 doc-gate 的「禁直接 borrow_mut 拿 &mut Scene」只有这一个合法出口。
+    pub(crate) fn write<R>(&self, f: impl FnOnce(&mut Scene) -> R) -> R {
+        self.doc.borrow_mut().write(f)
+    }
+}
+
 /// 脚本侧共享上下文。
 #[derive(Clone)]
 pub struct ScriptContext {
-    pub scene: Rc<RefCell<Scene>>,
+    /// 场景唯一真值：`r3e-doc` 的 Document。只读走 `doc.borrow()`（Deref 到 Scene），
+    /// 写入一律走 [`ScriptContext::write`]，不允许长期持有 `&mut Scene`。
+    pub doc: Rc<RefCell<Document>>,
     pub physics: Rc<RefCell<Physics>>,
     pub input: Rc<RefCell<InputState>>,
     pub audio: Rc<RefCell<Audio>>,
@@ -224,15 +237,14 @@ fn shape_cast_map(hit: Option<ShapeCastHit>) -> Map {
 }
 
 /// 对指定名字的物件做一次可变访问；找不到返回 false。
-fn edit(scene: &Rc<RefCell<Scene>>, name: &str, f: impl FnOnce(&mut r3e_core::Node)) -> bool {
-    let mut s = scene.borrow_mut();
-    match s.find_mut(name) {
+fn edit(doc: &Rc<RefCell<Document>>, name: &str, f: impl FnOnce(&mut r3e_core::Node)) -> bool {
+    doc.borrow_mut().write(|s| match s.find_mut(name) {
         Some(node) => {
             f(node);
             true
         }
         None => false,
-    }
+    })
 }
 
 fn xorshift(state: &Cell<u64>) -> f64 {
@@ -319,14 +331,13 @@ fn parse_ui_value(text: &str) -> UiValue {
 
 /// 按 key 修改场景里的一条 UI 元素；找不到返回 false。
 fn with_ui(ctx: &ScriptContext, key: &str, edit: impl FnOnce(&mut UiElement)) -> bool {
-    let mut scene = ctx.scene.borrow_mut();
-    match find_mut(&mut scene.ui, key) {
+    ctx.write(|scene| match find_mut(&mut scene.ui, key) {
         Some(el) => {
             edit(el);
             true
         }
         None => false,
-    }
+    })
 }
 
 /// 把脚本参数搬成 core 的 [`UiElement`]（只做解析与搬运，不含任何合并 / 覆盖策略）。
@@ -380,12 +391,12 @@ fn submit_ui(ctx: &ScriptContext, el: UiElement) -> bool {
     }
     let mut el = el;
     el.key = key.clone();
-    let mut scene = ctx.scene.borrow_mut();
-    match upsert_styled(&mut scene.ui, el) {
+    // 落盘与记账分两步：闭包内不能同时持有 ui_log 的借用。
+    let upsert = ctx.write(|scene| upsert_styled(&mut scene.ui, el));
+    match upsert {
         UiUpsert::Inserted => true,
         UiUpsert::Replaced => false,
         UiUpsert::Rejected => {
-            drop(scene);
             let msg = format!("UI 元素数量已达上限 {MAX_UI_ELEMENTS}，key `{key}` 未写入");
             println!("[script] {msg}");
             ctx.ui_log.borrow_mut().record(msg);
@@ -396,14 +407,15 @@ fn submit_ui(ctx: &ScriptContext, el: UiElement) -> bool {
 
 /// 按 key 修改场景里的一条文本；找不到返回 false（脚本可据此判断要不要 `text_add`）。
 fn with_text(ctx: &ScriptContext, key: &str, edit: impl FnOnce(&mut ScreenText)) -> bool {
-    let mut scene = ctx.scene.borrow_mut();
-    match scene.texts.iter_mut().find(|t| t.key == key) {
-        Some(t) => {
-            edit(t);
-            true
-        }
-        None => false,
-    }
+    ctx.write(
+        |scene| match scene.texts.iter_mut().find(|t| t.key == key) {
+            Some(t) => {
+                edit(t);
+                true
+            }
+            None => false,
+        },
+    )
 }
 
 /// 轻量 JSON → ObjectDesc：避免为了脚本再引一个 serde 依赖。

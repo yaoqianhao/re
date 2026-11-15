@@ -38,7 +38,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
                 f32_of(intensity),
             );
             light.range = f32_of(range);
-            c.scene.borrow_mut().upsert_local_light(light)
+            c.write(|s| s.upsert_local_light(light))
         },
     );
 
@@ -71,19 +71,19 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
                 f32_of(inner_deg),
                 f32_of(outer_deg),
             );
-            c.scene.borrow_mut().upsert_local_light(light)
+            c.write(|s| s.upsert_local_light(light))
         },
     );
 
     let c = ctx.clone();
     engine.register_fn("light_remove", move |key: &str| -> bool {
-        c.scene.borrow_mut().remove_local_light(key)
+        c.write(|s| s.remove_local_light(key))
     });
 
     // 清空全部灯，返回删掉的盏数。
     let c = ctx.clone();
     engine.register_fn("light_clear", move || -> i64 {
-        c.scene.borrow_mut().clear_local_lights() as i64
+        c.write(|s| s.clear_local_lights() as i64)
     });
 
     // 以下「改单个字段」全部走 `with_local_light`：key 不存在返回 false，
@@ -92,8 +92,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "light_set_pos",
         move |key: &str, x: f64, y: f64, z: f64| -> bool {
-            c.scene.borrow_mut().with_local_light(key, |l| {
-                l.pos = [f32_of(x), f32_of(y), f32_of(z)];
+            c.write(|s| {
+                s.with_local_light(key, |l| {
+                    l.pos = [f32_of(x), f32_of(y), f32_of(z)];
+                })
             })
         },
     );
@@ -102,23 +104,29 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "light_set_color",
         move |key: &str, r: f64, g: f64, b: f64| -> bool {
-            c.scene.borrow_mut().with_local_light(key, |l| {
-                l.color = [f32_of(r), f32_of(g), f32_of(b)];
+            c.write(|s| {
+                s.with_local_light(key, |l| {
+                    l.color = [f32_of(r), f32_of(g), f32_of(b)];
+                })
             })
         },
     );
 
     let c = ctx.clone();
     engine.register_fn("light_set_intensity", move |key: &str, v: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.intensity = f32_of(v);
+        c.write(|s| {
+            s.with_local_light(key, |l| {
+                l.intensity = f32_of(v);
+            })
         })
     });
 
     let c = ctx.clone();
     engine.register_fn("light_set_range", move |key: &str, v: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.range = f32_of(v);
+        c.write(|s| {
+            s.with_local_light(key, |l| {
+                l.range = f32_of(v);
+            })
         })
     });
 
@@ -126,8 +134,10 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "light_set_dir",
         move |key: &str, x: f64, y: f64, z: f64| -> bool {
-            c.scene.borrow_mut().with_local_light(key, |l| {
-                l.dir = [f32_of(x), f32_of(y), f32_of(z)];
+            c.write(|s| {
+                s.with_local_light(key, |l| {
+                    l.dir = [f32_of(x), f32_of(y), f32_of(z)];
+                })
             })
         },
     );
@@ -136,9 +146,11 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "light_set_cone",
         move |key: &str, inner_deg: f64, outer_deg: f64| -> bool {
-            c.scene.borrow_mut().with_local_light(key, |l| {
-                l.inner_deg = f32_of(inner_deg);
-                l.outer_deg = f32_of(outer_deg);
+            c.write(|s| {
+                s.with_local_light(key, |l| {
+                    l.inner_deg = f32_of(inner_deg);
+                    l.outer_deg = f32_of(outer_deg);
+                })
             })
         },
     );
@@ -153,28 +165,32 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "light_set_cast_shadow",
         move |key: &str, on: bool| -> bool {
-            c.scene.borrow_mut().with_local_light(key, |l| {
-                l.cast_shadow = on;
+            c.write(|s| {
+                s.with_local_light(key, |l| {
+                    l.cast_shadow = on;
+                })
             })
         },
     );
 
     let c = ctx.clone();
     engine.register_fn("light_set_shadow_bias", move |key: &str, v: f64| -> bool {
-        c.scene.borrow_mut().with_local_light(key, |l| {
-            l.shadow_bias = f32_of(v);
+        c.write(|s| {
+            s.with_local_light(key, |l| {
+                l.shadow_bias = f32_of(v);
+            })
         })
     });
 
     // 总开关：关掉只是不上传（场景数据保留），打开即整体恢复。
     let c = ctx.clone();
     engine.register_fn("set_lights_enabled", move |on: bool| {
-        c.scene.borrow_mut().lights_enabled = on;
+        c.write(|s| s.lights_enabled = on);
     });
 
     let c = ctx.clone();
     engine.register_fn("lights_enabled", move || -> bool {
-        c.scene.borrow().lights_enabled
+        c.doc.borrow().lights_enabled
     });
 
     // ---- 遮挡剔除（扩展二十二） ----
@@ -182,25 +198,26 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     // 提交序列退化成只有视锥剔除；参数与场景数据都保留，再打开即按原参数恢复。
     let c = ctx.clone();
     engine.register_fn("set_occlusion_enabled", move |on: bool| {
-        c.scene.borrow_mut().set_occlusion_enabled(on);
+        c.write(|s| s.set_occlusion_enabled(on));
     });
 
     let c = ctx.clone();
     engine.register_fn("occlusion_enabled", move || -> bool {
-        c.scene.borrow().occlusion_enabled()
+        c.doc.borrow().occlusion_enabled()
     });
 
     // 深度偏置（NDC 单位）：偏置越大越保守（越不剔），写入前统一收敛到合法区间。
     let c = ctx.clone();
     engine.register_fn("set_occlusion_bias", move |v: f64| -> f64 {
-        let mut scene = c.scene.borrow_mut();
-        let mut s = scene.occlusion;
-        s.depth_bias = f32_of(v);
-        scene.set_occlusion(s).depth_bias as f64
+        c.write(|scene| {
+            let mut s = scene.occlusion;
+            s.depth_bias = f32_of(v);
+            scene.set_occlusion(s).depth_bias as f64
+        })
     });
 
     let c = ctx.clone();
     engine.register_fn("occlusion_bias", move || -> f64 {
-        c.scene.borrow().occlusion.depth_bias as f64
+        c.doc.borrow().occlusion.depth_bias as f64
     });
 }

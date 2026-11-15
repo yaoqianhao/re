@@ -9,10 +9,11 @@ use super::*;
 use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::light::{MAX_LOCAL_SHADOW_BIAS, MIN_LIGHT_RANGE};
 use r3e_core::{AnimClip, AnimKey, AnimTrack, InputState};
+use r3e_doc::Document;
 use r3e_runtime::time::FrameTimeWindow;
 use std::sync::Arc;
 
-type Fixture = (Rc<RefCell<Scene>>, Rc<RefCell<Physics>>, ScriptHost);
+type Fixture = (Rc<RefCell<Document>>, Rc<RefCell<Physics>>, ScriptHost);
 
 fn fixture() -> Fixture {
     let mut scene = Scene::new();
@@ -26,7 +27,7 @@ fn fixture() -> Fixture {
             })
             .expect("测试场景 spawn 不应失败");
     }
-    let scene = Rc::new(RefCell::new(scene));
+    let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let scripts = ScriptHost::new(
         scene.clone(),
@@ -37,7 +38,7 @@ fn fixture() -> Fixture {
 }
 
 fn api<'a>(
-    scene: &'a Rc<RefCell<Scene>>,
+    scene: &'a Rc<RefCell<Document>>,
     physics: &'a Rc<RefCell<Physics>>,
     scripts: &'a mut ScriptHost,
 ) -> LocalEngineApi<'a> {
@@ -69,18 +70,20 @@ fn api<'a>(
 fn anim_fixture() -> Fixture {
     let (scene, physics, scripts) = fixture();
     {
-        let mut scene_ref = scene.borrow_mut();
-        let cube = scene_ref.find_id("cube").expect("cube 应存在");
-        let walk = Arc::new(anim_clip("walk", 10.0));
-        let mut inst = AnimInstance::new("hero/walk", walk);
-        inst.bindings = vec![AnimBinding {
-            node: cube,
-            node_index: 0,
-            path: "cube".to_string(),
-            track: 0,
-        }];
-        scene_ref.add_anim_instance(inst);
-        scene_ref.register_anim_clip("hero/atk", Arc::new(anim_clip("atk", 100.0)));
+        let atk = Arc::new(anim_clip("atk", 100.0));
+        scene.borrow_mut().write(|scene_ref| {
+            let cube = scene_ref.find_id("cube").expect("cube 应存在");
+            let walk = Arc::new(anim_clip("walk", 10.0));
+            let mut inst = AnimInstance::new("hero/walk", walk);
+            inst.bindings = vec![AnimBinding {
+                node: cube,
+                node_index: 0,
+                path: "cube".to_string(),
+                track: 0,
+            }];
+            scene_ref.add_anim_instance(inst);
+            scene_ref.register_anim_clip("hero/atk", atk);
+        });
     }
     (scene, physics, scripts)
 }

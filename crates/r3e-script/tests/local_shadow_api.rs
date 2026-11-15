@@ -11,16 +11,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use r3e_core::{InputState, LocalLight, Scene, MAX_LOCAL_SHADOW_CASTERS};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 
 struct Fixture {
-    scene: Rc<RefCell<Scene>>,
+    scene: Rc<RefCell<Document>>,
     host: ScriptHost,
 }
 
 fn fixture() -> Fixture {
-    let scene = Rc::new(RefCell::new(Scene::new()));
+    let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
     let host = ScriptHost::new(scene.clone(), physics, input);
@@ -54,7 +55,7 @@ impl Fixture {
     fn add_point(&mut self, key: &str, pos: [f32; 3], intensity: f32) {
         self.scene
             .borrow_mut()
-            .upsert_local_light(LocalLight::point(key, pos, [1.0; 3], intensity));
+            .write(|s| s.upsert_local_light(LocalLight::point(key, pos, [1.0; 3], intensity)));
     }
 }
 

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use r3e_core::Scene;
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -25,7 +26,7 @@ use crate::time::FrameTimeStats;
 /// 字段与原 `LocalEngineApi` 一一对应：这里刻意**只装借用**，不装所有权，
 /// 保证请求处理结束时宿主立刻恢复独占，主循环下一帧照常推进。
 pub struct EngineAccess<'a> {
-    pub scene: &'a Rc<RefCell<Scene>>,
+    pub scene: &'a Rc<RefCell<Document>>,
     pub physics: &'a Rc<RefCell<Physics>>,
     pub scripts: &'a mut ScriptHost,
     /// 窗口 / GPU 未就绪时为 `None`，此时依赖渲染器的请求应明确回报「不可用」。

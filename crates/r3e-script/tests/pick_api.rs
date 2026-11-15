@@ -13,16 +13,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use r3e_core::{Camera, InputState, Scene, Vec3};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 
 struct Fixture {
-    scene: Rc<RefCell<Scene>>,
+    scene: Rc<RefCell<Document>>,
     host: ScriptHost,
 }
 
 fn fixture() -> Fixture {
-    let scene = Rc::new(RefCell::new(Scene::new()));
+    let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
     let host = ScriptHost::new(scene.clone(), physics, input);
@@ -71,12 +72,11 @@ impl Fixture {
 
     /// 相机正对 +Z（看向原点），屏幕尺寸 800×600：屏幕中心就是 +Z 轴本身。
     fn setup(&mut self, screen: (f32, f32)) {
-        {
-            let mut scene = self.scene.borrow_mut();
-            scene.camera = Camera::new(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO);
-            scene.camera.aspect = screen.0 / screen.1.max(1.0);
-            scene.update_world_transforms();
-        }
+        self.scene.borrow_mut().write(|s| {
+            s.camera = Camera::new(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO);
+            s.camera.aspect = screen.0 / screen.1.max(1.0);
+            s.update_world_transforms();
+        });
         self.host.ui_interaction().borrow_mut().set_screen(screen);
     }
 }
@@ -227,7 +227,7 @@ fn screen_size_is_readable_from_scripts() {
     assert!((f.eval_f64("screen_size()[1]") - 720.0).abs() < 1e-6);
     // 与 pick_* 同源：按 screen_size() 算出的中心点必然命中正中的物件
     f.run(r#"create_node("center", "cube", 0.0, 0.0, 0.0);"#);
-    f.scene.borrow_mut().update_world_transforms();
+    f.scene.borrow_mut().write(|s| s.update_world_transforms());
     assert_eq!(
         f.eval_str(r#"let s = screen_size(); pick_at(s[0] * 0.5, s[1] * 0.5).name"#),
         "center"

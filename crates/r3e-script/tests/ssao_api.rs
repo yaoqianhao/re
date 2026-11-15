@@ -15,16 +15,17 @@ use r3e_core::ssao::{
     MAX_SSAO_INTENSITY, MAX_SSAO_RADIUS, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES,
 };
 use r3e_core::{InputState, Scene};
+use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_script::ScriptHost;
 
 struct Fixture {
-    scene: Rc<RefCell<Scene>>,
+    scene: Rc<RefCell<Document>>,
     host: ScriptHost,
 }
 
 fn fixture() -> Fixture {
-    let scene = Rc::new(RefCell::new(Scene::new()));
+    let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
     let host = ScriptHost::new(scene.clone(), physics, input);

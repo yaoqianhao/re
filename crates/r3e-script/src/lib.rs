@@ -14,6 +14,7 @@ use std::time::SystemTime;
 
 use r3e_audio::Audio;
 use r3e_core::{InputState, MeshAabbCache, Scene, SceneCommand, SceneStack, UiInteraction};
+use r3e_doc::Document;
 use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
@@ -26,7 +27,8 @@ type RebuildHook = Box<dyn FnMut(&mut Scene)>;
 pub struct ScriptHost {
     engine: Engine,
     clock: Rc<RefCell<Clock>>,
-    scene: Rc<RefCell<Scene>>,
+    /// 场景唯一真值（M0-S3）：宿主与脚本共用同一份 Document，写一律走 `write`。
+    doc: Rc<RefCell<Document>>,
     physics: Rc<RefCell<Physics>>,
     input: Rc<RefCell<InputState>>,
     /// 音频门面。脚本层**不**自己开设备：句柄由 app 注入，或退化成静默后端（编辑器 / 单测）。
@@ -55,13 +57,13 @@ pub struct ScriptHost {
 
 impl ScriptHost {
     pub fn new(
-        scene: Rc<RefCell<Scene>>,
+        doc: Rc<RefCell<Document>>,
         physics: Rc<RefCell<Physics>>,
         input: Rc<RefCell<InputState>>,
     ) -> Self {
         // 默认静默后端：单测 / 编辑器不需要真设备，也不该因为没声卡就报错。
         Self::new_with_audio(
-            scene,
+            doc,
             physics,
             input,
             Rc::new(RefCell::new(Audio::silent("脚本宿主未接入音频设备"))),
@@ -70,7 +72,7 @@ impl ScriptHost {
 
     /// 带音频门面的构造：app 层把持有真实设备的 `Audio` 句柄交进来，脚本与 app 共用同一混音器。
     pub fn new_with_audio(
-        scene: Rc<RefCell<Scene>>,
+        doc: Rc<RefCell<Document>>,
         physics: Rc<RefCell<Physics>>,
         input: Rc<RefCell<InputState>>,
         audio: Rc<RefCell<Audio>>,
@@ -84,7 +86,7 @@ impl ScriptHost {
         // 包围盒表同样在这里建好：绑定闭包捕获的是这个 `Rc`，之后换表不会生效。
         let pick_bounds = Rc::new(RefCell::new(MeshAabbCache::new()));
         let ctx = api::ScriptContext {
-            scene: scene.clone(),
+            doc: doc.clone(),
             physics: physics.clone(),
             input: input.clone(),
             audio: audio.clone(),
@@ -104,7 +106,7 @@ impl ScriptHost {
         Self {
             engine,
             clock,
-            scene,
+            doc,
             physics,
             input,
             audio,
@@ -130,11 +132,13 @@ impl ScriptHost {
 
     /// 跑一遍重建回调并刷新世界变换；无回调时只刷新变换。
     fn run_rebuild_hook(&mut self) {
-        let mut scene = self.scene.borrow_mut();
-        if let Some(hook) = self.rebuild_hook.as_mut() {
-            hook(&mut scene);
-        }
-        scene.update_world_transforms();
+        let hook = self.rebuild_hook.as_mut();
+        self.doc.borrow_mut().write(|scene| {
+            if let Some(hook) = hook {
+                hook(scene);
+            }
+            scene.update_world_transforms();
+        });
     }
 
     /// 输入状态句柄，供 app 层每帧填充后脚本读取。
@@ -142,8 +146,9 @@ impl ScriptHost {
         self.input.clone()
     }
 
-    pub fn scene_handle(&self) -> Rc<RefCell<Scene>> {
-        self.scene.clone()
+    /// 文档句柄：app / editor 与脚本共用同一份 [`Document`]（唯一真值）。
+    pub fn doc_handle(&self) -> Rc<RefCell<Document>> {
+        self.doc.clone()
     }
 
     /// 音频门面句柄，供 app 层每帧驱动 `Audio::update` 并读取错误。
@@ -294,7 +299,7 @@ impl ScriptHost {
     pub fn rebuild_scene(&mut self, json: &str) -> Result<(), String> {
         let new_scene = Scene::from_json_str(json).map_err(|e| format!("场景解析失败: {e}"))?;
         let phys_cfg = PhysicsConfig::from_scene(&new_scene.physics);
-        *self.scene.borrow_mut() = new_scene;
+        self.doc.borrow_mut().replace_scene(new_scene);
         {
             let mut physics = self.physics.borrow_mut();
             physics.clear_bodies();
@@ -347,12 +352,12 @@ impl ScriptHost {
             match Scene::from_json_str(json) {
                 Ok(new_scene) => {
                     phys_cfg = Some(PhysicsConfig::from_scene(&new_scene.physics));
-                    *self.scene.borrow_mut() = new_scene;
+                    self.doc.borrow_mut().replace_scene(new_scene);
                 }
                 Err(e) => println!("[script] 基础场景重放失败: {e}"),
             }
         } else {
-            self.scene.borrow_mut().clear_nodes();
+            self.doc.borrow_mut().write(|s| s.clear_nodes());
         }
         {
             let mut physics = self.physics.borrow_mut();
@@ -397,11 +402,11 @@ mod save_script_tests {
     use r3e_core::ObjectDesc;
 
     /// 空场景 + 物理/输入句柄的脚本宿主。
-    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+    fn host() -> (ScriptHost, Rc<RefCell<Document>>) {
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(scene.clone(), physics, input), scene)
+        (ScriptHost::new(doc.clone(), physics, input), doc)
     }
 
     #[test]
@@ -409,9 +414,11 @@ mod save_script_tests {
         let (mut host, scene) = host();
         scene
             .borrow_mut()
-            .spawn(ObjectDesc {
-                name: "probe".to_string(),
-                ..Default::default()
+            .write(|s| {
+                s.spawn(ObjectDesc {
+                    name: "probe".to_string(),
+                    ..Default::default()
+                })
             })
             .expect("spawn 应成功");
 
@@ -429,9 +436,11 @@ mod save_script_tests {
         let (mut host, scene) = host();
         scene
             .borrow_mut()
-            .spawn(ObjectDesc {
-                name: "probe".to_string(),
-                ..Default::default()
+            .write(|s| {
+                s.spawn(ObjectDesc {
+                    name: "probe".to_string(),
+                    ..Default::default()
+                })
             })
             .expect("spawn 应成功");
 
@@ -463,10 +472,10 @@ mod key_script_tests {
 
     /// 空场景 + 可外部驱动的输入句柄。
     fn host_with_input() -> (ScriptHost, Rc<RefCell<InputState>>) {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(scene, physics, input.clone()), input)
+        (ScriptHost::new(doc, physics, input.clone()), input)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -575,11 +584,11 @@ mod text_script_tests {
     use super::*;
 
     /// 空场景宿主 + 场景句柄（文本要直接查 `Scene::texts` 验证）。
-    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+    fn host() -> (ScriptHost, Rc<RefCell<Document>>) {
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(scene.clone(), physics, input), scene)
+        (ScriptHost::new(doc.clone(), physics, input), doc)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -863,8 +872,7 @@ mod text_script_tests {
         );
 
         // 用 core 直接铺满，验证的是「脚本这一侧是否还会绕过上限」。
-        {
-            let mut s = scene.borrow_mut();
+        scene.borrow_mut().write(|s| {
             for i in 0..r3e_core::ui::MAX_UI_ELEMENTS {
                 let mut el = r3e_core::ui::UiElement::new(
                     format!("fill{i}"),
@@ -877,7 +885,7 @@ mod text_script_tests {
                 ];
                 s.ui.push(el);
             }
-        }
+        });
         assert_eq!(
             host.eval("ui_count()").unwrap().as_int().unwrap(),
             r3e_core::ui::MAX_UI_ELEMENTS as i64
@@ -928,8 +936,7 @@ mod text_script_tests {
     #[test]
     fn ui_capacity_still_allows_update_when_full() {
         let (mut host, scene) = host();
-        {
-            let mut s = scene.borrow_mut();
+        scene.borrow_mut().write(|s| {
             for i in 0..r3e_core::ui::MAX_UI_ELEMENTS {
                 let mut el = r3e_core::ui::UiElement::new(
                     format!("fill{i}"),
@@ -942,7 +949,7 @@ mod text_script_tests {
                 ];
                 s.ui.push(el);
             }
-        }
+        });
         assert!(!eval_bool(
             &mut host,
             r#"ui_rect("fill0", "center", "0px", "0px", "9px", "9px", 1.0, 1.0, 1.0, 1.0)"#
@@ -1064,11 +1071,11 @@ mod audio_script_tests {
 
     /// 静默音频后端 + 空场景：等价于「这台机器没有声卡」的运行环境。
     fn host_silent() -> ScriptHost {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
         // ScriptHost::new 内部就是 Audio::silent —— 单测不碰真设备。
-        ScriptHost::new(scene, physics, input)
+        ScriptHost::new(doc, physics, input)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1239,11 +1246,11 @@ mod audio_script_tests {
 mod postfx_script_tests {
     use super::*;
 
-    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+    fn host() -> (ScriptHost, Rc<RefCell<Document>>) {
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(scene.clone(), physics, input), scene)
+        (ScriptHost::new(doc.clone(), physics, input), doc)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1363,18 +1370,18 @@ mod ui_interaction_script_tests {
 
     const SCR: (f32, f32) = (800.0, 600.0);
 
-    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+    fn host() -> (ScriptHost, Rc<RefCell<Document>>) {
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(scene.clone(), physics, input), scene)
+        (ScriptHost::new(doc.clone(), physics, input), doc)
     }
 
-    fn button(scene: &Rc<RefCell<Scene>>, key: &str, x: f32, y: f32) {
+    fn button(scene: &Rc<RefCell<Document>>, key: &str, x: f32, y: f32) {
         let mut el = UiElement::new(key, r3e_core::ui::UiKind::Rect, Anchor::TopLeft);
         el.offset = [UiValue::px(x), UiValue::px(y)];
         el.size = [UiValue::px(120.0), UiValue::px(40.0)];
-        scene.borrow_mut().ui.push(el);
+        scene.borrow_mut().write(|s| s.ui.push(el));
     }
 
     fn eval_str(host: &mut ScriptHost, src: &str) -> String {
@@ -1518,11 +1525,11 @@ mod local_light_script_tests {
     use super::*;
 
     /// 空场景 + 物理/输入句柄的脚本宿主。
-    fn host() -> (ScriptHost, Rc<RefCell<Scene>>) {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+    fn host() -> (ScriptHost, Rc<RefCell<Document>>) {
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(scene.clone(), physics, input), scene)
+        (ScriptHost::new(doc.clone(), physics, input), doc)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1878,10 +1885,10 @@ mod scene_binding_tests {
     use r3e_core::{Scene, StackEntry};
 
     fn host() -> ScriptHost {
-        let scene = Rc::new(RefCell::new(Scene::new()));
+        let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        ScriptHost::new(scene, physics, input)
+        ScriptHost::new(doc, physics, input)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1996,7 +2003,7 @@ mod scene_binding_tests {
         let mut h = host();
         assert!(eval_bool(&mut h, r#"scene_switch("lv2.json")"#));
         let json = h
-            .scene_handle()
+            .doc_handle()
             .borrow()
             .to_json_pretty()
             .expect("场景应可序列化");
