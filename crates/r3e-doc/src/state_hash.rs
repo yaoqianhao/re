@@ -591,6 +591,14 @@ impl Document {
     pub fn world_hash(&self) -> StateHash {
         world_hash(self.as_scene())
     }
+
+    /// 清空哈希缓存。
+    ///
+    /// 事务专用（[`crate::transaction`]）：事务期间「版本不动但内容变了」，缓存键失效，
+    /// 不清就会把中间态当成现值返回。不动版本、不置脏，纯缓存动作。
+    pub(crate) fn invalidate_hash_cache(&mut self) {
+        self.hash_cache.set(None);
+    }
 }
 
 // 覆盖守卫测试见 `tests/state_hash.rs`（单文件行数门禁 + 只测公开 API）。

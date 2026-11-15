@@ -16,6 +16,7 @@
 
 mod command;
 mod state_hash;
+mod transaction;
 mod validate;
 mod write;
 
@@ -27,6 +28,7 @@ use r3e_core::Scene;
 
 pub use command::{Command, CommandKind};
 pub use state_hash::{mix_f32, mix_str, mix_u64, scene_hash, world_hash, StateHash, FNV_OFFSET};
+pub use transaction::Transaction;
 pub use validate::{errors as validate_errors, validate, Issue, Severity};
 
 /// 文档层错误。
@@ -43,6 +45,16 @@ pub enum DocError {
     Rejected(String),
     /// 撤销栈为空。
     NothingToUndo,
+    /// 事务回滚不完整：某条命令的 `undo` 没能把状态精确还原。
+    ///
+    /// `undone` 是成功撤销的条数，`total` 是事务里已暂存的总条数。出现即代表文档状态
+    /// 已不可信（事务内部会同时把文档标脏），上层应当提示用户重开或存盘。
+    RollbackFailed {
+        /// 成功撤销的条数。
+        undone: usize,
+        /// 事务中已暂存的条数。
+        total: usize,
+    },
 }
 
 impl DocError {
@@ -51,6 +63,7 @@ impl DocError {
         match self {
             Self::Scene(e) | Self::NotFound(e) | Self::Rejected(e) => e,
             Self::NothingToUndo => "没有可撤销的操作",
+            Self::RollbackFailed { .. } => "事务回滚不完整，文档状态已不可信",
         }
     }
 }
@@ -62,6 +75,12 @@ impl fmt::Display for DocError {
             Self::NotFound(e) => write!(f, "目标不存在：{e}"),
             Self::Rejected(e) => write!(f, "写入被拒：{e}"),
             Self::NothingToUndo => write!(f, "没有可撤销的操作"),
+            Self::RollbackFailed { undone, total } => {
+                write!(
+                    f,
+                    "事务回滚不完整：{undone}/{total} 条撤销成功，文档状态已不可信"
+                )
+            }
         }
     }
 }

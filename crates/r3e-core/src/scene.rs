@@ -296,8 +296,8 @@ pub struct SceneFile {
     pub assets: Vec<AssetDecl>,
 }
 
-/// 场景：所有可渲染物件的唯一真源。
-#[derive(Debug)]
+/// 场景：所有可渲染物件的唯一真源。`Clone` 供文档层事务的影子快照（preview 在克隆上预演，主真值不碰）。
+#[derive(Debug, Clone)]
 pub struct Scene {
     nodes: HashMap<NodeId, Node>,
     order: Vec<NodeId>,
