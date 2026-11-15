@@ -15,6 +15,7 @@
 //! M1-DOC-FIELDS。原因见 `docs/M0S3_DOC_LAYER.md` §2 决定 2。
 
 mod command;
+mod validate;
 mod write;
 
 use std::fmt;
@@ -23,6 +24,7 @@ use std::ops::Deref;
 use r3e_core::Scene;
 
 pub use command::{Command, CommandKind};
+pub use validate::{errors as validate_errors, validate, Issue, Severity};
 
 /// 文档层错误。
 ///
@@ -96,6 +98,11 @@ impl Document {
     pub fn from_json_str(src: &str) -> Result<Self, DocError> {
         let scene = Scene::from_json_str(src).map_err(DocError::Scene)?;
         Ok(Self::new(scene))
+    }
+
+    /// 校验整份场景，返回全部问题（不修改文档、不标脏）。
+    pub fn validate(&self) -> Vec<Issue> {
+        validate::validate(&self.scene)
     }
 
     /// 只读视图。`Deref` 已经覆盖绝大多数场景，这个方法留给需要显式拿到 `&Scene`
