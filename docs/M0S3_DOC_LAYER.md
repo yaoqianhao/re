@@ -263,20 +263,36 @@ pub trait Command {
 
 ---
 
-## 5. 强制机制：`cargo xtask doc-gate`（新增子命令，纳入 `verify`）
+## 5. 强制机制：`cargo xtask doc-gate`（新增子命令，纳入 `verify`）✅ 已落地（2026-11-15）
 
 架构约束靠文档约束不住，必须落到 CI 命令。6 条规则：
 
-| # | 规则 | 例外白名单 |
-|---|---|---|
-| 1 | `RefCell<Scene>` / `Rc<RefCell<Scene>>` 只允许出现在 `crates/r3e-doc/` | `r3e-core` 自身单测 |
-| 2 | 返回或接收 `&mut Scene` 的**公开** API 只允许在 `r3e-doc` | `r3e-physics`（`sync_to_scene` / `step`，下游接收者）、`r3e-core`（内部） |
-| 3 | `DerefMut` 一词在 `crates/r3e-doc/` 中出现即失败 | 无 |
-| 4 | `runtime` / `editor-host` / `script` 不得出现 `Scene::from_json_str`，场景解析统一走 `Document::from_json_str` | 无 |
-| 5 | 未登记 `dep_rules.json` 的 crate 一律失败 | 无（现状已具备） |
-| 6 | `doc.write(|s| ...)` 闭包体内不得出现 `.borrow()` / `.borrow_mut()`（RefCell 重入静态扫描） | 无 |
+| # | 规则 | 例外白名单 | 实际落点 |
+|---|---|---|---|
+| 1 | `RefCell<Scene>` / `Rc<RefCell<Scene>>` 只允许出现在 `crates/r3e-doc/` | `r3e-core` 自身单测 | 实测零违规；`r3e-doc` 内 `#[cfg(test)]` 之后不扫 |
+| 2 | 返回或接收 `&mut Scene` 的**公开** API 只允许在 `r3e-doc` | `r3e-physics`（`sync_to_scene` / `step`，下游接收者）、`r3e-core`（内部） | 白名单 5 项登记在 `xtask/doc_gate.json`（另收 `script::write` / `script::set_rebuild_hook` 两个受控出口） |
+| 3 | `DerefMut` 一词在 `crates/r3e-doc/` 中出现即失败 | 无 | 实测零命中 |
+| 4 | `runtime` / `editor-host` / `script` 不得出现 `Scene::from_json_str`，场景解析统一走 `r3e-doc` 的解析入口 | 无 | 新增 `r3e_doc::parse_scene`，13 处上游调用全部迁移（app 6 / script 4 / host 3） |
+| 5 | 未登记 `dep_rules.json` 的 crate 一律失败 | 无（现状已具备） | 直接读 `dep_rules.json` 的 crate 集比对 |
+| 6 | `doc.write(\|s\| ...)` 闭包体内不得出现 `.borrow()` / `.borrow_mut()`（RefCell 重入静态扫描） | 无 | 载体名（`s` / `scene` / 任意标识符）由 `doc_gate.json` 的 `rule6_scene_keys` 配置 |
 
-实现要点：复用 `rust_files()` / `rel()` 现有工具，约 120 行；输出格式与 `lint-size` 一致（违规逐条列出 = crate + 文件 + 行号 + 规则号）。
+实现要点（实测，与方案期估算的差异写在此处）：`xtask/src/doc_gate.rs` **282 行**（不是 120 行，多出的量在去噪与三处判定细节上），
+配置外置为 `xtask/doc_gate.json`（`rule4_scope` / `rule6_scene_keys` / `rule2_exceptions`），与 `size_debt.json` 同纪律——**改动即评审**。
+输出格式与 `lint-size` 一致（违规逐条 = crate + 文件 + 行号 + 规则号），白名单条目数对不上会打印"可下调"提示。
+六条规则均做过**注入式负向验证**：往对应位置塞违规写法 → `rc=1` 且打印该规则号，还原后 `rc=0`；R5 用临时 crate `r3e-probe` 验证"未登记即红"后删除。
+
+### 5.1 P5 落地偏差（与 §5 方案期表述的差异，留痕）
+
+| 方案期表述 | 落地实际 | 原因 |
+|---|---|---|
+| 规则 4 统一走 `Document::from_json_str` | 新增 `r3e_doc::parse_scene(src) -> Result<Scene, String>`，上层调用改它；`Document::from_json_str` 内部改为调 `parse_scene` | 上游多处只需要**一个 owned `Scene`**（栈回退、刷新资产、测试最小场景），没有建 `Document` 的需求；强行造 Doc 会多一层无意义包装 |
+| 规则 1 白名单含 `r3e-core` 自身单测 | 实现上改为"测试块内一律不扫"（`#[cfg(test)]` 之后跳过） | core 侧本无命中，按"测试代码可以随手造 `RefCell<Scene>`"处理更省事，也避免后续测试写法被门禁误伤 |
+| 规则 2 例外仅 physics / core | 追加 `script::write` / `script::set_rebuild_hook` 两个受控出口 | P4 保留了 6 处 `&mut Scene` 受控出口，其中 script 侧两处是脚本上下文的唯一写通道，属"经 doc 收口的合法出口"而非泄漏 |
+| 规则 6 只看 `doc.write` 闭包 | 扫描任意 `write(|<key>| …)` 形式的闭包体，key 名可配 | 闭包参数名在真实代码里不统一（`s` / `scene`），硬编码会漏扫 |
+| 规则 2 例外仅 physics/core/script 两处 | 再追加 `r3e-runtime/src/asset_scene.rs` 5 条（`spawn_asset_nodes` / `attach_morph_bindings` / `attach_morph_bindings_with` / `bind_asset_skins` / `spawn_asset_anim`），白名单 5 → 10 项 | P4 保留的 runtime 侧受控出口原为 `app.rs` 内私有函数、不触发规则 2；P5 抽成独立模块后必须 `pub(crate)` 跨模块可见，门禁正确拦下，属登记受控出口而非放宽规则 |
+| `lint-size` 预期未涨 | 实测上涨 2 条：`r3e-runtime/src/app.rs` 3523→3540、`r3e-script/src/lib.rs` 2021→2028（P4 收口引入），门禁返回 1 | 129 处写点改写必然加行；先抽 `asset_scene.rs`（474 行）把 `app.rs` 压到 **3066**，再抽 `r3e-script/src/util.rs`（`has_fn` / `array_to_strings`）把 `lib.rs` 压到 **2018**，两处 `size_debt.json` 基线同步收紧 |
+| 债务基线只许变小 | `size_debt.json` 两行收紧为 3066 / 2018；`doc_gate.json` 白名单由 5 项增至 10 项 | 行数下降必须回写基线，否则等于自愿放弃约束；白名单新增仅因文件归属变化，非规则例外扩大 |
+
 
 ---
 
@@ -310,7 +326,7 @@ crates/r3e-doc/
 | **P2** | `Command` v0 12 条 + 单步 undo | S3-03 | command/* | 单测 ≥24（每命令 apply 生效 + undo 复原各 1） |
 | **P3** | `Validator` v0 + 负向 17 条（方案期写 8/9，见 §4.1 偏差） | S3-04 | validate/* | 负向全绿（必须报 Error），正向 11 场景 + 4 fixture 全过 |
 | **P4** | 入口迁移：script 91+115 / host 18+39 / runtime 11+31 / script-tests 9+29；`RebuildHook` 收口；app 4 个 helper 消化；`replace_scene` 接场景切换 | S3-05 | 5 处持有者全部改 `Rc<RefCell<Document>>` | `doc-gate` 零违规 + 全量测试绿 + 实机帧行为不变 |
-| **P5** | `xtask doc-gate` 落地 + 文档同频 | — | main.rs + md | `verify` 全绿 |
+| **P5** ✅ | `xtask doc-gate` 落地 + 文档同频 | — | `doc_gate.rs` + `doc_gate.json` + 四份 md | `verify` 全绿；六规则负向验证全部拦截 |
 
 P0~P3 可在 `r3e-doc` 内独立完成并提交（不动任何现有 crate，风险为零）；**P4 是唯一有回归风险的工作包**，按 crate 拆 4 笔提交，每笔单独 `cargo test -p <crate>` 可回退。
 
@@ -359,27 +375,32 @@ P0~P3 可在 `r3e-doc` 内独立完成并提交（不动任何现有 crate，风
 ## 11. 验收清单（全部可自动判定）
 
 ```bash
-cargo test -p r3e-doc                      # ≥45 绿，含 ≥8 个"必须失败"的负向用例
-cargo xtask doc-gate                       # 6 条规则零违规
-cargo xtask dep-check                      # r3e-doc 零违规，总违规仍 3 条
-cargo xtask lint-size                      # 24 项未涨，新文件 ≤800
-cargo xtask check-tests                    # 全 crate 只涨不跌，新增 r3e-doc 行
-cargo test --workspace                     # ≥1409（1364 + ≥45）
-cargo clippy --workspace --all-targets     # 0 告警（S2 现状 rc 0）
+cargo test -p r3e-doc                      # 方案写 ≥45：实测 63 绿（含 17 条"必须失败"的负向用例）
+cargo xtask doc-gate                       # 6 条规则零违规（238 个 .rs / 12 crate / 白名单 10 项）
+cargo xtask dep-check                      # r3e-doc 零违规，总违规仍 3 条存量债务（未因 doc 边而增）
+cargo xtask lint-size                      # 全部未涨：r3e-doc 最大文件 command/mod.rs 222 行；app.rs 3066、script lib.rs 2018（P5 抽出后收紧基线）
+cargo xtask check-tests                    # 全 crate 只涨不跌：r3e-doc 62→63，合计 1426→1427
+cargo test --workspace --all-features      # 方案写 ≥1409（1364+45）：实测 1,427 passed / 0 failed
+cargo clippy --workspace --all-features --all-targets -- -D warnings   # 0 告警
+cargo fmt --all -- --check                 # 0 diff
 cargo run -p r3e-app -- --run-seconds 20   # 帧行为不变：帧数 / 节点数 / 绘制调用与 S2 日志一致
 ```
 
 ---
 
-## 12. 提交规划（预计 6~7 笔）
+## 12. 提交规划与实况（方案计划 6~7 笔 → 实际 7 笔）
 
-1. `doc: 立项 r3e-doc + Document v0（Deref 只读 / write 门禁）` — P0+P1
-2. `doc: Command v0 十二条 apply/undo` — P2
-3. `doc: Validator v0 + 9 条负向用例` — P3
-4. `doc: xtask doc-gate 六条规则 + 规则表/测试基线登记` — P5（前半）
-5. `迁移: runtime 从 Document 取场景` — P4/runtime
-6. `迁移: script + editor-host 入口收口` — P4/script+host（若过大则拆两笔）
-7. `docs: M0S3 方案 + 看板同频` — P5（后半）
+| 计划 | 实际提交 | 内容 |
+|---|---|---|
+| 1. `doc: 立项 r3e-doc + Document v0` | `5828216` | P0+P1 合并：crate 立项 + `Document` / `write` / `Deref` |
+| 2. `doc: Command v0 十二条 apply/undo` | `cfefe31` | P2，实落 14 条（方案写 12，多 light×2 与 rename） |
+| 3. `doc: Validator v0 + 9 条负向用例` | `af2ec4e` | P3，实落 17 条负向 |
+| 3b. （新增）偏差留痕 | `db7dbe9` | P3 资产级校验推 M1 的单独记录 |
+| 4. `doc: xtask doc-gate 六条规则` | `a2c6830` | `doc_gate.rs` + `doc_gate.json` + `parse_scene` 迁移 + main.rs 接线 |
+| 5~6. `迁移: runtime / script + editor-host` | `5c22809` | P4 三 crate **合并为一笔**：类型链耦合（`LocalEngineApi` / `ScriptHost` / `App` 同时持 `Document`），拆开则中间态不可编译 |
+| 7. `docs: M0S3 方案 + 看板同频` | 本笔（`git log -1`；回填提交号会改变自身 hash，故不写死） | 本文件 + ARCHITECTURE / ROADMAP / EXECUTION 同频 |
+
+原则不变：本地提交不推送；`verify` 全绿才提交。
 
 ---
 

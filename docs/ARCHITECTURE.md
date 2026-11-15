@@ -85,7 +85,7 @@ rust3d-engine/
 │  ├─ ARCHITECTURE.md          # 本文档
 │  ├─ PHYSICS.md               # 物理子系统完整说明
 │  └─ ASSETS.md                # 资产管线：FBX / glTF 导入、AIR 统一格式、已知限制
-├─ xtask/                      # 工程门禁：verify / lint-size / check-tests / dep-check（不进引擎依赖图）
+├─ xtask/                      # 工程门禁：verify / lint-size / check-tests / doc-gate / dep-check（不进引擎依赖图）
 └─ crates/
    ├─ r3e-core/                # 内核：数学、变换、节点、场景图、相机、光照（零引擎依赖）
    ├─ r3e-render/              # 渲染：wgpu 设备、管线、程序化网格、WGSL
@@ -141,8 +141,16 @@ rust3d-engine/
 - `r3e-runtime` 是**唯一的帧循环所有者**：窗口、事件循环、时间步、headless 路径都在这里，因此渲染、物理、脚本、音频、资产
   都只被它直接驱动。它**不认识编辑器协议**——编辑能力经 `port::EditorService` 端口注入（依赖倒置），
   所以同一份主循环既能跑窗口也能跑 `--run-seconds` 无头验证。
+- `r3e-doc` 是 M0-S3 引入的**文档层**，位置在 `r3e-core` 之上、`r3e-runtime` / `r3e-script` / `r3e-editor-host` 之下，依赖只有 `r3e-core`。
+  它把"同一份内存 `Scene`"从口头约定变成**类型强制**：`Scene` 的所有权归 `Document`（move 语义，不复制、不克隆），
+  `Document` 实现 `Deref<Target = Scene>` 但**拒绝 `DerefMut`**——读随便读，写只能走 `doc.write(|s| …)` 这一个闭包入口，
+  闭包返回时统一抬 `version` 与 `dirty`。命令侧 `Command` v0 14 条（spawn / despawn / transform / visible / rename / camera / env / postfx / light×2 / ui / text 等）
+  以 `apply` + `undo` 成对落地，undo 栈留在 `Document` 外部，S4 的事务层只需套在 `write` 外面。
+  这条边界由 `cargo xtask doc-gate` 的六条规则机械执行，越界（例如上游 crate 直接持有 `RefCell<Scene>`、或泄漏 `&mut Scene` 的公开 API）即红；
+  场景解析统一走 `Document::from_json_str` / `r3e_doc::parse_scene`，上游不得再出现 `Scene::from_json_str`。
+  依赖边 `script / runtime / editor-host → doc → core`，方向向下不成环。
 - `r3e-editor` 只定义 JSON-RPC 协议、`EngineApi` trait 与 TCP/NDJSON 传输，**不依赖任何其它 r3e crate**，也不碰图形/窗口。
-- `r3e-editor-host` 是协议与帧循环之间的**唯一黏合层**：`LocalEngineApi` 桥接同一份 `Scene` / `Physics` / `ScriptHost`，
+- `r3e-editor-host` 是协议与帧循环之间的**唯一黏合层**：`LocalEngineApi` 桥接同一份 `Document`（内含唯一 `Scene`）/ `Physics` / `ScriptHost`，
   由它每帧消化至多 `--rpc-max-per-frame` 条请求。方向永远是 `r3e-editor-host → (r3e-editor, r3e-runtime)`。
 - `r3e-app` 是**薄壳**：初始化日志、把 argv 交给运行时、`--rpc-port` 时挂编辑器桥。它不直接依赖 wgpu / winit / gilrs，
   也不认识任何子系统——这一条由 `cargo xtask dep-check` 的规则表（`xtask/dep_rules.json`）机械把关。
@@ -160,14 +168,15 @@ rust3d-engine/
 | r3e-render | 13,109 | 3,665 | 307 | `renderer/`（17 文件，最大 `init.rs` 716 行；M0-S1 由单文件 5,582 拆出）/ `instance_upload.rs` / `upload_staging.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `gfx` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
 | r3e-asset | 6,371 | 898 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-script | 6,268 | 3,366 | 132 | `api/`（17 文件，最大 `mod.rs` 428 行；M0-S2 由单文件 4,070 拆出）/ `lib.rs`（2,021）；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
-| r3e-runtime | 4,318 | — | 14 | `app.rs`（3,523：窗口 / 主循环 / 时间步）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
+| r3e-runtime | 4,318 | — | 14 | `app.rs`（3,066：窗口 / 主循环 / 时间步）/ `asset_scene.rs`（474：资产装配 spawn / 形变 / 蒙皮 / 动画，M0-S3 抽出）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
 | r3e-editor-host | 3,947 | 120 | 58 | `api/`（13 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
 | r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
 | r3e-editor | 3,069 | 1,864 | 101 | `lib.rs`（协议 + `EngineApi` / `EnvironmentPatch` / `EnvironmentMapPatch` / `SsaoPatch` / `AnimLayerPatch` / `AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
+| **r3e-doc** | 1,115 | 710 | 63 | `lib.rs`（220：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`write.rs`（52：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 222 最大，`Command` trait + undo 栈；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，21 个 issue code） |
 | r3e-app | 37 | 1,442 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
-| **合计** | **76,995** | **15,787** | **1,364** | **约 7.70 万行 Rust + 1,517 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 98 个 test target（含 9 个 doctest）/ 1,360 passed / 0 failed，`--features rapier` 多 4 条专属用例** |
+| **合计** | **78,110** | **16,497** | **1,427** | **约 7.81 万行 Rust + 1,517 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 实测 1,427 passed / 0 failed（`Running` 行 204 个 target，含 lib/bin/集成/doctest 全部 harness），`--features rapier` 多 4 条专属用例** |
 
 行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算一次：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，
@@ -411,13 +420,14 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
-| **一键门禁** | `cargo xtask verify` | fmt + clippy + test + lint-size + check-tests + dep-check（报告态）串起来跑，任一硬门失败即非 0 退出。日常只需这一条 |
+| **一键门禁** | `cargo xtask verify` | fmt + clippy + test + lint-size + check-tests + doc-gate + dep-check（报告态）串起来跑，任一硬门失败即非 0 退出。日常只需这一条 |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
 | 单测（默认特性） | `cargo test --workspace` | 1,339 passed / 0 failed（95 个 test target，含 9 个 doctest） |
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 1,343 passed / 0 failed；比默认特性多 4 条，来源是**只在该特性下编译**的 `ccd_penetration.rs`（文件级 `#![cfg(feature = "rapier")]`，3 测）与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`（1 测）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
 | **文件规模** | `cargo xtask lint-size` | 单文件 ≤800 行；26 个存量超标文件登记在 `xtask/size_debt.json`，**只许变小不许变大**，拆到 ≤800 行后要删条目 |
-| **测试数不得下降** | `cargo xtask check-tests` | 逐 crate 对照 `xtask/tests_baseline.json`（core 566 / render 307 / script 128 / editor 97 / asset 61 / editor-host 55 / plugin 47 / audio 29 / physics 28 / runtime 14 / app 11，合计 1,343），任一 crate 变少即失败 |
+| **测试数不得下降** | `cargo xtask check-tests` | 逐 crate 对照 `xtask/tests_baseline.json`（core 576 / render 307 / script 132 / editor 101 / doc 63 / asset 61 / editor-host 58 / plugin 47 / audio 29 / physics 28 / runtime 14 / app 11，合计 1,427），任一 crate 变少即失败 |
+| **文档层收口** | `cargo xtask doc-gate` | 六条规则机械执行 M0-S3 的"唯一写入口"：`RefCell<Scene>` 只许在 `r3e-doc`（测试块内放宽）、公开 API 不许泄漏 `&mut Scene`（5 处受控出口登记在 `xtask/doc_gate.json`）、`DerefMut` 不许出现在 `r3e-doc`、`runtime`/`editor-host`/`script` 不许直连 `Scene::from_json_str`（改走 `r3e_doc::parse_scene` / `Document::from_json_str`）、未登记 `dep_rules.json` 的 crate 直接红、`write(\|s\| …)` 闭包体内不许再借用场景载体（RefCell 重入）。白名单同 `lint-size`：**只许减**，条目对不上会打印"可下调" |
 | **依赖方向** | `cargo xtask dep-check [--strict]` | 对照 `xtask/dep_rules.json` 的 `allow` 白名单。v0 只报告不阻塞；当前登记 3 条债务（`editor-host` 直连 5 个子系统、`plugin` 直连 core/physics、`script` 直连 physics/audio），M0 逐 Sprint 偿还后 `--strict` 转硬 |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -425,9 +435,9 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | CI | `.github/workflows/ci.yml`（fmt / gate / clippy / test / visual / visual-gpu 六个 job 名，其中 clippy / test / visual-gpu 各自带矩阵，全 Windows） | 每次 push、PR 自动跑，红则不合；`visual-gpu` 未配 runner 时显示 skipped（不阻塞合并，但可见） |
 
 `xtask` 存在的理由：上面几道门以前只写在文档里，靠人记。现在它们有代码、有白名单、有基线快照——
-**"结构债不许悄悄变多"这件事由机器执行**，而不是由下一个读文档的人自觉执行。三个数据文件都在 `xtask/`：
-`size_debt.json`（大文件账本）、`tests_baseline.json`（测试数底线）、`dep_rules.json`（依赖方向规则表），
-三者都进版本库，改动即评审。
+**"结构债不许悄悄变多"这件事由机器执行**，而不是由下一个读文档的人自觉执行。四个数据文件都在 `xtask/`：
+`size_debt.json`（大文件账本）、`tests_baseline.json`（测试数底线）、`dep_rules.json`（依赖方向规则表）、
+`doc_gate.json`（文档层写入口的例外清单），四者都进版本库，改动即评审。
 
 静态检查仅保留三处带注释的 `#[allow]`：`arc_with_non_send_sync`（渲染器主线程独占，`MeshProvider` 刻意不 `Send`）、
 `too_many_arguments`（顶点装配入口参数天然是平行数组，`r3e-asset` 内两处）。
@@ -3931,7 +3941,7 @@ M_i = frame_local⁻¹ · (A⁻¹ · joint_i)          // 全程无 X：A 与 jo
 | `Scene::tree_root(node)` | 同上 | 上溯到所在树的根，用来取 `A` |
 | `Scene::align_skin_frame(index)` | 同上 | 用当前世界矩阵固定一次基准；`update_skinning` 对未固定的蒙皮惰性兜底 |
 | `SkinInstance::solve_from_relative(&[Mat4])` | `r3e-core/src/skin.rs` | 直接用「已在网格局部空间的相对变换」填装，求解式里彻底没有 `X` |
-| `bind_asset_skins` | `r3e-runtime/src/app.rs` | 资产绑定蒙皮后立刻 `align_skin_frame`，失败则 warn 并让求解侧自己兜底 |
+| `bind_asset_skins` | `r3e-runtime/src/asset_scene.rs`（M0-S3 起） | 资产绑定蒙皮后立刻 `align_skin_frame`，失败则 warn 并让求解侧自己兜底 |
 
 **为什么要基准节点、而不是「网格与关节的最近公共祖先」**：真实导入路径里网格节点和骨架**不在同一棵树**。
 `tirger` 样本的网格节点 `diaojingbaihu` 是独立根（`parent = None`，直接吃资产实例变换），骨架挂在资产实例根

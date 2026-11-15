@@ -95,7 +95,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | `r3e-asset` | 保持 | 导入管线 | 不依赖 render（现状正确） |
 | `r3e-script` | **改造** | rhai 绑定 | 只能经 `CapabilityHost` trait 注入能力，**禁止 `use r3e_physics::*`** |
 | `r3e-protocol` | **新（由 editor 演进）** | 协议 + 能力清单 + 事务消息 | **仅 serde**，零引擎类型 |
-| `r3e-doc` | **新** | Document/Command/Transaction/Undo/Validator | **本路线图的核心新增** |
+| `r3e-doc` | **已建（M0-S3）** | Document/Command/Transaction/Undo/Validator | **本路线图的核心新增**：Document（唯一真值 + 闭包写入口）、Command v0 14 条、Validator v0 已落地；Transaction / Undo / StateHash 归 M0-S4 |
 | `r3e-runtime` | **新（由 app 拆出）** | 窗口、主循环、时间步、headless 模式 | 不含任何 RPC |
 | `r3e-editor-host` | **新（由 app 拆出）** | RPC 服务端，桥接 protocol ↔ doc | 不含主循环 |
 | `r3e-game` | **新** | 游戏层框架：玩家、交互、关卡流程 | 示例游戏的宿主，验证"引擎真的能做游戏" |
@@ -137,7 +137,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 |---|---|---|
 | M0-1 | 拆 `r3e-app` → `r3e-runtime` + `r3e-editor-host` + `main` 薄壳 | 三个 crate 各自可独立测试；`runtime` 能在无窗口 headless 下跑 600 帧 |
 | M0-2 | 拆三个单体文件（`renderer.rs` / `api.rs` / `editor.rs`）到 ≤800 行/文件 —— `renderer.rs` 已完成（M0-S1，2026-11-15，17 文件最大 716 行）；`editor.rs` 随 M0-S0 的 crate 拆分消解；`api.rs` 已完成（M0-S2，2026-11-15，script 17 文件最大 428 行、editor-host 13 文件最大 433 行，并新增 `core::cmd_spec` 命令表 369 条作单一真源） | 单文件行数 CI 门禁；拆分后测试数不减（≥1335） |
-| M0-3 | 新建 `r3e-doc`：Document 模型接管场景唯一真值 | `core::scene` 不再被 `app` 直接可变借用，只能经 `doc` |
+| M0-3 | 新建 `r3e-doc`：Document 模型接管场景唯一真值 —— 已完成（M0-S3，2026-11-15，`Document` 持 `Scene`、`Deref` 只读拒绝 `DerefMut`、129 处写点经 `doc.write` 收口、`cargo xtask doc-gate` 六规则上线） | `core::scene` 不再被 `app` 直接可变借用，只能经 `doc` |
 | M0-4 | Command + Transaction + UndoStack 落地 | 任意命令序列 apply 后 `undo` 全量回退，状态哈希与初始一致 |
 | M0-5 | `r3e-protocol` 从 `r3e-editor` 剥离，零引擎依赖 | `cargo tree -p r3e-protocol` 只有 serde |
 | M0-6 | 能力清单自动生成：`capabilities.json` 由代码导出，非手写 | 清单与实现不一致 → CI 失败 |

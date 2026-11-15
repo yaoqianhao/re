@@ -45,7 +45,7 @@ AIGC:
 ### 1.2 关键发现：M0-1 已经是"半成品"，不是"未开始"
 
 ```
-crates/r3e-runtime/       src/app.rs 3342 / cli.rs 412 / capture.rs 122 / time.rs 93 / port.rs 36 / lib.rs 35
+crates/r3e-runtime/       src/app.rs 3066 / asset_scene.rs 474 / cli.rs 412 / capture.rs 122 / time.rs 93 / port.rs 36 / lib.rs 35
 crates/r3e-editor-host/   src/api.rs 3320 / host.rs 44 / lib.rs 17
 crates/r3e-app/           src/app.rs 3235 / editor.rs 3442 / main.rs 402
 ```
@@ -76,7 +76,7 @@ crates/r3e-app/           src/app.rs 3235 / editor.rs 3442 / main.rs 402
 | 4487 | `r3e-render/src/renderer.rs` | 1740 | `r3e-script/src/lib.rs` |
 | 3442 | `r3e-editor-host/src/api.rs` | 1582 | `r3e-asset/src/lib.rs` |
 | 3386 | `r3e-script/src/api.rs` | 1523 | `r3e-physics/src/lib.rs` |
-| 3342 | `r3e-runtime/src/app.rs` | 1406 | `r3e-core/src/light.rs` |
+| 3066 | `r3e-runtime/src/app.rs`（M0-S3 抽出 `asset_scene.rs` 后） | 1406 | `r3e-core/src/light.rs` |
 | 3320 | `r3e-editor-host/src/api.rs` | 1329 | `r3e-core/src/ui.rs` |
 | 3319 | `r3e-core/src/scene.rs` | 1280 | `r3e-core/src/morph.rs` |
 | 3235 | `r3e-runtime/src/app.rs` | 1232 | `r3e-plugin/src/tools.rs` |
@@ -245,31 +245,35 @@ cargo metadata --format-version 1 | jq '.packages | length'   # 11
 
 ---
 
-### Sprint M0-S3 · `r3e-doc` 立项：Document 接管唯一真值（1–2 周）
+### Sprint M0-S3 · `r3e-doc` 立项：Document 接管唯一真值（1–2 周）✅ 已收口（2026-11-15）
 
 **目标**：场景有了唯一权威容器，写操作有了收口点。
 
-| 卡号 | 任务 | 验收 |
-|---|---|---|
-| S3-01 | 新建 `r3e-doc` crate（依赖仅 `r3e-core`） | `cargo tree -p r3e-doc` 只有 core 及其传递依赖 |
-| S3-02 | `Document` v0：**持有** `Scene`（move 语义，不复制），提供只读 view | `core::scene::Scene` 不再被 `runtime`/`editor-host` 直接可变借用 |
-| S3-03 | `Command` trait + `CommandKind` v0（先 10 条高频：spawn/despawn/set_transform/set_material/add_light/remove/compose…） | 每条命令有 apply/undo 对，单元测试 ≥10 |
-| S3-04 | `Validator` v0：场景/材质/动画数据合法性（引用存在、索引不越界、必填字段非空） | **故意注入非法场景的测试**必须让 Validator 报错（负向测试，铁律） |
-| S3-05 | `runtime` 改为从 `Document` 取场景 | `cargo test -p r3e-runtime` 绿，帧行为不变 |
+| 卡号 | 任务 | 验收 | 结果 |
+|---|---|---|---|
+| S3-01 ✅ | 新建 `r3e-doc` crate（依赖仅 `r3e-core`） | `cargo tree -p r3e-doc` 只有 core 及其传递依赖 | `dep-check` r3e-doc 零违规，`allow` 仅 `r3e-core` |
+| S3-02 ✅ | `Document` v0：**持有** `Scene`（move 语义，不复制），提供只读 view | `core::scene::Scene` 不再被 `runtime`/`editor-host` 直接可变借用 | `Deref<Target=Scene>` 只读、**拒绝 `DerefMut`**；写只走 `doc.write(\|s\| …)` |
+| S3-03 ✅ | `Command` trait + `CommandKind` v0（先 10 条高频） | 每条命令有 apply/undo 对，单元测试 ≥10 | 实落 **14 条**（spawn/despawn/transform/visible/rename/camera/env/postfx/light×2/ui/text…），每命令 apply + undo 各 1 测 |
+| S3-04 ✅ | `Validator` v0：场景/材质/动画数据合法性 | **故意注入非法场景的测试**必须让 Validator 报错（负向测试，铁律） | **17 条**负向用例（方案期 8/9，超额不减）+ 21 个 issue code；正向 11 份 `assets/scene*.json` + 4 份 morph fixture 零 Error |
+| S3-05 ✅ | `runtime` 改为从 `Document` 取场景 | `cargo test -p r3e-runtime` 绿，帧行为不变 | 写点收口 **129 处**（script 91+9 / host 18 / runtime 11）经 `doc.write`；全量 1,427 测绿 |
+| S3-06 ✅ | （新增）`cargo xtask doc-gate` 六条规则并入 `verify` | 结构约束靠机器而非自觉 | 六规则全部负向验证被拦截（注入即 rc=1，还原即 ok） |
 
 **退出演示**：
 ```bash
-cargo test -p r3e-doc              # 含至少 1 个"必须失败"的负向用例
-cargo xtask dep-check              # r3e-doc 一列零违规
+cargo test -p r3e-doc              # 63 测绿（含 17 条"必须失败"的负向用例）
+cargo xtask doc-gate               # 六规则零违规（236 个 .rs / 12 crate / 白名单 5 项）
+cargo xtask dep-check              # r3e-doc 一列零违规，总违规仍 3 条存量债务
 ```
 
-**熔断**：S3-02 若发现 `Scene` 被全局可变借用太多（跨 crate `&mut` 遍地），则**先做只读视图 + 写入口收口**，把"字段私有化"推到 M1，并在 Backlog 记一笔。不要为了架构纯洁性卡死两周。
+**熔断结论：未触发。** 实测显式 `&mut Scene` 15 处（全在 `r3e-doc` / `r3e-core` 内部 / `physics` 接收侧）、写入口 129 处且 100% 经 `borrow_mut()` 单一形态、无散落跨 crate `&mut`——因此 S3 走**完整收口**，只有"`Scene` 40 个 pub 字段私有化"按计划推 M1（`M1-DOC-FIELDS`）。
 
 ---
 
 ### Sprint M0-S4 · Transaction / Undo / 确定性（1–2 周）
 
 **目标**：任意命令序列可整体回退，且回退可被机器验证。
+
+**前置条件（S3 已交付）**：`doc.write(\|s\| …)` 已是场景唯一写入口（129 处收口）、`Document::version` 已逐写自增、`Command` 的 apply/undo 成对——S4 只需在 `write` 外层套前像栈、对 `scene` 做稳定序列化后哈希，无需新增真值容器。
 
 | 卡号 | 任务 | 验收 |
 |---|---|---|
@@ -318,7 +322,7 @@ cargo xtask lint-size       # 白名单外 0 文件
 | W2 | S1 | renderer 拆分前半 | `renderer.rs` 首刀 |
 | W3 | S1 + S2 | renderer 收尾 / api 差异测绘 | visual baseline 不变 |
 | W4 | S2 | 命令表 + api 按域拆 | 一致性测试上线 |
-| W5 | S3 | doc crate + Document | 场景唯一真值成立 |
+| W5 | S3 | doc crate + Document | 场景唯一真值成立 ✅（2026-11-15 收口，`doc-gate` 六规则上线） |
 | W6 | S4 | 事务 + undo + 哈希 | 全量回退通过 |
 | W7 | S4 + S5 | 回放 + 协议剥离 | 回放哈希稳定 |
 | W8 | S5 | 门禁转硬 + 文档 | **Gate 0** |
@@ -376,7 +380,7 @@ cargo xtask lint-size       # 白名单外 0 文件
 |---|---|---|---|---|
 | 1 | 最大文件行数 | 4053 | ≤800 | `cargo xtask lint-size` |
 | 2 | `>800` 行文件数 | 24 | ≤12 | 同上 |
-| 3 | `#[test]` 总数 | 1364 | 只增不减 | `cargo xtask verify` 快照比对 |
+| 3 | `#[test]` 总数 | 1427 | 只增不减 | `cargo xtask verify` 快照比对 |
 | 4 | 依赖违规数 | 3 | 0 | `cargo xtask dep-check` |
 | 5 | `verify` 时长 | 不存在 | <120s | `cargo xtask verify` 自带计时 |
 | 6 | 回放确定性 | 不存在 | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
@@ -386,7 +390,8 @@ cargo xtask lint-size       # 白名单外 0 文件
 | 周 | 最大行数 | >800 数 | 测试数 | 违规数 | verify(s) | 回放 |
 |---|---|---|---|---|---|---|
 | 2026-11-14 | 4487 | 25 | 1408 | 4 | — | — |
-| 2026-11-15 | 4053 | 24 | 1364 | 3 | — | — |
+| 2026-11-15 | 4053 | 24 | 1427 | 3 | — | — |
+| 2026-11-15（M0-S3 收口） | 4053 | 24 | 1427 | 3 | — | — |
 
 ---
 
