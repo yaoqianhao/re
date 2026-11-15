@@ -156,18 +156,18 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 27,076 | 3,753 | 566 | `scene.rs` / `blend_space.rs` / `anim_blend.rs` / `morph.rs` / `light.rs` / `ui.rs` / `envmap.rs` / `occlusion.rs` / `text.rs` / `input.rs` / `scene_stack.rs` / `air.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `glyph_atlas.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` / `pick.rs` |
-| r3e-render | 13,074 | 3,642 | 307 | `renderer/`（17 文件，最大 `init.rs` 716 行；M0-S1 由单文件 5,582 拆出）/ `instance_upload.rs` / `upload_staging.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `gfx` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 5,979 | 894 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
-| r3e-script | 6,091 | 3,224 | 128 | `api.rs`（4,070，M0-S2 双份收口对象）/ `lib.rs`（2,021）/ `lib.rs`；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
-| r3e-runtime | 4,312 | — | 14 | `app.rs`（3,523：窗口 / 主循环 / 时间步）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
-| r3e-editor-host | 3,638 | — | 55 | `api.rs`（3,552：`LocalEngineApi`）/ `host.rs`（帧内请求消化与资源上限） |
-| r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| r3e-editor | 3,067 | 1,737 | 97 | `lib.rs`（协议 + `EngineApi` / `EnvironmentPatch` / `EnvironmentMapPatch` / `SsaoPatch` / `AnimLayerPatch` / `AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
-| r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| r3e-app | 36 | 1,437 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
-| **合计** | **71,859** | **15,347** | **1,343** | **约 7.19 万行 Rust + 1,512 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 95 个 test target（含 9 个 doctest）/ 1,339 passed / 0 failed，`--features rapier` 多 4 条专属用例** |
+| r3e-core | 31,277 | 3,770 | 576 | `scene.rs` / `cmd_spec/`（12 文件，最大 `scene.rs` 601 行；M0-S2 命令表 369 条）/ `ui_text.rs` / `blend_space.rs` / `anim_blend.rs` / `morph.rs` / `light.rs` / `ui.rs` / `envmap.rs` / `occlusion.rs` / `text.rs` / `input.rs` / `scene_stack.rs` / `air.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `glyph_atlas.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` / `pick.rs` |
+| r3e-render | 13,109 | 3,665 | 307 | `renderer/`（17 文件，最大 `init.rs` 716 行；M0-S1 由单文件 5,582 拆出）/ `instance_upload.rs` / `upload_staging.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `gfx` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 6,371 | 898 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
+| r3e-script | 6,268 | 3,366 | 132 | `api/`（17 文件，最大 `mod.rs` 428 行；M0-S2 由单文件 4,070 拆出）/ `lib.rs`（2,021）；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
+| r3e-runtime | 4,318 | — | 14 | `app.rs`（3,523：窗口 / 主循环 / 时间步）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
+| r3e-editor-host | 3,947 | 120 | 58 | `api/`（13 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
+| r3e-plugin | 3,711 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
+| r3e-editor | 3,069 | 1,864 | 101 | `lib.rs`（协议 + `EngineApi` / `EnvironmentPatch` / `EnvironmentMapPatch` / `SsaoPatch` / `AnimLayerPatch` / `AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
+| r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
+| r3e-app | 37 | 1,442 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
+| **合计** | **76,995** | **15,787** | **1,364** | **约 7.70 万行 Rust + 1,517 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 98 个 test target（含 9 个 doctest）/ 1,360 passed / 0 failed，`--features rapier` 多 4 条专属用例** |
 
 行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算一次：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，

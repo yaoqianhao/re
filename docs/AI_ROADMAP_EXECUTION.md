@@ -295,7 +295,7 @@ cargo xtask dep-check              # r3e-doc 一列零违规
 | S5-01 | `r3e-protocol` 从 `r3e-editor` 剥离（仅 `serde`） | `cargo tree -p r3e-protocol` 只含 serde |
 | S5-02 | `cargo xtask gen-capabilities` 产出 `capabilities.json`（含 `commands`/`invariants`/`unsupported`） | 文件由代码导出，含 `git diff` 可审的稳定格式 |
 | S5-03 | 清单与实现不一致 → CI 红 | 删掉一个命令的实现但留表项 → 红 |
-| S5-04 | 修 4 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛、`app`→薄壳 | `cargo xtask dep-check` 0 违规 |
+| S5-04 | 修 3 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛、`app`→薄壳 | `cargo xtask dep-check` 0 违规 |
 | S5-05 | `dep-check` 转硬门禁（CI fail）+ 故意加违规依赖验证 | PR 上加一条违规依赖 → CI 红 |
 | S5-06 | `verify` = fmt + dep-check + clippy + test + replay + invariants | 单条命令 <120 秒 |
 | S5-07 | `docs/AI_WORKFLOW.md`：M0 结束后的标准工作流（改码 → verify → 判定） | 3 个可复制的命令块 |
@@ -372,12 +372,12 @@ cargo xtask lint-size       # 白名单外 0 文件
 
 ## 6. 度量看板（每周五更新一行，只许变好）
 
-| # | 指标 | 当前 (2026-11-14) | M0 目标 | 采集方式 |
+| # | 指标 | 当前 (2026-11-15) | M0 目标 | 采集方式 |
 |---|---|---|---|---|
-| 1 | 最大文件行数 | 4487 | ≤800 | `cargo xtask lint-size` |
-| 2 | `>800` 行文件数 | 25 | ≤12 | 同上 |
-| 3 | `#[test]` 总数 | 1408 | 只增不减 | `cargo xtask verify` 快照比对 |
-| 4 | 依赖违规数 | 4 | 0 | `cargo xtask dep-check` |
+| 1 | 最大文件行数 | 4053 | ≤800 | `cargo xtask lint-size` |
+| 2 | `>800` 行文件数 | 24 | ≤12 | 同上 |
+| 3 | `#[test]` 总数 | 1364 | 只增不减 | `cargo xtask verify` 快照比对 |
+| 4 | 依赖违规数 | 3 | 0 | `cargo xtask dep-check` |
 | 5 | `verify` 时长 | 不存在 | <120s | `cargo xtask verify` 自带计时 |
 | 6 | 回放确定性 | 不存在 | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 
@@ -386,6 +386,7 @@ cargo xtask lint-size       # 白名单外 0 文件
 | 周 | 最大行数 | >800 数 | 测试数 | 违规数 | verify(s) | 回放 |
 |---|---|---|---|---|---|---|
 | 2026-11-14 | 4487 | 25 | 1408 | 4 | — | — |
+| 2026-11-15 | 4053 | 24 | 1364 | 3 | — | — |
 
 ---
 

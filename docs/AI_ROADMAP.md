@@ -40,7 +40,7 @@ AI 写代码快，但没人能低成本判断它写对没有。当前验证路�
 | 单体现状 | 对 AI 的具体伤害 |
 |---|---|
 | `renderer.rs` 5,582 行（M0-S1 已拆为 `renderer/` 17 个模块，最大 716 行） | AI 读一次吃满上下文窗口，读不全就改错 |
-| `api.rs` 3386 行 | 加一个脚本函数要扫全文件，容易破坏已有 364 个函数 |
+| `api.rs` 4,070 行（M0-S2 已拆为 `api/` 17 个模块，最大 428 行；editor-host 侧 3,552 → 13 文件最大 433 行） | 加一个脚本函数要扫全文件，容易破坏已有 364 个函数 |
 | `app/editor.rs` 3234 行 | 改 RPC 和改主循环挤在一起，语义边界模糊 |
 | `r3e-app` 混三件事 | 想跑 headless 测试就必须把窗口也拖进来 |
 
@@ -136,7 +136,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | # | 内容 | 验收标准（可自动判定） |
 |---|---|---|
 | M0-1 | 拆 `r3e-app` → `r3e-runtime` + `r3e-editor-host` + `main` 薄壳 | 三个 crate 各自可独立测试；`runtime` 能在无窗口 headless 下跑 600 帧 |
-| M0-2 | 拆三个单体文件（`renderer.rs` / `api.rs` / `editor.rs`）到 ≤800 行/文件 —— `renderer.rs` 已完成（M0-S1，2026-11-15，17 文件最大 716 行）；`editor.rs` 随 M0-S0 的 crate 拆分消解；`api.rs`（4,070）待做 | 单文件行数 CI 门禁；拆分后测试数不减（≥1335） |
+| M0-2 | 拆三个单体文件（`renderer.rs` / `api.rs` / `editor.rs`）到 ≤800 行/文件 —— `renderer.rs` 已完成（M0-S1，2026-11-15，17 文件最大 716 行）；`editor.rs` 随 M0-S0 的 crate 拆分消解；`api.rs` 已完成（M0-S2，2026-11-15，script 17 文件最大 428 行、editor-host 13 文件最大 433 行，并新增 `core::cmd_spec` 命令表 369 条作单一真源） | 单文件行数 CI 门禁；拆分后测试数不减（≥1335） |
 | M0-3 | 新建 `r3e-doc`：Document 模型接管场景唯一真值 | `core::scene` 不再被 `app` 直接可变借用，只能经 `doc` |
 | M0-4 | Command + Transaction + UndoStack 落地 | 任意命令序列 apply 后 `undo` 全量回退，状态哈希与初始一致 |
 | M0-5 | `r3e-protocol` 从 `r3e-editor` 剥离，零引擎依赖 | `cargo tree -p r3e-protocol` 只有 serde |
