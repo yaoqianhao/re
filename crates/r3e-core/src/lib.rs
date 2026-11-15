@@ -33,6 +33,7 @@ pub mod text;
 pub mod texture_slot;
 pub mod transform;
 pub mod ui;
+pub mod ui_text;
 
 pub use aabb::Aabb;
 pub use air::{AirIssue, AirIssueKind};

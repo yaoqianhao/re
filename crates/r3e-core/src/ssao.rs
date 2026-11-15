@@ -479,3 +479,24 @@ mod tests {
         assert_eq!(s.effective_samples(), DEFAULT_SSAO_SAMPLES as usize);
     }
 }
+
+/// 采样数钳制：先按 `[MIN_SSAO_SAMPLES, MAX_SSAO_SAMPLES]` 夹再转 `u8`。
+///
+/// 直接 `as u8` 遇到负数是回绕而不是饱和，脚本侧与宿主侧的整数位宽也不同（`i64` / `i32`），
+/// 因此统一成 `i64 -> u8` 的唯一真源（M0-S2 收口）。
+pub fn clamp_samples(samples: i64) -> u8 {
+    samples.clamp(i64::from(MIN_SSAO_SAMPLES), i64::from(MAX_SSAO_SAMPLES)) as u8
+}
+
+#[cfg(test)]
+mod clamp_samples_tests {
+    use super::*;
+
+    #[test]
+    fn clamps_both_ends_and_saturates_negatives() {
+        assert_eq!(clamp_samples(-5), MIN_SSAO_SAMPLES);
+        assert_eq!(clamp_samples(0), MIN_SSAO_SAMPLES);
+        assert_eq!(clamp_samples(8), 8);
+        assert_eq!(clamp_samples(99), MAX_SSAO_SAMPLES);
+    }
+}
