@@ -247,6 +247,20 @@ pub trait Command {
 
 **正向测试**：仓库现有 5 份场景 JSON + `FALLBACK_SCENE` 全部 `validate()` 零 `Error`（保证 Validator 不是"什么都报错"的假阳性机器）。
 
+### 4.1 P3 实测偏差（落地时纠正，留痕以免后期误判）
+
+上面表格是**方案期口径**，落地时发现有两类规则在 doc 层判不了，已按下述方式纠正。P5 文档同频时以本小节为准（届时删除方案期表述）。
+
+| 方案期规则 | 为什么 doc 层判不了 | 落地替代 | 承接 |
+|---|---|---|---|
+| 引用存在：`Node.mesh` 的 `asset:` / `MeshRef` 可解析、`skins` 关节索引 < 骨骼数、`animations.clip` 在 `anim_clips` 中存在 | `MeshRef::Asset` 带的是**路径哈希** `AssetId(u32)`（`AssetId::from_path`），不是 `assets` 下标；骨骼数与 clip 存在性都要网格 / 资产导入结果，doc 只依赖 `r3e-core` | ① 物件 `asset:` 引用与 `assets[].path` 反推哈希比对，未声明即报 `ref.asset_missing`；② 动画绑定 / 蒙皮网格节点 / 蒙皮关节 / 形变网格节点做**节点存在性**检查（`ref.node_missing`）；③ 蒙皮关节矩阵与关节表长度不一致报 Error，未求解只报 Warn | M1 `DOC-ASSET-VALIDATE`：等 Validator 能拿到 `MeshData` / `MeshAabbCache` 再补资产级校验 |
+| 索引越界：morph 权重长度 ≠ target 数 | 权重数组按 `MAX_MORPH_TARGETS` 固定长度，长度本身恒等；真正的不一致要对照网格的 target 数量 | 改判 `morph.target_count > MAX_MORPH_TARGETS`（越界）与权重值 NaN/Inf | 同上 |
+
+落地实际规则（单测硬编码的 code，14 个）：
+`node.name.empty`、`node.name.duplicate`、`node.transform.non_finite`、`node.color.non_finite`、`node.material.non_finite`、`ui.key.empty`、`ui.key.duplicate`、`text.key.empty`、`text.key.duplicate`、`light.key.empty`、`light.key.duplicate`、`light.value.non_finite`、`lights.over_limit`、`ref.node_missing`、`ref.asset_missing`、`skin.joint_matrices.len`、`skin.joint_matrices.unsolved`（Warn）、`morph.target_count.over_max`、`morph.weight.non_finite`、`camera.non_finite`、`scene.background.non_finite`、`physics.gravity.non_finite`。
+
+负向用例 **17 条**（方案期写 ≥8，超额不减），正向回归从 5 份场景扩到 **11 份 `assets/scene*.json` + 4 份 morph fixture**——场景文件越多，假阳性越难藏。
+
 ---
 
 ## 5. 强制机制：`cargo xtask doc-gate`（新增子命令，纳入 `verify`）
@@ -294,7 +308,7 @@ crates/r3e-doc/
 | **P0** | 立项 `r3e-doc`；同步 `dep_rules.json` / `tests_baseline.json`（r3e-doc: 0）；`cargo tree -p r3e-doc` 只 core | S3-01 | crate 骨架 | `dep-check` 无"未登记"、`r3e-doc` 一列零违规 |
 | **P1** | `Document` v0：new / from_json_str / write / version / dirty / replace_scene / `Deref` | S3-02 | lib.rs + write.rs | 单测 ≥12（Deref 只读、write 后 version+1、replace 返回旧场景、writes 计数、脏标记、from_json_str 失败路径） |
 | **P2** | `Command` v0 12 条 + 单步 undo | S3-03 | command/* | 单测 ≥24（每命令 apply 生效 + undo 复原各 1） |
-| **P3** | `Validator` v0 + 负向 8/9 条 | S3-04 | validate/* | 负向全绿（必须报 Error），正向 5 场景 + FALLBACK 全过 |
+| **P3** | `Validator` v0 + 负向 17 条（方案期写 8/9，见 §4.1 偏差） | S3-04 | validate/* | 负向全绿（必须报 Error），正向 11 场景 + 4 fixture 全过 |
 | **P4** | 入口迁移：script 91+115 / host 18+39 / runtime 11+31 / script-tests 9+29；`RebuildHook` 收口；app 4 个 helper 消化；`replace_scene` 接场景切换 | S3-05 | 5 处持有者全部改 `Rc<RefCell<Document>>` | `doc-gate` 零违规 + 全量测试绿 + 实机帧行为不变 |
 | **P5** | `xtask doc-gate` 落地 + 文档同频 | — | main.rs + md | `verify` 全绿 |
 
