@@ -22,7 +22,7 @@ use r3e_core::{
     AnimDecl, MeshAabbCache, MeshData, MeshProvider, MeshRef, NodeId, Scene, SceneArchive,
     SceneCommand, SceneStack, StackEntry, UiInteraction,
 };
-use r3e_doc::Document;
+use r3e_doc::{mix_u64, Document, FNV_OFFSET};
 use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::ui::UiImageProvider;
 use r3e_render::Renderer;
@@ -169,13 +169,7 @@ impl std::fmt::Display for HeadlessReport {
     }
 }
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv_mix(hash: &mut u64, value: u64) {
-    *hash ^= value;
-    *hash = hash.wrapping_mul(FNV_PRIME);
-}
+// 指纹混入统一走 `r3e_doc::mix_u64`：全仓只保留一份 FNV 实现（M0-S4 P1）。
 
 #[derive(Debug, Clone, Default)]
 pub struct CliOptions {
@@ -409,11 +403,11 @@ impl EngineApp {
             )
         };
         let mut fingerprint = FNV_OFFSET;
-        fnv_mix(&mut fingerprint, self.frame_index);
-        fnv_mix(&mut fingerprint, self.time.to_bits());
-        fnv_mix(&mut fingerprint, scene_nodes as u64);
+        mix_u64(&mut fingerprint, self.frame_index);
+        mix_u64(&mut fingerprint, self.time.to_bits());
+        mix_u64(&mut fingerprint, scene_nodes as u64);
         for axis in camera {
-            fnv_mix(&mut fingerprint, u64::from(axis.to_bits()));
+            mix_u64(&mut fingerprint, u64::from(axis.to_bits()));
         }
         HeadlessReport {
             frames: self.frame_index,

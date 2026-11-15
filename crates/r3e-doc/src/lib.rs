@@ -15,15 +15,18 @@
 //! M1-DOC-FIELDS。原因见 `docs/M0S3_DOC_LAYER.md` §2 决定 2。
 
 mod command;
+mod state_hash;
 mod validate;
 mod write;
 
+use std::cell::Cell;
 use std::fmt;
 use std::ops::Deref;
 
 use r3e_core::Scene;
 
 pub use command::{Command, CommandKind};
+pub use state_hash::{mix_f32, mix_str, mix_u64, scene_hash, world_hash, StateHash, FNV_OFFSET};
 pub use validate::{errors as validate_errors, validate, Issue, Severity};
 
 /// 文档层错误。
@@ -79,6 +82,11 @@ pub struct Document {
     dirty: bool,
     writes: u64,
     undo_stack: Vec<CommandKind>,
+    /// `state_hash()` 的缓存：`(当时的 version, 哈希)`。
+    ///
+    /// 用 `Cell` 是为了让 [`Document::state_hash`] 保持 `&self`（纯读语义）仍能填空缓存；
+    /// 代价是 `Document` 不再 `Sync`——文档层本来就单线程持有，这个代价是明码的。
+    hash_cache: Cell<Option<(u64, StateHash)>>,
 }
 
 impl Document {
@@ -90,6 +98,7 @@ impl Document {
             dirty: false,
             writes: 0,
             undo_stack: Vec::new(),
+            hash_cache: Cell::new(None),
         }
     }
 

@@ -732,6 +732,11 @@ impl Scene {
         self.layout_version
     }
 
+    /// 下一个待分配节点 id：状态哈希必须覆盖它，否则「同脚本分配不同 `NodeId`」会假绿（M0-S4）。
+    pub fn next_id(&self) -> NodeId {
+        self.next_id
+    }
+
     /// 结构变了：推进版本号，让渲染层缓存的层级树失效。
     fn touch_layout(&mut self) {
         self.layout_version = self.layout_version.wrapping_add(1);
