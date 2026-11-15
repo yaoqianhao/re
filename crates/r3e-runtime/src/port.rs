@@ -13,7 +13,6 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use r3e_core::Scene;
 use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_render::Renderer;

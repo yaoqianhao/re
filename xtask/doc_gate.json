@@ -1,0 +1,77 @@
+{
+  "$comment": "cargo xtask doc-gate 的规则参数。改动本文件等同架构评审：白名单只许减，条目对不上会打印『可下调』，多出来的直接失败。",
+  "rule4_scope": [
+    "crates/r3e-runtime/",
+    "crates/r3e-editor-host/",
+    "crates/r3e-script/"
+  ],
+  "rule6_scene_keys": [
+    "scene",
+    "doc",
+    "document",
+    "self.scene",
+    "self.doc"
+  ],
+  "rule2_exceptions": [
+    {
+      "path": "crates/r3e-core/src/scene_stack.rs",
+      "needle": "pub fn apply(&self, scene: &mut Scene) -> usize {",
+      "count": 1,
+      "note": "core 内部快照应用：方案 §5 规则 2 例外（core 自身）"
+    },
+    {
+      "path": "crates/r3e-physics/src/lib.rs",
+      "needle": "fn sync_to_scene(&mut self, scene: &mut Scene);",
+      "count": 1,
+      "note": "物理后端把求解结果写回场景（下游接收者）"
+    },
+    {
+      "path": "crates/r3e-physics/src/lib.rs",
+      "needle": "pub fn step(&mut self, dt: f32, scene: &mut Scene) {",
+      "count": 1,
+      "note": "物理步进（下游接收者），P4 收口时已确认保留"
+    },
+    {
+      "path": "crates/r3e-script/src/api/mod.rs",
+      "needle": "pub(crate) fn write<R>(&self, f: impl FnOnce(&mut Scene) -> R) -> R {",
+      "count": 1,
+      "note": "ScriptContext::write：脚本层唯一写出口，受控泄漏"
+    },
+    {
+      "path": "crates/r3e-script/src/lib.rs",
+      "needle": "pub fn set_rebuild_hook(&mut self, hook: impl FnMut(&mut Scene) + 'static) {",
+      "count": 1,
+      "note": "RebuildHook：场景热重载后的补挂回调，受控泄漏"
+    },
+    {
+      "path": "crates/r3e-runtime/src/asset_scene.rs",
+      "needle": "pub(crate) fn spawn_asset_nodes(",
+      "count": 1,
+      "note": "资产节点 spawn：在 write 闭包内构造场景节点（P4 保留的受控出口，P5 从 app.rs 抽出成独立模块）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/asset_scene.rs",
+      "needle": "pub(crate) fn attach_morph_bindings(scene: &mut Scene, library: &r3e_asset::AssetLibrary) -> usize {",
+      "count": 1,
+      "note": "形变绑定登记：写网格形变槽（P4 保留的受控出口，P5 从 app.rs 抽出成独立模块）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/asset_scene.rs",
+      "needle": "pub(crate) fn attach_morph_bindings_with(",
+      "count": 1,
+      "note": "形变绑定（可注入计数判定，供测试）（P4 保留的受控出口，P5 从 app.rs 抽出成独立模块）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/asset_scene.rs",
+      "needle": "pub(crate) fn bind_asset_skins(",
+      "count": 1,
+      "note": "蒙皮绑定：写骨骼/蒙皮实例（P4 保留的受控出口，P5 从 app.rs 抽出成独立模块）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/asset_scene.rs",
+      "needle": "pub(crate) fn spawn_asset_anim(",
+      "count": 1,
+      "note": "动画实例登记：写动画实例与片段（P4 保留的受控出口，P5 从 app.rs 抽出成独立模块）"
+    }
+  ]
+}

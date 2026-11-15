@@ -60,7 +60,11 @@ fn quoted_parts(s: &str) -> Vec<&str> {
 #[test]
 fn dispatch的每个点分方法都在命令表里() {
     let keys = dispatch_keys();
-    assert!(keys.len() >= 39, "只扫到 {} 个分支，扫描逻辑可能失效（期望 42 个含别名）", keys.len());
+    assert!(
+        keys.len() >= 39,
+        "只扫到 {} 个分支，扫描逻辑可能失效（期望 42 个含别名）",
+        keys.len()
+    );
 
     let declared: BTreeSet<&str> = cmd_spec::rpc_names().collect();
     let missing: Vec<String> = keys
@@ -79,10 +83,7 @@ fn dispatch的每个点分方法都在命令表里() {
 fn 命令表里的rpc方法dispatch都认() {
     let keys = dispatch_keys();
     let declared: BTreeSet<&str> = cmd_spec::rpc_names().collect();
-    let phantom: Vec<&&str> = declared
-        .iter()
-        .filter(|rpc| !keys.contains(*rpc))
-        .collect();
+    let phantom: Vec<&&str> = declared.iter().filter(|rpc| !keys.contains(*rpc)).collect();
     assert!(
         phantom.is_empty(),
         "命令表登记了、`dispatch` 根本不认（表在骗人）：{phantom:?}"

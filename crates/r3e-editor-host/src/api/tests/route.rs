@@ -7,7 +7,6 @@
 
 use super::super::support::resolve_request_path;
 use r3e_core::scene_stack::SceneArchive;
-use r3e_core::Scene;
 use r3e_runtime::app::default_archive_path;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -69,7 +68,7 @@ fn resolve_request_path_falls_back_to_scene_directory() {
 fn archive_written_to_disk_reads_back_with_runtime_state() {
     let dir = temp_dir("roundtrip");
     let mut scene =
-        Scene::from_json_str(r#"{"name":"lv1","objects":[{"name":"box","mesh":"cube"}]}"#)
+        r3e_doc::parse_scene(r#"{"name":"lv1","objects":[{"name":"box","mesh":"cube"}]}"#)
             .expect("场景解析");
     scene.time = 12.5;
     scene.frame = 750;

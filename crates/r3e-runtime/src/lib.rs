@@ -8,6 +8,7 @@
 //! 与「开一个编辑器会话」共用同一条帧路径，谁也不用为了对方多链接一堆东西。
 
 pub mod app;
+mod asset_scene;
 pub mod capture;
 pub mod cli;
 pub mod port;

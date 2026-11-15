@@ -6,8 +6,11 @@
 //! - `cargo xtask lint-size`：单文件行数不许超线（白名单只许减不许加）
 //! - `cargo xtask check-tests`：每个 crate 的单测数不许低于基线快照
 //! - `cargo xtask dep-check`：crate 间依赖方向对照规则表（v0 只报告，`--strict` 才失败）
+//! - `cargo xtask doc-gate`：文档层收口六条规则（M0-S3 的 doc.write 唯一写入口不许回退）
 //!
 //! 设计约束：不引第三方 CLI 框架、不做花哨输出。门禁本身越简单越不容易坏。
+
+mod doc_gate;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -18,10 +21,11 @@ const USAGE: &str = "\
 用法: cargo xtask <子命令>
 
 子命令:
-  verify             fmt --check + clippy -D warnings + test + lint-size + check-tests + dep-check
+  verify             fmt --check + clippy -D warnings + test + lint-size + check-tests + doc-gate + dep-check
   lint-size          单文件行数门禁（白名单只许减不许加）
   check-tests        单测数不得低于 xtask/tests_baseline.json
   dep-check          crate 依赖方向对照 xtask/dep_rules.json（v0 只报告，--strict 失败）
+  doc-gate           文档层收口六条规则（RefCell<Scene> / &mut Scene / DerefMut / 解析入口 / 依赖登记 / 闭包重入）
   gen-capabilities   能力清单骨架（扫描脚本 API 注册点）
 ";
 
@@ -34,6 +38,7 @@ fn main() {
         "lint-size" => lint_size(),
         "check-tests" => check_tests(),
         "dep-check" => dep_check(strict),
+        "doc-gate" => doc_gate::run(&root()),
         "gen-capabilities" => gen_capabilities(),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
@@ -151,6 +156,9 @@ fn verify() -> i32 {
     }
     if check_tests() != 0 {
         failed.push("check-tests".into());
+    }
+    if doc_gate::run(&root) != 0 {
+        failed.push("doc-gate".into());
     }
     // dep-check v0 只报告：债务还没有还完，阻塞会让人习惯性绕过门禁。
     dep_check(false);

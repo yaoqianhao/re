@@ -422,7 +422,7 @@ fn with_text(ctx: &ScriptContext, key: &str, edit: impl FnOnce(&mut ScreenText))
 fn serde_json_lite(json: &str) -> Result<ObjectDesc, String> {
     // 借助 r3e-core 的 serde 实现：包装成单物件场景再取出
     let wrapped = format!("{{\"objects\":[{json}]}}");
-    let scene = Scene::from_json_str(&wrapped)?;
+    let scene = r3e_doc::parse_scene(&wrapped)?;
     let first = scene.iter().next().ok_or("空物件")?;
     let mut desc = ObjectDesc {
         name: first.name.clone(),

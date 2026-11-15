@@ -2,7 +2,7 @@
   "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。",
   "crates": {
     "r3e-core": 576,
-    "r3e-doc": 62,
+    "r3e-doc": 63,
     "r3e-render": 307,
     "r3e-script": 132,
     "r3e-editor": 101,
@@ -14,5 +14,5 @@
     "r3e-runtime": 14,
     "r3e-app": 11
   },
-  "total": 1426
+  "total": 1427
 }

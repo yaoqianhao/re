@@ -6,6 +6,7 @@
 //! * 物理通过 `r3e_physics::Physics` 门面暴露，当前为 `null` 后端（空实现）。
 
 pub mod api;
+mod util;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -16,9 +17,11 @@ use r3e_audio::Audio;
 use r3e_core::{InputState, MeshAabbCache, Scene, SceneCommand, SceneStack, UiInteraction};
 use r3e_doc::Document;
 use r3e_physics::{Physics, PhysicsConfig};
-use rhai::{Array, Dynamic, Engine, Scope, AST};
+use rhai::{Dynamic, Engine, Scope, AST};
 
 pub use api::Clock;
+pub use util::array_to_strings;
+use util::has_fn;
 
 /// 脚本宿主：持有 Rhai 引擎、编译后的 AST 与持久作用域。
 /// 场景重建后的补挂回调（P3）：宿主用它把资产节点与动画实例重新 spawn 回场景。
@@ -297,7 +300,7 @@ impl ScriptHost {
 
     /// 用新的场景 JSON 重建世界，并重跑当前脚本（IDE 里改 scene.json 也会生效）。
     pub fn rebuild_scene(&mut self, json: &str) -> Result<(), String> {
-        let new_scene = Scene::from_json_str(json).map_err(|e| format!("场景解析失败: {e}"))?;
+        let new_scene = r3e_doc::parse_scene(json).map_err(|e| format!("场景解析失败: {e}"))?;
         let phys_cfg = PhysicsConfig::from_scene(&new_scene.physics);
         self.doc.borrow_mut().replace_scene(new_scene);
         {
@@ -349,7 +352,7 @@ impl ScriptHost {
         // 重放基础场景，保证脚本重新执行时状态干净
         let mut phys_cfg = None;
         if let Some(json) = &self.base_scene_json {
-            match Scene::from_json_str(json) {
+            match r3e_doc::parse_scene(json) {
                 Ok(new_scene) => {
                     phys_cfg = Some(PhysicsConfig::from_scene(&new_scene.physics));
                     self.doc.borrow_mut().replace_scene(new_scene);
@@ -381,19 +384,6 @@ impl ScriptHost {
         println!("[script] 热重载完成");
         true
     }
-}
-
-/// AST 中是否存在指定名字与参数个数的函数。
-fn has_fn(ast: &AST, name: &str, arity: usize) -> bool {
-    ast.iter_functions()
-        .any(|f| f.name == name && f.params.len() == arity)
-}
-
-/// 便捷：把脚本里 `names()` 返回的数组转成字符串列表。
-pub fn array_to_strings(arr: Array) -> Vec<String> {
-    arr.into_iter()
-        .filter_map(|d| d.into_string().ok())
-        .collect()
 }
 
 #[cfg(test)]
@@ -457,7 +447,7 @@ mod save_script_tests {
 
         let text = std::fs::read_to_string(&path).expect("文件应已落盘");
         assert!(text.contains("probe"), "落盘内容应含物件名: {text}");
-        let back = Scene::from_json_str(&text).expect("落盘内容必须能回读");
+        let back = r3e_doc::parse_scene(&text).expect("落盘内容必须能回读");
         assert_eq!(back.len(), 1, "回读后物件数应一致");
 
         std::fs::remove_file(&path).expect("清理临时文件");

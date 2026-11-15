@@ -106,7 +106,7 @@ fn scene_save_writes_requested_path() {
     let text = std::fs::read_to_string(&path).expect("文件应已落盘");
     assert!(text.contains("cube"), "落盘内容应含物件名");
     assert!(!text.contains("world"), "不应写入运行时派生状态");
-    let back = Scene::from_json_str(&text).expect("落盘内容必须能回读");
+    let back = r3e_doc::parse_scene(&text).expect("落盘内容必须能回读");
     assert_eq!(back.len(), expected, "回读后物件数应一致");
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -96,8 +96,7 @@ impl Document {
     /// 从场景 JSON 建档。场景解析统一走这里（`doc-gate` 规则 4：上层不得直接调
     /// `Scene::from_json_str`）。
     pub fn from_json_str(src: &str) -> Result<Self, DocError> {
-        let scene = Scene::from_json_str(src).map_err(DocError::Scene)?;
-        Ok(Self::new(scene))
+        Ok(Self::new(parse_scene(src).map_err(DocError::Scene)?))
     }
 
     /// 校验整份场景，返回全部问题（不修改文档、不标脏）。
@@ -116,6 +115,18 @@ impl Default for Document {
     fn default() -> Self {
         Self::new(Scene::new())
     }
+}
+
+/// 只把场景 JSON 解析成 [`Scene`]，不建档。
+///
+/// 给「需要 owned `Scene`」的位置用：初始场景构造、[`Document::replace_scene`]、场景栈回退。
+/// 解析路径与 [`Document::from_json_str`] 同一条，所以 `doc-gate` 规则 4 只认这两个入口——
+/// 上层（runtime / script / editor-host）出现 `Scene::from_json_str` 即失败。
+///
+/// 错误类型故意保持 `String`（与 `r3e-core` 同形）：这些调用点的 `map_err` 文案与
+/// `?` 转换都是按字符串写的，这里包一层 `DocError` 只会让上层多一次拆包。
+pub fn parse_scene(src: &str) -> Result<Scene, String> {
+    Scene::from_json_str(src)
 }
 
 impl Deref for Document {
@@ -255,6 +266,15 @@ mod tests {
         assert!(matches!(err, DocError::Scene(_)));
         assert!(!err.detail().is_empty());
         assert!(err.to_string().contains("场景错误"));
+    }
+
+    #[test]
+    fn parse_scene_returns_owned_scene_without_document() {
+        // 需要 owned Scene 的位置（replace_scene / 场景栈回退）只解析、不建档：
+        // 解析路径与 from_json_str 同一条，错误也统一成 DocError。
+        let scene = parse_scene(MINIMAL_SCENE).expect("最小场景应当解析成功");
+        assert_eq!(scene.name, "min");
+        assert!(parse_scene("{ not json }").is_err());
     }
 
     /// 最小可用场景 JSON：只给一个空节点表。

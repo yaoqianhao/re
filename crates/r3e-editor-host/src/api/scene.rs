@@ -52,7 +52,7 @@ pub(super) fn scene_set_transform(
     api.scene
         .borrow_mut()
         .write(|scene| -> Result<Value, RpcFailure> {
-            let id = find_node_id(&scene, node)?;
+            let id = find_node_id(scene, node)?;
             let snapshot = {
                 let target = scene
                     .get_mut(id)
@@ -103,7 +103,7 @@ pub(super) fn scene_remove(api: &mut LocalEngineApi<'_>, node: &str) -> Result<V
     api.scene
         .borrow_mut()
         .write(|scene| -> Result<Value, RpcFailure> {
-            let id = find_node_id(&scene, node)?;
+            let id = find_node_id(scene, node)?;
             let name = scene
                 .get(id)
                 .map(|n| n.name.clone())
@@ -138,7 +138,7 @@ pub(super) fn scene_set_material(
                 return Err(RpcFailure::not_found(format!("物件 `{node}` 不存在")));
             }
             let applied = scene.material_of(node).unwrap_or_default();
-            let snapshot = find_node(&scene, node)
+            let snapshot = find_node(scene, node)
                 .map(node_value)
                 .unwrap_or(Value::Null);
             Ok(json!({

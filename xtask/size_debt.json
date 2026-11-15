@@ -24,7 +24,7 @@
     "crates/r3e-render/src/postfx.rs": 817,
     "crates/r3e-render/src/text.rs": 869,
     "crates/r3e-render/src/ui.rs": 1112,
-    "crates/r3e-runtime/src/app.rs": 3523,
-    "crates/r3e-script/src/lib.rs": 2021
+    "crates/r3e-runtime/src/app.rs": 3066,
+    "crates/r3e-script/src/lib.rs": 2018
   }
 }
