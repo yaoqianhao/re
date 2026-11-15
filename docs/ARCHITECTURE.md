@@ -156,22 +156,25 @@ rust3d-engine/
 
 | crate | src 行数 | tests/ 行数 | 单测数 | 主要文件 |
 | --- | --- | --- | --- | --- |
-| r3e-core | 21,892 | 3,193 | 566 | `scene.rs` / `blend_space.rs` / `anim_blend.rs` / `morph.rs` / `light.rs` / `ui.rs` / `envmap.rs` / `occlusion.rs` / `text.rs` / `input.rs` / `scene_stack.rs` / `air.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `glyph_atlas.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` / `pick.rs` |
-| r3e-render | 10,520 | 2,924 | 307 | `renderer.rs`（4,487，M0-S1 拆分对象）/ `instance_upload.rs` / `upload_staging.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `gfx` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
-| r3e-asset | 5,181 | 751 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
-| r3e-script | 5,126 | 2,743 | 128 | `api.rs`（3,386，M0-S2 双份收口对象）/ `lib.rs`；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
-| r3e-runtime | 4,026 | — | 14 | `app.rs`（3,342：窗口 / 主循环 / 时间步）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
-| r3e-editor-host | 3,188 | — | 55 | `api.rs`（3,127：`LocalEngineApi`）/ `host.rs`（帧内请求消化与资源上限） |
-| r3e-plugin | 3,183 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| r3e-editor | 2,573 | 1,536 | 97 | `lib.rs`（协议 + `EngineApi` / `EnvironmentPatch` / `EnvironmentMapPatch` / `SsaoPatch` / `AnimLayerPatch` / `AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
-| r3e-physics | 2,049 | 578 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
-| r3e-audio | 1,863 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| r3e-app | 30 | 1,128 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
-| **合计** | **59,631** | **12,853** | **1,343** | **约 5.96 万行 Rust + 1,512 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 95 个 test target（含 9 个 doctest）/ 1,339 passed / 0 failed，`--features rapier` 多 4 条专属用例** |
+| r3e-core | 27,076 | 3,753 | 566 | `scene.rs` / `blend_space.rs` / `anim_blend.rs` / `morph.rs` / `light.rs` / `ui.rs` / `envmap.rs` / `occlusion.rs` / `text.rs` / `input.rs` / `scene_stack.rs` / `air.rs` / `material.rs` / `env.rs` / `postfx.rs` / `ssao.rs` / `shadow_cull.rs` / `tangent.rs` / `texture_slot.rs` / `glyph_atlas.rs` / `skin.rs` / `anim.rs` / `aabb.rs` / `frustum.rs` / `pick.rs` |
+| r3e-render | 13,074 | 3,642 | 307 | `renderer/`（17 文件，最大 `init.rs` 716 行；M0-S1 由单文件 5,582 拆出）/ `instance_upload.rs` / `upload_staging.rs` / `pbr.rs` / `postfx.rs` / `ssao.rs` / `occlusion.rs` / `envprobe.rs` / `shadow_cull.rs` / `transparency.rs` / `text.rs` / `ui.rs` / `mesh.rs` / `gfx` / `shader.wgsl` / `postfx.wgsl` / `ssao.wgsl` / `text.wgsl` / `ui.wgsl` |
+| r3e-asset | 5,979 | 894 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
+| r3e-script | 6,091 | 3,224 | 128 | `api.rs`（4,070，M0-S2 双份收口对象）/ `lib.rs`（2,021）/ `lib.rs`；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
+| r3e-runtime | 4,312 | — | 14 | `app.rs`（3,523：窗口 / 主循环 / 时间步）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
+| r3e-editor-host | 3,638 | — | 55 | `api.rs`（3,552：`LocalEngineApi`）/ `host.rs`（帧内请求消化与资源上限） |
+| r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
+| r3e-editor | 3,067 | 1,737 | 97 | `lib.rs`（协议 + `EngineApi` / `EnvironmentPatch` / `EnvironmentMapPatch` / `SsaoPatch` / `AnimLayerPatch` / `AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
+| r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
+| r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
+| r3e-app | 36 | 1,437 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
+| **合计** | **71,859** | **15,347** | **1,343** | **约 7.19 万行 Rust + 1,512 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 95 个 test target（含 9 个 doctest）/ 1,339 passed / 0 failed，`--features rapier` 多 4 条专属用例** |
 
-行数口径（本节表在 2026-11-14 M0-S0 收口后整体重算一次：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 直接统计，`xtask/` 不计入引擎规模）：
+行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算一次：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，
-该快照是硬门禁，只许涨不许跌）。下表历史段落记录各扩展的**增量**，用于回溯当时的边际成本，不与本节合计行相加：
+该快照是硬门禁，只许涨不许跌）。2026-11-14 M0-S0 那次统计存在 glob 漏计（`r3e-render` 记 10,520，同一口径递归实测 13,074），
+本版按递归全量对全部 crate 重算修正，因此合计与旧版不可逐字对比，只与 `src`/`tests` 实测值对比。
+下表历史段落记录各扩展的**增量**，用于回溯当时的边际成本，不与本节合计行相加；其中出现的 `renderer.rs` 一律指
+M0-S1 拆分**前**的单文件（5,582 行），拆分后对应内容分布在 `crates/r3e-render/src/renderer/` 下 17 个模块里：
 扩展二十八（段归属下沉到节点）在其上增量 +6 src / +33 tests / +1 单测，
 扩展二十九（主通道视锥剔除层级化）再增量 +241 src / +387 tests / +14 单测 / +2 套件，
 扩展三十（主通道遮挡剔除层级化）再增量 +414 src（净）/ 0 tests / +7 单测 / 0 套件，
@@ -388,7 +391,7 @@ blend_space 605 + scene 10 + api 13，与 `git diff --numstat` 一致），
 （`tests` 相较上轮记录的 14,701 为 +68，正好是 `blend_space_api.rs` 的增量；`src` 净 +1,067 = blend_space 833 +
 scene 150 + anim_blend 47 + api 37，与 `git diff --numstat` 一致），
 扩展三十五（暂存环 + 多帧飞行）再增量 +1,243 src / 0 tests 文件 / +12 单测 / 0 套件
-（`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer.rs` 的 `UploadStaging` / `StagingStats` / 接入约 +380 净、
+（`upload_staging.rs` 380 行纯 CPU 契约含 12 条内联测试、`renderer/staging.rs` 的 `UploadStaging` / `renderer/stats.rs` 的 `StagingStats` / 接入约 +380 净、
 `lib.rs` 导出 +5；`cargo test --workspace` 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed）
 （综上停在扩展三十五收尾：59,984 行 / 11,170 tests 行 / 1,073 单测 / 75 套件 1,069 passed，`--features rapier` 同 75 套件 1,073 passed。
 扩展三十四收尾为 58,741 行 / 9,517 tests 行 / 1,061 单测 / 75 套件 1,057 passed，
@@ -413,7 +416,7 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | 单测（默认特性） | `cargo test --workspace` | 1,339 passed / 0 failed（95 个 test target，含 9 个 doctest） |
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 1,343 passed / 0 failed；比默认特性多 4 条，来源是**只在该特性下编译**的 `ccd_penetration.rs`（文件级 `#![cfg(feature = "rapier")]`，3 测）与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`（1 测）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings`（另跑 `--features rapier`） | 0 warning，**`-D warnings` 下零告警才算过** |
-| **文件规模** | `cargo xtask lint-size` | 单文件 ≤800 行；27 个存量超标文件登记在 `xtask/size_debt.json`，**只许变小不许变大**，拆到 ≤800 行后要删条目 |
+| **文件规模** | `cargo xtask lint-size` | 单文件 ≤800 行；26 个存量超标文件登记在 `xtask/size_debt.json`，**只许变小不许变大**，拆到 ≤800 行后要删条目 |
 | **测试数不得下降** | `cargo xtask check-tests` | 逐 crate 对照 `xtask/tests_baseline.json`（core 566 / render 307 / script 128 / editor 97 / asset 61 / editor-host 55 / plugin 47 / audio 29 / physics 28 / runtime 14 / app 11，合计 1,343），任一 crate 变少即失败 |
 | **依赖方向** | `cargo xtask dep-check [--strict]` | 对照 `xtask/dep_rules.json` 的 `allow` 白名单。v0 只报告不阻塞；当前登记 3 条债务（`editor-host` 直连 5 个子系统、`plugin` 直连 core/physics、`script` 直连 physics/audio），M0 逐 Sprint 偿还后 `--strict` 转硬 |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
@@ -2624,7 +2627,7 @@ WebGPU core 规范 `max_bind_groups = 4`（group 索引 0..3），第五组 `@gr
 
 两件事都收在渲染器内部，`r3e-core` 的场景结构与脚本 API 一字未改。
 
-**A. 半透明按深度由远及近（`r3e-render/src/transparency.rs` + `renderer.rs`）**
+**A. 半透明按深度由远及近（`r3e-render/src/transparency.rs` + `renderer/instancing.rs`）**
 
 前向管线没有逐像素排序，半透明只能靠"先画远的、后画近的"让 alpha 混合叠出正确结果；
 顺序反了近处物体会被远处物体盖住。判定与排序都是纯函数，因而可脱离 GPU 单测：
@@ -2737,7 +2740,7 @@ core 侧只管「怎么判」（§4.15），渲染侧只解决一件事：**金�
 **读回布局**（`ReadbackLayout`）：`width × height × 4` 字节按 `COPY_BYTES_PER_ROW_ALIGNMENT`（256 字节）
 行对齐，1080p ≈ 8.3 MiB/次；`width/height` 为 0 或乘积溢出时返回 `None`，本轮不发起读回。
 
-**接入点**（`renderer.rs::prepare_instances` 阶段三 A）：视锥剔除之后、分配实例槽位之前。
+**接入点**（`renderer/instancing.rs::prepare_instances` 阶段三 A）：视锥剔除之后、分配实例槽位之前。
 
 | 位置 | 行为 | 理由 |
 | --- | --- | --- |
@@ -2811,7 +2814,7 @@ core 侧给了成品 mip 链（§4.16），渲染侧负责三件事：**上传�
 输出同一份；`Renderer::env_probe_stats()` 在没配探针时给全零缺省。
 
 **测试口径**（`crates/r3e-render/src/envprobe.rs` 7 条 + `crates/r3e-render/tests/env_probe_shader.rs` 9 条 +
-`renderer.rs` 内 1 条）：f16 往返 / 溢出 / 次正规边界、`encode_faces` 的面数与层序、每行字节数、
+`renderer/` 内 1 条）：f16 往返 / 溢出 / 次正规边界、`encode_faces` 的面数与层序、每行字节数、
 `mip_lod` 与层布局一致（含单层链与 NaN）、naga 无窗口校验 `shader.wgsl`（入口点、`@group(1) @binding(6)`
 绑定声明、`env_probe` 四分量语义、`probe_specular` 的 lod 表达式与 CPU 常量对齐）。
 
@@ -3978,7 +3981,7 @@ M_i = frame_local⁻¹ · (A⁻¹ · joint_i)          // 全程无 X：A 与 jo
 | `pick_all` / `pick_nearest` / `pick_all_from_screen` / `pick_from_screen` | 同上 | 遍历场景、按距离排序 / 取最近；`pick_nearest` 与 `pick_all` 分开实现，悬停每帧调也不付整表排序 |
 | `MeshAabbCache` | 同上 | `MeshRef → Aabb` 登记表，宿主往里塞；本身实现 `MeshProvider`，可直接当提供者用 |
 | `PickBounds` | 同上 | **登记表优先、内置图元兜底**：资产盒来自 `MeshAabbCache`，`cube/sphere/plane/cylinder` 由 `ProceduralProvider` 现算（常量几何不占表位） |
-| `Renderer::mesh_aabb` | `r3e-render/src/renderer.rs` | 暴露渲染层 `MeshCache::bounds`（与视锥剔除共用同一份缓存，不重复算） |
+| `Renderer::mesh_aabb` | `r3e-render/src/renderer/mesh_cache.rs` | 暴露渲染层 `MeshCache::bounds`（与视锥剔除共用同一份缓存，不重复算） |
 | `EngineApp::sync_pick_bounds` | `r3e-runtime/src/app.rs` | 每帧把「场景节点引用的网格 → 局部盒」幂等登记进 `MeshAabbCache`，与脚本共享同一个 `Rc` |
 | `pick_at` / `pick_under_mouse` / `pick_all_at` | `r3e-script/src/api.rs` | 脚本入口，返回 Map / `Array<Map>` |
 | `screen_width` / `screen_height` / `screen_size` | 同上 | 像素坐标的另一半：脚本要算「屏幕中心」必须先知道画布多大，且必须与 `pick_*` 同源 |
@@ -4017,7 +4020,7 @@ M_i = frame_local⁻¹ · (A⁻¹ · joint_i)          // 全程无 X：A 与 jo
 长期 map 着的缓冲不能进命令编码器。所以教科书式「persistent mapped buffer + N 帧飞行」在 wgpu 里
 只能换个形态实现——把「映射一次写一批」改成「一帧写一块，槽位轮转」。
 
-**做法**：`renderer.rs` 内新增 `UploadStaging`（环形暂存槽 + 本帧打包缓冲），纯 CPU 契约部分
+**做法**：`renderer/staging.rs` 内新增 `UploadStaging`（环形暂存槽 + 本帧打包缓冲），纯 CPU 契约部分
 （`pack_runs` / `slot_bytes` / `slot_fit` / `SlotRing` / `saved_calls`）独立在 `upload_staging.rs`，不依赖设备、可单测。
 
 ```
@@ -4041,7 +4044,7 @@ render_to_view
 | `slot_bytes` / `slot_fit` | 同上 | 单槽容量规划：按 256 B 上取整、下限 `STAGING_MIN_BYTES = 64 KiB`、上限 `STAGING_MAX_BYTES = 8 MiB`；超上限返回 `TooLarge` |
 | `SlotRing` | 同上 | 多帧飞行的游标状态机：`advance(committed)` 只在已提交时推进，`STAGING_SLOTS = 3` 深 |
 | `saved_calls` | 同上 | 统计口径：`脏段数 - 实际写入数`，即本帧省下的队列往返 |
-| `UploadStaging` | `renderer.rs` | `stage`（打包 + 容量成长）/ `flush`（一帧一次写）/ `record`（录制块拷贝 + 轮转）/ `drop_pending`（目标缓冲换代时丢弃）/ `commit_shadows`（提交后对齐影子） |
+| `UploadStaging` | `renderer/staging.rs` | `stage`（打包 + 容量成长）/ `flush`（一帧一次写）/ `record`（录制块拷贝 + 轮转）/ `drop_pending`（目标缓冲换代时丢弃）/ `commit_shadows`（提交后对齐影子） |
 | `StagingStats` | 同上 | 挂进 `RenderStats.upload_staging`：`enabled` / `slots` / `capacity` / `frames` / `writes` / `copies` / `bytes` / `saves` / `rebuilds` / `fallbacks` |
 
 **三条必须遵守的不变量**：
@@ -4095,7 +4098,7 @@ render_to_view
 
 | 组件 | 位置 | 职责 |
 | --- | --- | --- |
-| `MeshMorph` | `render/renderer.rs` | 每网格元数据：`base`（本网格增量在表里的起始下标）/ `stride`（= 顶点数 × `MORPH_VERTEX_FLOATS` = 顶点数 × 9）/ `count`（有效形状数，≤ 12）/ `peak`（各形状位置增量里最长的那条，供剔除外扩） |
+| `MeshMorph` | `render/renderer/mesh_cache.rs` | 每网格元数据：`base`（本网格增量在表里的起始下标）/ `stride`（= 顶点数 × `MORPH_VERTEX_FLOATS` = 顶点数 × 9）/ `count`（有效形状数，≤ 12）/ `peak`（各形状位置增量里最长的那条，供剔除外扩） |
 | `MeshCache::register_morph` | 同上 | `ensure` 上传网格时调用：校验 → 取前 `MAX_MORPH_TARGETS`（12）个形状 → `flatten_limited` → 追加进 `morph_table` → 回写 `base/stride/count`；表余量不足则**该网格按无形变处理**并 warn（绝不写半截数据） |
 | `MeshCache::morph_version` | 同上 | 表内容的版本号，追加 / 换代即 +1；`upload_morph_table` 只在它变化时重写，静止场景 0 次 |
 | `upload_morph_table` | 同上 | 表缓冲容量按上限固定分配，表变长时整表重写；网格换代（换场景 / 热重载）时清表 + 版本自增，让所有网格重新登记 |
@@ -4106,7 +4109,7 @@ render_to_view
 | `instance_meta`（location 10） | `render/mesh.rs` | `[u32; 4]` = `(joint_base, morph_base, morph_stride, morph_count)`；原先单值的 `joint_base` 扩成这个 `u32x4` |
 | `morph_weights`（location 12 / 13 / 14） | 同上 | `[[f32; 4]; MORPH_WEIGHT_GROUPS]`，扩展四十一后是三组：第 g 组第 i 个分量管形状 `g × 4 + i`；`count` 之外的分量无意义（填 0）。布局由 `group_morph_weights` 从扁平 `[f32; 12]` 按 4 个一片切出来，`VertexAttribute` 的 `shader_location` 也按组号递增生写 |
 | `morph_slots`（location 15） | 同上 | 扩展四十二：`vec4<u32>` 形状序号列表，偏移 `MORPH_SLOT_OFFSET = MORPH_WEIGHT_OFFSET + 16 × MORPH_WEIGHT_GROUPS`（3 组时 = 144）；两个常量都由组数推出，改组数时不用手抄绝对值（`morph_shader_parity` 查 `mesh.rs` 里确实是这个表达式） |
-| `morph_upload(instance, shape_count)` | `render/renderer.rs` | 扩展四十二：**纯函数**，把实例掩码压成「只含在用形状」的槽列表（权重与序号按同一槽下标对齐，越界形状左移压缩），`count` 即槽数 `target_count`，脏位不能点亮不存在的形状） |
+| `morph_upload(instance, shape_count)` | `render/renderer/types.rs` | 扩展四十二：**纯函数**，把实例掩码压成「只含在用形状」的槽列表（权重与序号按同一槽下标对齐，越界形状左移压缩），`count` 即槽数 `target_count`，脏位不能点亮不存在的形状） |
 | `mask_drops_all_shapes(mask, shape_count)` | 同上 | 裁剪后掩码为 0 即「整段摘掉」：该实例的 `morph_count` 按 0 上报，着色器提前返回 |
 | `pack_morph_slots(shapes)` | `render/mesh.rs` | 扩展四十二：把槽列表（`&[u8]`）按 `u8` 小端打包进 `[u32; 4]`，每字 4 槽、空槽留 0。第 4 字是 `vec4` 的占位字，恒 0 |
 | `RenderStats.morph_masked_shapes` | 同上 | 扩展四十：本帧因掩码省下的形变槽位数（`masked_nonzero_count` 求和）。无形状网格恒 0，不会虚高。扩展四十二后它仍是「脚本关了但权重非零」的那部分，与槽列表长度互补 |
@@ -4163,7 +4166,7 @@ if in.instance_meta.w != 0u {
 - **CPU 不再求解**：扩展三十六之后形变完全由顶点着色器完成，CPU 只算权重与剔除外扩；
 - **像素不变量**：`count == 0` 的实例整段分支跳过，顶点坐标与扩展三十五**逐位相同**，所以像素基线无需重建。
 
-契约由三处守：`render/renderer.rs` 的 `morph_table_tests`（`target_count_is_capped_at_max` /
+契约由三处守：`render/renderer/tests.rs` 的 `morph_table_tests`（`target_count_is_capped_at_max` /
 `table_capacity_falls_back_to_no_morph` / `swapping_library_clears_table_and_bumps_version` /
 `mismatched_length_is_rejected_without_touching_table` / `max_displacement_is_the_longest_position_delta` /
 `cull_inflate_follows_weight_peak_and_scale`，扩展四十再补 `renderer::morph_mask_tests` 三条：
@@ -4202,7 +4205,7 @@ if in.instance_meta.w != 0u {
 | `MORPH_SLOT_LOCATION_BASE = 15` | 同上 | 由 `MORPH_WEIGHT_BASE_LOCATION + MORPH_WEIGHT_GROUPS` 推出，**只有一个** location（不是三个） |
 | `MORPH_SLOT_OFFSET = 144` | 同上 | `MORPH_WEIGHT_OFFSET + 16 × MORPH_WEIGHT_GROUPS`，紧跟在最后一组权重之后，中间不留空 |
 | `pack_morph_slots(shapes)` | 同上 | 槽列表 → `[u32; 4]`，`u8` 小端：第 `w` 字第 `i` 字节 = 槽 `4w + i`；空槽留 0（不能拿脏数据点亮不存在的形状） |
-| `morph_upload(instance, shape_count)` | `render/renderer.rs` | 掩码 → 槽列表的**唯一入口**：按形状下标升序收集在用形状、越界（≥ 网格形状数）的丢掉并**左移压缩**，返回的 `count` 就是槽数 |
+| `morph_upload(instance, shape_count)` | `render/renderer/types.rs` | 掩码 → 槽列表的**唯一入口**：按形状下标升序收集在用形状、越界（≥ 网格形状数）的丢掉并**左移压缩**，返回的 `count` 就是槽数 |
 | `instance_meta.w` | `shader.wgsl` | 语义从「网格形状数」变成**槽数**：`0` = 该实例整段摘掉形变（与扩展四十的全关等价，探针口径不变） |
 
 顶点侧从「逐形状静态展开」变成「按槽数循环 + 间接寻址」：
@@ -4342,9 +4345,9 @@ features，日志里那句后端名只是 `adapter.get_info()` 的副产品。�
 | 层 | 位置 | 只认什么 |
 | --- | --- | --- |
 | 宿主层 | `r3e-app` / `r3e-editor` / 插件 | `GfxApi` / `GfxInfo` / `caps_line()`，不 import 任何图形库类型 |
-| 门面层 | `renderer.rs` 的 `Renderer` + `gfx::RenderBackend` | 跨 API 契约：身份 / 能力 / 尺寸 / resize |
+| 门面层 | `renderer/mod.rs` 的 `Renderer` + `gfx::RenderBackend` | 跨 API 契约：身份 / 能力 / 尺寸 / resize |
 | 获取层 | `gfx::selection()` → `gfx::create_context()` → `gfx::backend::open()` | 设备怎么弄到手（**唯一**碰 Instance / Adapter 的地方） |
-| 实现层 | `renderer.rs` 其余部分（管线 / 绑定 / pass） | wgpu 具体绘制，既有调用一处未改 |
+| 实现层 | `renderer/` 其余模块（`init` / `pass` / `shadow` / `buffers` / `frame` / `staging`） | wgpu 具体绘制，既有调用一处未改 |
 
 #### 三个真被验证的不变量
 
@@ -4822,7 +4825,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 
 | 环节 | 位置 | 做法 |
 | --- | --- | --- |
-| 打包 | `renderer.rs` 每帧 `LightsUniform::from_lights(&scene.lights, scene.lights_enabled)` | 逐盏再跑一次 `sanitized()`，越界值不上 GPU |
+| 打包 | `renderer/uniforms.rs` 每帧 `LightsUniform::from_lights(&scene.lights, scene.lights_enabled)` | 逐盏再跑一次 `sanitized()`，越界值不上 GPU |
 | 上传 | 主通道 `prepare` 阶段一次 `write_buffer`（1040 B） | 与实例 / 材质共用同一个队列提交，不额外 sync |
 | 探针 | 起止日志 `局部光源：场景 N 盏 / 上传 M 盏 / 开关 bool` | 「场景」是 `Scene::lights.len()`，「上传」是 uniform 里实际 `count.x`，两者不等就是被截断或被开关清零 |
 | 演示 | `scripts/lights_demo.rhai` | 暖色点光绕原点画圆 + 半径呼吸、冷色聚光俯照；每 0.5 s 打印原点照度与单盏字段 |
@@ -4853,7 +4856,7 @@ M1 的 UI 只是「画出来」：`resolve_rect` 把 `UiElement` 换算成像素
 
 | 环节 | 位置 | 做法 |
 | --- | --- | --- |
-| 打包 | `renderer.rs` 每帧 `SsaoParams` 从 `postfx.ssao.sanitized()` 出发 | 核数组由 `kernel_uniform()` 现算，416 B 一次 `write_buffer` |
+| 打包 | `renderer/frame.rs` 每帧 `SsaoParams` 从 `postfx.ssao.sanitized()` 出发 | 核数组由 `kernel_uniform()` 现算，416 B 一次 `write_buffer` |
 | 提交 | 主通道结束后、`postfx.render` 之前 | 场景没开遮蔽段时不进这个分支，`passes = 0` |
 | 探针 | 起止日志 `遮蔽探针：段内启用 b / GPU 启用 b / 样本 M/M / pass N / AO 图 WxH / 世代 g / 半径 r / 偏置 b / 强度 i` | 前后两组「启用 / 样本」是「场景里写的」与「GPU 实际用的」对照，不相等就是被夹紧或没接上 |
 | 回显 | 插件 `scene_inspect` 的 `postfx.ssao` 字段 | 与 HDR 后处理同一段摘要，编辑器/插件不必再单开一条读取路径 |
@@ -6749,7 +6752,7 @@ spatial.rs（纯函数层）  trait AudioBackend          ← 契约新增 set_s
 | `crates/r3e-core/src/postfx.rs` | `PostFxSettings` / `BloomSettings` / `SsaoSettings`（扩展十七挂载）/ `TonemapMode`、`sanitized`、`expose` / `bright_pass` / `tonemap` / `fxaa_edge_visible` / `resolve` 参考实现（零 wgpu） |
 | `crates/r3e-core/src/ssao.rs` | `SsaoSettings`（5 字段 + `sanitized` / `is_neutral` / `effective_samples`）、`hemisphere_kernel`（确定性半球核）、`reconstruct_view_pos`、`normal_from_neighbors`、`is_occluded`、`ao_from_occlusion`、`MAX/MIN/DEFAULT_SSAO_*` 常量（零 wgpu） |
 | `crates/r3e-render/src/mesh.rs` | `Vertex` / `InstanceRaw` 布局、`cube` / `sphere` / `plane` / `cylinder` |
-| `crates/r3e-render/src/renderer.rs` | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`LocalShadowUniform`（扩展十八 C：`view_proj[24]` + `slots[16]`，`@group(3) @binding(7)`）、`LightsUniform`、`prepare_instances`、`prepare_shadow`、`prepare_local_shadow`（按层写矩阵并返回要跑的层号）、`render`（方向光阴影 pass → 局部阴影逐层 pass → 主 pass 写 HDR 目标 → `SsaoPass::render` 两个遮蔽 pass → `PostFxPass::render` composite → 文本 / UI）、`resize`、`RenderStats` |
+| `crates/r3e-render/src/renderer/`（17 个文件，最大 `init.rs` 716 行） | `Renderer` 初始化、`CameraUniform`、`ShadowUniform` / `ShadowPassUniform`、`LocalShadowUniform`（扩展十八 C：`view_proj[24]` + `slots[16]`，`@group(3) @binding(7)`）、`LightsUniform`、`prepare_instances`、`prepare_shadow`、`prepare_local_shadow`（按层写矩阵并返回要跑的层号）、`render`（方向光阴影 pass → 局部阴影逐层 pass → 主 pass 写 HDR 目标 → `SsaoPass::render` 两个遮蔽 pass → `PostFxPass::render` composite → 文本 / UI）、`resize`、`RenderStats`。模块分布：初始化在 `init.rs`、uniform 家族在 `uniforms.rs`、`prepare_instances` 在 `instancing.rs`、阴影两段在 `shadow.rs`、主流程在 `frame.rs`、`resize` 在 `backend.rs`、统计在 `stats.rs` |
 | `crates/r3e-render/src/text.rs` | `TextPass`（独立无深度管线）、`build_text` 顶点装配、图集动态纹理按需扩容、`MAX_TEXT_INSTANCES` 安全阀 |
 | `crates/r3e-render/src/ui.rs` | `UiPass`（单管线覆盖矩形/边框/图片）、`plan_ui` 纯 CPU 建批、`plan_slice`（九宫格切 3×3）、`UiImageProvider`、`images_to_load`、`MAX_UI_QUADS` 安全阀（九宫格原子丢弃）、`UiStats` |
 | `crates/r3e-render/src/ui.wgsl` | UI 着色器：屏幕像素 → NDC、纹理/纯色调制、alpha 混合 |

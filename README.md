@@ -1385,7 +1385,7 @@ cargo clippy --workspace --all-targets --features rapier -- -D warnings
 cargo test --workspace                         # 默认特性
 cargo test --workspace --features rapier       # Rapier 物理后端
 
-cargo xtask lint-size                          # 单文件 ≤800 行，超标的 27 个登记在 xtask/size_debt.json，只许变小
+cargo xtask lint-size                          # 单文件 ≤800 行，超标的 26 个登记在 xtask/size_debt.json，只许变小
 cargo xtask check-tests                        # 逐 crate 对照 xtask/tests_baseline.json，测试数只许涨不许跌
 cargo xtask dep-check                          # 依赖方向对照 xtask/dep_rules.json 的 allow 白名单（--strict 转硬门）
 cargo xtask gen-capabilities                   # 统计脚本/RPC/插件工具注册点（259 处，跑完即写报告）
@@ -1395,13 +1395,16 @@ cargo test -p r3e-app --test visual_regression -- --nocapture
 ```
 
 `cargo clippy` 不加 `-D warnings` 等于没跑——本仓库的口径是**零 warning**，
-例外只允许带注释说明的 `#[allow]`，当前全库共三处：`r3e-render/src/renderer.rs` 的
-`arc_with_non_send_sync`（`MeshProvider` 刻意不 `Send`，渲染主线程独占），以及
+例外只允许带注释说明的 `#[allow]`，当前全库共七处 clippy 豁免：
+`r3e-render/src/renderer/mesh_cache.rs` 的 `arc_with_non_send_sync`（`MeshProvider` 刻意不 `Send`，渲染主线程独占）、
+`r3e-render/src/renderer/shadow.rs` 的 `too_many_arguments`（参数均来自调用方现成字段）与 `needless_range_loop`（按下标写回定长数组）、
+`r3e-render/src/postfx.rs` 与 `r3e-core/src/light.rs` 各一处 `too_many_arguments`，以及
 `r3e-asset/src/lib.rs`、`r3e-asset/src/gltf_import.rs` 各一处 `too_many_arguments`（顶点装配 / 导入入口参数天然是平行数组）。
+（M0-S1 拆分把原先记在 `renderer.rs` 上的两处 `#[allow]` 带到了 `renderer/shadow.rs`，本盘点按实测重列。）
 
 **三道结构门为什么存在**：它们以前只是文档里的约定（"别写超 800 行的文件"、"别删测试"、"别乱加依赖"），
 靠人自觉执行，于是每拆一个巨型 crate 就悄悄多一笔债。现在债有账本、基线有快照、规则有白名单，全在 `xtask/` 下进版本库：
-`size_debt.json`（27 个大文件及其当时的行数，涨一行即失败）、`tests_baseline.json`（逐 crate 测试数底线）、
+`size_debt.json`（26 个大文件及其当时的行数，涨一行即失败）、`tests_baseline.json`（逐 crate 测试数底线）、
 `dep_rules.json`（逐 crate 的允许依赖）。`verify` 把三道门串在 fmt/clippy/test 之后，本地一条命令 = CI 的 `gate` job。
 
 CI 配置在 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)，六道门对应
@@ -1693,7 +1696,7 @@ CPU 侧是纯函数、不依赖 wgpu，所以能吃单测。
 | --- | --- | --- |
 | 契约 | `crates/r3e-core/src/env.rs` | `EnvironmentSettings`（7 个字段）+ `sanitized()` + Sh9 投影（CPU 纯函数） |
 | 传输 | `crates/r3e-editor/src/lib.rs` | `EnvironmentPatch`（字段全可选）+ `scene.set_environment` 解析 |
-| 缓存 | `crates/r3e-render/src/renderer.rs` | 环境配置变化才重投影，`environment_builds()` 暴露次数 |
+| 缓存 | `crates/r3e-render/src/renderer/state.rs` | 环境配置变化才重投影，`environment_builds()` 暴露次数 |
 | 上屏 | `crates/r3e-render/src/shader.wgsl` | 球谐漫反射 + 解析高光，`env_horizon.w > 0.5` 为启用位 |
 
 **语义**：`scene.environment == None` 时完全走老的 `light.ambient` 常数项——**不写环境段的老场景行为不变**。
@@ -1878,7 +1881,7 @@ uniform（`1 + 16×64 = 1040` 字节），片元里循环累加，不加 pass、
 | 层 | 位置 | 职责 |
 | --- | --- | --- |
 | 契约 | `crates/r3e-core/src/light.rs` | `LocalLight` / `LocalLightKind` / `attenuation` / `spot_factor` / `irradiance`（CPU 参考，零 wgpu） |
-| 打包 | `crates/r3e-render/src/renderer.rs` | `LightsUniform::from_lights(&scene.lights, scene.lights_enabled)`，每帧一次 `write_buffer` |
+| 打包 | `crates/r3e-render/src/renderer/uniforms.rs` | `LightsUniform::from_lights(&scene.lights, scene.lights_enabled)`，每帧一次 `write_buffer` |
 | 驱动 | `r3e-script` / `r3e-editor` | 脚本 19 个 API；编辑器 `light.list` / `light.set` / `light.remove` / `light.clear` / `light.set_enabled`（补丁式） |
 
 **衰减与锥因子**（与 `shader.wgsl` 逐式对应）：
@@ -1943,7 +1946,7 @@ ao_final ──▶ composite：color *= ao（在曝光之前）
 | --- | --- | --- |
 | 契约 | `crates/r3e-core/src/ssao.rs` | `hemisphere_kernel` / `kernel_uniform` / `reconstruct_view_pos` / `normal_from_neighbors` / `is_occluded` / `ao_from_occlusion` + `SsaoSettings::sanitized`（零 wgpu） |
 | GPU | `crates/r3e-render/src/ssao.rs` + `ssao.wgsl` | `SsaoPass`：参数块、深度/遮蔽图两个绑定组、生成与散焦两条 pipeline、`AO_FORMAT` / `AO_PASSES_PER_FRAME` |
-| 接入 | `crates/r3e-render/src/renderer.rs` + `postfx.rs` | 主通道深度加 `TEXTURE_BINDING` 用法；`ssao.render(...)` 在 `postfx.render(...)` 之前；composite 绑 AO 视图（世代号判等） |
+| 接入 | `crates/r3e-render/src/renderer/frame.rs` + `postfx.rs` | 主通道深度加 `TEXTURE_BINDING` 用法；`ssao.render(...)` 在 `postfx.render(...)` 之前；composite 绑 AO 视图（世代号判等） |
 | 驱动 | `r3e-script` / `r3e-editor` / `r3e-app` | 12 个脚本 API；`scene.set_ssao` RPC；`[起始]/[收尾] 遮蔽探针` |
 
 **为什么用深度重建，而不是几何法线**：主通道没有 MRT（多渲染目标），写 G-buffer 要改所有材质的
@@ -2374,7 +2377,7 @@ cargo run -p r3e-app -- --scene assets/scene_local_shadow.json --script scripts/
 
 | 项 | 内容 |
 | --- | --- |
-| **位置** | `crates/r3e-render/src/postfx.rs` 的 `create_ao_placeholder`（`PostFxPass` 构造时调用），共 1 处；`renderer.rs` 只是把 `&queue` 透传进来 |
+| **位置** | `crates/r3e-render/src/postfx.rs` 的 `create_ao_placeholder`（`PostFxPass` 构造时调用），共 1 处；`renderer/frame.rs` 只是把 `&queue` 透传进来 |
 | **成因** | SSAO 关闭时 composite 仍要有一张遮蔽图可采样，代码建了 1×1 `R8Unorm` 纹理当占位图，**但只建不写**。WebGPU 规定纹理创建后内容未定义（实现上普遍清 0），而 composite 片元里是 `color *= ao` ——采到 0 就把整帧乘成黑色 |
 | **表现** | 窗口全黑，**连背景清除色都一起没了**；`RenderStats`（draw / instance / cull）完全正常，日志里 `渲染器就绪`、探针一个不缺，纯肉眼看不出问题出在后处理 |
 | **影响范围** | 默认配置（`postfx.ssao.enabled = false`）下**所有场景**；只有显式开 SSAO 时才有真实遮蔽图、才不黑。因此扩展十七之后的默认构建一直是坏的，肉眼验证存在窗口才会发现，无头测试全绿也发现不了 |
@@ -2797,7 +2800,7 @@ cargo run --release -- <scene.json> <script.rhai> --assets-root <assets 目录> 
 | 宿主层 | `r3e-app` / `r3e-editor` / 插件 | `GfxApi` / `GfxInfo` / `caps_line()` |
 | 门面层 | `Renderer` + `gfx::RenderBackend` | 身份 / 能力 / 尺寸 / resize |
 | 获取层 | `gfx::selection` → `gfx::create_context` → `gfx::backend::open` | 设备怎么弄到手（唯一碰 Instance / Adapter 的地方） |
-| 实现层 | `renderer.rs` 其余部分 | wgpu 具体绘制 |
+| 实现层 | `renderer/` 其余模块 | wgpu 具体绘制 |
 
 ### 28.1 怎么选 API
 

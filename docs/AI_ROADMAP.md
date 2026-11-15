@@ -39,7 +39,7 @@ AI 写代码快，但没人能低成本判断它写对没有。当前验证路�
 
 | 单体现状 | 对 AI 的具体伤害 |
 |---|---|
-| `renderer.rs` 4487 行 | AI 读一次吃满上下文窗口，读不全就改错 |
+| `renderer.rs` 5,582 行（M0-S1 已拆为 `renderer/` 17 个模块，最大 716 行） | AI 读一次吃满上下文窗口，读不全就改错 |
 | `api.rs` 3386 行 | 加一个脚本函数要扫全文件，容易破坏已有 364 个函数 |
 | `app/editor.rs` 3234 行 | 改 RPC 和改主循环挤在一起，语义边界模糊 |
 | `r3e-app` 混三件事 | 想跑 headless 测试就必须把窗口也拖进来 |
@@ -89,7 +89,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | crate | 状态 | 职责 | 关键约束 |
 |---|---|---|---|
 | `r3e-core` | 保持，内部拆分 | 纯数据与算法：场景图、动画、材质、UI 数据 | 零图形/物理依赖（现状已达成，保持） |
-| `r3e-render` | 保持，拆 `renderer.rs` | wgpu 后端 + gfx 抽象 | 唯一持有 GPU 句柄的层 |
+| `r3e-render` | 保持，`renderer.rs` 已拆为 `renderer/`（M0-S1） | wgpu 后端 + gfx 抽象 | 唯一持有 GPU 句柄的层 |
 | `r3e-physics` | 保持 | 物理端口 + rapier 适配器 | 端口 trait 化，`rapier` feature 默认开启 |
 | `r3e-audio` | 保持 | 音频端口 + rodio 适配器 | 后续加总线/混音器 |
 | `r3e-asset` | 保持 | 导入管线 | 不依赖 render（现状正确） |
@@ -136,7 +136,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | # | 内容 | 验收标准（可自动判定） |
 |---|---|---|
 | M0-1 | 拆 `r3e-app` → `r3e-runtime` + `r3e-editor-host` + `main` 薄壳 | 三个 crate 各自可独立测试；`runtime` 能在无窗口 headless 下跑 600 帧 |
-| M0-2 | 拆三个单体文件（`renderer.rs` / `api.rs` / `editor.rs`）到 ≤800 行/文件 | 单文件行数 CI 门禁；拆分后测试数不减（≥1335） |
+| M0-2 | 拆三个单体文件（`renderer.rs` / `api.rs` / `editor.rs`）到 ≤800 行/文件 —— `renderer.rs` 已完成（M0-S1，2026-11-15，17 文件最大 716 行）；`editor.rs` 随 M0-S0 的 crate 拆分消解；`api.rs`（4,070）待做 | 单文件行数 CI 门禁；拆分后测试数不减（≥1335） |
 | M0-3 | 新建 `r3e-doc`：Document 模型接管场景唯一真值 | `core::scene` 不再被 `app` 直接可变借用，只能经 `doc` |
 | M0-4 | Command + Transaction + UndoStack 落地 | 任意命令序列 apply 后 `undo` 全量回退，状态哈希与初始一致 |
 | M0-5 | `r3e-protocol` 从 `r3e-editor` 剥离，零引擎依赖 | `cargo tree -p r3e-protocol` 只有 serde |
@@ -327,7 +327,7 @@ world.query(Query { kind: Interactable, in_bbox: bbox, has_component: "trigger" 
 
 理由：它是当前解耦最薄弱处（一个 crate 混三件事），也是 AI 接入时最容易污染的地方。拆完之后 headless 模式天然可行，后续所有验证基建才有落脚点。
 
-第二件：**`renderer.rs` 4487 行拆分**。理由同上——AI 读不全就改不对，这是可度量的直接障碍。
+第二件：**`renderer.rs` 5,582 行拆分**（M0-S1，已完成：17 个文件最大 716 行，拆分后测试数 1,343 不减）。理由同上——AI 读不全就改不对，这是可度量的直接障碍。
 
 ---
 
