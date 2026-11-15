@@ -63,7 +63,7 @@ impl Document {
     pub fn replace_scene(&mut self, next: Scene) -> Scene {
         let old = std::mem::replace(&mut self.scene, next);
         // 换场景后旧撤销栈的前像全部指向另一个场景，留着只会撤销出错。
-        self.undo_stack.clear();
+        self.undo.clear();
         self.touch();
         old
     }

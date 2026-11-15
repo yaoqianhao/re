@@ -130,7 +130,8 @@ fn commit_bumps_version_once_and_stages_all() {
     let committed = tx.commit().expect("提交");
 
     assert_eq!(doc.version(), base_version + 1, "一笔事务只 +1 版本");
-    assert_eq!(doc.undo_depth(), base_depth + 2, "n 条命令一次进栈");
+    assert_eq!(doc.undo_depth(), base_depth + 1, "整笔事务只占一格");
+    assert_eq!(doc.undo_commands(), 2, "一格里有 2 条命令");
     assert_eq!(doc.state_hash(), committed);
 }
 

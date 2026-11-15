@@ -29,7 +29,7 @@ use r3e_core::{
     SurfaceMaterial, Transform, UiElement, Vec4,
 };
 
-use crate::{DocError, Document};
+use crate::{DocError, Document, Mark, UndoGroup};
 
 /// 可撤销命令。
 ///
@@ -277,37 +277,61 @@ impl Document {
         let kind = cmd.kind();
         kind.apply(&mut self.scene)?;
         self.touch();
-        self.undo_stack.push(kind);
+        self.undo.push_single(kind);
         Ok(())
     }
 
-    /// 撤销最近一条命令。栈空返回 [`DocError::NothingToUndo`]。
+    /// 撤销最近**一笔**历史。栈空返回 [`DocError::NothingToUndo`]。
     ///
-    /// 失败时命令留在栈里（只有成功撤销才出栈），避免「撤销失败还丢了一条历史」。
+    /// 「一笔」= 一次 `apply`（单命令）或一次事务 `commit`（n 条命令）。因此一次 undo
+    /// 会把整笔事务原样退回去，而不是退一条。
+    ///
+    /// 失败时该笔里没撤掉的命令留在栈上（只有成功撤销才出栈），避免「撤销失败还丢了历史」。
     pub fn undo(&mut self) -> Result<(), DocError> {
-        let kind = self
-            .undo_stack
+        let mark = self
+            .undo
             .last()
-            .cloned()
+            .map(UndoGroup::mark)
             .ok_or(DocError::NothingToUndo)?;
-        kind.undo(&mut self.scene)?;
-        self.undo_stack.pop();
+        self.undo.rollback_to(mark, &mut self.scene)?;
         self.touch();
         Ok(())
     }
 
-    /// 撤销栈深度。
+    /// 回滚到水位 `mark`：撤销该标记及之后的**所有笔**（逆序），返回撤销的命令条数。
+    ///
+    /// 事务用它做原子回退边界；上层也能用它做「退回某个快照点」。
+    pub fn rollback_to(&mut self, mark: Mark) -> Result<usize, DocError> {
+        let undone = self.undo.rollback_to(mark, &mut self.scene)?;
+        if undone > 0 {
+            self.invalidate_hash_cache();
+            self.touch();
+        }
+        Ok(undone)
+    }
+
+    /// 撤销栈深度（**笔数**，不是命令条数）。
     pub fn undo_depth(&self) -> usize {
-        self.undo_stack.len()
+        self.undo.len()
+    }
+
+    /// 撤销栈里累计的命令条数（含事务内的 n 条）。
+    pub fn undo_commands(&self) -> usize {
+        self.undo.total_cmds()
+    }
+
+    /// 下一次事务的水位标记（`rollback_to` 的边界锚点）。
+    pub fn undo_mark(&self) -> Mark {
+        self.undo.next_mark()
     }
 
     /// 清空撤销栈（存盘 / 换文档后调用）。
     pub fn clear_undo(&mut self) {
-        self.undo_stack.clear();
+        self.undo.clear();
     }
 
     /// 最近一条命令的展示名（没有则为 `None`）。
     pub fn undo_label(&self) -> Option<&'static str> {
-        self.undo_stack.last().map(CommandKind::label)
+        self.undo.last_label()
     }
 }

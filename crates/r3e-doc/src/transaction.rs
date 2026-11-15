@@ -20,7 +20,7 @@
 //!    主动清空哈希缓存（[`Document::invalidate_hash_cache`]），避免缓存把中间态当现值。
 //! 3. **无嵌套**：`Transaction` 持有 `&mut Document`，类型系统直接挡住。
 
-use crate::{CommandKind, DocError, Document, StateHash};
+use crate::{CommandKind, DocError, Document, Mark, StateHash};
 
 /// 一笔进行中的事务。
 ///
@@ -31,8 +31,8 @@ pub struct Transaction<'a> {
     doc: &'a mut Document,
     /// 事务开始时的内容哈希（`rollback` 的收敛目标）。
     base: StateHash,
-    /// 事务开始时的撤销栈深度（`rollback` 的截断目标）。
-    base_depth: usize,
+    /// 事务开始时的撤销栈水位（`rollback` 的回滚边界）。
+    base_mark: Mark,
     /// 已成功执行的命令，按执行顺序排列。
     staged: Vec<CommandKind>,
     /// 首次失败后置位：此后任何写入都直接返回同一个错误。
@@ -45,11 +45,11 @@ impl Document {
     /// 只读一次哈希，不推进版本、不置脏；事务本身不产生任何可观察副作用。
     pub fn begin(&mut self) -> Transaction<'_> {
         let base = self.state_hash();
-        let base_depth = self.undo_stack.len();
+        let base_mark = self.undo.next_mark();
         Transaction {
             doc: self,
             base,
-            base_depth,
+            base_mark,
             staged: Vec::new(),
             poisoned: None,
         }
@@ -157,7 +157,8 @@ impl<'a> Transaction<'a> {
         }
         if !self.staged.is_empty() {
             let staged = std::mem::take(&mut self.staged);
-            self.doc.undo_stack.extend(staged);
+            // 整笔入栈：一笔 n 条命令，撤销时一次全退。
+            self.doc.undo.push_group(staged);
             self.doc.touch();
         }
         Ok(self.doc.state_hash())
@@ -169,8 +170,11 @@ impl<'a> Transaction<'a> {
     pub fn rollback(mut self) -> Result<StateHash, DocError> {
         let total = self.staged.len();
         let undone = self.undo_staged();
-        // 事务期间撤销栈没动过，truncate 是幂等保险（防止将来有路径在事务里出栈）。
-        self.doc.undo_stack.truncate(self.base_depth);
+        // 事务期间撤销栈没动过，`rollback_to` 是幂等保险（防止将来有路径在事务里入栈）。
+        let _ = self
+            .doc
+            .undo
+            .rollback_to(self.base_mark, &mut self.doc.scene);
         self.doc.invalidate_hash_cache();
         if undone != total {
             self.doc.dirty = true;
