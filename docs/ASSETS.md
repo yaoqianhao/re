@@ -478,7 +478,7 @@ struct CachedAsset {
 | `crates/r3e-core/src/node.rs` | `BuiltinMesh` / `AssetId` / `MeshRef`；`Node.mesh` 由 `MeshKind` 改为 `MeshRef` |
 | `crates/r3e-asset/src/lib.rs` | `ufbx` 解析、`AssetLibrary`、`AssetEntry`、`MeshAsset`、`MaterialPart`、`TextureInfo`/`MaterialInfo`、`dump_fbx` |
 | `crates/r3e-render/src/mesh.rs` | `MeshCache`：键 `MeshRef`，按 `MeshProvider` 取 `MeshData` 惰性上传 GPU |
-| `crates/r3e-render/src/renderer.rs` | 顶点布局 32 字节、`Arc<dyn MeshProvider>` 注入点（不再依赖 `r3e-asset`） |
+| `crates/r3e-render/src/renderer/mesh_cache.rs` | 顶点布局 32 字节、`Arc<dyn MeshProvider>` 注入点（不再依赖 `r3e-asset`） |
 | `crates/r3e-app/src/main.rs` | `--asset` / `--dump-asset`、`spawn_asset_nodes`、启动时注入资产库 |
 
 **依赖边界（已核实）**：`cargo tree -p r3e-render` 中不存在 `r3e-asset` 与 `ufbx`；
@@ -524,7 +524,7 @@ AABB 与独立校验工具（`D:\_probe\aabb_check`，直接调 ufbx 复算）�
 | --- | --- |
 | `crates/r3e-core/src/mesh.rs` | `MeshPartData`（索引区间 + 材质下标）、`MaterialData`（base_color / metallic / roughness / base_color_texture）、`TextureImage`；`MeshProvider` 增加 `mesh_parts` / `material` / `texture` |
 | `crates/r3e-asset/src/lib.rs` | 贴图解码（`image` + tga/bmp 特性，按扩展名兜底）、材质因子提取、`mesh_parts` 分区输出 |
-| `crates/r3e-render/src/renderer.rs` | `MaterialCache`（材质 uniform + 贴图 view + 采样器）、bind group 1、按 `GpuPart` 逐段 `draw_indexed` |
+| `crates/r3e-render/src/renderer/material.rs` | `MaterialCache`（材质 uniform + 贴图 view + 采样器）、bind group 1、按 `GpuPart` 逐段 `draw_indexed` |
 | `crates/r3e-render/src/shader.wgsl` | `group(1)` 材质 uniform 与贴图采样，albedo = 物件色 × 材质因子 × 贴图 |
 | `crates/r3e-runtime/src/app.rs` | 场景 `assets` 段导入 + 按声明 spawn（position/rotation/scale/`spawn:false`）、路径去重 |
 | `crates/r3e-core/src/scene.rs` | `from_json_str` 剥 UTF-8 BOM（PowerShell/记事本保存的场景不再解析失败） |
@@ -626,7 +626,7 @@ P4 已落地：FBX 的 `skin_deformers` 变成引擎侧的关节绑定，动画�
 | `crates/r3e-asset/src/lib.rs` | `skin_deformers → clusters` 提取关节（`node_index` / `path` / `bind_to_world`）与每顶点 `joints/weights`（归一化、超 4 权重取大者），`MeshAsset.skin: Option<u32>`、`AssetEntry.skins`、`skin_stats()` |
 | `crates/r3e-render/src/mesh.rs` | 顶点属性 5 个（`0..=4`，`3 = Uint16x4`、`4 = Float32x4`）；`InstanceRaw` 加 `joint_base`（location 10），stride 96 |
 | `crates/r3e-render/src/shader.wgsl` | `@group(2) @binding(0) u_joints: array<mat4x4>`；`skin_matrix()` 做 LBS，权重全 0 时跳过取样（内置网格零成本） |
-| `crates/r3e-render/src/renderer.rs` | 关节 storage buffer + bind group + pipeline layout `group(2)`；`prepare_instances` 按 `scene.skin_of(mesh_node)` 填 `joint_base` 并上传本帧关节矩阵（溢出报错不静默截断） |
+| `crates/r3e-render/src/renderer/instancing.rs` | 关节 storage buffer + bind group + pipeline layout `group(2)`；`prepare_instances` 按 `scene.skin_of(mesh_node)` 填 `joint_base` 并上传本帧关节矩阵（溢出报错不静默截断） |
 | `crates/r3e-runtime/src/app.rs` | `bind_asset_skins`（静止姿态绑关节，按 `node_index` 对齐）、`log_skin_probe`（CPU 复算蒙皮质心 / 最大偏差，做无头验收） |
 | `crates/r3e-asset/examples/skin_probe.rs` | 口径探针：同一帧分别用 `bind_to_world⁻¹` 与静止姿态逆矩阵做 CPU 蒙皮，对比顶点位移，作为「逆绑定取静止姿态」的证据 |
 
@@ -691,7 +691,7 @@ A 阶段的目标是「让外部资产也拥有包围盒」，它同时是阴影
 | `crates/r3e-core/src/aabb.rs` | 新增 `Aabb`（`min/max`、`EMPTY`、`new/from_points/from_center_half/union/expand/transformed/inflate_relative/half_extents/size/center/is_empty`） |
 | `crates/r3e-core/src/frustum.rs` | 新增 `Frustum`（`from_view_projection`、`planes`、`contains_point`、`intersects_aabb`，正负顶点测试） |
 | `crates/r3e-core/src/mesh.rs` | `MeshData::aabb()` / `aabb_box()`；`MeshProvider` 新增 `mesh_aabb(key) -> Option<Aabb>`（默认 `None`） |
-| `crates/r3e-render/src/renderer.rs` | `MeshCache.bounds`（`HashMap<MeshRef, Option<Aabb>>`）+ `bounds()`；`prepare_instances` 里先过视锥再分配实例/关节槽位；`SKIN_CULL_MARGIN = 0.25`；`RenderStats` 增 `culled / cull_missing_bounds` |
+| `crates/r3e-render/src/renderer/mesh_cache.rs` | `MeshCache.bounds`（`HashMap<MeshRef, Option<Aabb>>`）+ `bounds()`；`prepare_instances` 里先过视锥再分配实例/关节槽位；`SKIN_CULL_MARGIN = 0.25`；`RenderStats` 增 `culled / cull_missing_bounds` |
 | `crates/r3e-physics/src/lib.rs` | `ColliderDesc::infer_with / from_node_with(node, bounds)`，`half_extents_from` 用真实 AABB × scale 推导 |
 | `crates/r3e-runtime/src/app.rs` | 资产库改为 `Rc<RefCell<Arc<AssetLibrary>>>`（可就地换库）；`refresh_assets_from_json` 比较 `assets` 声明后按需重导；`collect_asset_specs(scene, scene_path, cli)` 支持 `--assets-root`；启动/收尾打印剔除统计 |
 | `crates/r3e-app/src/main.rs` | `--assets-root DIR` 解析与 USAGE |
