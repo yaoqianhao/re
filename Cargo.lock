@@ -2319,6 +2319,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-doc"
+version = "0.1.0"
+dependencies = [
+ "r3e-core",
+]
+
+[[package]]
 name = "r3e-editor"
 version = "0.1.0"
 dependencies = [

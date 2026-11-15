@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/r3e-core",
+    "crates/r3e-doc",
     "crates/r3e-render",
     "crates/r3e-physics",
     "crates/r3e-script",
@@ -25,6 +26,7 @@ authors = ["r3e"]
 [workspace.dependencies]
 # 内部 crate
 r3e-core = { path = "crates/r3e-core" }
+r3e-doc = { path = "crates/r3e-doc" }
 r3e-render = { path = "crates/r3e-render" }
 r3e-physics = { path = "crates/r3e-physics" }
 r3e-script = { path = "crates/r3e-script" }

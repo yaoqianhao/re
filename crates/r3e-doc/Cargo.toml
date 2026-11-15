@@ -1,0 +1,10 @@
+[package]
+name = "r3e-doc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# 文档层只许依赖 core：唯一真值 + 写入口，不得反向依赖任何上层。
+r3e-core.workspace = true
