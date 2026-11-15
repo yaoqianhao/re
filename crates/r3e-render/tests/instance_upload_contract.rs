@@ -16,7 +16,23 @@ use r3e_render::renderer::{InstanceUploadStats, RenderStats};
 use r3e_render::{InstanceRaw, MORPH_WEIGHT_GROUPS};
 
 fn renderer_src() -> &'static str {
-    include_str!("../src/renderer.rs")
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 /// 默认读数全零：没跑起来之前不能有任何「传过字节」的迹象。

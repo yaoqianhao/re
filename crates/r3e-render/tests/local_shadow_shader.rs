@@ -7,7 +7,6 @@
 use r3e_core::{MAX_LOCAL_LIGHTS, MAX_LOCAL_SHADOW_LAYERS};
 
 const SHADER: &str = include_str!("../src/shader.wgsl");
-const RENDERER: &str = include_str!("../src/renderer.rs");
 
 fn parsed_module() -> naga::Module {
     match naga::front::wgsl::parse_str(SHADER) {
@@ -48,11 +47,14 @@ fn struct_field_order_matches_rust() {
         cursor += found + field.len();
     }
     // Rust 侧同名同序
-    let struct_start = RENDERER
+    let struct_start = renderer_src()
         .find("pub struct LocalShadowUniform {")
         .expect("renderer 缺少 LocalShadowUniform");
-    let struct_end = struct_start + RENDERER[struct_start..].find('}').expect("结构未闭合");
-    let rust_body = &RENDERER[struct_start..struct_end];
+    let struct_end = struct_start
+        + renderer_src()[struct_start..]
+            .find('}')
+            .expect("结构未闭合");
+    let rust_body = &renderer_src()[struct_start..struct_end];
     let mut cursor = 0usize;
     for field in fields {
         let found = rust_body[cursor..]
@@ -82,7 +84,7 @@ fn array_lengths_match_core_consts() {
     );
     // 渲染层的纹理层数也必须来自同一个常量
     assert!(
-        RENDERER.contains("r3e_core::MAX_LOCAL_SHADOW_LAYERS as u32"),
+        renderer_src().contains("r3e_core::MAX_LOCAL_SHADOW_LAYERS as u32"),
         "局部阴影纹理的层数必须来自 MAX_LOCAL_SHADOW_LAYERS"
     );
 }
@@ -112,11 +114,11 @@ fn bindings_are_group3_binding_5_6_7() {
     );
     // 深度比较必须是 Comparison 采样器，否则 textureSampleCompare 校验不过
     assert!(
-        RENDERER.contains("wgpu::SamplerBindingType::Comparison"),
+        renderer_src().contains("wgpu::SamplerBindingType::Comparison"),
         "局部阴影必须用比较采样器"
     );
     assert!(
-        RENDERER.contains("r3e-local-shadow-map"),
+        renderer_src().contains("r3e-local-shadow-map"),
         "renderer 缺少局部阴影纹理"
     );
 }
@@ -170,4 +172,26 @@ fn face_branches_cover_six_faces() {
         SHADER.contains("slot.x < 0.0"),
         "必须保留「槽位 -1 即不投影」的早退，否则老场景会被算进阴影"
     );
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

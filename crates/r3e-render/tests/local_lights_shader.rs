@@ -9,7 +9,6 @@
 use r3e_core::{ATTENUATION_EPSILON, ATTENUATION_WINDOW_POWER, MAX_LOCAL_LIGHTS};
 
 const SHADER: &str = include_str!("../src/shader.wgsl");
-const RENDERER: &str = include_str!("../src/renderer.rs");
 
 fn parsed_module() -> naga::Module {
     match naga::front::wgsl::parse_str(SHADER) {
@@ -66,7 +65,7 @@ fn local_light_struct_field_order_matches_rust() {
     // Rust 侧必须同名同序
     let mut cursor = 0usize;
     for field in fields {
-        let found = RENDERER[cursor..]
+        let found = renderer_src()[cursor..]
             .find(&format!("pub {field}:"))
             .unwrap_or_else(|| panic!("LocalLightRaw 里找不到 {field}（顺序可能错了）"));
         cursor += found + field.len();
@@ -109,22 +108,22 @@ fn lights_binding_is_group3_binding4() {
     );
     // renderer 侧：光源 buffer 由 shadow 布局的 binding 4 承载，且不单开绑定组
     assert!(
-        RENDERER.contains("r3e-lights-ubo"),
+        renderer_src().contains("r3e-lights-ubo"),
         "renderer 缺少局部光源 uniform buffer"
     );
     assert!(
-        !RENDERER.contains("r3e-lights-bgl"),
+        !renderer_src().contains("r3e-lights-bgl"),
         "不应再单独创建光源绑定组布局（已并入 shadow_layout 的 binding 4）"
     );
     assert!(
-        !RENDERER.contains("lights_bind_group"),
+        !renderer_src().contains("lights_bind_group"),
         "不应再有独立的 lights_bind_group"
     );
     // shadow_layout 的 entries 里必须声明 binding 4
-    let idx = RENDERER
+    let idx = renderer_src()
         .find("r3e-shadow-bgl")
         .expect("renderer 缺少 r3e-shadow-bgl");
-    let tail = &RENDERER[idx..idx + 4000];
+    let tail = &renderer_src()[idx..idx + 4000];
     assert!(
         tail.contains("binding: 4"),
         "shadow_layout 必须声明 binding 4（局部光源表）"
@@ -184,4 +183,26 @@ fn spot_kind_threshold_matches_gpu_code() {
     );
     assert_eq!(r3e_core::LocalLightKind::Point.gpu_code(), 0.0);
     assert_eq!(r3e_core::LocalLightKind::Spot.gpu_code(), 1.0);
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

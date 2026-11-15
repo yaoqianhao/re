@@ -18,14 +18,12 @@
 //! 摊平阶段整桶 `remove` 不到 —— 玻璃面板凭空消失，实例数悄悄少几个，而画面
 //! 只在面板那块区域变暗，肉眼看几乎发现不了。`visual-gpu` 严格模式就是被它弄红的。
 
-const SOURCE: &str = include_str!("../src/renderer.rs");
-
 /// 截出 `prepare_instances` 的函数体：从签名行到下一个同级 `fn` 之前。
 fn prepare_instances_body() -> &'static str {
-    let start = SOURCE
+    let start = renderer_src()
         .find("fn prepare_instances")
         .expect("renderer.rs 里必须还有 prepare_instances");
-    let rest = &SOURCE[start..];
+    let rest = &renderer_src()[start..];
     let end = rest[1..]
         .find("\n    /// ")
         .or_else(|| rest[1..].find("\n    fn "))
@@ -160,4 +158,26 @@ fn node_enters_only_its_own_segment() {
         body.contains("if transparent {") && body.contains("} else if !occluded {"),
         "段分支必须是「透明 → 半透明桶；不透明且未被遮挡 → 不透明桶」"
     );
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

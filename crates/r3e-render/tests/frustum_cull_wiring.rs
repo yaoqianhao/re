@@ -11,13 +11,11 @@
 //! 4. 掩码取不到时 fail-open（保留实例），绝不因为数据缺失让物件消失；
 //! 5. 掩码筛选排在入桶之前，被剪掉的实例不占实例槽位、不占关节槽位。
 
-const SOURCE: &str = include_str!("../src/renderer.rs");
-
 fn prepare_instances_body() -> &'static str {
-    let start = SOURCE
+    let start = renderer_src()
         .find("fn prepare_instances")
         .expect("renderer.rs 里必须还有 prepare_instances");
-    let rest = &SOURCE[start..];
+    let rest = &renderer_src()[start..];
     let end = rest[1..]
         .find("\n    /// ")
         .or_else(|| rest[1..].find("\n    fn "))
@@ -53,7 +51,7 @@ fn cull_tree_is_separate_from_caster_tree() {
         "主通道不能复用阴影的 caster 树：那棵只装进桶的遮挡体，被剔实例不在其中"
     );
     assert!(
-        SOURCE.contains("fn sync_cull_layout(&mut self, scene: &Scene)"),
+        renderer_src().contains("fn sync_cull_layout(&mut self, scene: &Scene)"),
         "sync_cull_layout 丢失"
     );
 }
@@ -61,10 +59,10 @@ fn cull_tree_is_separate_from_caster_tree() {
 /// 拓扑缓存必须带 layout_version 守卫。
 #[test]
 fn cull_topology_is_cached_by_layout_version() {
-    let start = SOURCE
+    let start = renderer_src()
         .find("fn sync_cull_layout")
         .expect("sync_cull_layout 丢失");
-    let rest = &SOURCE[start..];
+    let rest = &renderer_src()[start..];
     let end = rest[1..].find("\n    fn ").unwrap_or(rest.len() - 1);
     let body = &rest[..end + 1];
     assert!(
@@ -123,4 +121,26 @@ fn cull_stats_are_reported() {
         body.contains("plan.counts.branch_pruned"),
         "整枝跳过（净收益）计数丢失"
     );
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

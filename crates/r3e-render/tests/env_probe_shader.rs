@@ -13,7 +13,6 @@ use r3e_render::{
 };
 
 const SHADER: &str = include_str!("../src/shader.wgsl");
-const RENDERER: &str = include_str!("../src/renderer.rs");
 
 fn parsed_module() -> naga::Module {
     match naga::front::wgsl::parse_str(SHADER) {
@@ -70,12 +69,12 @@ fn cube_binding_is_group1_binding6() {
 /// 绑定组的布局项必须与 wgsl 声明一致：立方体 + 可过滤浮点，否则创建管线时就校验失败。
 #[test]
 fn layout_entry_matches_shader_declaration() {
-    let idx = RENDERER
+    let idx = renderer_src()
         .match_indices("binding: 6,")
         .map(|(i, _)| i)
-        .find(|i| window(RENDERER, *i, 500).contains("TextureViewDimension::Cube"))
+        .find(|i| window(renderer_src(), *i, 500).contains("TextureViewDimension::Cube"))
         .expect("renderer 缺少 binding 6（立方体）的布局项");
-    let body = window(RENDERER, idx, 500);
+    let body = window(renderer_src(), idx, 500);
     assert!(
         body.contains("wgpu::TextureViewDimension::Cube"),
         "binding 6 的视图维度必须是 Cube"
@@ -114,11 +113,13 @@ fn camera_struct_field_order_matches_rust() {
         cursor += found + field.len();
     }
     // Rust 侧同名同序（CameraUniform 的字段表）
-    let struct_start = RENDERER
+    // M0-S1 拆分后模块间字段需 `pub(crate)` 可见，比对字段顺序前先归一化掉前缀。
+    let rust_all = renderer_src().replace("pub(crate) ", "");
+    let struct_start = rust_all
         .find("struct CameraUniform {")
         .expect("renderer 缺少 CameraUniform");
-    let struct_end = struct_start + RENDERER[struct_start..].find("\n}").expect("结构未闭合");
-    let rust_body = &RENDERER[struct_start..struct_end];
+    let struct_end = struct_start + rust_all[struct_start..].find("\n}").expect("结构未闭合");
+    let rust_body = &rust_all[struct_start..struct_end];
     let mut cursor = 0usize;
     for field in fields {
         let found = rust_body[cursor..]
@@ -186,10 +187,10 @@ fn shader_lod_matches_cpu_mapping() {
 /// 兜底纹理：没有探针时绑 1×1×6 全黑立方体，且与真探针同格式（否则切场景要改布局）。
 #[test]
 fn fallback_cube_is_one_by_one_hdr() {
-    let idx = RENDERER
+    let idx = renderer_src()
         .find("fn create_black_cube_texture(")
         .expect("renderer 缺少兜底立方体");
-    let body = window(RENDERER, idx, 2000);
+    let body = window(renderer_src(), idx, 2000);
     assert!(
         body.contains("depth_or_array_layers: 6"),
         "兜底图必须补齐 6 个面"
@@ -204,18 +205,18 @@ fn fallback_cube_is_one_by_one_hdr() {
     );
     assert_eq!(DUMMY_CUBE_FACE_SIZE, 1, "兜底面边长就是 1 像素");
     // 换图 / 卸图都要让材质缓存失效（bind group 里写的是视图本身）
-    let set_idx = RENDERER
+    let set_idx = renderer_src()
         .find("fn set_env_cube(")
         .expect("renderer 缺少 set_env_cube");
     assert!(
-        window(RENDERER, set_idx, 400).contains("self.materials.clear()"),
+        window(renderer_src(), set_idx, 400).contains("self.materials.clear()"),
         "换探针必须清空材质缓存，否则旧 bind group 还指着旧视图"
     );
-    let reset_idx = RENDERER
+    let reset_idx = renderer_src()
         .find("fn reset_env_cube(")
         .expect("renderer 缺少 reset_env_cube");
     assert!(
-        window(RENDERER, reset_idx, 400).contains("self.materials.clear()"),
+        window(renderer_src(), reset_idx, 400).contains("self.materials.clear()"),
         "卸探针同样要清空材质缓存"
     );
 }
@@ -230,11 +231,11 @@ fn stats_default_is_idle() {
     assert_eq!(stats.face_size, 0);
     assert_eq!(stats.mip_levels, 0);
     assert!(
-        RENDERER.contains("pub env_probe: EnvProbeStats"),
+        renderer_src().contains("pub env_probe: EnvProbeStats"),
         "RenderStats 必须带出探针状态"
     );
     assert!(
-        RENDERER.contains("env_probe: self.env_probe_stats()"),
+        renderer_src().contains("env_probe: self.env_probe_stats()"),
         "每帧统计必须从渲染器当前探针取"
     );
 }
@@ -268,4 +269,26 @@ fn upload_plan_matches_settings() {
             "行距不得有 padding"
         );
     }
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

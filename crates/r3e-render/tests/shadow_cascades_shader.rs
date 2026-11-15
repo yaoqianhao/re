@@ -7,7 +7,6 @@
 use r3e_core::MAX_CASCADES;
 
 const SHADER: &str = include_str!("../src/shader.wgsl");
-const RENDERER: &str = include_str!("../src/renderer.rs");
 
 /// 把连续空白压成单个空格，避免断言被缩进/换行踩到。
 fn flat(s: &str) -> String {
@@ -33,19 +32,19 @@ fn shadow_map_is_a_depth_array_with_matching_layers() {
         "阴影图不应再是单层 2D 纹理"
     );
     assert!(
-        RENDERER.contains("view_dimension: wgpu::TextureViewDimension::D2Array"),
+        renderer_src().contains("view_dimension: wgpu::TextureViewDimension::D2Array"),
         "绑定布局的 binding 0 必须是 D2Array"
     );
     assert!(
-        RENDERER.contains("depth_or_array_layers: layers,"),
+        renderer_src().contains("depth_or_array_layers: layers,"),
         "分层深度数组的层数必须来自 layers 参数"
     );
     // 扩展十八 C 把方向光级联与局部阴影的建纹理逻辑抽成 create_shadow_array，
     // 因此这里改成断言「调用处传的是 MAX_CASCADES」，语义与原来的字面量断言等价。
-    let map_label = RENDERER
+    let map_label = renderer_src()
         .find("\"r3e-shadow-map\"")
         .expect("renderer 缺少方向光阴影纹理");
-    let layers_arg = RENDERER
+    let layers_arg = renderer_src()
         .find("MAX_CASCADES as u32")
         .expect("方向光阴影纹理数组层数必须等于 MAX_CASCADES");
     assert!(
@@ -86,8 +85,8 @@ fn shadow_uniform_field_order_matches_rust() {
     }
 
     assert!(
-        RENDERER.contains("light_view_proj: [[[f32; 4]; 4]; MAX_CASCADES],")
-            && RENDERER.contains("split_ndc: [f32; 4],"),
+        renderer_src().contains("light_view_proj: [[[f32; 4]; 4]; MAX_CASCADES],")
+            && renderer_src().contains("split_ndc: [f32; 4],"),
         "renderer 侧 ShadowUniform 的字段顺序必须与 shader 一致"
     );
 }
@@ -95,24 +94,24 @@ fn shadow_uniform_field_order_matches_rust() {
 #[test]
 fn per_level_matrix_and_split_table_are_uploaded() {
     assert!(
-        RENDERER.contains("r3e_core::cascade_splits(camera, cascade)"),
+        renderer_src().contains("r3e_core::cascade_splits(camera, cascade)"),
         "renderer 必须用 core 的 cascade_splits 计算切分点（不要在 GPU 侧另推一套）"
     );
     // 扩展二十四把 fit 换成 fit_cascade_extended（把级联近端朝光源推 caster_extend）。
     // extend = 0 时它与 fit_cascade 逐位相同，老场景矩阵不变。
     assert!(
-        RENDERER.contains("r3e_core::fit_cascade_extended(")
-            && RENDERER.contains("cascade.caster_extend,"),
+        renderer_src().contains("r3e_core::fit_cascade_extended(")
+            && renderer_src().contains("cascade.caster_extend,"),
         "每级矩阵必须来自 core 的 fit_cascade_extended，且外扩量取自 cascade.caster_extend"
     );
     assert!(
-        RENDERER.contains("shadow_pass_uniforms: Vec<wgpu::Buffer>"),
+        renderer_src().contains("shadow_pass_uniforms: Vec<wgpu::Buffer>"),
         "每级需要独立的光源矩阵 uniform（深度 pass 逐级重绑）"
     );
     // 扩展二十四起，循环上界取 `ShadowPlan::levels`（0 = 本帧阴影关闭，一次 pass 都不跑），
     // 每轮从 plan.masks 取该级的保留集合。
     assert!(
-        RENDERER.contains("for level in 0..shadow_plan.levels as usize"),
+        renderer_src().contains("for level in 0..shadow_plan.levels as usize"),
         "深度 pass 必须逐级各跑一遍，且级数为 0 时整体跳过"
     );
 }
@@ -138,7 +137,7 @@ fn sampling_selects_level_by_camera_depth_and_blends() {
         "级间必须按 blend 带宽做混合"
     );
     assert!(
-        tight(RENDERER)
+        tight(renderer_src())
             .contains("params2: [shadow.strength, levels as f32, shadow.cascade.blend, 0.0],"),
         "params2 必须上传 强度 / 级数 / 混合带宽（尾位留给对齐）"
     );
@@ -153,4 +152,26 @@ fn single_cascade_keeps_stage_d_behavior() {
         flat(SHADER).contains("if levels <= 0 { return 1.0;"),
         "级数为 0 时必须整段跳过（关闭阴影零开销）"
     );
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

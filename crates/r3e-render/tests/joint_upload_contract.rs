@@ -104,7 +104,7 @@ fn stats_are_self_consistent() {
 /// 接线：关节上传必须走脏段函数，旧的整段全量写必须已经删掉。
 #[test]
 fn renderer_uploads_joints_through_dirty_runs() {
-    let src = include_str!("../src/renderer.rs");
+    let src = renderer_src();
     assert!(
         src.contains("self.upload_joint_runs(&joints)"),
         "prepare_instances 必须把关节上传交给 upload_joint_runs"
@@ -122,7 +122,7 @@ fn renderer_uploads_joints_through_dirty_runs() {
 /// 接线：影子必须在写 GPU 之后刷新，空帧必须清影子。
 #[test]
 fn joint_shadow_follows_gpu_writes() {
-    let src = include_str!("../src/renderer.rs");
+    let src = renderer_src();
     let start = src.find("fn upload_joint_runs").expect("上传函数必须存在");
     let body = &src[start..];
     let write_at = body.find("write_buffer(").expect("必须真的写 GPU");
@@ -142,4 +142,26 @@ fn joint_shadow_follows_gpu_writes() {
         empty_at < clear_at,
         "空蒙皮帧必须清影子，否则下一个蒙皮角色首帧漏传"
     );
+}
+
+// M0-S1：`renderer.rs` 已拆成 `renderer/` 目录多文件，源码静态断言改为拼接整目录，
+// 保持「全域可见」的原有语义。
+fn renderer_src() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("renderer");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("renderer 目录必须存在")
+            .map(|e| e.expect("读目录失败").path())
+            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("读源文件失败"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }

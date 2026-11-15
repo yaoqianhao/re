@@ -97,8 +97,12 @@ fn device_acquisition_lives_only_in_the_backend_impl() {
 fn renderer_no_longer_hands_out_backend_types() {
     // 扩展四十三曾在 `Renderer` 上暴露 AdapterInfo / Features / Backends，
     // 上层因此被迫认识 wgpu。这三个签名是那次泄漏的指纹，不许复活。
-    let path = crate_src("r3e-render").join("renderer.rs");
-    let src = production_source(&path);
+    let dir = crate_src("r3e-render").join("renderer");
+    let src: String = rs_files(&dir)
+        .iter()
+        .map(|f| production_source(f))
+        .collect::<Vec<_>>()
+        .join("\n");
     for leaked in [
         "pub fn adapter_info(",
         "pub fn device_features(",
@@ -133,8 +137,12 @@ fn the_neutral_layer_stays_neutral() {
 #[test]
 fn renderer_implements_the_cross_api_contract() {
     // 契约真的挂上了才叫抽象；否则 trait 只是摆设
-    let path = crate_src("r3e-render").join("renderer.rs");
-    let src = production_source(&path);
+    let dir = crate_src("r3e-render").join("renderer");
+    let src: String = rs_files(&dir)
+        .iter()
+        .map(|f| production_source(f))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         src.contains("impl crate::gfx::RenderBackend for Renderer"),
         "Renderer 没有实现 RenderBackend —— 跨 API 协议形同虚设"

@@ -23,7 +23,6 @@
     "crates/r3e-physics/src/lib.rs": 1929,
     "crates/r3e-plugin/src/tools.rs": 1405,
     "crates/r3e-render/src/postfx.rs": 817,
-    "crates/r3e-render/src/renderer.rs": 5582,
     "crates/r3e-render/src/text.rs": 869,
     "crates/r3e-render/src/ui.rs": 1112,
     "crates/r3e-runtime/src/app.rs": 3523,

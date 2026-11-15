@@ -75,7 +75,12 @@ fn app_layer_has_no_source_branch() {
 #[test]
 fn upload_path_is_single() {
     // `MeshCache::ensure` 必须只经 `self.provider.mesh_data` 取数据，不允许旁路。
-    let renderer = production_source(&crate_src("r3e-render").join("renderer.rs"));
+    let renderer_dir = crate_src("r3e-render").join("renderer");
+    let renderer: String = rs_files(&renderer_dir)
+        .iter()
+        .map(|f| production_source(f))
+        .collect::<Vec<_>>()
+        .join("\n");
     let ensure_body = renderer
         .split("pub fn ensure(")
         .nth(1)
