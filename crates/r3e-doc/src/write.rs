@@ -62,12 +62,17 @@ impl Document {
     /// 拿到的是一个更新的版本，缓存不会误命中（S3 风险表 R3）。
     pub fn replace_scene(&mut self, next: Scene) -> Scene {
         let old = std::mem::replace(&mut self.scene, next);
+        // 换场景后旧撤销栈的前像全部指向另一个场景，留着只会撤销出错。
+        self.undo_stack.clear();
         self.touch();
         old
     }
 
     /// 记账：版本 +1、置脏、写次数 +1。
-    fn touch(&mut self) {
+    ///
+    /// 命令层（[`crate::command`]）执行成功后会自己调一次，因此命令走的是「先改、
+    /// 成功才记账」的顺序，失败不推进版本。
+    pub(crate) fn touch(&mut self) {
         self.version += 1;
         self.dirty = true;
         self.writes += 1;

@@ -14,6 +14,7 @@
 //! 本轮（S3）只锁「可变借用的来源」：`Scene` 的公开字段保持不动，字段私有化推到
 //! M1-DOC-FIELDS。原因见 `docs/M0S3_DOC_LAYER.md` §2 决定 2。
 
+mod command;
 mod write;
 
 use std::fmt;
@@ -21,20 +22,30 @@ use std::ops::Deref;
 
 use r3e_core::Scene;
 
+pub use command::{Command, CommandKind};
+
 /// 文档层错误。
 ///
-/// v0 只区分「core 给出的错误」，命令层的目标缺失 / 参数非法在 P2 起并入。
+/// 分四类：core 给出的错误、命令目标缺失、写入被拒、撤销栈为空。上层用 [`DocError::detail`]
+/// 取正文展示，用变体决定要不要重试 / 提示用户。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocError {
     /// core 返回的错误字符串（场景解析失败、场景自身约束不满足）。
     Scene(String),
+    /// 命令的目标不存在（节点 / 光源 / UI / 文本的 id 或 key 找不到）。
+    NotFound(String),
+    /// 目标存在但写入被拒（UI 元素表已满、局部光源已达上限）。
+    Rejected(String),
+    /// 撤销栈为空。
+    NothingToUndo,
 }
 
 impl DocError {
     /// 错误正文（不含变体前缀），便于上层直接展示。
     pub fn detail(&self) -> &str {
         match self {
-            Self::Scene(e) => e,
+            Self::Scene(e) | Self::NotFound(e) | Self::Rejected(e) => e,
+            Self::NothingToUndo => "没有可撤销的操作",
         }
     }
 }
@@ -43,6 +54,9 @@ impl fmt::Display for DocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Scene(e) => write!(f, "场景错误：{e}"),
+            Self::NotFound(e) => write!(f, "目标不存在：{e}"),
+            Self::Rejected(e) => write!(f, "写入被拒：{e}"),
+            Self::NothingToUndo => write!(f, "没有可撤销的操作"),
         }
     }
 }
@@ -62,6 +76,7 @@ pub struct Document {
     version: u64,
     dirty: bool,
     writes: u64,
+    undo_stack: Vec<CommandKind>,
 }
 
 impl Document {
@@ -72,6 +87,7 @@ impl Document {
             version: 1,
             dirty: false,
             writes: 0,
+            undo_stack: Vec::new(),
         }
     }
 
