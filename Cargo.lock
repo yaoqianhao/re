@@ -2389,6 +2389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-replay"
+version = "0.1.0"
+dependencies = [
+ "r3e-core",
+ "r3e-doc",
+]
+
+[[package]]
 name = "r3e-runtime"
 version = "0.1.0"
 dependencies = [

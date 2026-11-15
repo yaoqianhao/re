@@ -12,6 +12,7 @@
     "r3e-plugin",
     "r3e-runtime",
     "r3e-editor-host",
+    "r3e-replay",
     "r3e-app"
   ],
   "crates": {
@@ -20,31 +21,46 @@
       "note": "内核零引擎依赖：纯数据与算法"
     },
     "r3e-doc": {
-      "allow": ["r3e-core"],
+      "allow": [
+        "r3e-core"
+      ],
       "note": "文档层只许依赖 core：场景唯一真值 + 唯一写入口（S3 立项）"
     },
     "r3e-render": {
-      "allow": ["r3e-core"],
+      "allow": [
+        "r3e-core"
+      ],
       "note": "渲染只许向下依赖 core，禁止依赖 asset/physics/audio/script"
     },
     "r3e-asset": {
-      "allow": ["r3e-core"],
+      "allow": [
+        "r3e-core"
+      ],
       "note": "导入管线不依赖 render"
     },
     "r3e-physics": {
-      "allow": ["r3e-core"],
+      "allow": [
+        "r3e-core"
+      ],
       "note": "物理只许依赖 core"
     },
     "r3e-audio": {
-      "allow": ["r3e-core"],
+      "allow": [
+        "r3e-core"
+      ],
       "note": "音频只许依赖 core"
     },
     "r3e-script": {
-      "allow": ["r3e-core", "r3e-doc"],
+      "allow": [
+        "r3e-core",
+        "r3e-doc"
+      ],
       "note": "脚本层只能经 CapabilityHost trait 端口注入子系统，不得直连具体实现；场景写走 doc 写入口"
     },
     "r3e-editor": {
-      "allow": ["r3e-core"],
+      "allow": [
+        "r3e-core"
+      ],
       "note": "协议库应零引擎依赖（M0-5 剥离为 r3e-protocol）"
     },
     "r3e-plugin": {
@@ -52,20 +68,43 @@
       "note": "插件是进程外工具，只许依赖 protocol；当前直连 core/physics 属债务"
     },
     "r3e-runtime": {
-      "allow": ["r3e-core", "r3e-doc", "r3e-render", "r3e-physics", "r3e-script", "r3e-asset", "r3e-audio"],
+      "allow": [
+        "r3e-core",
+        "r3e-doc",
+        "r3e-render",
+        "r3e-physics",
+        "r3e-script",
+        "r3e-asset",
+        "r3e-audio"
+      ],
       "note": "运行时可用下层全部能力，但不得依赖 editor / editor-host / plugin（运行时不懂 RPC）"
     },
     "r3e-editor-host": {
-      "allow": ["r3e-core", "r3e-doc", "r3e-editor", "r3e-runtime"],
+      "allow": [
+        "r3e-core",
+        "r3e-doc",
+        "r3e-editor",
+        "r3e-runtime"
+      ],
       "note": "编辑器宿主只许 protocol + doc + runtime；直连 render/physics/script 属债务"
     },
     "r3e-app": {
-      "allow": ["r3e-runtime", "r3e-editor-host"],
+      "allow": [
+        "r3e-runtime",
+        "r3e-editor-host"
+      ],
       "note": "薄壳：只许 runtime + editor-host，不得直接依赖 wgpu/winit/gilrs 或子系统"
     },
     "xtask": {
       "allow": [],
       "note": "工程工具不参与引擎依赖图"
+    },
+    "r3e-replay": {
+      "allow": [
+        "r3e-core",
+        "r3e-doc"
+      ],
+      "note": "回放器只允许依赖真值与哈希，不得引入 render/audio/physics"
     }
   }
 }

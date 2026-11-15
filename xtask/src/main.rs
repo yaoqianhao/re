@@ -38,6 +38,7 @@ fn main() {
         "lint-size" => lint_size(),
         "check-tests" => check_tests(),
         "dep-check" => dep_check(strict),
+        "replay" => replay(),
         "doc-gate" => doc_gate::run(&root()),
         "gen-capabilities" => gen_capabilities(),
         "help" | "-h" | "--help" => {
@@ -151,6 +152,9 @@ fn verify() -> i32 {
     if !run_cargo(&root, &["test", "--workspace"]) {
         failed.push("cargo test".into());
     }
+    if replay() != 0 {
+        failed.push("replay".into());
+    }
     if lint_size() != 0 {
         failed.push("lint-size".into());
     }
@@ -170,6 +174,96 @@ fn verify() -> i32 {
         println!("\n[verify] 失败项：{}", failed.join(", "));
         1
     }
+}
+
+// ---------------------------------------------------------------- replay
+
+/// 回放参数（与 `crates/r3e-replay` 的默认值保持一致）。
+const REPLAY_ARGS: [&str; 7] = ["--seed", "42", "--frames", "600", "--hash-every", "60", ""];
+
+/// 确定性回放门禁（S4-06）：同一组参数跑**两次**，逐行比对 stdout。
+///
+/// 为什么不用 `--frames 60` 之类的小值：600 帧覆盖 60 笔事务、60 个节点、
+/// 540 条随机命令，短回放抓不到「累积到某帧才开始分叉」的问题。
+///
+/// 为什么捕获而不是直接继承输出：两次运行的输出要能逐行对比，且失败时要能
+/// 打印「第一个不一致的行 + 两边的原文」，继承输出只能让人自己肉眼比对。
+fn replay() -> i32 {
+    let root = root();
+    println!("[replay] cargo build -p r3e-replay --bin r3e-replay");
+    if !run_cargo(&root, &["build", "-p", "r3e-replay", "--bin", "r3e-replay"]) {
+        println!("[replay] 构建失败");
+        return 1;
+    }
+
+    let args: Vec<&str> = REPLAY_ARGS
+        .iter()
+        .copied()
+        .filter(|a| !a.is_empty())
+        .collect();
+    let run_once = || {
+        Command::new("cargo")
+            .args(["run", "-q", "-p", "r3e-replay", "--bin", "r3e-replay", "--"])
+            .args(&args)
+            .current_dir(&root)
+            .output()
+    };
+
+    let first = match run_once() {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            println!(
+                "[replay] 第 1 次运行失败：{}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            return 1;
+        }
+        Err(e) => {
+            println!("[replay] 无法启动回放器：{e}");
+            return 1;
+        }
+    };
+    let second = match run_once() {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            println!(
+                "[replay] 第 2 次运行失败：{}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            return 1;
+        }
+        Err(e) => {
+            println!("[replay] 无法启动回放器：{e}");
+            return 1;
+        }
+    };
+
+    let a = String::from_utf8_lossy(&first.stdout);
+    let b = String::from_utf8_lossy(&second.stdout);
+    let la: Vec<&str> = a.lines().collect();
+    let lb: Vec<&str> = b.lines().collect();
+
+    for (i, (x, y)) in la.iter().zip(lb.iter()).enumerate() {
+        if x != y {
+            println!("[replay] 第 {} 行不一致", i + 1);
+            println!("  第 1 次: {x}");
+            println!("  第 2 次: {y}");
+            return 1;
+        }
+    }
+    if la.len() != lb.len() {
+        println!("[replay] 行数不一致：{} vs {}", la.len(), lb.len());
+        return 1;
+    }
+
+    let samples = la.iter().filter(|l| l.starts_with("frame ")).count();
+    let final_line = la.last().copied().unwrap_or("<空>");
+    let final_hash = final_line
+        .rsplit_once("final=")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_else(|| "<缺失>".to_string());
+    println!("[replay] 600 帧 / {samples} 个采样点 / 两次运行哈希完全一致（final={final_hash}）");
+    0
 }
 
 // ---------------------------------------------------------------- lint-size

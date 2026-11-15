@@ -13,6 +13,7 @@ members = [
     "crates/r3e-audio",
     "crates/r3e-runtime",
     "crates/r3e-editor-host",
+    "crates/r3e-replay",
     "xtask",
 ]
 
@@ -35,6 +36,7 @@ r3e-editor = { path = "crates/r3e-editor" }
 r3e-audio = { path = "crates/r3e-audio" }
 r3e-runtime = { path = "crates/r3e-runtime" }
 r3e-editor-host = { path = "crates/r3e-editor-host" }
+r3e-replay = { path = "crates/r3e-replay" }
 
 # 音频（非空间化）：rodio = cpal 设备 + symphonia 解码。
 # 关掉默认 features 只留 wav / ogg(vorbis) / mp3，避免把 flac / AAC 等用不上的解码器拉进二进制。

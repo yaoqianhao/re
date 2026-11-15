@@ -12,7 +12,8 @@
     "r3e-audio": 29,
     "r3e-physics": 28,
     "r3e-runtime": 14,
-    "r3e-app": 11
+    "r3e-app": 11,
+    "r3e-replay": 11
   },
-  "total": 1446
+  "total": 1457
 }

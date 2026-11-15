@@ -1,0 +1,11 @@
+[package]
+name = "r3e-replay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "r3e 确定性回放器：只依赖真值（core）与文档（doc），零 GPU 零音频"
+
+[dependencies]
+r3e-core.workspace = true
+r3e-doc.workspace = true
