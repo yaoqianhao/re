@@ -11,3 +11,9 @@ description = "r3e 编辑器桥：TCP + NDJSON 上的 JSON-RPC 2.0 协议与传�
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
+
+# 仅测试期用：`tests/cmd_spec_contract.rs` 要把 `known_methods()` 与
+# `r3e_core::cmd_spec` 的命令表对齐。r3e-editor 的 dep_rules allow 本来就含 r3e-core，
+# 所以这条 dev-dependency 不新增任何依赖边（跑 xtask dep-check 可核）。
+[dev-dependencies]
+r3e-core.workspace = true

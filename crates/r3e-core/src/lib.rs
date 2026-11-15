@@ -8,6 +8,7 @@ pub mod anim;
 pub mod anim_blend;
 pub mod blend_space;
 pub mod camera;
+pub mod cmd_spec;
 pub mod env;
 pub mod envmap;
 pub mod frustum;

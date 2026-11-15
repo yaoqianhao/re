@@ -1,0 +1,118 @@
+//! 契约：`dispatch` 的分支键与 `r3e_core::cmd_spec` 的 RPC 条目必须一一对应。
+//!
+//! 前三处契约管「脚本注册 ↔ 表」「宿主实现 ↔ 表」，这里管第二边：「`dispatch` 认哪些
+//! 方法名 ↔ 表里登记了哪些 RPC」。少一条分支，宿主实现得再好也是 `method not found`。
+//!
+//! 分支键不手抄：`include_str!` 读被测源码后扫 `match canonical(&req.method)` 的分支头。
+//! `ping` 刻意不进表——它是链路健康检查，不是命令。
+
+use std::collections::BTreeSet;
+
+use r3e_core::cmd_spec;
+
+const LIB_SRC: &str = include_str!("../src/lib.rs");
+
+/// 扫 `pub fn dispatch` 里 `match` 的分支键（只认恰好 8 空格缩进的分支头，
+/// 嵌套 `match` 里的分支缩进更深，不会被误收）。
+fn dispatch_keys() -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in LIB_SRC.lines() {
+        if line.starts_with("pub fn dispatch(") {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with('}') {
+            break;
+        }
+        if !line.starts_with("        \"") {
+            continue;
+        }
+        let Some((head, _)) = line.split_once("=>") else {
+            continue;
+        };
+        // 一个分支头可能挂多个别名：`"engine.stats" | "enginestats" =>`。
+        out.extend(quoted_parts(head));
+    }
+    out
+}
+
+/// 取出 `s` 里所有双引号包裹的片段。
+fn quoted_parts(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        match after.find('"') {
+            Some(close) => {
+                out.push(&after[..close]);
+                rest = &after[close + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+#[test]
+fn dispatch的每个点分方法都在命令表里() {
+    let keys = dispatch_keys();
+    assert!(keys.len() >= 39, "只扫到 {} 个分支，扫描逻辑可能失效（期望 42 个含别名）", keys.len());
+
+    let declared: BTreeSet<&str> = cmd_spec::rpc_names().collect();
+    let missing: Vec<String> = keys
+        .iter()
+        .filter(|k| k.contains('.'))
+        .filter(|k| !declared.contains(**k))
+        .map(|k| format!("`dispatch` 能分派 `{k}`，命令表没登记"))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{missing:#?}\n加 RPC 分支时请同步在 `crates/r3e-core/src/cmd_spec/` 补条目"
+    );
+}
+
+#[test]
+fn 命令表里的rpc方法dispatch都认() {
+    let keys = dispatch_keys();
+    let declared: BTreeSet<&str> = cmd_spec::rpc_names().collect();
+    let phantom: Vec<&&str> = declared
+        .iter()
+        .filter(|rpc| !keys.contains(*rpc))
+        .collect();
+    assert!(
+        phantom.is_empty(),
+        "命令表登记了、`dispatch` 根本不认（表在骗人）：{phantom:?}"
+    );
+}
+
+#[test]
+fn ping是健康检查不进命令表() {
+    let keys = dispatch_keys();
+    assert!(keys.contains(&"ping"), "`dispatch` 少了 ping 分支");
+    assert!(cmd_spec::by_rpc("ping").is_none(), "ping 不该被登记成命令");
+}
+
+#[test]
+fn 无点别名不参与对齐且只有一个规范名() {
+    let keys = dispatch_keys();
+    let aliases: Vec<&str> = keys
+        .iter()
+        .copied()
+        .filter(|k| !k.contains('.') && *k != "ping")
+        .collect();
+    assert_eq!(
+        aliases.len(),
+        2,
+        "无点别名应只有 captureframe / enginestats，实际：{aliases:?}"
+    );
+    for alias in aliases {
+        assert!(
+            cmd_spec::by_rpc(alias).is_none(),
+            "别名 `{alias}` 不该进命令表，规范名才进"
+        );
+    }
+}

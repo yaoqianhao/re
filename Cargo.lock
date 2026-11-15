@@ -2323,6 +2323,7 @@ name = "r3e-editor"
 version = "0.1.0"
 dependencies = [
  "log",
+ "r3e-core",
  "serde",
  "serde_json",
 ]
