@@ -3,7 +3,7 @@ name: CI
 # 五道门对应 docs/ARCHITECTURE.md §3.3：格式（fmt）-> 工程门禁（gate：lint-size / check-tests / dep-check）
 # -> 静态检查（clippy -D warnings）-> 测试（默认特性 + rapier）-> 像素回归（visual / visual-gpu）。
 # 任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
-# gate 那三道是「结构债」刹车（cargo xtask，见 docs/AI_ROADMAP_EXECUTION.md §3.1），dep-check 在 v0 只报告不阻塞。
+# gate 那三道是「结构债」刹车（cargo xtask，见 docs/AI_ROADMAP.md §3.1.2 / §附录 B），dep-check 在 v0 只报告不阻塞。
 #
 # 像素那道为什么拆成两个 job：托管 runner 没有显卡，只能验基准图自洽（visual）；真正拦像素漂移的是
 # 带 GPU 的自建 runner（visual-gpu，R3E_VISUAL_STRICT=1，跳过即失败）。配置方法见 docs/CI_GPU_RUNNER.md。
