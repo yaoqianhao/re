@@ -5,6 +5,7 @@ name: CI
 # 任何一道红了都不合并；除源码里带注释说明的 #[allow] 外，不给 clippy 开例外。
 # gate 那三道是「结构债」刹车（cargo xtask，见 docs/AI_ROADMAP.md §3.1.2 / §附录 B）；dep-check 自 M0-S5 起是硬门禁，
 # 存量债登记在 xtask/dep_debt.json（4 条，只减不增），还清即删条。
+# M0-S5/D6 起 gate 再添两道：gen-capabilities --check（清单漂移）与 invariants（不变量三源相等）。
 #
 # 像素那道为什么拆成两个 job：托管 runner 没有显卡，只能验基准图自洽（visual）；真正拦像素漂移的是
 # 带 GPU 的自建 runner（visual-gpu，R3E_VISUAL_STRICT=1，跳过即失败）。配置方法见 docs/CI_GPU_RUNNER.md。
@@ -59,6 +60,12 @@ jobs:
       # 存量 4 条债在 xtask/dep_debt.json 里带 why/plan，只减不增。
       - name: dep-check（硬门禁，债务见 xtask/dep_debt.json）
         run: cargo xtask dep-check --strict
+      # 能力清单与不变量三源（登记表 / 反例测试 / 清单）自 M0-S5 起是硬门禁：
+      # 手改清单、只在登记表加 code 不补反例、只在测试里写 code 不登记，都会红。
+      - name: gen-capabilities --check（清单不许与代码漂移）
+        run: cargo xtask gen-capabilities --check
+      - name: invariants（不变量三源集合相等）
+        run: cargo xtask invariants
 
   clippy:
     name: clippy (-D warnings, ${{ matrix.features || 'default' }})

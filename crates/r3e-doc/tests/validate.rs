@@ -12,7 +12,7 @@ use r3e_core::{
     anim::{AnimBinding, AnimClip, AnimInstance},
     morph::MorphInstance,
     skin::SkinInstance,
-    NodeId, ObjectDesc, PhysicsSceneDesc, ScreenText, UiElement, Vec4,
+    LocalLight, NodeId, ObjectDesc, PhysicsSceneDesc, ScreenText, SurfaceMaterial, UiElement, Vec4,
 };
 use r3e_doc::{Document, Severity};
 
@@ -40,9 +40,24 @@ fn codes(doc: &Document) -> Vec<&'static str> {
         .collect()
 }
 
+fn warn_codes(doc: &Document) -> Vec<&'static str> {
+    doc.validate()
+        .into_iter()
+        .filter(|i| i.severity == Severity::Warn)
+        .map(|i| i.code)
+        .collect()
+}
+
 fn assert_error(doc: &Document, code: &str) {
     let found = codes(doc);
     assert!(found.contains(&code), "期望 {code}，实得 {found:?}");
+}
+
+/// 同一套「只破坏一个约束」的立场，只是断言 `Warn`——`Error` 会掩盖 `Warn` 的缺失，
+/// 所以单独筛一遍。首个字符串实参固定为 code（`xtask invariants` 按此约定扫源码）。
+fn assert_warn(doc: &Document, code: &str) {
+    let found = warn_codes(doc);
+    assert!(found.contains(&code), "期望 warn {code}，实得 {found:?}");
 }
 
 // ---------- 负向 ----------
@@ -251,6 +266,122 @@ fn undeclared_asset_ref_is_error() {
         };
     });
     assert_error(&doc, "ref.asset_missing");
+}
+
+#[test]
+fn non_finite_material_is_error() {
+    let mut doc = doc_with_node();
+    let id = id_of(&doc, "cube");
+    doc.write(|s| {
+        s.get_mut(id).unwrap().material = Some(SurfaceMaterial {
+            metallic: f32::NAN,
+            ..SurfaceMaterial::default()
+        })
+    });
+    assert_error(&doc, "node.material.non_finite");
+}
+
+#[test]
+fn duplicate_light_key_is_error() {
+    let mut doc = doc_with_node();
+    doc.write(|s| {
+        s.lights
+            .push(LocalLight::point("lamp", [0.0, 2.0, 0.0], [1.0; 3], 1.0));
+        s.lights
+            .push(LocalLight::point("lamp", [1.0, 2.0, 0.0], [1.0; 3], 1.0));
+    });
+    assert_error(&doc, "light.key.duplicate");
+}
+
+#[test]
+fn non_finite_light_value_is_error() {
+    let mut doc = doc_with_node();
+    // 绕开 `sanitized()` 直接塞 Vec：这正对应「反序列化 / 脚本手写 Vec」这条真实入口。
+    doc.write(|s| {
+        let mut light = LocalLight::point("lamp", [0.0, 2.0, 0.0], [1.0; 3], 1.0);
+        light.intensity = f32::INFINITY;
+        s.lights.push(light);
+    });
+    assert_error(&doc, "light.value.non_finite");
+}
+
+#[test]
+fn empty_ui_key_is_error() {
+    let mut doc = doc_with_node();
+    doc.write(|s| s.ui.push(UiElement::default()));
+    assert_error(&doc, "ui.key.empty");
+}
+
+#[test]
+fn duplicate_text_key_is_error() {
+    let mut doc = doc_with_node();
+    doc.write(|s| {
+        s.texts.push(ScreenText {
+            key: "score".to_string(),
+            ..ScreenText::default()
+        });
+        s.texts.push(ScreenText {
+            key: "score".to_string(),
+            ..ScreenText::default()
+        });
+    });
+    assert_error(&doc, "text.key.duplicate");
+}
+
+#[test]
+fn non_finite_morph_weight_is_error() {
+    let mut doc = doc_with_node();
+    let id = id_of(&doc, "cube");
+    doc.write(|s| {
+        let mut morph = MorphInstance::new(id, 2);
+        morph.weights[0] = f32::NAN;
+        s.add_morph(morph);
+    });
+    assert_error(&doc, "morph.weight.non_finite");
+}
+
+#[test]
+fn non_finite_background_is_error() {
+    let mut doc = doc_with_node();
+    doc.write(|s| s.background = Vec4::new(f32::NAN, 0.0, 0.0, 1.0));
+    assert_error(&doc, "scene.background.non_finite");
+}
+
+#[test]
+fn empty_anim_name_is_error() {
+    let mut doc = doc_with_node();
+    doc.write(|s| {
+        s.animations
+            .push(AnimInstance::new("  ", Arc::new(AnimClip::default())));
+    });
+    assert_error(&doc, "anim.name.empty");
+}
+
+#[test]
+fn empty_skin_name_is_error() {
+    let mut doc = doc_with_node();
+    let id = id_of(&doc, "cube");
+    doc.write(|s| s.add_skin(SkinInstance::new(" ", id)));
+    assert_error(&doc, "skin.name.empty");
+}
+
+#[test]
+fn unsolved_joint_matrices_is_warn() {
+    let mut doc = doc_with_node();
+    let id = id_of(&doc, "cube");
+    doc.write(|s| {
+        let mut skin = SkinInstance::new("skin", id);
+        skin.bindings.push(r3e_core::skin::SkinBinding {
+            node: id,
+            node_index: 0,
+            path: "root/joint".to_string(),
+            rest_world: r3e_core::Mat4::IDENTITY,
+            inverse_bind: r3e_core::Mat4::IDENTITY,
+        });
+        // 有骨骼但一张矩阵都没求：可用但可疑，只报 Warn。
+        s.add_skin(skin);
+    });
+    assert_warn(&doc, "skin.joint_matrices.unsolved");
 }
 
 // ---------- 正向：仓库真实场景必须零 Error ----------

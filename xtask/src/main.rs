@@ -2,16 +2,19 @@
 //!
 //! 这些检查原本散在 CI 的 yaml 与人的记忆里，现在收敛成一条命令：
 //!
-//! - `cargo xtask verify`：fmt + clippy + test + 下面三项自查，任一失败即非 0 退出
+//! - `cargo xtask verify`：fmt + clippy + test + 下面各门禁，任一失败即非 0 退出
 //! - `cargo xtask lint-size`：单文件行数不许超线（白名单只许减不许加）
 //! - `cargo xtask check-tests`：每个 crate 的单测数不许低于基线快照
 //! - `cargo xtask dep-check`：crate 间依赖方向门禁（默认严格；存量债见 `xtask/dep_debt.json`，只减不增）
 //! - `cargo xtask doc-gate`：文档层收口六条规则（M0-S3 的 doc.write 唯一写入口不许回退）
+//! - `cargo xtask gen-capabilities --check`：能力清单不许与代码漂移
+//! - `cargo xtask invariants`：不变量三源（登记表 / 反例测试 / 能力清单）必须集合相等
 //!
 //! 设计约束：不引第三方 CLI 框架、不做花哨输出。门禁本身越简单越不容易坏。
 
 mod doc_gate;
 mod gen_capabilities;
+mod invariants;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,12 +25,14 @@ const USAGE: &str = "\
 用法: cargo xtask <子命令>
 
 子命令:
-  verify             fmt --check + clippy -D warnings + test + lint-size + check-tests + doc-gate + dep-check
+  verify             fmt --check + clippy -D warnings + test + replay + lint-size + check-tests
+                     + doc-gate + dep-check --strict + gen-capabilities --check + invariants
   lint-size          单文件行数门禁（白名单只许减不许加）
   check-tests        单测数不得低于 xtask/tests_baseline.json
   dep-check          crate 依赖方向门禁（默认严格；--report 只报告。债务见 xtask/dep_debt.json）
   doc-gate           文档层收口六条规则（RefCell<Scene> / &mut Scene / DerefMut / 解析入口 / 依赖登记 / 闭包重入）
   gen-capabilities   生成 docs/capabilities.json（三源交叉；--check 只校验不写盘）
+  invariants         不变量三源比对（登记表 / 反例测试 / 能力清单必须集合相等）
 ";
 
 fn main() {
@@ -44,6 +49,7 @@ fn main() {
         "replay" => replay(),
         "doc-gate" => doc_gate::run(&root()),
         "gen-capabilities" => gen_capabilities::run(&root(), check),
+        "invariants" => invariants::run(&root()),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             0
@@ -170,6 +176,13 @@ fn verify() -> i32 {
     // dep-check 自 M0-S5 起是硬门禁：白名单外违规、债务新增、债务残留都红。
     if dep_check(true) != 0 {
         failed.push("dep-check".into());
+    }
+    // 清单先于 invariants 校验：invariants 的 C 源就是清单文件，清单漂移会连带报错。
+    if gen_capabilities::run(&root, true) != 0 {
+        failed.push("gen-capabilities --check".into());
+    }
+    if invariants::run(&root) != 0 {
+        failed.push("invariants".into());
     }
 
     if failed.is_empty() {
