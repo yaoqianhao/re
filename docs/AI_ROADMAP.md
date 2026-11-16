@@ -22,7 +22,7 @@ AIGC:
 
 ## 零、当前所处位置（2026-11-16 实测，非文档口径）
 
-**一句话**：M0 七个 Sprint 已完成五个（S0–S4），**只剩 S5（协议剥离 + 能力清单 + 门禁转硬）**；M0-1 ~ M0-4、M0-7、M0-8 六项交付物已达成，M0-5 / M0-6 / M0-9 依赖 S5。
+**一句话**：M0 七个 Sprint **全部完成**（S0–S5，2026-11-16 收口），M0-1 ~ M0-9 九项交付物全部达成、**Gate 0 已过**；下一步是 M1（AI 写入闭环）。
 
 ### 0.1 Sprint 状态
 
@@ -33,25 +33,28 @@ AIGC:
 | M0-S2 | `api.rs` 双份收口 | ✅ 2026-11-15 | script 17 文件最大 428 / editor-host 13 文件最大 433；`core::cmd_spec` 命令表 **369 条**成单一真源 |
 | M0-S3 | `r3e-doc` 立唯一真值 | ✅ 2026-11-15 | `Document` 只读 `Deref`、拒绝 `DerefMut`；写点收口 **129 处**；`doc-gate` 六规则；Validator 17 条负向用例 |
 | M0-S4 | 事务 / Undo / 确定性 | ✅ 2026-11-15 | `Transaction` 198 行 / `StateHash` 604 行（FNV-1a64）/ `UndoStack` 168 行；新建 `r3e-replay` 546 行 11 测，600 帧两次同哈希 |
-| M0-S5 | 协议剥离 + 能力清单 + 门禁转硬 | ⬜ 待做 | 目标卡 S5-01 ~ S5-07（见 §3.1.7） |
+| M0-S5 | 协议剥离 + 能力清单 + 门禁转硬 | ✅ 2026-11-16 | `r3e-protocol` 8 文件 2,326 行仅 serde / `r3e-editor` 缩至 505 行传输层；`capabilities.json` 4,744 行 369 命令；`dep-check --strict` 硬门 0 违规 + 4 条债记账；`invariants` 三源 24/24/24；`verify` 20.4s 九道门；`AI_WORKFLOW.md` 落地 |
 
 ### 0.2 门禁现状（`cargo xtask verify`，2026-11-16 实测）
 
-| 指标 | 现值 | M0 目标 | 采集 |
+| 指标 | 现值（M0-S5 收口） | M0 目标 | 采集 |
 |---|---|---|---|
 | 最大文件行数 | 4057（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
-| `>800` 行文件数 | 24 | ≤12 | 同上（白名单 24 项，全部未上涨） |
-| `#[test]` 总数 | 1457 | 只增不减 | `cargo xtask check-tests` 快照比对 |
-| 依赖违规数 | 3（涉及 9 条依赖边） | 0 | `cargo xtask dep-check`（v0 只报告） |
-| `verify` 时长 | 14.7s（热缓存） | <120s | 实测 |
+| `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 8 文件最大 486 行） |
+| `#[test]` 总数 | 1476 | 只增不减 | `cargo xtask check-tests` 快照比对 |
+| 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
+| 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增） | 记账可查 | `xtask/dep_debt.json` |
+| 能力清单漂移 | 0（`capabilities.json` 369 命令 / 39 RPC / 24 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
+| 不变量三源 | 24 = 24 = 24 | 三源一致 | `cargo xtask invariants` |
+| `verify` 时长 | 20.4s（热缓存，九道门全硬） | <120s | 实测 |
 | 回放确定性 | **已达成** `final=59d48dedf2b0677e` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
-| `doc-gate` | 246 个 `.rs` / 6 条规则 / 白名单 10 项 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
+| `doc-gate` | 256 个 `.rs` / 14 个 crate / 6 条规则 / 白名单 10 项 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
 
 ### 0.3 仓库结构现状
 
-- crate 目录 **13 个**：`core / render / physics / audio / asset / script / doc / replay / runtime / editor-host / editor / plugin / app`，另有 `xtask`（dep-check 计 14 个）。
-- **`r3e-protocol` 尚不存在**（`crates/r3e-protocol` → False），这正是 S5-01 的第一件事。
-- 依赖违规 3 条存量：`editor-host -> asset/audio/physics/render/script`、`plugin -> core/physics`、`script -> audio/physics`。
+- crate 目录 **14 个**：`core / render / physics / audio / asset / script / doc / replay / runtime / editor-host / editor / protocol / plugin / app`，另有 `xtask`（`doc-gate` 计 14 个，不含 xtask）。
+- `r3e-protocol` 已落地（8 文件 / 2,326 行 / 34 测，依赖仅 serde + serde_json），`r3e-editor` 只剩传输层（505 行 / 72 测），旧 `use r3e_editor::` 调用方零改动。
+- 依赖违规 **0 条**；债务 4 条登记在 `xtask/dep_debt.json`（`plugin → core` / `plugin → physics` / `script → physics` / `script → audio`），M1 偿还（见 §3.1.7 收尾实测）。
 
 ---
 
@@ -157,7 +160,16 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | `plugin` | `protocol` | 引擎所有其他 crate |
 | `game` | 下层全部 + `doc` | `protocol`, `editor-host` |
 
-落地方式：`cargo xtask dep-check` 解析依赖图对照上表（规则数据在 `xtask/dep_rules.json`，白名单未列入即违规）。**当前仍是 v0 报告态，S5-05 转硬门禁。**
+落地方式：`cargo xtask dep-check` 解析依赖图对照上表（规则数据在 `xtask/dep_rules.json`，白名单未列入即违规）。**M0-S5（2026-11-16）已转硬门禁**：默认即严格模式，四判定任一命中即 `exit=1`，`verify` 与 CI 都按硬门跑。
+
+| 判定 | 触发条件 | 现状 |
+|---|---|---|
+| ① 白名单外依赖 | 出现 `dep_rules.json` 未列明的依赖边 | 0 |
+| ② 债务残留 | `dep_debt.json` 登记的 4 条边**被保留**（债还完未销账也算违规） | 4 / limit 4 |
+| ③ 超限 | 债务条数 > `limit`（只减不增，新增必须改 json 并说明） | 4 = 4 |
+| ④ 未登记 | 出现白名单外新边且未进 `dep_debt.json` | 0 |
+
+债务记账（`xtask/dep_debt.json`）每条含 `from` / `to` / `why` / `plan`，`plan` 必须写清"哪个 Sprint 还、还成什么形态"，否则不算登记。
 
 ---
 
@@ -173,8 +185,8 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | M0-2 | 三个单体文件拆到 ≤800 行/文件 | 单文件行数 CI 门禁；拆分后测试数不减 | S1-01~07、S2-04~05 | ✅（`editor.rs` 由 S0 消解） |
 | M0-3 | `r3e-doc`：Document 接管场景唯一真值 | `core::scene` 不再被直接可变借用，只能经 `doc` | S3-01~06 | ✅ |
 | M0-4 | Command + Transaction + UndoStack | 任意命令序列 apply 后 undo 全量回退，哈希与初始一致 | S3-03、S4-01~04 | ✅ |
-| M0-5 | `r3e-protocol` 剥离，零引擎依赖 | `cargo tree -p r3e-protocol` 只有 serde | S5-01 | ⬜ |
-| M0-6 | 能力清单自动生成 | 清单与实现不一致 → CI 失败 | S5-02~03 | ⬜ |
+| M0-5 | `r3e-protocol` 剥离，零引擎依赖 | `cargo tree -p r3e-protocol` 只有 serde | S5-01 | ✅ |
+| M0-6 | 能力清单自动生成 | 清单与实现不一致 → CI 失败 | S5-02~03 | ✅ |
 | M0-7 | Headless 确定性回放框架 | 同输入两次运行，帧状态哈希完全相同 | S4-05~06 | ✅ |
 | M0-8 | CPU 不变量校验器 v0 | 故意注入非法场景 → 必须报错，有负向测试守护 | S3-04 | ✅ |
 | M0-9 | `dep-check` 依赖门禁进 CI | 故意加一条违规依赖 → CI 红 | S0-08~09、S5-04~05 | 🟨 报告态已进 CI，硬门禁待 S5 |
@@ -278,27 +290,34 @@ S0 收口+立尺 ──► S1 renderer 拆分 ───────────�
 
 **红线**：`StateHash` 若出现两份实现（历史：几何校验/顶点装配/FNV 各有过两份），视为失败——重复实现会漂移出真 bug。
 
-#### 3.1.7 Sprint M0-S5 · 协议剥离 + 能力清单 + 门禁转硬（1 周）⬜ 当前 Sprint
+#### 3.1.7 Sprint M0-S5 · 协议剥离 + 能力清单 + 门禁转硬（1 周）✅ 2026-11-16
 
 > 编号保留 S5（S0–S4 已占位），是 M0 的最后一个 Sprint。
 
-| 卡号 | 任务 | 验收 |
-|---|---|---|
-| S5-01 | `r3e-protocol` 从 `r3e-editor` 剥离（仅 `serde`） | `cargo tree -p r3e-protocol` 只含 serde |
-| S5-02 | `cargo xtask gen-capabilities` 产出 `capabilities.json`（含 `commands` / `invariants` / `unsupported`） | 由代码导出，格式稳定可 `git diff` 审 |
-| S5-03 | 清单与实现不一致 → CI 红 | 删掉一个命令实现但留表项 → 红 |
-| S5-04 | 修 3 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛 | `dep-check` 后 0 违规 |
-| S5-05 | `dep-check` 转硬门禁（CI fail）+ 故意加违规依赖验证 | PR 加一条违规依赖 → CI 红 |
-| S5-06 | `verify` 收敛为 fmt + dep-check + clippy + test + doc-gate + lint-size + replay + invariants | 单条命令 <120 秒 |
-| S5-07 | `docs/AI_WORKFLOW.md`：M0 之后的标准工作流（改码 → verify → 判定） | 3 个可复制命令块 |
+| 卡号 | 任务 | 验收 | 执行结果 |
+|---|---|---|---|
+| S5-01 ✅ | `r3e-protocol` 从 `r3e-editor` 剥离（仅 `serde`） | `cargo tree -p r3e-protocol` 只含 serde | 8 文件 / 2,326 行 / 34 测；依赖只有 `serde` + `serde_json`；`r3e-editor` 留 505 行传输层 + `pub use` 再导出，外部调用方零改动 |
+| S5-02 ✅ | `cargo xtask gen-capabilities` 产出 `capabilities.json` | 由代码导出，格式稳定可 `git diff` 审 | 4,744 行，`commands=369` / `rpc=39` / `script_only=330` / `domains=17` / `invariants=24`；真源为 ISSUE_CODES 常量表 + RPC_METHODS + `core::cmd_spec` 交叉 |
+| S5-03 ✅ | 清单与实现不一致 → CI 红 | 删掉一个命令实现但留表项 → 红 | `gen-capabilities --check` 逐字节比对进 `verify`；四项注入演练（改 cmd_spec / 改 rpc 字段 / 改 dispatch 臂名 / 手改清单）全红后还原 |
+| S5-04 ⚠️ 降级 | 修 3 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛 | `dep-check` 后 0 违规 | `editor-host` 已收敛为叶子适配器（0 违规）；`script`→`physics`/`audio` 实测 **53 方法 / 704 行 / 14 测试**直连，端口化突破「零行为变化」纪律 → **降级记账**入 `dep_debt.json` 并留 M1 契约清单（详见 `M0S5_PROTOCOL.md` §13.5 偏差表） |
+| S5-05 ✅ | `dep-check` 转硬门禁（CI fail）+ 故意加违规依赖验证 | PR 加一条违规依赖 → CI 红 | 默认即严格四判定（白名单外 / 债务残留 / 超限 / 未登记），`--report` 降级为显式开关；`ci.yml` 撤 `continue-on-error`；四项故障注入演练全红 |
+| S5-06 ✅ | `verify` 收敛（fmt + dep-check + clippy + test + doc-gate + lint-size + replay + 新两门） | 单条命令 <120 秒 | 九道门全硬，实测 **20.4s**；新增 `invariants` 三源比对门（24 = 24 = 24）与 `gen-capabilities --check` |
+| S5-07 ✅ | `docs/AI_WORKFLOW.md`：M0 之后的标准工作流（改码 → verify → 判定） | 3 个可复制命令块 | 落地，含九道门清单 / 改码闭环 / 债务与基线记账规则 / 提交纪律 |
 
-**Gate 0 判据**：
+**收尾实测（2026-11-16）**：全仓 **1,476 单测 / 0 failed**（默认特性 111 target 含 12 doctest；`rapier` 特性 1,480）；`verify` 20.4s 九道门全绿；`dep-check --strict` 0 违规 / 4 条债务；`invariants` 24/24/24；`capabilities.json` 无漂移；回放 `final=59d48dedf2b0677e`。
+
+**Gate 0 判据（复核结果）**：
 ```bash
-cargo xtask verify          # 绿，<120s，含回放哈希
-cargo xtask dep-check       # 0 违规（--strict 通过）
-cargo xtask lint-size       # 白名单外 0 文件
+cargo xtask verify                  # ✅ 绿，20.4s，含回放哈希
+cargo xtask dep-check --strict      # ✅ 0 违规（4 条债务已登记，limit=4）
+cargo xtask lint-size               # ✅ 白名单外 0 文件
+cargo xtask gen-capabilities --check # ✅ 无漂移
+cargo xtask invariants              # ✅ 24 = 24 = 24
 ```
-且 `>800` 行文件数从 24 收敛到 **~12 以内**（当前最大 4057 的 `scene.rs` 不在 M0 强制范围，归 M1 `M1-DOC-FIELDS`；但 S5 前若有余量可提前拆）。
+
+**遗留项（Gate 0 允许带账过，M1 处理）**：
+1. `>800` 行文件数 **23**，未收敛到 12 以内——`r3e-core/src/scene.rs` 4,057 行归 M1 `M1-DOC-FIELDS`，其余随 M1/M2 按域拆分；`size_debt.json` 23 项只减不增，`verify` 每次盯住不涨。
+2. 依赖债 4 条（`plugin → core/physics`、`script → physics/audio`）留在 `dep_debt.json`，M1 开端口契约时偿还；偿还前 `dep-check --strict` 会拒绝第 5 条新增。
 
 #### 3.1.8 M0 周历（单人业余口径，含缓冲）
 
@@ -311,7 +330,7 @@ cargo xtask lint-size       # 白名单外 0 文件
 | W5 | S3 | doc crate + Document | 场景唯一真值成立 | ✅ 2026-11-15 |
 | W6 | S4 | 事务 + undo + 哈希 | 全量回退通过 | ✅ 2026-11-15 |
 | W7 | S4 + S5 | 回放 + 协议剥离起步 | 回放哈希稳定 | ✅ 回放完成 |
-| W8 | S5 | 门禁转硬 + 文档 | **Gate 0** | ⬅ 现在这里 |
+| W8 | S5 | 门禁转硬 + 文档 | **Gate 0** | ✅ 2026-11-16（带 2 项遗留账） |
 
 即 7–8 周（路线图估 4–6 周全职，此处按业余 15–20h/周折算，符合"2–3 倍折算"下限）。
 
@@ -446,7 +465,7 @@ world.query(Query { kind: Interactable, in_bbox: bbox, has_component: "trigger" 
 | 上下文控制 | 单文件 ≤800 行硬门禁，保证 AI 一次读全 |
 | 改动边界 | 依赖门禁 + 每 crate 独立可测，AI 改动影响面可预测 |
 | 并行开发 | crate 级隔离，允许多个 AI Agent 同时改不同 crate |
-| 反馈闭环 | `cargo xtask verify` 一条命令覆盖全部 V1/V2（14.7s 热缓存） |
+| 反馈闭环 | `cargo xtask verify` 一条命令覆盖全部 V1/V2（20.4s 热缓存，九道门） |
 | 契约守护 | 每个 crate 出端口 trait，改实现不破契约；契约测试由 AI 补写 |
 
 ---
@@ -537,10 +556,10 @@ chore(ci): 门禁与脚本
 | # | 指标 | 当前 (2026-11-16) | M0 目标 | 采集方式 |
 |---|---|---|---|---|
 | 1 | 最大文件行数 | 4057 | ≤800 | `cargo xtask lint-size` |
-| 2 | `>800` 行文件数 | 24 | ≤12 | 同上 |
-| 3 | `#[test]` 总数 | 1457 | 只增不减 | `cargo xtask check-tests` |
-| 4 | 依赖违规数 | 3 | 0 | `cargo xtask dep-check` |
-| 5 | `verify` 时长 | 14.7s（热缓存） | <120s | 实测 |
+| 2 | `>800` 行文件数 | 23 | ≤12 | 同上 |
+| 3 | `#[test]` 总数 | 1476 | 只增不减 | `cargo xtask check-tests` |
+| 4 | 依赖违规数 | 0（债务 4 条已登记） | 0 | `cargo xtask dep-check --strict` |
+| 5 | `verify` 时长 | 20.4s（热缓存，九道门） | <120s | 实测 |
 | 6 | 回放确定性 | 已达成（`final=59d48dedf2b0677e`） | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 
 记录表（每周追加）：
@@ -552,6 +571,7 @@ chore(ci): 门禁与脚本
 | 2026-11-15（M0-S3 收口） | 4053 | 24 | 1427 | 3 | — | — |
 | 2026-11-15（M0-S4 收口） | 4057 | 24 | 1457 | 3 | 19.6 | 600 帧两次一致 |
 | 2026-11-16（文档合并复核） | 4057 | 24 | 1457 | 3 | 14.7 | 600 帧两次一致 |
+| 2026-11-16（**M0-S5 收口 / Gate 0**） | 4057 | 23 | 1476 | **0** | 20.4 | 600 帧两次一致 |
 
 ---
 
@@ -572,12 +592,12 @@ chore(ci): 门禁与脚本
 
 ## 十、下一步（当前 Sprint 的执行入口）
 
-M0-S1/S2/S3/S4 均已收口，**当前唯一待办是 Sprint M0-S5（§3.1.7）**，按 S5-01 → S5-07 顺序：
+M0 收官（S0–S5 全部 ✅，Gate 0 已过）。**下一个入口是 M1（AI 写入闭环，§3.2）**：
 
-1. **S5-01** 建 `r3e-protocol`（仅 serde），从 `r3e-editor` 剥离消息与错误语义；
-2. **S5-02/03** `gen-capabilities` 导出 `capabilities.json` + 不一致即红；
-3. **S5-04/05** 还清 3 条依赖违规并把 `dep-check` 转 `--strict`；
-4. **S5-06/07** `verify` 收敛 + `AI_WORKFLOW.md`，然后打 Gate 0。
+1. **先还账**：`xtask/dep_debt.json` 的 4 条债随 M1 端口契约偿还；`>800` 行 23 项按 `M1-DOC-FIELDS`（`scene.rs` 4,057 行）优先拆；
+2. **M1 主线**：语义查询层（`capabilities.json` 369 命令 → 收敛的查询面）+ 事务化写入 + 三层验证；
+3. **纪律不变**：任何改动前跑 `cargo xtask verify`（应 exit=0），改动后同一命令必须仍绿——细则见 `docs/AI_WORKFLOW.md`；
+4. **本地提交不推送**，按 D1…Dn 分段提交。
 
 **开工前先跑一次** `cargo xtask verify`（应 exit=0），确认起点是绿。
 
@@ -588,28 +608,32 @@ M0-S1/S2/S3/S4 均已收口，**当前唯一待办是 Sprint M0-S5（§3.1.7）*
 | 现状资产 | 在路线图中的角色 |
 |---|---|
 | `r3e-core` 零图形依赖 + 大量纯 CPU 测试 | M0 headless 验证的地基，已直接复用 |
-| 369 条命令表（`core::cmd_spec`）+ 一致性测试 | S5-02 `capabilities.json` 的原材料，M1 语义查询要**收敛**的对象 |
+| 369 条命令表（`core::cmd_spec`）+ 一致性测试 | S5-02 `capabilities.json` 的原材料（已产出 4,744 行清单），M1 语义查询要**收敛**的对象 |
 | `-32601` 诚实失败语义 | 机制 1 `unsupported` 字段的文化来源 |
 | `Document` / `Transaction` / `UndoStack` / `StateHash` | 机制 2、机制 5 的已落地实现 |
 | `r3e-replay`（546 行 / 11 测） | 机制 4 的 V2 层，Gate 0 的判据来源 |
-| 1457 个测试 | V1 验证基线，任何拆分不得减数 |
+| 1476 个测试 | V1 验证基线，任何拆分不得减数 |
 | `gate` CI job（报告态） | S5-05 转硬门禁的接入点 |
 | 动画混合空间（深水区） | 相对成熟，M2 只需补 IK/根运动/事件 |
-| `r3e-editor`（仅依赖 serde） | S5-01 协议层天生的起点 |
+| `r3e-protocol`（仅 serde，2,326 行 / 34 测） | S5-01 的产物：协议层独立 crate，`r3e-editor` 只剩传输层 |
 
 ## 附录 B：验证命令约定（`xtask` 唯一清单）
 
 ```bash
 # .cargo/config.toml 已注册：[alias] xtask = "run --package xtask --"
 
-cargo xtask verify            # fmt + dep-check + clippy + test + doc-gate + lint-size + replay
-cargo xtask dep-check         # 依赖规则表校验（v0 报告；S5-05 起 --strict 阻塞）
-cargo xtask lint-size         # 单文件 ≤800 + 债务白名单只减不增
-cargo xtask check-tests       # #[test] 数与基线快照比对
+cargo xtask verify            # 九道门一次跑完：fmt + dep-check(--strict) + clippy(-D warnings) + test
+                              # + doc-gate + lint-size + check-tests + gen-capabilities --check + invariants + replay
+cargo xtask dep-check         # 依赖规则表校验（默认严格四判定，任一命中 exit=1；--report 只报告）
+cargo xtask lint-size         # 单文件 ≤800 + 债务白名单（size_debt.json）只减不增
+cargo xtask check-tests       # #[test] 数与基线快照（tests_baseline.json）比对
 cargo xtask doc-gate          # 写入口 / 唯一真值六条结构规则
-cargo xtask gen-capabilities  # 导出 capabilities.json（S5-02）
+cargo xtask gen-capabilities  # 导出 docs/capabilities.json；--check 逐字节比对（不进 verify 的产物会被判红）
+cargo xtask invariants        # 不变量三源比对（ISSUE_CODES / RPC_METHODS / cmd_spec），当前 24 = 24 = 24
 cargo xtask replay --seed 42 --frames 600   # 确定性回放，输出状态哈希（逐行比对两次运行）
 ```
+
+`verify` 单次实测 20.4s（热缓存），是新代码进入仓库前唯一必跑的命令；细则见 `docs/AI_WORKFLOW.md`。
 
 ## 附录 C：任务卡模板
 

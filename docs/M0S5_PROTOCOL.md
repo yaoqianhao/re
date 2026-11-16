@@ -451,12 +451,12 @@ cargo xtask verify
 
 ## 11. 文档同频清单（D7 一并刷新，以当时实测为准）
 
-| 文件 | 回填点 |
-|---|---|
-| `docs/AI_ROADMAP.md` | 看板六项数字（最大文件 4 057 不变 / `>800` 23 / 测试 1 457 / 依赖违规 0 / verify 耗时实测 / 回放哈希）；§2.2 依赖规则表按 §5 改；§3.1.7 S5-04/05 验收重写 + Gate 0 判据修订；§八 kanban 把 M0 标收口；附录说明本次口径纠正 6 处 |
-| `docs/ARCHITECTURE.md` | 新增「协议层」职责段：`r3e-protocol` 只认 JSON + `EngineApi`，`r3e-editor` 只做传输；dispatch 三分文件表；能力清单真源三源交叉图 |
-| `docs/AI_WORKFLOW.md`（新建） | 三个可复制命令块：①日常循环（改码 → `cargo xtask verify`）②提交前（`dep-check --strict` + `gen-capabilities --check`）③门禁红了怎么查（lint-size / check-tests / dep-check / invariants 四个典型） |
-| `docs/M0S5_PROTOCOL.md` | §13 收尾实测回填（预算 vs 实际、门禁结果、提交记录、与方案的偏差） |
+| 文件 | 回填点 | D7 执行 |
+|---|---|---|
+| `docs/AI_ROADMAP.md` | 看板六项数字（最大文件 4 057 不变 / `>800` 23 / 测试 1 457 / 依赖违规 0 / verify 耗时实测 / 回放哈希）；§2.2 依赖规则表按 §5 改；§3.1.7 S5-04/05 验收重写 + Gate 0 判据修订；§八 kanban 把 M0 标收口；附录说明本次口径纠正 6 处 | ✅ §0.1/§0.2/§0.3 全部改为 S5 收口实测；§2.2 增严格四判定表；§3.1.7 改 ✅ + 七卡执行结果 + 遗留两项；§3.1.8 W8 收口；§八 看板追加 2026-11-16 行；§十 入口改 M1；附录 A/B 数字同频 |
+| `docs/ARCHITECTURE.md` | 新增「协议层」职责段：`r3e-protocol` 只认 JSON + `EngineApi`，`r3e-editor` 只做传输；dispatch 三分文件表；能力清单真源三源交叉图 | ✅ §2 结构树加 `r3e-protocol`；§3.1 依赖说明 + §3.1.1 补三投影两门；§3.2 表加 protocol 行、editor 缩为传输层；§3.3 九道门；**§8.11 编辑器桥重写**（原「8 个方法 / 纯协议层含 RpcServer」已过时 → 39 方法 + 两层分工）；附录模块对照表补 protocol/editor 两行 |
+| `docs/AI_WORKFLOW.md`（新建） | 三个可复制命令块：①日常循环（改码 → `cargo xtask verify`）②提交前（`dep-check --strict` + `gen-capabilities --check`）③门禁红了怎么查（lint-size / check-tests / dep-check / invariants 四个典型） | ✅ 新建，七节：三条铁律 / 命令块①基线 / 命令块②改码闭环 / 失败判定树（11 类红）/ 三本账与降级流程 / 文档同频检查表 / 停机条件；含 3 个可复制命令块（§一/§二/§五） |
+| `docs/M0S5_PROTOCOL.md` | §13 收尾实测回填（预算 vs 实际、门禁结果、提交记录、与方案的偏差） | ✅ §13.1–§13.9 全部回填（预算 vs 实际、门禁、提交记录、偏差、D3/D5/D6 演练、S5-04 降级决议、收尾判定、本文档同频） |
 
 ---
 
@@ -480,25 +480,35 @@ cargo xtask verify
 
 | 项 | 预算 | 实际 |
 |---|---|---|
-| `r3e-protocol` 文件数 / 最大文件行数 | 9 / ≤800 | 待填 |
-| `r3e-editor` 剥离后行数 | ~520 | 待填 |
+| `r3e-protocol` 文件数 / 最大文件行数 | 9 / ≤800 | **9** 个 `.rs`（`src/` 8 + 集成测试 1）/ 最大 **759**（`tests/rpc_contract.rs`），`src/` 内最大 486（`dispatch/scene.rs`）——均 ≤800，无债务条目 |
+| `r3e-editor` 剥离后行数 | ~520 | **505**（`src/` 2 文件：`lib.rs` 35 行只做 `pub use` 再导出 + `server.rs` 470 行传输层） |
 | `capabilities.json` 行数 | ~2 800 | **4 744**（93 668 字节） |
-| `verify` 耗时 | 18–22s | 待填 |
+| `verify` 耗时 | 18–22s | **20.4s**（热态 15 道门禁全跑；首次含新测试编译 57.4s，不计入门禁收敛口径） |
 
 ### 13.2 门禁结果
 
 | 门禁 | 结果 |
 |---|---|
-| `cargo test --workspace` | 1466 条全绿（D2/D3 后） |
-| `lint-size`（债务数） | 待填 |
-| `dep-check --strict`（违规 / 债务） | 待填 |
+| `cargo test --workspace` | **1476** 条全绿 / 0 failed（D2/D3 时 1466，D6 补 10 条反例测试后 → 1476） |
+| `lint-size`（债务数） | 绿：扫描 256 个 `.rs`，阈值 800，白名单 **23** 项全部未上涨（=24−1，`r3e-editor/src/lib.rs` 剥离后已掉出阈值得以销账） |
+| `dep-check --strict`（违规 / 债务） | 绿：白名单外 **0** 条违规，债务 **4** 条（上限 4，全部带 `why`/`plan`） |
 | `gen-capabilities --check` | 绿（D2 首绿；D3 注入 4 项全部按预期变红/回绿，见 §13.5） |
-| `invariants`（24/24/24） | 待填 |
-| 回放哈希 | 待填 |
+| `invariants`（24/24/24） | 绿：A 登记表 24 = B 反例测试 24 = C 能力清单 24（D6 首绿，注入演练见 §13.7） |
+| 回放哈希 | `final=59d48dedf2b0677e`（600 帧 / 10 采样点，两次运行完全一致） |
 
 ### 13.3 提交记录（本地，未推送）
 
-待填。
+| # | commit | 内容 |
+|---|---|---|
+| 1 | `70514c3` | D1 协议层纯搬迁：新建 `r3e-protocol`（8 文件按域切分），`r3e-editor` 只留传输层 + `pub use` 再导出，调用方零改动 |
+| 2 | `fcaec23` | D1 收尾：`r3e-protocol` 接入 workspace、`tests_baseline` 同批迁移、`size_debt` 销账 |
+| 3 | `96336c3` | D2 能力清单：`ISSUE_CODES` / `RPC_METHODS` 结构化真源 + `gen-capabilities` 生成器，落地 `capabilities.json` 369/39/330/17/24 |
+| 4 | `221b52d` | D3 一致性门：生成器 `--check` 逐字节比对 + `rpc_methods_match_dispatch_arms` 双向对齐测试，接入 verify |
+| 5 | `b334e9d` | D5 `dep-check --strict` 四判定 + `dep_debt.json` 4 条（只减不增），`dep_rules` 纠偏 |
+| 6 | `fe34146` | D5 CI：gate job 撤 `continue-on-error`，`dep-check` 接 `--strict` |
+| 7 | `2973007` | D6 `invariants` 三源比对门 + 补 10 条反例测试 + verify/CI 收敛（热态 20.4s） |
+
+> D4 是决议与文档（S5-04 降级记账），随 D5 一笔提交，不单独占一笔。全部为本地提交，**不推送**。
 
 ### 13.4 与方案的偏差
 
@@ -508,8 +518,12 @@ cargo xtask verify
 | D2-2 `capabilities.json` 2 800 → **4 744 行** | 实际每条命令 ~12.8 行（`name`/`domain`/`rpc`/`params[]`/`returns`/`reversible`/`cost`/`since` 八字段多行展开 + 中文说明），`lint-size` 只扫 `*.rs` 故不触发阈值 |
 | D2-3 生成器位置 | 方案写 `xtask/src/gen_capabilities.rs` 重写 + `xtask/main.rs` 562→640；实际新建独立模块 271 行，`main.rs` 只加 `mod` 声明、`--check` 参数与分发臂（net 增 5 行），旧 37 行占位函数整体删除 |
 | D2-4 硬断言口径 | 方案要求「命令数 == cmd_spec::len()」；实现改为对常量 `EXPECTED_COMMANDS = 369` 硬断言 + RPC 集合与 `RPC_METHODS` 双向差集校验，把「加命令」变成必须显式改常量的动作 |
-| D4-1 端口存在性 | 方案 §1.3 与决定 2 均称「`CapabilityHost` 端口已存在，需补物理/音频入口」；实测全仓 `CapabilityHost` **0 命中**、`r3e-script/src` **0 个 trait**。真相是路线图 §2.2 把该 trait 写成**目标态**（原文「只能经 `CapabilityHost` 注入；现仍直连，S5-04 还债」），方案把目标态读成了现状 | S5-04 由「改代码修 1 条边」降级为「记账 2 条 → M1」；判据由 `cargo tree` 干净改为 `dep_debt` 只减不增（决议见 §13.6） |
-| D4-2 成本口径 | 方案按「21 行文本引用」估成本；实测是 **53 个方法**（physics 16 / audio 37）、**704 行绑定代码**、**14 / 15 个测试文件**直接 `use r3e_physics::Physics`。行数口径严重低估，因为一个 `use` 行背后是一整组 API 绑定 | §1.3 成本由「中」改「高」，并按符号位重新记账 |
+| D4-1 端口存在性 | 方案 §1.3 与决定 2 均称「`CapabilityHost` 端口已存在，需补物理/音频入口」；实测全仓 `CapabilityHost` **0 命中**、`r3e-script/src` **0 个 trait**。真相是路线图 §2.2 把该 trait 写成**目标态**（原文「只能经 `CapabilityHost` 注入；现仍直连，S5-04 还债」），方案把目标态读成了现状。处理：S5-04 由「改代码修 1 条边」降级为「记账 2 条 → M1」，判据由 `cargo tree` 干净改为 `dep_debt` 只减不增（决议见 §13.6） |
+| D4-2 成本口径 | 方案按「21 行文本引用」估成本；实测是 **53 个方法**（physics 16 / audio 37）、**704 行绑定代码**、**14 / 15 个测试文件**直接 `use r3e_physics::Physics`。行数口径严重低估，因为一个 `use` 行背后是一整组 API 绑定。处理：§1.3 成本由「中」改「高」，并按符号位重新记账 |
+| D5-1 提交规划 | §10 把「CI 撤 `continue-on-error`」单列为第 7 笔；实际 `ci.yml` 只需把 `cargo xtask dep-check` 改成 `--strict`（job 级 `continue-on-error` 早在 D1 前就不存在），因此并入 D5 代码那笔一起提，总笔数 7 → 7（少一笔 CI 专属提交） |
+| D5-2 测试基线口径 | 方案基准写 1 457 / 1 466，实测 `cargo test --workspace` 报 1 462：差 4 条在 `#[cfg(feature = "rapier")]` 内，默认特性不编译。门禁 `check-tests` 数的是源码 `#[test]` 字面量（1466），故两者口径不同、都正确，文档统一注明 |
+| D6-1 B 源扫描口径 | `invariants` 首跑把 `assert_error` 的报错文案串 `"期望 {code}，实得 {found:?}"` 误当成 code。修补：扫描跳过 `fn` 定义行，且只收「全小写点分」形态（`code.shape`），文案串因含空格/花括号被滤掉；修补后 stale 归零，仅剩 10 条真实缺口 |
+| D6-2 缺反例的不变量 | 方案假设「24 条都有反例测试」，实测 B 源只有 14 条，缺 10 条（`light.key.duplicate` / `light.value.non_finite` / `morph.weight.non_finite` / `node.material.non_finite` / `scene.background.non_finite` / `skin.joint_matrices.unsolved` / `skin.name.empty` / `text.key.duplicate` / `ui.key.empty` / `anim.name.empty`）。补 10 条后 `r3e-doc` 86 → 96，合计 1466 → 1476 |
 
 ### 13.5 故障注入演练（D3 实测，四项全部按预期变红/回绿）
 
@@ -581,4 +595,63 @@ R3 熔断条款（「超 8 条测试失效则 audio 入 debt」）在本例中�
 2. 或 `script` 的物理/音频绑定继续膨胀（现值 704 行），使「脚本能做哪些物理/音频操作」无法靠 `capabilities.json` 审计。
 
 届时落点**不是 53 方法 trait，而是 C（绑定下沉）+ 可选 feature 条件编译**：把绑定从 `r3e-script` 挪到认识子系统的宿主，比在 script 里造端口更省，且不增加抽象层数。
+### 13.7 故障注入演练（D5/D6 实测，逐条变红后还原）
+
+D5 的注入对象是 `dep_rules.json` / `dep_debt.json` / `capabilities.json` 与源码，D6 的注入对象是三源各自的真源。每个动作都先红、后原样还原回绿，`git status` 干净才算数。
+
+| # | 注入动作 | 期望判定 | 实测 |
+|---|---|---|---|
+| E | `dep_rules.json` 给 `r3e-doc` 加一条指向 `r3e-render` 的允许 | 判 1（白名单外违规）红 | ✅ rc=1，报 `r3e-doc -> r3e-render` 未登记 |
+| F | `dep_debt.json` 塞第 5 条假边（`r3e-doc -> r3e-core`） | 判 3（债务超限）红 | ✅ rc=1，报 `债务 5 条 > 上限 4` |
+| G | 注释掉源码里 `plugin -> core` 的实际引用 | 判 2（债务残留）红 | ✅ rc=1，报该边已不存在需销账 |
+| H | 删掉 `dep_rules.json` 里 `r3e-replay` 的规则行 | 判 4（规则缺失）红 | ✅ rc=1，报 `r3e-replay` 未登记规则 |
+| I | `ISSUE_CODES` 删一条（`camera.non_finite`） | `invariants` 红：stale_in_tests + stale_in_caps | ✅ rc=1，A=23/B=24/C=24，缺的两侧各报 1 条 |
+| J | 测试字面量改错（`camera.non_finite` → `camera.nonfinite`） | `invariants` 红：missing_in_tests + stale_in_tests | ✅ rc=1，两侧各报 1 条，缺/多同时可见 |
+| K | 手改 `capabilities.json` 一条 code（`ui.key.empty` → `ui.key.missing`） | `invariants` 红 + `gen-capabilities --check` 红 | ✅ 双红：invariants 报 missing/stale_in_caps 各 1；`--check` 定位到第 4732 行并给出仓库/生成两份原文 |
+
+> 演练 I/J/K 覆盖不变量三源的三个方向：**登记表是被测对象、测试是证据、清单是产物**。任一侧单独漂移都会红，只有三侧同时改才放行——这正是「三源比对」而非「清单自检」的理由。
+
+### 13.8 收尾判定
+
+§9 的七条验收全部可自动判定，收尾实测逐条对账后全部达成：
+
+| # | 验收项 | 结论 |
+|---|---|---|
+| 1 | `r3e-protocol` 纯依赖（仅 serde / serde_json） | ✅ 依赖表零引擎 crate |
+| 2 | 全仓测试不减、0 failed | ✅ 1476 全绿（基线随测试新增上抬，只增不减） |
+| 3 | 单文件行数白名单外 0 | ✅ 23 项债务未上涨，无新增超标文件 |
+| 4 | 依赖违规白名单外 0，债务只减不增 | ✅ 0 违规 / 4 条债（上限 4） |
+| 5 | 能力清单无漂移 | ✅ `gen-capabilities --check` 绿 |
+| 6 | 不变量三源一致 | ✅ 24 = 24 = 24 |
+| 7 | 总门禁 <120s 且回放哈希一致 | ✅ 20.4s（热态），`final=59d48dedf2b0677e` |
+
+M0-S5 至此收口。未还清的 4 条依赖债（`plugin→core`、`plugin→physics`、`script→physics`、`script→audio`）按 §12 移交 M1，触发条件与落点见 §13.6.6 与 `xtask/dep_debt.json` 的 `plan` 字段。
+
+### 13.9 D7 文档同频（四文件回填完毕）
+
+D7 只动文档，不动代码；所有数字均由命令当场输出后写入，不沿用任何预估。
+
+| 文件 | 行数 | 本次回填的关键口径 |
+|---|---|---|
+| `docs/AI_ROADMAP.md` | 701 | §0.1 S5 改 ✅；§0.2 十行门禁表（含 `dep-check --strict` 0 违规、债务 4、清单无漂移、三源 24/24/24、verify 20.4s）；§0.3 crate 14 个；§2.2 严格四判定表；§3.1.7 七卡执行结果 + 收尾实测 + Gate 0 复核 + 遗留两项；§八 看板追加收口行；§十 入口指向 M1 |
+| `docs/ARCHITECTURE.md` | 6864 | §2 结构树 + §3.1 依赖说明 + §3.1.1 三投影两门 + §3.2 规模表（新增 protocol 2,326/759/34，editor 缩为 505/1,875/72）+ §3.3 九道门 + **§8.11 重写**（旧文「8 个方法 / 纯协议层」已失真，改为 protocol 39 方法 / editor 传输两层）+ 附录补 protocol、editor 两行 |
+| `docs/AI_WORKFLOW.md` | 新建 | 三条铁律 + 三个可复制命令块（开工基线 / 改码闭环 / 同频检查）+ 11 类红灯判定树 + 三本账与降级流程 + 停机条件 |
+| `docs/M0S5_PROTOCOL.md` | 本文件 | §11 补 D7 执行列；§13.9 本节 |
+
+**本次纠正的历史失真口径**（文档里长期错的值 → 实测值）：
+
+| 位置 | 旧值 | 实测 |
+|---|---|---|
+| `ARCHITECTURE.md` §8.11 | `EngineApi` 8 个方法、`r3e-editor` 是纯协议层（含 `RpcServer`） | 39 个方法（与 `RPC_METHODS` 一一对应）；协议在 `r3e-protocol`，`RpcServer` 在 `r3e-editor` |
+| `ARCHITECTURE.md` §3.2 / `AI_ROADMAP` §0.3 | crate 13 个 / `r3e-protocol` 不存在 | 14 个（含 protocol），`doc-gate` 报 14 个 crate / 256 个 `.rs` |
+| `AI_ROADMAP` §0.2 / §八 | 测试 1,457、`>800` 24、违规 3、verify 14.7s | 1,476 / 23 / 0 / 20.4s |
+| `AI_ROADMAP` §3.1.7 | S5-04「修 3 条违规 → 0」 | 修 1（editor-host）+ 规则 1（改叶子适配器）+ 记账 4 条（`script`/`plugin` 债务） |
+
+**Gate 0 带账过项**（不算未达成，算显式记账）：
+
+1. `>800` 行文件 23 个（目标 ≤12）：`scene.rs` 4,057 行落 `M1-DOC-FIELDS`，其余随 M1/M2 按域拆；`size_debt.json` 23 条只减不增，`verify` 每次守门。
+2. 依赖债 4 条：`plan` 字段已写偿还落点（M1 端口契约 + plugin 去 core/physics），偿还前新增第 5 条会被判 3 打红。
+
+D7 完成即 M0-S5 全流程（D1–D7）收口。
+
 *（内容由AI生成，仅供参考）*
