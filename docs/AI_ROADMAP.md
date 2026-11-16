@@ -181,7 +181,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 
 | # | 交付物 | 验收标准（可自动判定） | 承接 Sprint | 状态 |
 |---|---|---|---|---|
-| M0-1 | 拆 `r3e-app` → `r3e-runtime` + `r3e-editor-host` + `main` 薄壳 | 三 crate 各自可独立测试；`runtime` 无窗口 headless 跑 600 帧 | S0-01~04 | ✅ |
+| M0-1 | 拆 `r3e-app` → `r3e-runtime` + `r3e-editor-host` + `main` 薄壳 | 三 crate 各自可独立测试；无窗口 headless 跑 600 帧（由 `r3e-replay` 承载，不依赖 render/winit，跑在 `verify` 内，全程不起 GPU） | S0-01~04 | ✅ |
 | M0-2 | 三个单体文件拆到 ≤800 行/文件 | 单文件行数 CI 门禁；拆分后测试数不减 | S1-01~07、S2-04~05 | ✅（`editor.rs` 由 S0 消解） |
 | M0-3 | `r3e-doc`：Document 接管场景唯一真值 | `core::scene` 不再被直接可变借用，只能经 `doc` | S3-01~06 | ✅ |
 | M0-4 | Command + Transaction + UndoStack | 任意命令序列 apply 后 undo 全量回退，哈希与初始一致 | S3-03、S4-01~04 | ✅ |
