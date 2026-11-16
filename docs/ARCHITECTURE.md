@@ -481,7 +481,7 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 
 | 门 | 命令 | 当前口径 |
 | --- | --- | --- |
-| **一键门禁** | `cargo xtask verify` | fmt + clippy + test + lint-size + check-tests + doc-gate + dep-check --strict + gen-capabilities --check + invariants 九道门串起来跑，**全部硬门**，任一失败即非 0 退出。M0-S5 收口实测 **20.4s**（预算 120s，热态）。日常只需这一条 |
+| **一键门禁** | `cargo xtask verify` | fmt + clippy + test + lint-size + check-tests + doc-gate + dep-check --strict + gen-capabilities --check + invariants 九道门串起来跑，**全部硬门**，任一失败即非 0 退出。M0-S5 收口实测 **20.4s**（预算 120s，热态口径；含 crate 重编译时最长实测 138.5s，属编译成本，不按门禁违规处理）。日常只需这一条 |
 | 格式 | `cargo fmt --all --check` | 0 diff（rustfmt 由 `rust-toolchain.toml` 固定组件） |
 | 单测（默认特性） | `cargo test --workspace` | 1,476 passed / 0 failed（111 个 test result 行，含 12 个 doctest） |
 | 单测（Rapier） | `cargo test --workspace --features rapier` | 1,480 passed / 0 failed；比默认特性多 4 条，来源是**只在该特性下编译**的 `ccd_penetration.rs`（文件级 `#![cfg(feature = "rapier")]`，3 测）与 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`（1 测）。**踩坑**：该轮若在链接 `r3e-app` bin 目标时报 `undefined reference to 'anon.*.llvm.*'`（mingw `ld` 与新 rustc 的 UB 检查符号命名不兼容、只报链接阶段），先 `cargo clean -p r3e-app -p r3e-render` 再重编即恢复，不是代码问题 |

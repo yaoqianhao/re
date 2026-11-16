@@ -46,7 +46,7 @@ AIGC:
 | 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增） | 记账可查 | `xtask/dep_debt.json` |
 | 能力清单漂移 | 0（`capabilities.json` 369 命令 / 39 RPC / 24 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
 | 不变量三源 | 24 = 24 = 24 | 三源一致 | `cargo xtask invariants` |
-| `verify` 时长 | 20.4s（热缓存，九道门全硬；同机实测区间 16.5–25.4s，视缓存态） | <120s | 实测 |
+| `verify` 时长（热态） | 14.6–20.4s（九道门全硬）；冷缓存 25.4s；含 crate 重编译最长实测 138.5s（编译成本，不计入门禁判据） | <120s（热态口径） | 实测 |
 | 回放确定性 | **已达成** `final=59d48dedf2b0677e` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 | `doc-gate` | 256 个 `.rs` / 14 个 crate / 6 条规则 / 白名单 10 项 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
 
@@ -301,7 +301,7 @@ S0 收口+立尺 ──► S1 renderer 拆分 ───────────�
 | S5-03 ✅ | 清单与实现不一致 → CI 红 | 删掉一个命令实现但留表项 → 红 | `gen-capabilities --check` 逐字节比对进 `verify`；四项注入演练（改 cmd_spec / 改 rpc 字段 / 改 dispatch 臂名 / 手改清单）全红后还原 |
 | S5-04 ⚠️ 降级 | 修 3 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛 | `dep-check` 后 0 违规 | `editor-host` 已收敛为叶子适配器（0 违规）；`script`→`physics`/`audio` 实测 **53 方法 / 704 行 / 14 测试**直连，端口化突破「零行为变化」纪律 → **降级记账**入 `dep_debt.json` 并留 M1 契约清单（详见 `M0S5_PROTOCOL.md` §13.5 偏差表） |
 | S5-05 ✅ | `dep-check` 转硬门禁（CI fail）+ 故意加违规依赖验证 | PR 加一条违规依赖 → CI 红 | 默认即严格四判定（白名单外 / 债务残留 / 超限 / 未登记），`--report` 降级为显式开关；`ci.yml` 撤 `continue-on-error`；四项故障注入演练全红 |
-| S5-06 ✅ | `verify` 收敛（fmt + dep-check + clippy + test + doc-gate + lint-size + replay + 新两门） | 单条命令 <120 秒 | 九道门全硬，实测 **20.4s**；新增 `invariants` 三源比对门（24 = 24 = 24）与 `gen-capabilities --check` |
+| S5-06 ✅ | `verify` 收敛（fmt + dep-check + clippy + test + doc-gate + lint-size + replay + 新两门） | 单条命令 <120 秒 | 九道门全硬，实测 **20.4s**（热态；含 crate 重编译最长 138.5s）；新增 `invariants` 三源比对门（24 = 24 = 24）与 `gen-capabilities --check` |
 | S5-07 ✅ | `docs/AI_WORKFLOW.md`：M0 之后的标准工作流（改码 → verify → 判定） | 3 个可复制命令块 | 落地，含九道门清单 / 改码闭环 / 债务与基线记账规则 / 提交纪律 |
 
 **收尾实测（2026-11-16）**：全仓 **1,476 单测 / 0 failed**（默认特性 111 target 含 12 doctest；`rapier` 特性 1,480）；`verify` 20.4s 九道门全绿；`dep-check --strict` 0 违规 / 4 条债务；`invariants` 24/24/24；`capabilities.json` 无漂移；回放 `final=59d48dedf2b0677e`。
@@ -559,7 +559,7 @@ chore(ci): 门禁与脚本
 | 2 | `>800` 行文件数 | 23 | ≤12 | 同上 |
 | 3 | `#[test]` 总数 | 1476 | 只增不减 | `cargo xtask check-tests` |
 | 4 | 依赖违规数 | 0（债务 4 条已登记） | 0 | `cargo xtask dep-check --strict` |
-| 5 | `verify` 时长 | 20.4s（热缓存，九道门） | <120s | 实测 |
+| 5 | `verify` 时长（热态） | 14.6–20.4s；含重编译最长 138.5s | <120s（热态） | 实测 |
 | 6 | 回放确定性 | 已达成（`final=59d48dedf2b0677e`） | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 
 记录表（每周追加）：

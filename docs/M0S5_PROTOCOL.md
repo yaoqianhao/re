@@ -496,6 +496,8 @@ cargo xtask verify
 | `invariants`（24/24/24） | 绿：A 登记表 24 = B 反例测试 24 = C 能力清单 24（D6 首绿，注入演练见 §13.7） |
 | 回放哈希 | `final=59d48dedf2b0677e`（600 帧 / 10 采样点，两次运行完全一致） |
 
+> 耗时口径：`<120s` 指热态（target 已就绪、无 crate 重编译）。复核时若触发重编译，实测可达 138.5s，属编译成本而非门禁退化——`verify` 的判据只有 rc=0。
+
 ### 13.3 提交记录（本地，未推送）
 
 | # | commit | 内容 |
@@ -507,6 +509,8 @@ cargo xtask verify
 | 5 | `b334e9d` | D5 `dep-check --strict` 四判定 + `dep_debt.json` 4 条（只减不增），`dep_rules` 纠偏 |
 | 6 | `fe34146` | D5 CI：gate job 撤 `continue-on-error`，`dep-check` 接 `--strict` |
 | 7 | `2973007` | D6 `invariants` 三源比对门 + 补 10 条反例测试 + verify/CI 收敛（热态 20.4s） |
+| 8 | `bb36be4` | D7 文档同频：新建 `AI_WORKFLOW.md`，回填 `AI_ROADMAP` / `ARCHITECTURE` / 本协议 §13（verify 25.4s 冷缓存） |
+| 9 | `4240bb2` | M0 收口复核校正：M0-9 状态 🟨 → ✅；`verify` 时长补记同机实测区间 16.5–25.4s（视缓存态） |
 
 > D4 是决议与文档（S5-04 降级记账），随 D5 一笔提交，不单独占一笔。全部为本地提交，**不推送**。
 
@@ -623,7 +627,7 @@ D5 的注入对象是 `dep_rules.json` / `dep_debt.json` / `capabilities.json` �
 | 4 | 依赖违规白名单外 0，债务只减不增 | ✅ 0 违规 / 4 条债（上限 4） |
 | 5 | 能力清单无漂移 | ✅ `gen-capabilities --check` 绿 |
 | 6 | 不变量三源一致 | ✅ 24 = 24 = 24 |
-| 7 | 总门禁 <120s 且回放哈希一致 | ✅ 20.4s（热态），`final=59d48dedf2b0677e` |
+| 7 | 总门禁 <120s（热态）且回放哈希一致 | ✅ 20.4s（热态；重编译最长 138.5s），`final=59d48dedf2b0677e` |
 
 M0-S5 至此收口。未还清的 4 条依赖债（`plugin→core`、`plugin→physics`、`script→physics`、`script→audio`）按 §12 移交 M1，触发条件与落点见 §13.6.6 与 `xtask/dep_debt.json` 的 `plan` 字段。
 
