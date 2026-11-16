@@ -8,3 +8,8 @@ description = "仓库级工程门禁：verify / lint-size / check-tests / dep-ch
 
 [dependencies]
 serde_json.workspace = true
+# gen-capabilities 要读三源（命令表 / 不变量表 / RPC 方法表），三者都在引擎 crate 里。
+# dep-check 只扫 crates/ 下的目录（xtask 不在其中），故这几条依赖不产生依赖违规。
+r3e-core.workspace = true
+r3e-doc.workspace = true
+r3e-protocol.workspace = true

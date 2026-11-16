@@ -11,6 +11,7 @@
 //! 设计约束：不引第三方 CLI 框架、不做花哨输出。门禁本身越简单越不容易坏。
 
 mod doc_gate;
+mod gen_capabilities;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,13 +27,14 @@ const USAGE: &str = "\
   check-tests        单测数不得低于 xtask/tests_baseline.json
   dep-check          crate 依赖方向对照 xtask/dep_rules.json（v0 只报告，--strict 失败）
   doc-gate           文档层收口六条规则（RefCell<Scene> / &mut Scene / DerefMut / 解析入口 / 依赖登记 / 闭包重入）
-  gen-capabilities   能力清单骨架（扫描脚本 API 注册点）
+  gen-capabilities   生成 docs/capabilities.json（三源交叉；--check 只校验不写盘）
 ";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().cloned().unwrap_or_else(|| "help".to_string());
     let strict = args.iter().any(|a| a == "--strict");
+    let check = args.iter().any(|a| a == "--check");
     let code = match cmd.as_str() {
         "verify" => verify(),
         "lint-size" => lint_size(),
@@ -40,7 +42,7 @@ fn main() {
         "dep-check" => dep_check(strict),
         "replay" => replay(),
         "doc-gate" => doc_gate::run(&root()),
-        "gen-capabilities" => gen_capabilities(),
+        "gen-capabilities" => gen_capabilities::run(&root(), check),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             0
@@ -519,44 +521,4 @@ fn crate_deps(manifest: &Path) -> (Vec<String>, Vec<String>) {
         }
     }
     (prod, dev)
-}
-
-// ---------------------------------------------------------------- gen-capabilities
-
-fn gen_capabilities() -> i32 {
-    let root = root();
-    let mut files = Vec::new();
-    rust_files(&root.join("crates/r3e-script"), &mut files);
-    files.sort();
-
-    // 能力清单的真源是脚本注册点：`engine.register_fn("name", ...)` 一类调用。
-    // v0 只做计数与清单骨架，等 protocol 落地后再升级为结构化 JSON 输出。
-    let mut names: Vec<String> = Vec::new();
-    for f in &files {
-        let Ok(text) = fs::read_to_string(f) else {
-            continue;
-        };
-        for line in text.lines() {
-            let l = line.trim();
-            if let Some(idx) = l.find(".register_fn(\"") {
-                let rest = &l[idx + ".register_fn(\"".len()..];
-                if let Some(end) = rest.find('"') {
-                    names.push(rest[..end].to_string());
-                }
-            }
-        }
-    }
-    names.sort();
-    names.dedup();
-
-    println!("[gen-capabilities] 扫描 {} 个脚本源文件", files.len());
-    println!("  注册点数量: {}", names.len());
-    for n in names.iter().take(20) {
-        println!("    {n}");
-    }
-    if names.len() > 20 {
-        println!("    ...（其余 {} 项）", names.len() - 20);
-    }
-    println!("  TODO(M1): 输出 machine-readable capabilities.json，含读写能力与参数签名");
-    0
 }

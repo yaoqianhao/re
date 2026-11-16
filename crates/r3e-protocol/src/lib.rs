@@ -26,6 +26,7 @@
 //! | `dispatch/media.rs` | `ui.*` / `light.*` / `audio.*` 臂 + 未知方法 |
 
 pub mod api;
+pub mod caps;
 pub mod dispatch;
 pub mod msg;
 pub mod patch;
@@ -38,6 +39,58 @@ pub use patch::*;
 pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// 对外 RPC 能力方法表（39 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+///
+/// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
+/// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
+/// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
+/// 「39 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 而不是靠人肉数 `match` 臂。
+///
+/// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
+/// gen-capabilities` 会立刻红）。
+pub const RPC_METHODS: &[&str] = &[
+    "audio.spatial.clear",
+    "audio.spatial.list",
+    "audio.spatial.listener",
+    "audio.spatial.remove",
+    "audio.spatial.set",
+    "audio.spatial.setenabled",
+    "capture.frame",
+    "engine.info",
+    "engine.stats",
+    "light.clear",
+    "light.list",
+    "light.remove",
+    "light.set",
+    "light.setenabled",
+    "scene.animlayers",
+    "scene.animlayerset",
+    "scene.archive.load",
+    "scene.archive.save",
+    "scene.back",
+    "scene.get",
+    "scene.list",
+    "scene.remove",
+    "scene.save",
+    "scene.setenvironment",
+    "scene.setenvironmentmap",
+    "scene.setmaterial",
+    "scene.setpostfx",
+    "scene.setssao",
+    "scene.settransform",
+    "scene.shadow",
+    "scene.spawn",
+    "scene.stack",
+    "scene.switch",
+    "script.eval",
+    "script.reload",
+    "ui.list",
+    "ui.remove",
+    "ui.set",
+    "ui.state",
+];
 
 // JSON-RPC 2.0 标准错误码
 pub const PARSE_ERROR: i32 = -32700;

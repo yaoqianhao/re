@@ -1,0 +1,4744 @@
+{
+  "schema": 1,
+  "generated_by": "cargo xtask gen-capabilities",
+  "engine": "r3e",
+  "protocol_version": 1,
+  "counts": {
+    "commands": 369,
+    "rpc": 39,
+    "script_only": 330,
+    "domains": 17,
+    "invariants": 24
+  },
+  "domains": [
+    "scene",
+    "scene_flow",
+    "anim",
+    "anim_blend",
+    "anim_sync",
+    "env",
+    "render",
+    "shadow",
+    "ui",
+    "text",
+    "light",
+    "audio",
+    "physics",
+    "input",
+    "query",
+    "pick",
+    "meta"
+  ],
+  "commands": [
+    {
+      "name": "add_anim_layer",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "add_anim_layer_additive",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "add_anim_layer_blend_sample",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "add_anim_layer_blend_sample_3d",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "add_anim_layer_clip",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_clip",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_clips",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_count",
+      "domain": "anim",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_fade",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_fade_from",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_info",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_blend",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_blend_build_stats",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_blend_speed",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_blend_stale",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_clip_looping",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_clip_phase_offset",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_clip_speed",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_clip_time",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_clips",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_count",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_info",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_mask",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_phase",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_sync",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_sync_phase",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_sync_probe",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_sync_source",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layer_weight",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_layers",
+      "domain": "anim_blend",
+      "rpc": "scene.animlayers",
+      "params": [
+        "&str"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_of",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_playing",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anim_time",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "anims",
+      "domain": "anim",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "attach_body",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio.spatial.list",
+      "domain": "meta",
+      "rpc": "audio.spatial.list",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio.spatial.set",
+      "domain": "meta",
+      "rpc": "audio.spatial.set",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_available",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_backend",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_count",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_enabled",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_error_count",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_is_paused",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_is_playing",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_keys",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_last_error",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_master_volume",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_pause",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_play",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_play_ex",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_resume",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_set_enabled",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_set_loop",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_set_master_volume",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_set_volume",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_attach",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_attach_ex",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_attach_node",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_clear",
+      "domain": "audio",
+      "rpc": "audio.spatial.clear",
+      "params": [],
+      "returns": "()",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_count",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_detach",
+      "domain": "audio",
+      "rpc": "audio.spatial.remove",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_distance",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_doppler",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_enabled",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_gain",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_keys",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_listener",
+      "domain": "audio",
+      "rpc": "audio.spatial.listener",
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_model",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_node",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_position",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_rate",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_set_doppler",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_set_enabled",
+      "domain": "audio",
+      "rpc": "audio.spatial.setenabled",
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_set_listener",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_set_model",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_set_position",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_status",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_spatial_tick",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "i64",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_status",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_stop",
+      "domain": "audio",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_stop_all",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "()",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "audio_supports_speed",
+      "domain": "audio",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "body_ccd",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "body_count",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "body_impulse",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "body_set_ccd",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "build_anim_layer_blend",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "camera",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "capture.frame",
+      "domain": "meta",
+      "rpc": "capture.frame",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_anim_layer_blend",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_anim_layer_clip_playback",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_anim_layers",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_env_map",
+      "domain": "env",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_environment",
+      "domain": "env",
+      "rpc": null,
+      "params": [],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_material",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_postfx",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "clear_ssao",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "count",
+      "domain": "scene",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "create_node",
+      "domain": "scene",
+      "rpc": "scene.spawn",
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "create_node_at_origin",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "create_node_json",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "detach_body",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "dt",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "engine.info",
+      "domain": "meta",
+      "rpc": "engine.info",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "engine.stats",
+      "domain": "meta",
+      "rpc": "engine.stats",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "env_map_intensity",
+      "domain": "env",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "env_map_source",
+      "domain": "env",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "exists",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "fade_anim_layer",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "fov",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "fps",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "frame",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "gamepad_connected",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "gamepad_name",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "get_pos",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "has_env_map",
+      "domain": "env",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "has_environment",
+      "domain": "env",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "has_postfx",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "has_ssao",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "key_any",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "key_any_pressed",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "key_down",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "key_held_count",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "key_pressed",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "key_released",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "keys_held",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light.list",
+      "domain": "meta",
+      "rpc": "light.list",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_add_point",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_add_spot",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_clear",
+      "domain": "light",
+      "rpc": "light.clear",
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_remove",
+      "domain": "light",
+      "rpc": "light.remove",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_cast_shadow",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_color",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_cone",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_dir",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_intensity",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_pos",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_range",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "light_set_shadow_bias",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "lights_enabled",
+      "domain": "light",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_cast_shadow",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_count",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_exists",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_intensity",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_irradiance",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_keys",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_light_kind",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "local_shadow_caster_count",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "log",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "material_of",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_active",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_bind",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_count",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_exclusive",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_group",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_mask",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_mask_set",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_norm",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_reset",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_set",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_show",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_visible",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "morph_weight",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_down",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_dx",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_dy",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_moved",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_pos",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_pressed",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_released",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_x",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "mouse_y",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "move_by",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "names",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "occlusion_bias",
+      "domain": "light",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "occlusion_enabled",
+      "domain": "light",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "orbit",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pad_axis",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pad_down",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pad_pressed",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pad_released",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_backend",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_capabilities",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_ccd_default",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_enabled",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_gravity",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_ground",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_has_capability",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_overlap",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_raycast",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_raycast_full",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_set_backend",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_set_ccd",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_set_enabled",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_set_gravity",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_set_ground",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_shape_cast_box",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_shape_cast_sphere",
+      "domain": "physics",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "physics_take_events",
+      "domain": "physics",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pick_all_at",
+      "domain": "pick",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pick_at",
+      "domain": "pick",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "pick_under_mouse",
+      "domain": "pick",
+      "rpc": null,
+      "params": [],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "play_anim",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "postfx_exposure",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "postfx_tonemap",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "rand",
+      "domain": "input",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "remove_anim_layer",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "remove_anim_layer_clip",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "remove_node",
+      "domain": "scene",
+      "rpc": "scene.remove",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "remove_nodes",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "i64",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "rotate",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "save_scene",
+      "domain": "shadow",
+      "rpc": "scene.save",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene.get",
+      "domain": "meta",
+      "rpc": "scene.get",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene.list",
+      "domain": "meta",
+      "rpc": "scene.list",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene.setenvironment",
+      "domain": "meta",
+      "rpc": "scene.setenvironment",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene.settransform",
+      "domain": "meta",
+      "rpc": "scene.settransform",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene.shadow",
+      "domain": "meta",
+      "rpc": "scene.shadow",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene.stack",
+      "domain": "meta",
+      "rpc": "scene.stack",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_back",
+      "domain": "scene_flow",
+      "rpc": "scene.back",
+      "params": [],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_command_pending",
+      "domain": "scene_flow",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_json",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_load_archive",
+      "domain": "scene_flow",
+      "rpc": "scene.archive.load",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_save_archive",
+      "domain": "scene_flow",
+      "rpc": "scene.archive.save",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_stack_current",
+      "domain": "scene_flow",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_stack_depth",
+      "domain": "scene_flow",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_stack_index",
+      "domain": "scene_flow",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_stack_names",
+      "domain": "scene_flow",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scene_switch",
+      "domain": "scene_flow",
+      "rpc": "scene.switch",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "screen_height",
+      "domain": "pick",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "screen_size",
+      "domain": "pick",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "screen_width",
+      "domain": "pick",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "script.eval",
+      "domain": "meta",
+      "rpc": "script.eval",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "script.reload",
+      "domain": "meta",
+      "rpc": "script.reload",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "scroll",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ambient",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_clip",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_clip_fade",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_blend_1d",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_blend_2d",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_blend_3d",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_blend_sample_speed",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_blend_value",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_blend_value_3d",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_clip",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_clip_phase_offset",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_clip_playback",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_clip_weight",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_mask",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_mode",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_speed",
+      "domain": "anim_blend",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_sync",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_sync_mode",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_sync_source",
+      "domain": "anim_sync",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_layer_weight",
+      "domain": "anim_blend",
+      "rpc": "scene.animlayerset",
+      "params": [
+        "&str",
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_looping",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_speed",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_anim_time",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_background",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_bloom",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "bool",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_color",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_color4",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_emissive",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_env_intensity",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_env_map",
+      "domain": "env",
+      "rpc": "scene.setenvironmentmap",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_env_map_enabled",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_env_map_faces",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "Array"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_env_map_intensity",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "f64",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_env_sun",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_exposure",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_fxaa",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_light",
+      "domain": "env",
+      "rpc": "light.set",
+      "params": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_light_color",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_lights_enabled",
+      "domain": "light",
+      "rpc": "light.setenabled",
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_material",
+      "domain": "scene",
+      "rpc": "scene.setmaterial",
+      "params": [
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_mesh",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_occlusion_bias",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "f64",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_occlusion_enabled",
+      "domain": "light",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_pos",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_postfx",
+      "domain": "render",
+      "rpc": "scene.setpostfx",
+      "params": [
+        "f64",
+        "&str",
+        "bool",
+        "f64",
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_rot",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_scale",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_scale_uniform",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_blend",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_cascades",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "i64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_caster_cull",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_caster_extend",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_distance",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_extent",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_size",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "i64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_shadow_strength",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_sky",
+      "domain": "env",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ssao",
+      "domain": "render",
+      "rpc": "scene.setssao",
+      "params": [
+        "bool",
+        "f64",
+        "f64",
+        "f64",
+        "i64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ssao_enabled",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ssao_intensity",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ssao_radius",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ssao_samples",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "i64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_text_enabled",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_tonemap",
+      "domain": "render",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ui_above_text",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_ui_enabled",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "bool"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "set_visible",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "shadow_cascades",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "shadow_caster_cull",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "shadow_enabled",
+      "domain": "shadow",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ssao_bias",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ssao_enabled",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ssao_intensity",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ssao_radius",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ssao_samples",
+      "domain": "render",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "stop_anim",
+      "domain": "anim",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_add",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_clear",
+      "domain": "text",
+      "rpc": null,
+      "params": [],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_content",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_count",
+      "domain": "text",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_enabled",
+      "domain": "text",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_exists",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_height",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_keys",
+      "domain": "text",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_remove",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_align",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_alpha",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_color",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_line_height",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_pos",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_size",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_visible",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_set_wrap",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "text_width",
+      "domain": "text",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "time",
+      "domain": "input",
+      "rpc": null,
+      "params": [],
+      "returns": "f64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui.set",
+      "domain": "meta",
+      "rpc": "ui.set",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui.state",
+      "domain": "meta",
+      "rpc": "ui.state",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_above_text",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_active",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_border",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_capacity",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_clear",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "()",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_clicked",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_count",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_enabled",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_error_count",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_event_count",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_event_key",
+      "domain": "pick",
+      "rpc": null,
+      "params": [
+        "i64"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_event_kind_name",
+      "domain": "pick",
+      "rpc": null,
+      "params": [
+        "i64"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_events",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_exists",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_hit",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_hover",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_hovered",
+      "domain": "query",
+      "rpc": null,
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_image",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_keys",
+      "domain": "ui",
+      "rpc": "ui.list",
+      "params": [],
+      "returns": "Array",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_kind_clicked",
+      "domain": "pick",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_last_error",
+      "domain": "ui",
+      "rpc": null,
+      "params": [],
+      "returns": "String",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_pointer_over_ui",
+      "domain": "query",
+      "rpc": null,
+      "params": [],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_rect",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_remove",
+      "domain": "ui",
+      "rpc": "ui.remove",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_alpha",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_anchor",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_border",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_color",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_image",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_layer",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_pos",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_size",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_slice",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "|",
+        "&str",
+        "&str",
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_uv",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    },
+    {
+      "name": "ui_set_visible",
+      "domain": "ui",
+      "rpc": null,
+      "params": [
+        "&str",
+        "bool"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M0-backfill"
+    }
+  ],
+  "invariants": [
+    {
+      "code": "anim.name.empty",
+      "layer": "refs",
+      "severity": "error"
+    },
+    {
+      "code": "camera.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "light.key.duplicate",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "light.key.empty",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "light.value.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "lights.over_limit",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "morph.target_count.over_max",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "morph.weight.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "node.color.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "node.material.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "node.name.duplicate",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "node.name.empty",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "node.transform.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "physics.gravity.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "ref.asset_missing",
+      "layer": "refs",
+      "severity": "error"
+    },
+    {
+      "code": "ref.node_missing",
+      "layer": "refs",
+      "severity": "error"
+    },
+    {
+      "code": "scene.background.non_finite",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "skin.joint_matrices.len",
+      "layer": "refs",
+      "severity": "error"
+    },
+    {
+      "code": "skin.joint_matrices.unsolved",
+      "layer": "refs",
+      "severity": "warn"
+    },
+    {
+      "code": "skin.name.empty",
+      "layer": "refs",
+      "severity": "error"
+    },
+    {
+      "code": "text.key.duplicate",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "text.key.empty",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "ui.key.duplicate",
+      "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "ui.key.empty",
+      "layer": "bounds",
+      "severity": "error"
+    }
+  ],
+  "unsupported": [
+    {
+      "item": "physics.backend.rapier",
+      "reason": "feature 未开启时退回内置积分器，纸面参数与刚体休眠行为不同",
+      "since": "M1"
+    }
+  ]
+}

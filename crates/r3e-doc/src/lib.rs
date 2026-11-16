@@ -31,7 +31,10 @@ pub use command::{Command, CommandKind};
 pub use state_hash::{mix_f32, mix_str, mix_u64, scene_hash, world_hash, StateHash, FNV_OFFSET};
 pub use transaction::Transaction;
 pub use undo::{Mark, UndoGroup, UndoStack};
-pub use validate::{errors as validate_errors, validate, Issue, Severity};
+pub use validate::{
+    errors as validate_errors, issue_code_by_code, validate, Issue, IssueCode, Severity,
+    ISSUE_CODES,
+};
 
 /// 文档层错误。
 ///

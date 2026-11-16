@@ -25,7 +25,7 @@ M0 最后一个 Sprint。七张卡里 **5 张可原样执行**，**1 张（S5-04
 | S5-05「转硬 + 0 违规」 | ⚠️ 改为「白名单外 0 违规 + 债务 2 条（只减不增）」，复用 `size_debt.json` 已验证的机制 |
 | Gate 0「>800 行文件 24 → ~12」 | ❌ 该判据在 M0 内不成立：S5 七张卡无一含拆文件任务，剥离后实测只能 **24 → 23**。顺延 M1，本次显式修订 |
 | 能力清单真源 | `cmd_spec` 369 条 = **39 条 RPC + 330 条仅脚本**，与 `EngineApi` trait 的 39 个方法**精确相等**，与 `dispatch` 的 37 个 match 臂相容 → 三源交叉可做硬一致性门 |
-| 新增门禁 | `gen-capabilities --check`（防清单漂移）+ `invariants`（25 个 issue code 的元测试）|
+| 新增门禁 | `gen-capabilities --check`（防清单漂移）+ `invariants`（24 个 issue code 的元测试）|
 | 排期 | D1–D7（业余 15–20h/周口径），D7 收 Gate 0 |
 | 验收 | `verify` 绿 / `<120s` / `dep-check --strict` 白名单外 0 / 清单无漂移 / 测试 1457 不减 |
 
@@ -210,7 +210,7 @@ pub use server::{Job, RpcServer};
 | 源 | 提供 | 实测 |
 |---|---|---|
 | `r3e_core::cmd_spec::all()` | `commands[]`（name / domain / rpc / params / returns / reversible / cost / since） | **369 条**（`rpc=Some` **39** + `rpc=None` **330**） |
-| `r3e_doc::ISSUE_CODES`（**新增常量表**） | `invariants[]`（code / layer / severity） | **25 条**（`validate/bounds.rs` 19 + `validate/refs.rs` 6） |
+| `r3e_doc::ISSUE_CODES`（**新增常量表**） | `invariants[]`（code / layer / severity） | **24 条**（`validate/bounds.rs` 19 + `validate/refs.rs` 6；`Issue::error("physics.gravity.non_finite", "physics.gravity", ..)` 的第二个参数是 path 不是 code，故 25 个字面量实为 24 条 code） |
 | `r3e_protocol::caps` | schema / 序列化 / 排序规则 | 新写 |
 
 `xtask` 需加 `r3e-core` + `r3e-doc` 依赖——**已核实安全**：`dep_check()` 用 `crate_dirs()` 只遍历 `crates/` 下目录（`main.rs:411`），`xtask` 不在其中，故不产生依赖违规；`dep_rules.json` 里的 `"xtask"` 条目仅供 `doc-gate` 规则 5 登记用。
@@ -219,7 +219,7 @@ pub use server::{Job, RpcServer};
 - `commands.len() == cmd_spec::len() == 369`
 - `commands 中 rpc 非空数 == 39`
 - `39 == EngineApi trait 方法数`（由 `r3e-protocol` 导出 `const RPC_METHODS: &[&str]`，与 `dispatch` 臂数 37 相容：2 条走别名/默认分支）
-- `invariants.len() == 25` 且每个 code 在 `r3e-doc` 测试源码中被断言过
+- `invariants.len() == r3e_doc::ISSUE_CODES.len() == 24` 且每个 code 在 `r3e-doc` 测试源码中被断言过
 
 `--check` 模式：重新生成到内存，与仓库内 `docs/capabilities.json` 逐字节比对（键排序 + 2 空格缩进，保证 `git diff` 可读可审）。不一致 → exit 1 并打印首个差异键路径。
 
@@ -228,7 +228,7 @@ pub use server::{Job, RpcServer};
 `cargo xtask invariants` 做三源集合比对，不跑引擎：
 
 ```
-A = r3e_doc::ISSUE_CODES 的 code 集合（25）
+A = r3e_doc::ISSUE_CODES 的 code 集合（24）
 B = r3e-doc 测试源码里 `"xxx.yyy"` 形式的 code 断言集合
 C = docs/capabilities.json 的 invariants[].code 集合
 判据：A == B == C，任一差集非空 → exit 1，打印 `missing_in_tests` / `missing_in_caps` / `stale_in_tests`
@@ -248,14 +248,15 @@ C = docs/capabilities.json 的 invariants[].code 集合
   "generated_by": "cargo xtask gen-capabilities",
   "engine": "r3e",
   "protocol_version": 1,
-  "counts": { "commands": 369, "rpc": 39, "script_only": 330, "domains": 17, "invariants": 25 },
+  "counts": { "commands": 369, "rpc": 39, "script_only": 330, "domains": 17, "invariants": 24 },
   "domains": ["scene", "scene_flow", "anim", "anim_blend", "anim_sync", "env", "render",
               "shadow", "ui", "text", "light", "audio", "physics", "input", "query", "pick", "meta"],
   "commands": [
-    { "name": "scene.spawn", "domain": "scene", "rpc": "scene.spawn",
-      "params": ["node"], "returns": "bool", "reversible": true, "cost": "cheap", "since": "M0-backfill" },
-    { "name": "anim.blend.push", "domain": "anim_blend", "rpc": null,
-      "params": ["layer", "clip"], "returns": null, "reversible": true, "cost": "cheap", "since": "M0-backfill" }
+    { "name": "audio_spatial_clear", "domain": "audio", "rpc": "audio.spatial.clear",
+      "params": [], "returns": "()", "reversible": true, "cost": "cheap", "since": "M0-backfill" },
+    { "name": "add_anim_layer", "domain": "anim_blend", "rpc": null,
+      "params": ["&str", "&str", "&str", "f64"], "returns": "bool", "reversible": false,
+      "cost": "cheap", "since": "M0-backfill" }
   ],
   "invariants": [
     { "code": "node.name.empty", "layer": "bounds", "severity": "error" },
@@ -266,6 +267,13 @@ C = docs/capabilities.json 的 invariants[].code 集合
   ]
 }
 ```
+
+> **实测字段形态（D2 生成后回填，原示例已按真实数据改正）**：
+> - `params` 存的是 **Rust 参数类型**（`&str` / `f64` / `Option<&str>` …），不是参数名——`CommandSpec.params` 目前只有类型；参数名（脚本帮助里那套）待 M1 从注册点补结构化字段。
+> - `returns` 实测 **369 条全部有值**（`bool` / `Value` / `f64`…），无 `null`：命令表里没有「无返回」条目。
+> - `reversible: false` 138 条（占 37%），集中在 upsert / spawn / 播放控制类；`cost` 分布 cheap 300 / linear 35 / heavy 34。
+> - `name` 是**脚本函数名**（`snake_case`，如 `audio_spatial_clear`），`rpc` 才是 JSON-RPC 点分方法名，两者不同命名空间；`name` 全局唯一（369 条无重复）。
+> - **已知质量缺口（M1 债）**：39 条 RPC 里有 **16 条是「只有方法没有脚本注册点」的占位条目**——`name` 直接等于点分方法名、`domain` 一律 `meta`、`params: []`、`returns: "Value"`（如 `audio.spatial.list` / `capture.frame`）。它们与 23 条「脚本名 + rpc」的正常条目并存，消费者无法据此区分；M1 补 `CommandSpec` 结构化字段时一并收口。
 
 稳定性约定（写进 `caps.rs` doc）：
 - `commands` 按 `name` 字典序、`invariants` 按 `code`、`domains` 按声明序（`Domain` 枚举序）
@@ -303,12 +311,12 @@ xtask/
   dep_rules.json           editor-host allow 放开 + editor→protocol + script 补 protocol
 
 docs/
-  capabilities.json        新建（由代码生成，入版本库）                        ~ 2 800（369 命令 × 7 行）
+  capabilities.json        新建（由代码生成，入版本库）                        ~ 2 800 → 实 4 744
   M0S5_PROTOCOL.md         本文档
   AI_WORKFLOW.md           新建（S5-07）
 ```
 
-**行数风险**：`capabilities.json` 约 2 800 行，但 `lint-size` 只扫 `*.rs`（实测"扫描 246 个 `.rs`"），不受 800 阈值约束。
+**行数风险**：`capabilities.json` 实测 **4 744 行**（原估 ~2 800：每条命令 7 行不够，`params`/`name` 内含中文 `returns` 后实际 ~12.8 行/条），但 `lint-size` 只扫 `*.rs`（实测"扫描 246 个 `.rs`"），不受 800 阈值约束。
 
 **测试迁移记账（必须同批）**：
 
@@ -342,7 +350,7 @@ docs/
 | 天 | 工作包 | 卡 | 交付判据 |
 |---|---|---|---|
 | D1 | **纯搬迁**：建 `r3e-protocol`，按 §1.2 分段切文件，dispatch 拆 3 文件，29 测试迁 `tests/rpc_contract.rs`；`r3e-editor` 留 `server.rs` + re-export；同步 workspace members、两个 Cargo.toml、`tests_baseline`、`size_debt` | S5-01 | `cargo tree -p r3e-protocol --edges normal,dev` 仅 serde/serde_json；`cargo test --workspace` 1 457 绿；`use r3e_editor::*` 的 69 条集成测试零改动通过 |
-| D2 | **能力生成器**：`r3e-doc` 加 `ISSUE_CODES`（25 条）；`r3e-protocol::caps` 定义 DTO；`xtask/gen_capabilities.rs` 重写（读 `cmd_spec::all()` + `ISSUE_CODES` + `RPC_METHODS`）；`xtask` 加依赖 | S5-02 | `cargo xtask gen-capabilities` 产出 `docs/capabilities.json`，`counts` = 369/39/330/17/25，重跑字节一致 |
+| D2 | **能力生成器**：`r3e-doc` 加 `ISSUE_CODES`（24 条）；`r3e-protocol::caps` 定义 DTO；`xtask/gen_capabilities.rs` 重写（读 `cmd_spec::all()` + `ISSUE_CODES` + `RPC_METHODS`）；`xtask` 加依赖 | S5-02 | `cargo xtask gen-capabilities` 产出 `docs/capabilities.json`，`counts` = 369/39/330/17/24，重跑字节一致 |
 | D3 | **一致性门 + 演练**：`--check` 模式；临时注释 `cmd_spec` 里 `scene.spawn` 一条 → `--check` 必须红；恢复后绿 | S5-03 | 演练双向：删表项红 / 删实现（`dispatch` 臂）红；`git diff` 可审 |
 | D4 | **script 端口化**：`CapabilityHost` 补物理/音频入口，替换 `r3e-script` 21 处引用，删 `Cargo.toml` 两条依赖 | S5-04(1/3) | `cargo tree -p r3e-script` 无 physics/audio；132 测试不减 |
 | D5 | **dep 债务 + 转硬**：建 `dep_debt.json`（2 条）；`--strict` 四判定；改 `dep_rules.json`（host/script/editor/protocol）；CI 撤 `continue-on-error`；演练"临时给 `r3e-doc` 加 `r3e-render` 依赖 → CI 红" | S5-04(2/3,3/3) + S5-05 | `dep-check --strict` → `违规 0 条；债务 2 条`；故障注入演练红 |
@@ -401,7 +409,7 @@ cargo xtask dep-check --strict
 # 5. 能力清单无漂移
 cargo xtask gen-capabilities --check
 
-# 6. 不变量三源一致（25 == 25 == 25）
+# 6. 不变量三源一致（24 == 24 == 24）
 cargo xtask invariants
 
 # 7. 总门禁 <120s 且含回放哈希 final=59d48dedf2b0677e
@@ -414,7 +422,7 @@ cargo xtask verify
 | A2 | 全仓单测 | **1 457 / 0 failed** |
 | A3 | `lint-size` 白名单外 | **0 文件**；债务 24 → 23 |
 | A4 | `dep-check --strict` | 白名单外 **0**；债务 **2**（plugin×2） |
-| A5 | `capabilities.json` | 369 命令 / 39 rpc / 330 脚本独有 / 17 域 / 25 不变量，重跑字节一致 |
+| A5 | `capabilities.json` | 369 命令 / 39 rpc / 330 脚本独有 / 17 域 / 24 不变量，重跑字节一致 |
 | A6 | 一致性门演练 | 删 `cmd_spec` 表项 → 红；删 `dispatch` 臂 → 红；恢复 → 绿 |
 | A7 | dep 门演练 | 临时加违规依赖 → CI 红；移除 → 绿 |
 | A8 | `verify` 耗时 | **< 120s**（当前热 14.7s，预估 18–22s） |
@@ -428,7 +436,7 @@ cargo xtask verify
 | # | commit | 覆盖 |
 |---|---|---|
 | 1 | `refactor(protocol): 抽出 r3e-protocol，editor 留传输层` | 新建 crate + dispatch 三分 + 29 测试迁移 + 两个 Cargo.toml + workspace members + tests_baseline + size_debt 删条 |
-| 2 | `feat(doc): ISSUE_CODES 常量表（25 条不变量）` | `r3e-doc` 导出 + 测试改为引用常量 |
+| 2 | `feat(doc): ISSUE_CODES 常量表（24 条不变量）` | `r3e-doc` 导出 + 测试改为引用常量 |
 | 3 | `feat(xtask): gen-capabilities 三源交叉生成 capabilities.json` | 生成器 + `r3e-protocol::caps` + `docs/capabilities.json` + xtask 依赖 |
 | 4 | `feat(xtask): capabilities --check 一致性门` | `--check` + 沿 `assert` 硬判据 |
 | 5 | `refactor(script): CapabilityHost 端口化，去除 physics/audio 直连` | `r3e-script` 21 处引用替换 + Cargo.toml 两条删除 |
@@ -474,7 +482,7 @@ cargo xtask verify
 |---|---|---|
 | `r3e-protocol` 文件数 / 最大文件行数 | 9 / ≤800 | 待填 |
 | `r3e-editor` 剥离后行数 | ~520 | 待填 |
-| `capabilities.json` 行数 | ~2 800 | 待填 |
+| `capabilities.json` 行数 | ~2 800 | **4 744**（93 668 字节） |
 | `verify` 耗时 | 18–22s | 待填 |
 
 ### 13.2 门禁结果
@@ -485,7 +493,7 @@ cargo xtask verify
 | `lint-size`（债务数） | 待填 |
 | `dep-check --strict`（违规 / 债务） | 待填 |
 | `gen-capabilities --check` | 待填 |
-| `invariants`（25/25/25） | 待填 |
+| `invariants`（24/24/24） | 待填 |
 | 回放哈希 | 待填 |
 
 ### 13.3 提交记录（本地，未推送）
@@ -494,5 +502,10 @@ cargo xtask verify
 
 ### 13.4 与方案的偏差
 
-待填（预期偏差点：dispatch 三分行数、script 端口化测试数、host 规则修订措辞）。
+| 偏差 | 说明 |
+|---|---|
+| D2-1 `invariants` 25 → **24** | 方案数的是 `validate/` 下点分字符串字面量（bounds 19 + refs 6 = 25），其中 `physics.gravity` 是 `Issue::error(code, path, msg)` 的 **path** 参数，不是 code。`ISSUE_CODES` 按真实 code 建表为 24 条，方案 §决定 4/§3 的 25 已同步改 24 |
+| D2-2 `capabilities.json` 2 800 → **4 744 行** | 实际每条命令 ~12.8 行（`name`/`domain`/`rpc`/`params[]`/`returns`/`reversible`/`cost`/`since` 八字段多行展开 + 中文说明），`lint-size` 只扫 `*.rs` 故不触发阈值 |
+| D2-3 生成器位置 | 方案写 `xtask/src/gen_capabilities.rs` 重写 + `xtask/main.rs` 562→640；实际新建独立模块 271 行，`main.rs` 只加 `mod` 声明、`--check` 参数与分发臂（net 增 5 行），旧 37 行占位函数整体删除 |
+| D2-4 硬断言口径 | 方案要求「命令数 == cmd_spec::len()」；实现改为对常量 `EXPECTED_COMMANDS = 369` 硬断言 + RPC 集合与 `RPC_METHODS` 双向差集校验，把「加命令」变成必须显式改常量的动作 |
 *（内容由AI生成，仅供参考）*

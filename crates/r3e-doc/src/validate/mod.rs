@@ -14,7 +14,10 @@ use std::fmt;
 use r3e_core::Scene;
 
 mod bounds;
+mod invariants;
 mod refs;
+
+pub use invariants::{by_code as issue_code_by_code, IssueCode, ISSUE_CODES};
 
 /// 问题严重度。
 ///
