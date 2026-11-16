@@ -145,7 +145,14 @@ rust3d-engine/
   它把"同一份内存 `Scene`"从口头约定变成**类型强制**：`Scene` 的所有权归 `Document`（move 语义，不复制、不克隆），
   `Document` 实现 `Deref<Target = Scene>` 但**拒绝 `DerefMut`**——读随便读，写只能走 `doc.write(|s| …)` 这一个闭包入口，
   闭包返回时统一抬 `version` 与 `dirty`。命令侧 `Command` v0 14 条（spawn / despawn / transform / visible / rename / camera / env / postfx / light×2 / ui / text 等）
-  以 `apply` + `undo` 成对落地，undo 栈留在 `Document` 外部，S4 的事务层只需套在 `write` 外面。
+  以 `apply` + `undo` 成对落地；M0-S4 起 undo 栈收进 `UndoStack`（`undo.rs`，168 行），**一笔事务只占一格**，
+  并支持 `rollback_to(mark)` 水位回退，供事务回退与「撤销到某次意图之前」共用。
+  M0-S4 同时把「状态指纹」变成类型：`state_hash.rs`（604 行）是 `StateHash` 的**唯一实现**（FNV-1a64 + `mix_u64`），
+  按 `Scene.nodes` 的 `order` 顺序混入 13 组字段，`HashMap` 索引（`anim_clips` / `name_index`）**不进哈希**以保确定性；
+  `transaction.rs`（198 行）在其上给出 `begin / preview / commit / rollback`，`preview` 用 `Scene` 真快照跑影子场景，
+  返回哈希而不动主文档，失败一律经 `DocError::RollbackFailed` 上报而不是静默吞掉。
+  跨 crate 只暴露 `Document::{state_hash, world_hash}`：`r3e-runtime` 的帧指纹已改为复用 `r3e_doc::{mix_u64, FNV_OFFSET}`，
+  全仓不再有第二份状态哈希实现（`air.rs` 的资产 digest 与 `plugin/tools.rs` 的工具表哈希属不同域，保留原样并在 §10 点名）。
   这条边界由 `cargo xtask doc-gate` 的六条规则机械执行，越界（例如上游 crate 直接持有 `RefCell<Scene>`、或泄漏 `&mut Scene` 的公开 API）即红；
   场景解析统一走 `Document::from_json_str` / `r3e_doc::parse_scene`，上游不得再出现 `Scene::from_json_str`。
   依赖边 `script / runtime / editor-host → doc → core`，方向向下不成环。
@@ -174,9 +181,10 @@ rust3d-engine/
 | r3e-editor | 3,069 | 1,864 | 101 | `lib.rs`（协议 + `EngineApi` / `EnvironmentPatch` / `EnvironmentMapPatch` / `SsaoPatch` / `AnimLayerPatch` / `AudioSpatialPatch`）/ `server.rs`（TCP 桥 + 资源上限单测） |
 | r3e-physics | 2,550 | 662 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,338 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| **r3e-doc** | 1,115 | 710 | 63 | `lib.rs`（220：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`write.rs`（52：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 222 最大，`Command` trait + undo 栈；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，21 个 issue code） |
+| **r3e-doc** | 2,454 | 1,488 | 82 | `lib.rs`（315：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`state_hash.rs`（604：`StateHash` 唯一实现 + 13 组字段覆盖表 + 哈希缓存）、`transaction.rs`（198：`begin` / `preview` / `commit` / `rollback` + `RollbackFailed`）、`undo.rs`（168：`UndoStack` 一事务一格 + `rollback_to` 水位）、`write.rs`（80：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 337 最大，`Command` trait；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，21 个 issue code） |
+| **r3e-replay** | 546 | — | 11 | `lib.rs`（427：`ReplayConfig` / LCG / `run()` 每帧 9 条命令、每 10 帧一笔事务、每 60 帧一个采样点）、`main.rs`（119：命令行与逐行输出契约，供 `xtask replay` 比对） |
 | r3e-app | 37 | 1,442 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
-| **合计** | **78,110** | **16,497** | **1,427** | **约 7.81 万行 Rust + 1,517 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 实测 1,427 passed / 0 failed（`Running` 行 204 个 target，含 lib/bin/集成/doctest 全部 harness），`--features rapier` 多 4 条专属用例** |
+| **合计** | **79,525** | **17,216** | **1,457** | **约 7.95 万行 Rust + 1,517 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features` 实测 1,457 passed / 0 failed（含 lib/bin/集成/doctest 全部 harness 与 `rapier` 特性）** |
 
 行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算一次：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，
@@ -412,6 +420,13 @@ scene 150 + anim_blend 47 + api 37，与 `git diff --numstat` 一致），
 单测数一列是 `#[test]` **标注数**，
 其中 4 条只在 `--features rapier` 下参与（`crates/r3e-physics/tests/ccd_penetration.rs` 整文件 3 条 +
 `backend_contract.rs::rapier_stacks_bodies_and_reports_collision_events`），故默认特性实跑 1,069（`#[test]` 全量标注 1,073，减 rapier-only 4 条）。
+M0-S4（文档层事务 / 撤销 / 回放）是里程碑而非渲染扩展，单独记一笔增量：新增 `r3e-replay` crate（546 src / 11 单测），
+`r3e-doc` 由 1,115 src / 63 单测涨到 2,454 src / 82 单测（新增 `state_hash.rs` 604、`transaction.rs` 198、`undo.rs` 168，
+`command/mod.rs` 222 → 337、`lib.rs` 220 → 315、`write.rs` 52 → 80），
+`r3e-runtime` 的帧指纹改为复用 `r3e_doc::{mix_u64, FNV_OFFSET}`（输出格式不变），
+全仓 `src` 78,110 → 79,525、`tests` 16,497 → 17,216、单测 1,427 → 1,457，
+收尾实测 **79,525 src / 17,216 tests / 1,457 单测 / 1,457 passed / 0 failed**（`--all-features` 同值），
+并新增门禁 `cargo xtask replay`：同参数跑两次逐行比对 600 帧输出（含构建约 9s），已接入 `cargo xtask verify`。
 
 Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto = "thin"` / `codegen-units = 1` /
 `strip = "symbols"` / `panic = "abort"`，比旧快照的 32.0 MB 瘦一半，静态链接的 wgpu 后端与 ufbx 仍在）。
@@ -6506,6 +6521,11 @@ cargo run -- crates/r3e-app/tests/fixtures/visual_regression/scene.json `
 # 真跑像素回归（需要 GPU；无显卡时用例自动跳过并计 passed）
 $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression -- --nocapture
 # 首建档或确认画面变化是有意的：加 $env:R3E_UPDATE_BASELINE = "1"
+
+# 确定性回放（headless：不建窗口、不碰 GPU）：同参数跑两次并逐行比对 600 帧
+cargo xtask replay
+# 只看输出不做比对（默认 --seed 42 --frames 600 --hash-every 60）
+cargo run -q -p r3e-replay -- --seed 42 --frames 600 --hash-every 60
 ```
 
 **实机验证记录**（Release 构建）：
@@ -6518,6 +6538,7 @@ $env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression
 | 热重载 | 改 `scene.json` 与 `main.rhai` 后 ≤0.4s 生效，场景干净重建 |
 | REPL | 输入指令后自动暂停脚本，指令立即反映到画面 |
 | 物理 | 默认关：`attach_body` 返回 false、`body_count()` 为 0；`--physics on` 后 5 个刚体落地反弹并进入休眠 |
+| 确定性回放（M0-S4） | `cargo xtask replay`：600 帧 / 10 个采样点 / 两次运行哈希完全一致（`final=59d48dedf2b0677e`），含构建 9.3s；每次运行 `nodes=60` 恒定、`depth` 每 10 帧 +1（60 笔事务） |
 | 编译 | `cargo build --release` 零 warning |
 | 像素回归（扩展二十） | RTX 5060 Laptop / Vulkan 实跑 `R3E_VISUAL_REGRESSION=1 cargo test -p r3e-app --test visual_regression`：`captured_frame_matches_baseline ... ok`（5.20s），子进程日志 `渲染器就绪: 640x360` + `[capture] 第 3 帧截图完成: {"bytes":21049,...,"width":640} \| draws=5 instances=10`，与基准图逐像素比对通过 |
 | 材质数据贴图（扩展二十一） | CPU 侧 `cargo test -p r3e-core -p r3e-asset -p r3e-render`：`tangent` 5 / `texture_slot` 3 / `pbr` 4 / `pbr_maps_contract` 9 / `pbr_map_import` 4 全绿；GPU 侧三张图是否真的改变观感需**待人工验证**（拖入带 `NormalMap` / `Roughness` / `AO` 槽位的模型，逐张开关对比亮度与高光形状），无 GPU 断言不下结论 |

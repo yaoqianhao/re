@@ -69,6 +69,8 @@ D:\rust3d-engine
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
 │   ├─ r3e-audio/             # 音频（rodio 后端 + 静默降级 + 混音门面 + 3D 空间化）
+│   ├─ r3e-doc/               # 文档层：Scene 唯一真值 + Command + 事务 + 撤销栈 + 状态哈希
+│   ├─ r3e-replay/            # headless 确定性回放（只依赖 core + doc，不开窗口不碰 GPU）
 │   ├─ r3e-editor/            # 编辑器 RPC 协议（EngineApi / dispatch）+ TCP 桥
 │   ├─ r3e-plugin/            # IDE 插件进程（工具 schema + 读写侧工具集，JSON-RPC over stdio）
 │   ├─ r3e-runtime/           # 运行时：窗口 / 事件循环 / 主循环 / 时间步 / headless（不认编辑器协议）
@@ -81,8 +83,9 @@ D:\rust3d-engine
     └─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
 ```
 
-workspace 共 11 个引擎 crate + 1 个 `xtask` 工具 crate，依赖单向：
-`app → editor-host → (editor, runtime) → render / script / physics / audio / asset → core`，核心层不认识 wgpu。
+workspace 共 **13 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：
+`app → editor-host → (editor, runtime) → render / script / physics / audio / asset → core`，核心层不认识 wgpu；
+旁挂两条：`doc → core`（文档层，场景写入口与哈希）、`replay → core + doc`（回放器）。
 `r3e-app` 已收敛成 30 行薄壳，`cargo xtask dep-check` 每次 verify 都会按 `xtask/dep_rules.json` 重算这条线。
 
 ---
@@ -1002,6 +1005,9 @@ cargo run --release --features rapier -- assets/scene_ccd.json scripts/ccd_demo.
 
 ## 7. 已知边界
 
+- 文档层（`r3e-doc`）负责**事务、撤销栈与状态哈希**，回放（`r3e-replay`）**不依赖渲染 / 音频 / 物理后端**：
+  600 帧回放只在 `Scene` 上打命令、不建窗口不碰 GPU，因此只保证「同机同二进制两次一致」，跨平台位级确定性推到 M2，
+  见 [§38 确定性回放](#38-确定性回放m0-s4)。
 - 单方向光 + **环境探针（IBL）**，直接光照走 **Cook-Torrance**（GGX + Smith + Schlick，
   参数 metallic / roughness / emissive）。环境探针是解析式（三色天空 + 太阳 + 9 项球谐），另有 **HDR 立方体反射探针**
   （扩展二十三：离线预滤波 mip 链，配了探针时金属能映出探针里的环境、镜面按粗糙度取 mip），
@@ -3674,6 +3680,60 @@ target\x86_64-pc-windows-gnu\debug\r3e.exe assets\scene_anim.json scripts\blend_
 - **1D 没有「增量」一说**：1D 根本不剖分；
 - **作废判据盯着位模式**：`samples` 是公开字段，直接改一个坐标不会动 `stale`，所以比对必须逐点 `to_bits()`
   而不只是比长度——否则旧拓扑配新点、权重会静默错位。
+
+---
+
+## 38. 确定性回放（M0-S4）
+
+> 事务、撤销栈与状态哈希三件套落在 `r3e-doc`，回放器单独一个 crate（`r3e-replay`）——
+> **它不认识渲染器、音频、物理后端**，只往 `Document` 上打命令，所以能在无窗口无 GPU 的机器上跑。
+
+### 38.1 三件套分工
+
+| 模块 | 位置 | 干什么 | 关键约束 |
+| --- | --- | --- | --- |
+| 状态哈希 | `crates/r3e-doc/src/state_hash.rs`（604 行） | `world_hash`（场景内容）/ `state_hash`（场景 + 撤销深度）两份指纹，FNV-1a64 + `mix_u64` | **全仓唯一实现**；`nodes` 按 `order` 顺序遍历；`HashMap` 索引（`anim_clips` / `name_index`）不进哈希 |
+| 事务 | `crates/r3e-doc/src/transaction.rs`（198 行） | `begin` → `stage` 若干命令 → `commit`；`preview` 跑影子场景只返回哈希、**不动主文档** | 失败一律 `DocError::RollbackFailed` 上报，不静默；`commit` 只推 1 次 `version` |
+| 撤销栈 | `crates/r3e-doc/src/undo.rs`（168 行） | `UndoStack`：**一笔事务只占一格**，`undo()` 全退；`rollback_to(mark)` 退到指定水位 | 失败不截断历史；`clear()` 只抬水位 |
+
+状态哈希覆盖 13 组字段（`frame` / `time` / 节点变换 / 可见性 / 颜色 / 材质 / 相机 / 环境 / 后处理 / UI / 文本 / 灯光 / 节点名），
+每组有守卫测试：任一字段扰动，哈希必变；同一状态两次哈希必相同。
+
+### 38.2 跑一次
+
+```powershell
+cd D:\rust3d-engine
+
+# 门禁形态：同参数跑两次 + 逐行比对（约 9 秒，含构建）
+cargo xtask replay
+
+# 只看输出
+cargo run -q -p r3e-replay -- --seed 42 --frames 600 --hash-every 60
+```
+
+参数：`--seed`（默认 42）/ `--frames`（默认 600）/ `--hash-every`（默认 60，0 = 不出采样行）。
+
+### 38.3 输出怎么读
+
+```text
+[replay] seed=42 frames=600 hash_every=60 dt=0.016667
+frame 0060 world=e9bd8abd781203c1 state=82f456b8529dd626 nodes=60 depth=6
+...
+frame 0600 world=59d48dedf2b0677e state=cba5196255a3ddf2 nodes=60 depth=60
+[replay] done frames=600 commits=60 undo_depth=60 final=59d48dedf2b0677e
+```
+
+- `world` / `state`：两份指纹。`state` 比 `world` 多混入撤销深度，所以同一画面「改过又撤销回去」时两者会分别反映；
+- `nodes`：活节点数；`depth`：撤销栈深度——**每 10 帧一笔事务**，所以 `depth` 每 10 帧 +1，正常是 6/12/…/60；
+- 每帧固定 9 条命令（8 条改变换 + 1 条改可见性，按 LCG 取模挑目标），前 60 帧每帧 spawn 一个节点做预热；
+- **比对的是整行**，不只哈希：`nodes` / `depth` 一起比，才能在分叉时一眼看出是哪一帧开始不对。
+
+### 38.4 已知边界
+
+- **只保证同机同二进制两次一致**：浮点跨平台差异不处理（跨平台位级确定性推到 M2）；换机器哈希不同不是 bug；
+- **不接脚本与资产**：回放只打 `Command`，不跑 Rhai、不装 FBX/AIR，`r3e-script` 的输入录放属 M1-S5 的 `r3e-cli replay`；
+- **没有 redo**：S4 卡片没要求，重做栈等协议层（`r3e-protocol`）定型再谈；
+- **`preview` 用真快照**：`Scene: Clone` 深拷贝只在事务边界发生；若将来 preview 被高频调用，要改成「每笔事务一次快照 + 复用」。
 
 ---
 

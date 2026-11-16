@@ -277,12 +277,17 @@ cargo xtask dep-check              # r3e-doc 一列零违规，总违规仍 3 �
 
 | 卡号 | 任务 | 验收 |
 |---|---|---|
-| S4-01 | `Transaction`：`begin/preview/apply/commit/rollback` | `preview` 前零副作用（用状态哈希对比证明） |
-| S4-02 | 原子性：N 条命令 apply 中第 k 条失败 → 前 k-1 条自动回退 | 故障注入测试：中间命令失败，文档状态 == 初始状态 |
-| S4-03 | `StateHash`：Document 稳定序列化 → 哈希（FNV/blake3 择一，**只留一份实现**） | 同状态两次哈希相同；不同状态必不相同 |
-| S4-04 | `UndoStack` + 全量回退测试 | "任意命令序列 apply 后 undo 到空，哈希与初始一致"（性质测试，随机序列 N=100） |
-| S4-05 | headless 确定性回放：固定步长 + 可设种子 + 600 帧 | 同输入两次运行，每 60 帧哈希完全一致 |
-| S4-06 | `cargo xtask replay --seed 42 --frames 600` 接进 `verify` | `verify` 输出状态哈希行 |
+| S4-01 ✅ | `Transaction`：`begin/preview/apply/commit/rollback` | `preview` 前零副作用（用状态哈希对比证明） | `transaction.rs` **198 行**，`begin/stage/apply/preview/commit/rollback` 六入口齐；`preview` 走 `Scene: Clone` 影子场景、只回哈希，`preview_is_side_effect_free` + `preview_matches_real_execution` 锁住 |
+| S4-02 ✅ | 原子性：N 条命令 apply 中第 k 条失败 → 前 k-1 条自动回退 | 故障注入测试：中间命令失败，文档状态 == 初始状态 | 失败按**倒序 undo** 退到 `base`，退不动报 `DocError::RollbackFailed`、绝不静默；`failed_apply_rolls_back_to_base` / `rollback_restores_base_without_version_bump` |
+| S4-03 ✅ | `StateHash`：Document 稳定序列化 → 哈希（FNV/blake3 择一，**只留一份实现**） | 同状态两次哈希相同；不同状态必不相同 | 择 **FNV-1a64**，`state_hash.rs` **604 行**（`mix_u64/mix_f32/mix_str` 一份实现）；13 组字段逐组守卫测试，`state_hash_of_same_scene_is_stable` 锁同状态；`r3e-runtime` 帧指纹改为复用同一套 mix（输出格式不变），余下 3 处 FNV 在 `air`/`plugin::tools`，属资产与插件域、按方案保留 |
+| S4-04 ✅ | `UndoStack` + 全量回退测试 | "任意命令序列 apply 后 undo 到空，哈希与初始一致"（性质测试，随机序列 N=100） | `undo.rs` **168 行**：`UndoGroup` **一笔事务只占一格**、`rollback_to(mark)` 退到水位；性质测试 `random_sequence_undo_to_empty_restores_hash`（N=100）已落地，另有 `undo_failure_keeps_command_on_stack` / `failed_undo_keeps_remaining_history` 锁「失败不截断历史」 |
+| S4-05 ✅ | headless 确定性回放：固定步长 + 可设种子 + 600 帧 | 同输入两次运行，每 60 帧哈希完全一致 | 新建 `r3e-replay` crate（**546 src / 11 测**）：LCG 种子 + `dt=1/60` 固定步 + 每帧 9 条命令、每 10 帧一笔事务；600 帧 10 个采样点两次运行逐行一致，`final=59d48dedf2b0677e`、`nodes=60`、`depth=60`；不依赖渲染 / 音频 / 物理后端 |
+| S4-06 ✅ | `cargo xtask replay --seed 42 --frames 600` 接进 `verify` | `verify` 输出状态哈希行 | `xtask replay` 先 build 再跑 exe **两次**、逐行 diff（不只比末行），`verify` 末尾追加该步；实测 rc=0、含构建 9.3s |
+
+**收尾实测（2026-11-15）**：`r3e-doc` 单测 **63 → 82**（+19：哈希 5 / 事务 9 / 撤销 6，含 1 条 N=100 随机序列性质测试），
+新增 `r3e-replay` **11 测**；全仓 **1,427 → 1,457 单测 / 1,457 passed / 0 failed**（`--all-features` 同值）；
+`cargo xtask verify` 的 fmt / dep-check / clippy（`-D warnings`）/ test / doc-gate / lint-size / replay 全绿。
+`Scene: Clone` 在方案期只做探针后即还原，S4 真实引入（`preview` 需要真快照），`cargo check -p r3e-core` 与全仓测试均通过。
 
 **退出演示**：`cargo xtask verify` 中包含 600 帧回放哈希对比，全程不开 GPU。
 
@@ -378,12 +383,12 @@ cargo xtask lint-size       # 白名单外 0 文件
 
 | # | 指标 | 当前 (2026-11-15) | M0 目标 | 采集方式 |
 |---|---|---|---|---|
-| 1 | 最大文件行数 | 4053 | ≤800 | `cargo xtask lint-size` |
+| 1 | 最大文件行数 | 4057 | ≤800 | `cargo xtask lint-size` |
 | 2 | `>800` 行文件数 | 24 | ≤12 | 同上 |
-| 3 | `#[test]` 总数 | 1427 | 只增不减 | `cargo xtask verify` 快照比对 |
+| 3 | `#[test]` 总数 | 1457 | 只增不减 | `cargo xtask verify` 快照比对 |
 | 4 | 依赖违规数 | 3 | 0 | `cargo xtask dep-check` |
-| 5 | `verify` 时长 | 不存在 | <120s | `cargo xtask verify` 自带计时 |
-| 6 | 回放确定性 | 不存在 | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
+| 5 | `verify` 时长 | 19.6s（热缓存） | <120s | `cargo xtask verify` 自带计时 |
+| 6 | 回放确定性 | **已达成**（`final=59d48dedf2b0677e`） | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 
 看板记录表（每周追加）：
 
@@ -392,6 +397,7 @@ cargo xtask lint-size       # 白名单外 0 文件
 | 2026-11-14 | 4487 | 25 | 1408 | 4 | — | — |
 | 2026-11-15 | 4053 | 24 | 1427 | 3 | — | — |
 | 2026-11-15（M0-S3 收口） | 4053 | 24 | 1427 | 3 | — | — |
+| 2026-11-15（M0-S4 收口） | 4057 | 24 | 1457 | 3 | 19.6 | 600 帧两次一致 |
 
 ---
 

@@ -417,9 +417,21 @@ cargo run -p r3e-app -- --run-seconds 20   # 帧行为不变：帧数 / 节点�
 
 ---
 
-## 14. S3 之后（S4 的接口已预留）
+## 14. S3 之后（S4 已落地，预留点逐条兑现）
 
-- `doc.write()` 是 `Transaction::apply` 的唯一落地点 → S4 的原子性只需在 write 外面套"前像栈"。
-- `Document::version` 是 `StateHash` 的节拍器 → S4-03 只需对 `scene` 做稳定序列化后哈希，无需新增真值容器。
-- `Command` 的 `&self` + 构造期前像 → S4-02 的"第 k 条失败自动回退"可以直接倒序 `undo()`，不需要命令可变状态。
+本节原写于 S3 收尾，记的是"留给 S4 的三处接口"。S4 已完成，下面是当时的预判与实落结果的对照——
+方案与实测细节见 [`docs/M0S4_TRANSACTION.md`](M0S4_TRANSACTION.md)。
+
+| S3 预留点 | S4 实落 | 是否如预判 |
+| --- | --- | --- |
+| `doc.write()` 是 `Transaction::apply` 的唯一落地点 | `Transaction` 不绕开 `write`：`stage` 收命令、`commit` 里逐条 `apply` 走 `Document::apply` → 同一个写入口 | 是（原子性靠倒序 `undo`，不是在 write 外面再包一层前像栈） |
+| `Document::version` 是 `StateHash` 的节拍器 | `state_hash` 缓存按 `version` 失效，`state_hash_cache_follows_version` 锁住；`state_hash` 本身**不含** `version`，只含 `frame`/`time`/内容 | 是（但缓存反而成了必须——每次全量遍历太贵，见 S4 文档 §3） |
+| `Command` 的 `&self` + 构造期前像 | `Transaction::commit` 失败时倒序 `undo()` 即可回到 base，命令无需可变状态；`failed_apply_rolls_back_to_base` 覆盖 | 是 |
+
+两处**预判之外**的发现：
+
+- `preview` 要真快照：S3 期以为"只算哈希不动场景"够用，实际要拿到「应用后」的哈希必须真跑一遍，
+  所以给 `Scene` 加了 `Clone`（方案期先做探针验证可行再还原，S4 正式引入）——这条成本当初没算进 S3 的预留里；
+- `undo` 的粒度是**事务**不是**命令**：`Document::undo()` 在 v0 是单步栈（一格一条命令），
+  S4 换成 `UndoStack` + `UndoGroup`（一笔事务一格），所以 `undo_depth` 的语义从"命令数"变成"事务数"。
 *（内容由AI生成，仅供参考）*

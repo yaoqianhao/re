@@ -363,11 +363,13 @@ docs/M0S4_TRANSACTION.md           ★本文
 
 ## 11. 文档同频清单（S4 收尾时一并刷新，以当时实测为准）
 
-1. `docs/AI_ROADMAP_EXECUTION.md`：S4 卡片 S4-01…S4-06 打勾；看板测试数刷到落地实测值；「前置条件」补 S3 交接实况（`Scene: Clone`、`undo_stack` 已在）。
-2. `docs/ARCHITECTURE.md`：§「文档层」补 `state_hash` / `transaction` / `undo` 三模块与职责边界；规模表加 `r3e-doc` 新行数与 `r3e-replay` 一行；「运行与验证」表加 `cargo xtask replay --seed 42 --frames 600`。
-3. `README.md`：边界段补一句「文档层负责事务与状态哈希，回放不依赖渲染 / 音频」；新增一节说明 600 帧确定性回放怎么跑、输出怎么读。
-4. `xtask/tests_baseline.json` / `size_debt.json`：落地实测回填（只增不减、只降不升）。
-5. `docs/M0S3_DOC_LAYER.md` §14：把「S4 的接口已预留」改为「已由 M0S4_TRANSACTION.md 承接」并给链接。
+已全部完成（2026-11-15，与代码同频）：
+
+1. ✅ `docs/AI_ROADMAP_EXECUTION.md`：S4-01…S4-06 全打勾，每卡补「实落」列；表格后补「收尾实测」段（63 → 82、1,427 → 1,457）。
+2. ✅ `docs/ARCHITECTURE.md`：文档层补 `state_hash` / `transaction` / `undo` 三模块职责；规模表 `r3e-doc` 改 2,454 / 1,488 / 82、新增 `r3e-replay` 546 / — / 11、合计 79,525 / 17,216 / 1,457，另记一条 M0-S4 增量段；运行与验证加 `cargo xtask replay` 并在实机验证表加一行。
+3. ✅ `README.md`：§7 边界首条补「文档层负责事务 / 撤销 / 哈希，回放不依赖渲染 / 音频 / 物理」；新增 §38「确定性回放（M0-S4）」（分工表 + 怎么跑 + 输出怎么读 + 4 条已知边界）。
+4. ✅ `xtask/tests_baseline.json` / `size_debt.json`：`r3e-replay` 记 11、total 刷到 1457；`lint-size` 无新增债务（全部文件 ≤ 800）。
+5. ✅ `docs/M0S3_DOC_LAYER.md` §14：改为「S4 已落地」，三处预留点逐条对照实落结果，另记两条预判之外的发现。
 
 ---
 
@@ -377,4 +379,54 @@ docs/M0S4_TRANSACTION.md           ★本文
 - `UndoStack` 的 tx 标记直接给 M1-S3「一次意图 = N 条原子命令，undo 一次全退」用，S4 已把粒度做对。
 - `r3e-replay` 的 `ReplayConfig` / `run()` 直接给 M1-S5 的 `r3e-cli replay` 复用，S4 只做「同机两次一致」，M1 再加「跨版本对照」。
 - `state_hash` 是 S5「invariants」与 M1「对外 dry-run 返回哈希」的唯一哈希入口，届时只允许调用，不允许再写第二份。
+---
+
+## 13. 收尾实测（落地后回填，2026-11-15）
+
+### 13.1 预算 vs 实际
+
+| 文件 | 预算 | 实际 | 说明 |
+| --- | --- | --- | --- |
+| `r3e-doc/src/lib.rs` | 285 → ~300 | **315** | `+begin` / `+哈希缓存字段` / `+变体`，比预估多 15 行 |
+| `r3e-doc/src/write.rs` | 80 → ~95 | **80** | 未动——缓存失效挂在 `Document::version` 比对，不需要写入口配合 |
+| `r3e-doc/src/state_hash.rs` | ~280 | **604** | 超一倍：13 组字段的守卫测试内联写在文件里（逻辑本身约 190 行） |
+| `r3e-doc/src/transaction.rs` | ~260 | **198** | 六入口 + 9 测，比预估省 |
+| `r3e-doc/src/undo.rs` | ~150 | **168** | `UndoGroup` + `mark` / `rollback_to` 水位 + 6 测 |
+| `r3e-doc/src/command/mod.rs` | 313 → ~290 | **337** | 反而涨了：`undo_stack: Vec<CommandKind>` 保留（S3 单命令路径不动），`UndoStack` 是并存的第二层 |
+| `r3e-replay/src/{lib,main}.rs` | ~310 | **546** | `ReplayConfig` / `Lcg` / `run()` / `Report` + 11 测 |
+| `xtask/src/main.rs` | 450 → ~520 | **+48** | `replay()` 走「build → 跑两次 → 逐行 diff」，不需要捕获解析输出 |
+
+结论：**只有 `state_hash.rs` 超预算**，原因是守卫测试写成内联而非拆到 `tests/`；
+其余均在设计区间内，`lint-size` 无新增债务。
+
+### 13.2 门禁结果
+
+| 门禁 | 结果 |
+| --- | --- |
+| `cargo test --workspace` | **1,457 passed / 0 failed**（`--all-features` 同值） |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
+| `cargo xtask doc-gate` | 六规则 0 违规 |
+| `cargo xtask dep-check` | `r3e-replay` 零违规（allow = core + doc）；余下为 S5 已知债务 |
+| `cargo xtask lint-size` | 0 新增债务 |
+| `cargo xtask replay` | rc=0，600 帧 / 10 采样点 / 两次逐行一致 `final=59d48dedf2b0677e` |
+
+### 13.3 提交记录（本地，未推送）
+
+| 提交 | 内容 |
+| --- | --- |
+| `834b44f` | feat(doc): StateHash 唯一实现 + 哈希缓存（S4-P1） |
+| `8b23c58` | feat(doc): Transaction v0（begin/preview/commit/rollback + 原子回退）（S4-P2） |
+| `2f4ea7a` | feat(doc): UndoStack v0（一笔事务一格 + rollback_to 水位）（S4-P3） |
+| `b0fa702` | feat(replay): r3e-replay 确定性回放 600 帧 + xtask replay 逐行比对（S4-P4） |
+| 本文档所在提交 | docs: M0-S4 收尾同频（方案 §10 第 5 笔） |
+
+### 13.4 与方案的三处偏差（均已落进代码注释）
+
+1. `write.rs` 未改：原以为缓存失效要在写入口显式打标，实际只需比对 `Document::version`；
+2. `command/mod.rs` 的 `undo_stack` **没迁出**：S3 的单命令 undo 仍由 `Document::undo()` 直接支撑，事务层是 `UndoStack` 并存，
+   两条路互不干扰——方案 §2「事务与单命令并存」在这里兑现；
+3. `preview` 返回 `StateHash` 而非报告对象：刻意留窄口子，M1-S1 换 `PreviewReport { hash, diff }` 时不破坏调用方。
+
+---
+
 *（内容由AI生成，仅供参考）*
