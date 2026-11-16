@@ -1,5 +1,5 @@
 {
-  "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。M0-S5：r3e-editor 101->72、新增 r3e-protocol 29（协议层 29 条内嵌测试整体迁出，合计仍 1457，只搬家不减少）；D2 能力生成器：r3e-doc 82->86（ISSUE_CODES 表 4 条自检）、r3e-protocol 29->33（caps DTO 4 条），合计 1465。",
+  "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。M0-S5：r3e-editor 101->72、新增 r3e-protocol 29（协议层 29 条内嵌测试整体迁出，合计仍 1457，只搬家不减少）；D2 能力生成器：r3e-doc 82->86（ISSUE_CODES 表 4 条自检）、r3e-protocol 29->33（caps DTO 4 条）+ 34（RPC_METHODS 与 dispatch 臂对齐门），合计 1466。",
   "crates": {
     "r3e-core": 576,
     "r3e-doc": 86,
@@ -9,12 +9,12 @@
     "r3e-asset": 61,
     "r3e-editor-host": 58,
     "r3e-plugin": 47,
-    "r3e-protocol": 33,
+    "r3e-protocol": 34,
     "r3e-audio": 29,
     "r3e-physics": 28,
     "r3e-runtime": 14,
     "r3e-app": 11,
     "r3e-replay": 11
   },
-  "total": 1465
+  "total": 1466
 }

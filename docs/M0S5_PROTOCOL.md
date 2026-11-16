@@ -489,10 +489,10 @@ cargo xtask verify
 
 | 门禁 | 结果 |
 |---|---|
-| `cargo test --workspace` | 待填 |
+| `cargo test --workspace` | 1466 条全绿（D2/D3 后） |
 | `lint-size`（债务数） | 待填 |
 | `dep-check --strict`（违规 / 债务） | 待填 |
-| `gen-capabilities --check` | 待填 |
+| `gen-capabilities --check` | 绿（D2 首绿；D3 注入 4 项全部按预期变红/回绿，见 §13.5） |
 | `invariants`（24/24/24） | 待填 |
 | 回放哈希 | 待填 |
 
@@ -508,4 +508,16 @@ cargo xtask verify
 | D2-2 `capabilities.json` 2 800 → **4 744 行** | 实际每条命令 ~12.8 行（`name`/`domain`/`rpc`/`params[]`/`returns`/`reversible`/`cost`/`since` 八字段多行展开 + 中文说明），`lint-size` 只扫 `*.rs` 故不触发阈值 |
 | D2-3 生成器位置 | 方案写 `xtask/src/gen_capabilities.rs` 重写 + `xtask/main.rs` 562→640；实际新建独立模块 271 行，`main.rs` 只加 `mod` 声明、`--check` 参数与分发臂（net 增 5 行），旧 37 行占位函数整体删除 |
 | D2-4 硬断言口径 | 方案要求「命令数 == cmd_spec::len()」；实现改为对常量 `EXPECTED_COMMANDS = 369` 硬断言 + RPC 集合与 `RPC_METHODS` 双向差集校验，把「加命令」变成必须显式改常量的动作 |
+
+### 13.5 故障注入演练（D3 实测，四项全部按预期变红/回绿）
+
+| # | 注入动作 | 期望 | 实测 |
+|---|---|---|---|
+| A | `cmd_spec/meta.rs` 把 `scene.list` 的 `rpc: Some(..)` 改 `None` | `gen-capabilities --check` 非 0 | ✅ rc=1，一次报 3 条：`rpc 条目 38 条，RPC_METHODS 39 条` / `命令表缺 ["scene.list"]` / `命令表缺少 RPC 方法：scene.list` |
+| B | 还原 A | 回绿 | ✅ `清单与代码一致` |
+| C | `dispatch/scene.rs` 把 `"scene.list" =>` 改成 `"scene.list.tmp" =>`（编译仍过，只是掉进未知方法分支） | 契约测试非 0 | ✅ `rpc_methods_match_dispatch_arms` 失败：`dispatch 缺 ["scene.list"]（声明了但没实现），多 ["scene.list.tmp"]` |
+| D | 手改 `docs/capabilities.json` 一个字段（`cheap` → `CHEAP`） | `--check` 报漂移并定位 | ✅ rc=1，`首个差异在第 45 行` + 两行原文对照 |
+
+> 演练本身不留痕：四处注入全部原样还原，`git status` 干净后才提交。
+> C/D 是两种不同的失效面——C 抓「实现被删」，D 抓「清单被手改或忘重生成」，二者互补，缺一都会漏。
 *（内容由AI生成，仅供参考）*

@@ -685,3 +685,75 @@ mod stats_capture_rpc_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------- 门禁：实现与声明对齐
+
+/// 从 dispatch 源码里抠出所有 `match` 臂的方法名字面量。
+///
+/// 只认「行首是双引号 + 本行含 `=>`」的行，取 `=>` 之前的部分再把双引号里的内容全取出——
+/// 这样 `"a" | "b" =>`、`"a" if cond =>`、`"a" => match ...` 三种写法都能正确解析，
+/// 而臂体里出现的字符串（`"ok"` / `"error"` 之类）不会被误当成方法名。
+fn collect_dispatch_arms() -> Vec<String> {
+    const SOURCES: &[&str] = &[
+        include_str!("../src/dispatch/mod.rs"),
+        include_str!("../src/dispatch/scene.rs"),
+        include_str!("../src/dispatch/media.rs"),
+    ];
+
+    let mut names = Vec::new();
+    for src in SOURCES {
+        for line in src.lines() {
+            let head = line.trim_start();
+            if !head.starts_with('"') {
+                continue;
+            }
+            let Some(pos) = head.find("=>") else { continue };
+            let mut in_str = false;
+            let mut buf = String::new();
+            for ch in head[..pos].chars() {
+                match ch {
+                    '"' => {
+                        if in_str {
+                            names.push(std::mem::take(&mut buf));
+                        }
+                        in_str = !in_str;
+                    }
+                    c if in_str => buf.push(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// `RPC_METHODS` 必须与 `dispatch` 的 `match` 臂双向对齐（S5-03 的「删实现要红」）。
+///
+/// 为什么扫源码而不是调 `dispatch`：删掉一个臂时代码**照样编译**（掉进 `_ =>` 未知方法分支），
+/// 运行时才会 404。扫源码能把这种「声明还在、实现没了」的漂移在测试期就按住。
+#[test]
+fn rpc_methods_match_dispatch_arms() {
+    /// 允许比 `RPC_METHODS` 多出来的臂：传输层心跳 + 两条无点历史别名（仍接受，不再声明）。
+    const EXTRA_ARMS: &[&str] = &["ping", "enginestats", "captureframe"];
+
+    let arms = collect_dispatch_arms();
+
+    let mut expected: Vec<String> = RPC_METHODS.iter().map(|m| (*m).to_string()).collect();
+    expected.extend(EXTRA_ARMS.iter().map(|m| (*m).to_string()));
+    expected.sort_unstable();
+    expected.dedup();
+
+    let missing: Vec<&String> = expected.iter().filter(|m| !arms.contains(m)).collect();
+    let extra: Vec<&String> = arms.iter().filter(|m| !expected.contains(m)).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "RPC_METHODS 与 dispatch 臂不一致：dispatch 缺 {missing:?}（声明了但没实现），多 {extra:?}（实现了但没声明）"
+    );
+    assert_eq!(
+        arms.len(),
+        RPC_METHODS.len() + EXTRA_ARMS.len(),
+        "臂总数对不上"
+    );
+}
