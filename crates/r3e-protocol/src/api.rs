@@ -290,4 +290,54 @@ pub trait EngineApi {
     fn script_reload(&mut self) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("script.reload"))
     }
+
+    /// 开一笔事务，返回事务句柄（M1-S1）。
+    ///
+    /// 回包契约：`{ "txId": String, "baseHash": u64, "version": u64, "staged": 0 }`。
+    /// `baseHash` 是开事务那一刻的内容哈希，**`commit` 前任何操作都不许改它**——上层用
+    /// 这一条断言「`preview` / `apply` 真的没动场景」。
+    ///
+    /// 同一时刻只允许一笔未决事务：已有未决事务时宿主应回 `TX_BUSY`
+    /// （错误码见 crate 根的 `TX_*` 常量），而不是排队或隐式提交上一笔。
+    fn tx_begin(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("tx.begin"))
+    }
+
+    /// 把一条**意图**暂存进事务。
+    ///
+    /// `op` 是白名单内的点分方法名（如 `scene.settransform`），`args` 是它的具名参数字典
+    /// （缺省 `null`）。宿主负责把「方法名 + 参数」翻译成 `r3e-doc` 的命令值对象——前像
+    /// 必须在执行当下的 `&mut Document` 里就地抓，不能让远端伪造（见 `dispatch/tx.rs` 头注释）。
+    ///
+    /// 回包契约：`{ "txId", "staged": usize, "op": String }`。暂存不落场景、不推版本。
+    fn tx_apply(&mut self, _tx_id: &str, _op: &str, _args: &Value) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("tx.apply"))
+    }
+
+    /// 影子预演：在**不改场景**的前提下算出提交后的哈希与受影响对象。
+    ///
+    /// 回包契约：`{ "txId", "baseHash": u64, "previewHash": u64, "staged": usize,
+    /// "changed": [{ "kind": String, "target": String|null }] }`。
+    /// `baseHash` 与 `tx.begin` 返回值必须一致，否则说明有东西在事务外改了文档。
+    fn tx_preview(&mut self, _tx_id: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("tx.preview"))
+    }
+
+    /// 提交：n 条命令作为**一笔**入撤销栈，版本只 +1，一次 `undo` 整笔退回。
+    ///
+    /// 回包契约：`{ "txId", "committed": usize, "hash": u64, "version": u64, "undoDepth": usize }`。
+    /// 任一条命令失败则整笔不落（原子性），返回错误且事务仍保持未决——由调用方决定
+    /// `rollback` 还是修完重试。
+    fn tx_commit(&mut self, _tx_id: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("tx.commit"))
+    }
+
+    /// 回滚：丢弃暂存，场景回到 `tx.begin` 时的基哈希。
+    ///
+    /// 回包契约：`{ "txId", "undone": usize, "hash": u64, "version": u64 }`。
+    /// 由于暂存期场景本就没被改动，`undone` 通常是 0；非 0 只有在宿主把暂存实现成
+    /// 「真应用 + 影子记录」时才可能出现。
+    fn tx_rollback(&mut self, _tx_id: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("tx.rollback"))
+    }
 }

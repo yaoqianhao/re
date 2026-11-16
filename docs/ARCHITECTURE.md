@@ -178,12 +178,12 @@ M0-S5 把编辑器协议按「数据 / 传输」切开后，协议层不再是�
                               │
         ┌─────────────────────┼─────────────────────┐
         ▼                     ▼                     ▼
-   dispatch 路由表       RPC_METHODS（39）      capabilities.json
-  （match 臂，全在          （权威方法列表）       （机器可读清单，369 命令）
+   dispatch 路由表       RPC_METHODS（44）      capabilities.json
+  （match 臂，全在          （权威方法列表）       （机器可读清单，374 命令）
    protocol/dispatch/）           │                     ▲
         └──────────────┬──────────┘                     │
                        ▼                                │
-              cmd_spec 命令表（369）─── gen-capabilities ┘
+              cmd_spec 命令表（374）─── gen-capabilities ┘
                        │
                        ▼
               ISSUE_CODES（24 条不变量）── invariants 门 ── 测试断言（24 条）
@@ -193,17 +193,18 @@ M0-S5 把编辑器协议按「数据 / 传输」切开后，协议层不再是�
 
 | 投影 | 位置 | 规模 | 谁在核 |
 |---|---|---|---|
-| `cmd_spec` 命令表 | `r3e-core/src/cmd_spec/`（12 文件） | 369 条（rpc 39 + script_only 330，域 17） | `cmd_spec_contract` 测试 + `gen-capabilities` |
-| `RPC_METHODS` 权威列表 | `r3e-protocol/src/lib.rs` | 39 条 | `rpc_contract` 测试双向对齐 dispatch 臂 |
+| `cmd_spec` 命令表 | `r3e-core/src/cmd_spec/`（12 文件） | 374 条（rpc 44 + script_only 330，域 17） | `cmd_spec_contract` 测试 + `gen-capabilities` |
+| `RPC_METHODS` 权威列表 | `r3e-protocol/src/lib.rs` | 44 条（M1-S1 起含 5 条 `tx.*`） | `rpc_contract` 测试双向对齐 dispatch 臂 |
 | `ISSUE_CODES` 不变量登记表 | `r3e-doc/src/validate/` | 24 条 | `invariants` 门（三源比对）+ 反例测试 |
 
 `dispatch` 是协议层唯一的入口函数，M0-S5 由单文件 896 行拆成三个：
 
 | 文件 | 行数 | 负责 |
 |---|---|---|
-| `dispatch/mod.rs` | 337 | `dispatch()` 主体：方法名分派、参数反序列化、错误码映射 |
-| `dispatch/scene.rs` | 486 | `scene.*` / `text.*` / `ui.*` / `light.*` 等场景面方法实现 |
-| `dispatch/media.rs` | 255 | `capture.*` / `audio.*` / `engine.*` 等采集与媒体面方法实现 |
+| `dispatch/mod.rs` | 313 | `dispatch()` 主体：方法名分派、参数反序列化、错误码映射；M1-S1 起把 `tx.*` 交给 `dispatch/tx.rs` |
+| `dispatch/scene.rs` | 471 | `scene.*` / `text.*` / `ui.*` / `light.*` 等场景面方法实现 |
+| `dispatch/media.rs` | 250 | `capture.*` / `audio.*` / `engine.*` 等采集与媒体面方法实现 |
+| `dispatch/tx.rs` | 102 | `tx.*` 事务协议面（M1-S1 新增）：`begin` / `apply` / `preview` / `commit` / `rollback` 五个方法，只做参数解包与转调，事务态归宿主 |
 
 两道门（`cargo xtask verify` 内自动跑，任一红即失败）：
 
@@ -211,6 +212,39 @@ M0-S5 把编辑器协议按「数据 / 传输」切开后，协议层不再是�
 2. **`invariants`**：把不变量三源（登记表 `ISSUE_CODES` / 测试里的 `assert_error("code")` / 清单里的 `invariants`）做差集，任一侧单独漂移都报出 `missing_*` / `stale_*` 四类并列出具体 code。三侧同时改才放行。
 
 > 为什么不用「清单自检」而用「三源比对」：清单由生成器产出，自检只能证明「清单与生成器一致」，证明不了「清单里的每条不变量真的有测试在守」。三源比对把**登记表当被测对象、测试当证据、清单当产物**，缺证据的不变量无法蒙混过关。
+
+### 3.1.2 事务协议：`tx.*` 五方法（M1-S1）
+
+M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次调用内跑完 n 条命令）抬升成**跨 RPC 的会话式事务**。AI 侧的一次改动是四条独立请求（`tx.begin` → 若干 `tx.apply` → `tx.preview` → `tx.commit`），中间 `Document` 的 `RefCell` 早被释放了，所以事务态不能是「宿主里一个活对象」。
+
+**事务态挂在哪**：挂在 `Document` 上（`crates/r3e-doc/src/tx.rs`，277 行），不是挂在 `LocalEngineApi` 上——每次 RPC 都新建一个 `LocalEngineApi`，字段活不过一次请求（方案 C1 的落地形态，与 M1-PLAN 中「宿主 TxRegistry」的差异在此：注册表放到宿主必然随请求消亡）。
+
+未决事务只保留三样东西：`id`、`base`（`begin` 时刻的 `StateHash`）、`shadow`（主场景的副本）。命令在**影子**上构造并执行，主场景在 `commit` 之前一个字节都不动，由此得到三条性质：
+
+| 性质 | 机制 | 可观测结果 |
+|---|---|---|
+| 隔离 | 未决期间其他 RPC 读的是主场景 | 事务期间 `scene.get` / `state_hash` / 版本号 / 撤销栈全不变 |
+| 回滚零风险 | `rollback` 只是丢影子，不做 undo 反演 | 不存在「某条 undo 不精确导致回滚不完整」的失败面 |
+| 冲突显式化 | `commit` 前比对 `state_hash()` 与 `base` | 事务期间被别人改过 → `TX_CONFLICT`，而不是拿旧前像覆盖别人的改动 |
+
+五个方法的契约：
+
+| 方法 | 入参 | 回包 | 失败码 |
+|---|---|---|---|
+| `tx.begin` | — | `txId` / `baseHash`（`0x` + 16 位十六进制）/ `version` / `staged=0` | `TX_BUSY`（已有未决事务） |
+| `tx.apply` | `txId` + `op` + 该 op 的原生参数 | `txId` / `op` / `staged`（累计条数） | `TX_NOT_FOUND` / `TX_REJECTED`（op 不在白名单）/ `TX_APPLY_FAILED`（物件不存在等） |
+| `tx.preview` | `txId` | `staged` / `base` / `current` / `shadow` 三个哈希 | `TX_NOT_FOUND` |
+| `tx.commit` | `txId` | `committed`（条数）/ `hash` / `version`（+1） | `TX_NOT_FOUND` / `TX_CONFLICT` |
+| `tx.rollback` | `txId` | `dropped`（丢弃条数）/ `hash`（回到 `base`）/ `version` | `TX_NOT_FOUND` |
+
+两条硬规矩：
+
+1. **同一时刻只允许一笔未决事务**（`TX_BUSY`）。多笔并行会让各自影子各推一份未来，提交顺序不同得到不同结果——那是「先解决语义再谈并发」的问题，不是实现细节。
+2. **`tx.apply` 的 `op` 走白名单**，白名单 = 有 `CommandKind` 且能补齐前像的写点。首版 5 条：`scene.spawn` / `scene.settransform` / `scene.setvisible` / `light.remove` / `ui.remove`。白名单外的写点（`scene.remove` / `scene.setmaterial` / `light.set` / `ui.set` / 环境类）回 `TX_REJECTED`——**不允许为了「凑齐」在事务里绕过命令直改场景**，那会让 `undo` 悄悄失效。
+
+`base` 只在 `begin` 时取一次，`commit` 成功后强制重取（方案风险 R4：「事务态与 `StateHash` 双源」的处置）。哈希出网形态是字符串不是数字：JSON 数字进 JS 会被 `Number` 截到 53 位有效位，而冲突判定恰好依赖这个值。
+
+测试面：`crates/r3e-doc/tests/tx.rs` 13 个用例（影子隔离、提交记账、冲突、回滚、换场景作废）、`crates/r3e-protocol/tests/tx_contract.rs`（五方法可分发 + 参数整形）、`crates/r3e-editor/tests/cmd_spec_contract.rs`（`tx.*` 进能力表）。
 
 ### 3.2 代码规模
 
@@ -221,16 +255,16 @@ M0-S5 把编辑器协议按「数据 / 传输」切开后，协议层不再是�
 | r3e-asset | 5,979 | 894 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-script | 6,230 | 3,367 | 132 | `api/`（17 文件，最大 `mod.rs` 428 行；M0-S2 由单文件 4,070 拆出）/ `lib.rs`（2,021）；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
 | r3e-runtime | 4,338 | — | 14 | `app.rs`（3,066：窗口 / 主循环 / 时间步）/ `asset_scene.rs`（474：资产装配 spawn / 形变 / 蒙皮 / 动画，M0-S3 抽出）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
-| r3e-editor-host | 3,979 | 119 | 58 | `api/`（13 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
+| r3e-editor-host | 4,287 | 127 | 58 | `api/`（14 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出，M1-S1 增 `api/tx.rs` 269）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| r3e-protocol | 2,326 | 759 | 34 | `msg.rs` / `patch.rs` / `api.rs`（`EngineApi` trait）/ `caps.rs`（能力清单 DTO）/ `dispatch/`（3 文件：`mod.rs` 337 路由 + `scene.rs` 486 + `media.rs` 255；M0-S5 由 `r3e-editor/lib.rs` 单文件搬出）/ `tests/rpc_contract.rs`（759：`RPC_METHODS` 与 dispatch 臂双向对齐 + 清单 DTO 契约） |
+| r3e-protocol | 2,518 | 1,037 | 49 | `msg.rs` / `patch.rs` / `api.rs`（`EngineApi` trait）/ `caps.rs`（能力清单 DTO）/ `dispatch/`（4 文件：`mod.rs` 313 路由 + `scene.rs` 471 + `media.rs` 250 + `tx.rs` 102 事务面，M1-S1 从 `mod.rs` 拆出）/ `tests/rpc_contract.rs`（`RPC_METHODS` 与 dispatch 臂双向对齐 + 清单 DTO 契约）/ `tests/tx_contract.rs`（`tx.*` 五方法分发与参数整形） |
 | r3e-editor | 505 | 1,875 | 72 | `lib.rs`（35：只做 `pub use r3e_protocol::*` 再导出，保证旧 `use r3e_editor::` 调用方零改动）/ `server.rs`（470：TCP / NDJSON 传输 + 资源上限单测）；协议数据层已于 M0-S5 迁往 `r3e-protocol` |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| **r3e-doc** | 2,676 | 1,619 | 96 | `lib.rs`（315：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`state_hash.rs`（604：`StateHash` 唯一实现 + 13 组字段覆盖表 + 哈希缓存）、`transaction.rs`（198：`begin` / `preview` / `commit` / `rollback` + `RollbackFailed`）、`undo.rs`（168：`UndoStack` 一事务一格 + `rollback_to` 水位）、`write.rs`（80：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 337 最大，`Command` trait；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，24 个 issue code，M0-S5 补齐最后 10 条的反例测试） |
+| **r3e-doc** | 3,045 | 1,924 | 109 | `lib.rs`（315：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`state_hash.rs`（604：`StateHash` 唯一实现 + 13 组字段覆盖表 + 哈希缓存）、`transaction.rs`（198：`begin` / `preview` / `commit` / `rollback` + `RollbackFailed`）、`tx.rs`（277：M1-S1 会话式事务，`TxSession` 影子场景 + `TX_BUSY` 单笔约束）、`undo.rs`（168：`UndoStack` 一事务一格 + `rollback_to` 水位）、`write.rs`（80：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 337 最大，`Command` trait；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，24 个 issue code，M0-S5 补齐最后 10 条的反例测试） |
 | r3e-replay | 546 | — | 11 | `lib.rs`（427：`ReplayConfig` / LCG / `run()` 每帧 9 条命令、每 10 帧一笔事务、每 60 帧一个采样点）、`main.rs`（119：命令行与逐行输出契约，供 `xtask replay` 比对） |
 | r3e-app | 36 | 1,437 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
-| **合计** | **79,511** | **18,125** | **1,476** | **约 7.95 万行 Rust + 1,512 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace` 实测 1,476 passed / 0 failed（含 lib/bin/集成/doctest 全部 harness；`rapier` 特性另有 4 条 feature-gated 用例）** |
+| **合计** | **80,438** | **18,719** | **1,504** | **约 8.04 万行 Rust + 1,512 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features --features rapier` 实测 1,504 passed / 0 failed（含 lib/bin/集成/doctest 全部 harness；M1-S1 由 1,476 增 28 条：`r3e-doc/tests/tx.rs` 13 + protocol 15）** |
 
 行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算，并在 2026-11-16 M0-S5 收口时按同一口径再全量重算一次（新增 `r3e-protocol` 行、`r3e-editor` 缩为传输层、单测总数随 D6 补 10 条反例测试 1,466 → 1,476）：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，
@@ -490,7 +524,7 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | **测试数不得下降** | `cargo xtask check-tests` | 逐 crate 对照 `xtask/tests_baseline.json`（core 576 / render 307 / script 132 / doc 96 / editor 72 / asset 61 / editor-host 58 / plugin 47 / protocol 34 / audio 29 / physics 28 / runtime 14 / replay 11 / app 11，合计 **1,476**），任一 crate 变少即失败。基线只许上抬，每次上抬须在 `_comment` 里写明是哪一批测试带来的 |
 | **文档层收口** | `cargo xtask doc-gate` | 六条规则机械执行 M0-S3 的"唯一写入口"：`RefCell<Scene>` 只许在 `r3e-doc`（测试块内放宽）、公开 API 不许泄漏 `&mut Scene`（5 处受控出口登记在 `xtask/doc_gate.json`）、`DerefMut` 不许出现在 `r3e-doc`、`runtime`/`editor-host`/`script` 不许直连 `Scene::from_json_str`（改走 `r3e_doc::parse_scene` / `Document::from_json_str`）、未登记 `dep_rules.json` 的 crate 直接红、`write(\|s\| …)` 闭包体内不许再借用场景载体（RefCell 重入）。白名单同 `lint-size`：**只许减**，条目对不上会打印"可下调" |
 | **依赖方向** | `cargo xtask dep-check --strict` | 对照 `xtask/dep_rules.json` 的 `allow` 白名单，M0-S5 起 `--strict` 为**硬门**（CI 同步去掉 `continue-on-error`），四判定：白名单外违规 / 债务残留（边没了还挂着免死金牌）/ 债务超限 / 未登记规则。当前 **0 违规 / 4 条债务**（`plugin→core`、`plugin→physics`、`script→physics`、`script→audio`，登记在 `xtask/dep_debt.json`，`limit=4` 只减不增）。`--report` 保留为降级查看模式 |
-| **能力清单无漂移** | `cargo xtask gen-capabilities --check` | 重新生成 `docs/capabilities.json` 与磁盘逐字节比对。清单是**产物不是手写文件**：手改必红。369 条命令（rpc 39 + script_only 330，域 17）|
+| **能力清单无漂移** | `cargo xtask gen-capabilities --check` | 重新生成 `docs/capabilities.json` 与磁盘逐字节比对。清单是**产物不是手写文件**：手改必红。374 条命令（rpc 44 + script_only 330，域 17）|
 | **不变量三源一致** | `cargo xtask invariants` | 比对 `ISSUE_CODES`（24）/ 测试断言 code（24）/ 清单 `invariants`（24）三源差集，分 `missing_in_tests` / `stale_in_tests` / `missing_in_caps` / `stale_in_caps` 四类报出具体 code，非空即红。理由见 §3.1.1 |
 | 无头构建 | `cargo build --release` + `r3e.exe --run-seconds 2` | 零 warning，退出码 0 |
 | 像素回归（CI 闸门） | `$env:R3E_VISUAL_REGRESSION = "1"; cargo test -p r3e-app --test visual_regression` | 闸门开、有显卡才真比像素；托管 runner 无显卡时跳过，由同文件纯 CPU 用例守基准图（存在 / 可解码 / 640×360）。CI 内禁止 `R3E_UPDATE_BASELINE`（否则回归会被"新图覆盖旧基准"洗成永远绿） |
@@ -4817,7 +4851,7 @@ update_animations(dt)
 
 编辑器桥分两层（M0-S5 前的 `r3e-editor` 是**协议 + 传输合体**，剥开后的边界如下）：
 
-- `r3e-protocol`（**协议数据层**）：`EngineApi` trait 的 **39 个方法**（与 `RPC_METHODS` 39 条一一对应）、JSON-RPC 2.0 请求/响应编解码、`dispatch` 路由、能力清单 DTO。它不知道 `Scene` 长什么样，也不依赖渲染器——这保证"编辑器协议"不会反向污染渲染/物理层。trait 方法全带 `Err(unsupported(..))` 默认实现，只是为了让 mock / 未来的第二后端少写样板；**`LocalEngineApi` 39 个方法全部覆盖**（实现见 `crates/r3e-editor-host/src/api.rs`）。
+- `r3e-protocol`（**协议数据层**）：`EngineApi` trait 的 **44 个方法**（与 `RPC_METHODS` 44 条一一对应）、JSON-RPC 2.0 请求/响应编解码、`dispatch` 路由、能力清单 DTO。它不知道 `Scene` 长什么样，也不依赖渲染器——这保证"编辑器协议"不会反向污染渲染/物理层。trait 方法全带 `Err(unsupported(..))` 默认实现，只是为了让 mock / 未来的第二后端少写样板；**`LocalEngineApi` 44 个方法全部覆盖**（实现见 `crates/r3e-editor-host/src/api.rs`）。
 - `r3e-editor`（**传输层**）：`RpcServer`（TCP 监听、连接线程、有界队列）+ NDJSON 分帧 + 资源上限，`lib.rs` 只做 `pub use r3e_protocol::*`。
 
 真正把协议落到状态上的是 `r3e_editor_host::api::LocalEngineApi`：它同时持有

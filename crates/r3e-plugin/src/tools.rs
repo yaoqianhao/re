@@ -1,4 +1,4 @@
-//! 工具实现：全部是纯计算 + 只读宿主能力，没有一条代码会写盘或执行外部命令。
+//! 工具实现：全部是纯计算 + 只读宿主能力，没有一条代码会写盘或执行外部命令。注：`scene_inspect` / `mesh_stats` / `scene_validate` / `physics_simulate` 四项仍直连 `r3e-core` / `r3e-physics`，去依赖前置见 `docs/M1_S1D_SUBSTITUTION.md`（M1-S1-D 替代清单）。
 //!
 //! 设计约定：
 //!

@@ -2,9 +2,10 @@
 //!
 //! ```text
 //! dispatch()                      元命令 ping / engine.* / script.* / capture.*
-//!   └─ scene::dispatch_scene      scene.* / anim.*
-//!        └─ media::dispatch_media ui.* / light.* / audio.*
-//!             └─ 未知方法 → METHOD_NOT_FOUND
+//!   └─ tx::dispatch_tx            tx.*（M1-S1 事务协议）
+//!        └─ scene::dispatch_scene scene.* / anim.*
+//!             └─ media::dispatch_media ui.* / light.* / audio.*
+//!                  └─ 未知方法 → METHOD_NOT_FOUND
 //! ```
 //!
 //! 参数解码辅助（`param` / `opt_f32*` / `with_node` …）也在这里，子模块通过
@@ -19,6 +20,7 @@ use crate::{INTERNAL_ERROR, METHOD_NOT_FOUND, PROTOCOL_VERSION};
 
 mod media;
 mod scene;
+mod tx;
 
 /// 方法名归一化：忽略大小写与下划线，`scene.setTransform` 与 `scene.set_transform` 等价。
 fn canonical(method: &str) -> String {
@@ -145,8 +147,8 @@ fn opt_f32_array<const N: usize>(
 /// 把一条请求派发到 [`EngineApi`]，永不 panic（未知方法走 `METHOD_NOT_FOUND`）。
 ///
 /// 分组只是为了让单文件留在 800 行内：`ping` / `engine.*` / `script.*` / `capture.*`
-/// 在本文件，`scene.*` 与 `anim.*` 在 [`scene`]，`ui.*` / `light.*` / `audio.*` 在
-/// [`media`]。组间靠兜底分支串联：命中不到本组就顺序交给下一组，最后一组回
+/// 在本文件，`tx.*` 在 [`tx`]，`scene.*` 与 `anim.*` 在 [`scene`]，`ui.*` / `light.*` /
+/// `audio.*` 在 [`media`]。组间靠兜底分支串联：命中不到本组就顺序交给下一组，最后一组回
 /// `METHOD_NOT_FOUND`。因此「某条臂放在哪个文件」不影响任何命令的行为。
 pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
     let id = req.id.clone();
@@ -201,7 +203,7 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             Ok(r) => Response::ok(id, r),
             Err(f) => Response::fail(id, f),
         },
-        _ => scene::dispatch_scene(api, id, params, &method, &req.method),
+        _ => tx::dispatch_tx(api, id, params, &method, &req.method),
     }
 }
 

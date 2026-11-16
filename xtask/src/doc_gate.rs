@@ -12,8 +12,10 @@
 //! | 4 | 上层不得出现 `Scene::from_json_str`，只走 `r3e_doc::parse_scene` / `Document::from_json_str` | 无 |
 //! | 5 | 未登记 `xtask/dep_rules.json` 的 crate 一律失败 | 无 |
 //! | 6 | `write(|s| ...)` 闭包体内不得再借用场景载体（RefCell 重入） | 无 |
+//! | 7 | `.write(` 写点数不得超过 `docs/WRITE_SITES.md` 台账登记（M1-S1 起） | 无，台账即登记 |
 //!
 //! 白名单和 `lint-size` 一样**只许减**：条目对不上就报「可删」，多出来的直接失败。
+//! 规则 7 同理——台账数字比实际大就提示「可下调」，比实际小就红。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -70,6 +72,8 @@ pub fn run(root: &Path) -> i32 {
 
     let mut bad: Vec<String> = Vec::new();
     let mut checked = 0usize;
+    // 规则 7 用：crate 目录名 -> `.write(` 出现次数
+    let mut write_sites: BTreeMap<String, usize> = BTreeMap::new();
 
     for f in &files {
         let Ok(text) = fs::read_to_string(f) else {
@@ -80,6 +84,18 @@ pub fn run(root: &Path) -> i32 {
         let is_doc = path.starts_with(DOC_CRATE);
         let in_scope4 = scope4.iter().any(|p| path.starts_with(p.as_str()));
         let lines: Vec<&str> = text.lines().collect();
+
+        // ---- 规则 7 计数：按 crate 累计 `.write(` 字面次数（注释与字符串也算，
+        // 口径与 docs/WRITE_SITES.md 的人工统计保持一致，避免"看起来降了其实是注释")
+        if let Some(crate_name) = path
+            .strip_prefix("crates/")
+            .and_then(|p| p.split('/').next())
+        {
+            let n = text.matches(".write(").count();
+            if n > 0 {
+                *write_sites.entry(crate_name.to_string()).or_insert(0) += n;
+            }
+        }
 
         // ---- 规则 1 / 3：逐行文本扫描（规则 1 需要知道是否已在测试块内）
         let mut in_test = false;
@@ -236,10 +252,54 @@ pub fn run(root: &Path) -> i32 {
         }
     }
 
+    // ---- 规则 7：写点台账只许减（docs/WRITE_SITES.md，机读列：crate / 登记数）
+    let ledger_text = fs::read_to_string(root.join("docs/WRITE_SITES.md")).unwrap_or_default();
+    let mut ledger: BTreeMap<String, usize> = BTreeMap::new();
+    for line in ledger_text.lines() {
+        let t = line.trim();
+        if !t.starts_with('|') {
+            continue;
+        }
+        let cols: Vec<&str> = t.trim_matches('|').split('|').map(|c| c.trim()).collect();
+        if cols.len() < 2 || !cols[0].starts_with("r3e-") {
+            continue;
+        }
+        if let Ok(count) = cols[1].parse::<usize>() {
+            ledger.insert(cols[0].to_string(), count);
+        }
+    }
+    if ledger.is_empty() {
+        bad.push(
+            "规则7 docs/WRITE_SITES.md 台账解析为空（表头应为 `| crate | 登记写点数 | 说明 |`）"
+                .into(),
+        );
+    }
+    for (name, actual) in &write_sites {
+        match ledger.get(name) {
+            Some(&reg) if *actual > reg => bad.push(format!(
+                "规则7 `{name}` 有 {actual} 处 .write(，台账只登记 {reg} 处：新增写点必须先在 docs/WRITE_SITES.md 登记并写明理由"
+            )),
+            Some(&reg) if *actual < reg => {
+                println!("  可下调: 写点 {name} 登记 {reg} 处，实际 {actual} 处")
+            }
+            Some(_) => {}
+            None => bad.push(format!(
+                "规则7 `{name}` 有 {actual} 处 .write(，但台账没有该 crate 的登记行"
+            )),
+        }
+    }
+    for name in ledger.keys() {
+        if !write_sites.contains_key(name) {
+            println!("  可下调: 台账里的 `{name}` 已无写点，可整行删除");
+        }
+    }
+
     println!(
-        "[doc-gate] 扫描 {checked} 个 .rs，{} 个 crate，规则 6 条，白名单 {} 项",
+        "[doc-gate] 扫描 {checked} 个 .rs，{} 个 crate，规则 7 条，白名单 {} 项，写点台账 {} 个 crate / {} 处",
         crates.len(),
-        allow.len()
+        allow.len(),
+        ledger.len(),
+        write_sites.values().sum::<usize>()
     );
     if bad.is_empty() {
         println!("[doc-gate] ok");

@@ -81,6 +81,7 @@ mod scene_flow;
 mod script;
 mod shadow;
 mod support;
+mod tx;
 mod ui_rpc;
 
 impl EngineApi for LocalEngineApi<'_> {
@@ -222,6 +223,21 @@ impl EngineApi for LocalEngineApi<'_> {
     }
     fn script_reload(&mut self) -> Result<Value, RpcFailure> {
         script::script_reload(self)
+    }
+    fn tx_begin(&mut self) -> Result<Value, RpcFailure> {
+        tx::tx_begin(self)
+    }
+    fn tx_apply(&mut self, tx_id: &str, op: &str, args: &Value) -> Result<Value, RpcFailure> {
+        tx::tx_apply(self, tx_id, op, args)
+    }
+    fn tx_preview(&mut self, tx_id: &str) -> Result<Value, RpcFailure> {
+        tx::tx_preview(self, tx_id)
+    }
+    fn tx_commit(&mut self, tx_id: &str) -> Result<Value, RpcFailure> {
+        tx::tx_commit(self, tx_id)
+    }
+    fn tx_rollback(&mut self, tx_id: &str) -> Result<Value, RpcFailure> {
+        tx::tx_rollback(self, tx_id)
     }
 }
 

@@ -17,6 +17,7 @@
 mod command;
 mod state_hash;
 mod transaction;
+mod tx;
 mod undo;
 mod validate;
 mod write;
@@ -30,6 +31,7 @@ use r3e_core::Scene;
 pub use command::{Command, CommandKind};
 pub use state_hash::{mix_f32, mix_str, mix_u64, scene_hash, world_hash, StateHash, FNV_OFFSET};
 pub use transaction::Transaction;
+pub use tx::{TxBegin, TxCommit, TxPreview, TxRollback, TxSession, TxStaged};
 pub use undo::{Mark, UndoGroup, UndoStack};
 pub use validate::{
     errors as validate_errors, issue_code_by_code, validate, Issue, IssueCode, Severity,
@@ -60,6 +62,12 @@ pub enum DocError {
         /// 事务中已暂存的条数。
         total: usize,
     },
+    /// 已有一笔未决事务（M1-S1）：同一时刻只允许一笔。
+    Busy(String),
+    /// 事务 id 不存在或对不上（未开启 / 已被提交或回滚 / 中途作废）。
+    TxNotFound(String),
+    /// 事务期间文档被外部改动，基哈希失效，提交被拒（M1-S1）。
+    Conflict(String),
 }
 
 impl DocError {
@@ -69,6 +77,7 @@ impl DocError {
             Self::Scene(e) | Self::NotFound(e) | Self::Rejected(e) => e,
             Self::NothingToUndo => "没有可撤销的操作",
             Self::RollbackFailed { .. } => "事务回滚不完整，文档状态已不可信",
+            Self::Busy(e) | Self::TxNotFound(e) | Self::Conflict(e) => e,
         }
     }
 }
@@ -86,6 +95,9 @@ impl fmt::Display for DocError {
                     "事务回滚不完整：{undone}/{total} 条撤销成功，文档状态已不可信"
                 )
             }
+            Self::Busy(e) => write!(f, "已有未决事务：{e}"),
+            Self::TxNotFound(e) => write!(f, "事务不存在：{e}"),
+            Self::Conflict(e) => write!(f, "事务冲突：{e}"),
         }
     }
 }
@@ -111,6 +123,11 @@ pub struct Document {
     /// 用 `Cell` 是为了让 [`Document::state_hash`] 保持 `&self`（纯读语义）仍能填空缓存；
     /// 代价是 `Document` 不再 `Sync`——文档层本来就单线程持有，这个代价是明码的。
     hash_cache: Cell<Option<(u64, StateHash)>>,
+    /// 未决的会话式事务（M1-S1，见 [`tx`]）。`None` = 没有事务在手。
+    ///
+    /// 事务在 `commit` / `rollback` 之前**不动**主场景：命令只在影子副本上跑，
+    /// 所以本字段的存在不影响 `scene` / `version` / `undo` 的任何不变量。
+    tx: Option<TxSession>,
 }
 
 impl Document {
@@ -123,6 +140,7 @@ impl Document {
             writes: 0,
             undo: UndoStack::new(),
             hash_cache: Cell::new(None),
+            tx: None,
         }
     }
 

@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 369,
-    "rpc": 39,
+    "commands": 374,
+    "rpc": 44,
     "script_only": 330,
     "domains": 17,
     "invariants": 24
@@ -4144,6 +4144,56 @@
       "reversible": true,
       "cost": "cheap",
       "since": "M0-backfill"
+    },
+    {
+      "name": "tx.apply",
+      "domain": "meta",
+      "rpc": "tx.apply",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M1-S1"
+    },
+    {
+      "name": "tx.begin",
+      "domain": "meta",
+      "rpc": "tx.begin",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M1-S1"
+    },
+    {
+      "name": "tx.commit",
+      "domain": "meta",
+      "rpc": "tx.commit",
+      "params": [],
+      "returns": "Value",
+      "reversible": false,
+      "cost": "linear",
+      "since": "M1-S1"
+    },
+    {
+      "name": "tx.preview",
+      "domain": "meta",
+      "rpc": "tx.preview",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S1"
+    },
+    {
+      "name": "tx.rollback",
+      "domain": "meta",
+      "rpc": "tx.rollback",
+      "params": [],
+      "returns": "Value",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M1-S1"
     },
     {
       "name": "ui.set",

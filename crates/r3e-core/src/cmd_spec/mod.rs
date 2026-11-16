@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(
             rpc,
             rpc_only + 23,
-            "39 个 RPC 方法里 23 个能对到脚本命令，其余 16 个只有 RPC"
+            "44 个 RPC 方法里 23 个能对到脚本命令，其余 21 个只有 RPC（M1-S1 加 5 条 tx.*）"
         );
     }
 

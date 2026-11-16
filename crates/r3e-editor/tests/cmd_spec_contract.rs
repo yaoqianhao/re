@@ -17,6 +17,8 @@ use r3e_core::cmd_spec;
 const META_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/mod.rs");
 const SCENE_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/scene.rs");
 const MEDIA_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/media.rs");
+/// 事务五条（M1-S1）自成一臂，与上面三处并列。
+const TX_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/tx.rs");
 
 /// 扫某个 `dispatch*` 函数里 `match` 的分支键（只认恰好 8 空格缩进的分支头，
 /// 嵌套 `match` 里的分支缩进更深，不会被误收）。
@@ -56,6 +58,7 @@ fn dispatch_keys() -> Vec<&'static str> {
     let mut out = scan_branches(META_SRC, "pub fn dispatch(");
     out.extend(scan_branches(SCENE_SRC, "fn dispatch_scene("));
     out.extend(scan_branches(MEDIA_SRC, "fn dispatch_media("));
+    out.extend(scan_branches(TX_SRC, "fn dispatch_tx("));
     out
 }
 
@@ -80,8 +83,8 @@ fn quoted_parts(s: &str) -> Vec<&str> {
 fn dispatch的每个点分方法都在命令表里() {
     let keys = dispatch_keys();
     assert!(
-        keys.len() >= 39,
-        "只扫到 {} 个分支，扫描逻辑可能失效（期望 42 个含别名）",
+        keys.len() >= 44,
+        "只扫到 {} 个分支，扫描逻辑可能失效（期望 44 个即：39 基础 + 5 事务）",
         keys.len()
     );
 

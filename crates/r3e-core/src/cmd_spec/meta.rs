@@ -1,8 +1,11 @@
-//! 仅有 RPC、没有脚本函数的命令（引擎信息 / 截图 / 脚本执行 / 只读装配）。
+//! 仅有 RPC、没有脚本函数的命令（引擎信息 / 截图 / 脚本执行 / 只读装配 / 事务协议）。
 //!
 //! 生成方式见 `docs/M0S2_API_SPLIT.md` §4：脚本名与签名由 `temp/gen_cmd_spec.py` 扫
 //! `register_fn` 得到，`rpc` 一列是人工对照 `dispatch` 分支裁决的结果；
 //! `reversible` / `cost` 两列按文档记录的规则统一裁决，逐条复核留到 S5-02。
+//!
+//! M1-S1 在此追加 `tx.*` 五条：事务是**纯 RPC 能力**，脚本侧刻意不开放——脚本里
+//! 若能手搓事务，就等于给了一条不经命令层记账的写入口，S4 验证器会形同虚设。
 
 use super::{CommandSpec, Cost, Domain, SINCE_V0};
 
@@ -167,5 +170,60 @@ pub(super) static ALL: &[CommandSpec] = &[
         reversible: true,
         cost: Cost::Heavy,
         since: SINCE_V0,
+    },
+    // ---- M1-S1 事务协议：5 条纯 RPC 方法，无对应脚本函数 ----
+    CommandSpec {
+        name: "tx.begin",
+        rpc: Some("tx.begin"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        cost: Cost::Cheap,
+        since: "M1-S1",
+    },
+    CommandSpec {
+        name: "tx.apply",
+        rpc: Some("tx.apply"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只往事务里堆暂存，不碰场景、不推版本：文档状态没变，故按可逆标。
+        reversible: true,
+        cost: Cost::Cheap,
+        since: "M1-S1",
+    },
+    CommandSpec {
+        name: "tx.preview",
+        rpc: Some("tx.preview"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 影子预演：结构上不可能写文档，是整条链上唯一「免费试」的方法。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M1-S1",
+    },
+    CommandSpec {
+        name: "tx.commit",
+        rpc: Some("tx.commit"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 真正落场景、推版本，是 AI 写世界的唯一出口。
+        reversible: false,
+        cost: Cost::Linear,
+        since: "M1-S1",
+    },
+    CommandSpec {
+        name: "tx.rollback",
+        rpc: Some("tx.rollback"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 终结一笔事务：虽不写场景，但把暂存一次性作废，属于状态变更。
+        reversible: false,
+        cost: Cost::Cheap,
+        since: "M1-S1",
     },
 ];

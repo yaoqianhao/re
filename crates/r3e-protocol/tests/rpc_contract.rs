@@ -696,6 +696,7 @@ mod stats_capture_rpc_tests {
 fn collect_dispatch_arms() -> Vec<String> {
     const SOURCES: &[&str] = &[
         include_str!("../src/dispatch/mod.rs"),
+        include_str!("../src/dispatch/tx.rs"),
         include_str!("../src/dispatch/scene.rs"),
         include_str!("../src/dispatch/media.rs"),
     ];

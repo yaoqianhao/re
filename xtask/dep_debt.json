@@ -5,14 +5,14 @@
     {
       "crate": "r3e-plugin",
       "dep": "r3e-core",
-      "why": "插件入口的工具层直连 core 的类型与名册（crates/r3e-plugin/src/tools.rs，1405 行），改成只依赖 protocol 等于重写整个工具层",
-      "plan": "M1-S1：tools.rs 按 protocol 的 tools/* 契约重写、DTO 由 r3e-protocol 提供后删条（重写成本>本 Sprint 预算，见 M0S5_PROTOCOL.md §8）"
+      "why": "插件入口的工具层直连 core 的类型与名册（crates/r3e-plugin/src/tools.rs，1324 行），改成只依赖 protocol 等于重写整个工具层",
+      "plan": "M1-S1-D 前置未满足（见 docs/M1_S1D_SUBSTITUTION.md §3）：需 S2-B 的 query.find/query.describe/query.stats 先落地，scene_inspect 才能从「本地遍历 core::Scene」改为 RPC 回包投影；其余 mesh_stats/scene_validate 依赖 M1-S4 的计算类 RPC。届时先削 core 依赖，再削 physics。"
     },
     {
       "crate": "r3e-plugin",
       "dep": "r3e-physics",
       "why": "features.rapier 要把物理后端编进插件二进制（rapier = [\"r3e-physics/rapier\"]），物理查询直接走 physics 门面",
-      "plan": "M1-S1：物理查询改为经 protocol 调用子进程外的宿主能力，插件不再链接 physics 后删条"
+      "plan": "M1-S1-D 前置未满足（见 docs/M1_S1D_SUBSTITUTION.md §2 第 4 行）：physics_simulate 的本地步进需由引擎侧物理 RPC 或 r3e-cli --features rapier 承接，且 features.rapier 的间接依赖要一并挪出插件。排在 plugin→core 之后偿还。"
     },
     {
       "crate": "r3e-script",

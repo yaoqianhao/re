@@ -64,6 +64,8 @@ impl Document {
         let old = std::mem::replace(&mut self.scene, next);
         // 换场景后旧撤销栈的前像全部指向另一个场景，留着只会撤销出错。
         self.undo.clear();
+        // 未决事务的影子与基哈希同样属于旧场景，留着提交时会往新场景上盖旧前像（M1-S1）。
+        self.tx = None;
         self.touch();
         old
     }

@@ -1,4 +1,4 @@
-//! 契约：宿主侧 `impl EngineApi for LocalEngineApi` 的 39 个方法 ↔ 命令表 RPC 条目。
+//! 契约：宿主侧 `impl EngineApi for LocalEngineApi` 的 44 个方法 ↔ 命令表 RPC 条目。
 //!
 //! 前三处契约管的是「脚本注册 ↔ 表」和「dispatch ↔ 表」；这里管第三边：宿主到底把
 //! 哪些 RPC 方法实出来了。少实现一个方法，线上就是 `unsupported`；多实现一个没人认的
@@ -52,7 +52,14 @@ fn rpc_of(method: &str) -> Option<String> {
         "scene_archive_save" => Some("scene.archive.save".to_string()),
         "scene_archive_load" => Some("scene.archive.load".to_string()),
         _ => {
-            for prefix in ["audio_spatial_", "scene_", "light_", "ui_", "script_"] {
+            for prefix in [
+                "audio_spatial_",
+                "scene_",
+                "light_",
+                "ui_",
+                "script_",
+                "tx_",
+            ] {
                 if let Some(tail) = method.strip_prefix(prefix) {
                     let ns = match prefix {
                         "audio_spatial_" => "audio.spatial",
@@ -60,6 +67,7 @@ fn rpc_of(method: &str) -> Option<String> {
                         "light_" => "light",
                         "ui_" => "ui",
                         "script_" => "script",
+                        "tx_" => "tx",
                         _ => unreachable!(),
                     };
                     return Some(format!("{ns}.{}", flat(tail)));
@@ -76,8 +84,8 @@ fn 宿主实现的每个方法都能在表里找到rpc() {
     let methods = host_methods();
     assert_eq!(
         methods.len(),
-        39,
-        "宿主 EngineApi 方法数应为 39，实际 {}",
+        44,
+        "宿主 EngineApi 方法数应为 44，实际 {}",
         methods.len()
     );
 
