@@ -144,6 +144,47 @@ impl std::fmt::Display for MeshRef {
     }
 }
 
+/// 单个物件最多登记的语义标签数（M1-S2-C）。
+pub const MAX_NODE_TAGS: usize = 16;
+
+/// 单个标签的最大长度，按 `char` 计（M1-S2-C）。
+pub const NODE_TAG_MAX_LEN: usize = 32;
+
+/// 标签收敛：去首尾空白、丢空串、去重（保序）、逐条截断、整体截到 [`MAX_NODE_TAGS`]。
+///
+/// `Scene::spawn`（场景文件装入与脚本/协议生成共用）走这一个入口，保证
+/// 「场景文件里写了什么」与「查询面看到什么」是同一份口径。
+pub fn normalize_tags<I, S>(raw: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut out: Vec<String> = Vec::new();
+    for tag in raw {
+        let tag = tag.as_ref().trim();
+        if tag.is_empty() {
+            continue;
+        }
+        let tag: String = tag.chars().take(NODE_TAG_MAX_LEN).collect();
+        if out.iter().any(|t| t == &tag) {
+            continue;
+        }
+        out.push(tag);
+        if out.len() >= MAX_NODE_TAGS {
+            break;
+        }
+    }
+    out
+}
+
+/// 可交互半径收敛：非有限值（NaN / inf）与非正值一律视为「不声明」（`None`）。
+///
+/// 半径是「从物件原点算起多近算可交互」，0 与负数没有语义，直接当作不可交互，
+/// 免得查询面拿到一个永远命中不了、又非 `None` 的半径。
+pub fn normalize_interact_radius(r: f32) -> Option<f32> {
+    (r.is_finite() && r > 0.0).then_some(r)
+}
+
 /// 场景中的一个物件。
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -165,6 +206,14 @@ pub struct Node {
     /// `None` 表示「不覆盖」：走网格资产自带的材质，再退到默认材质。
     /// 写入前必须经过 [`crate::SurfaceMaterial::sanitized`] 收敛。
     pub material: Option<crate::SurfaceMaterial>,
+    /// 语义标签：给 AI 查询面按语义挑物件用（如 `door` / `pickup` / `enemy`）。
+    ///
+    /// 写入前必须经过 [`normalize_tags`] 收敛：非空串、去重、保序、条数与长度有上限。
+    pub tags: Vec<String>,
+    /// 可交互半径（世界单位）。`Some(r)` = 可交互，`None` = 不可交互。
+    ///
+    /// 写入前必须经过 [`normalize_interact_radius`] 收敛（非正值与非有限值视为不声明）。
+    pub interact_radius: Option<f32>,
     /// 每帧由 `Scene::update_world_transforms` 计算的缓存。
     pub world: Mat4,
     /// 世界法线矩阵缓存。
@@ -185,6 +234,8 @@ impl Node {
             body: None,
             physics: None,
             material: None,
+            tags: Vec::new(),
+            interact_radius: None,
             world: Mat4::IDENTITY,
             world_normal: glam::Mat3::IDENTITY,
         }

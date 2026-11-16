@@ -24,6 +24,7 @@ pub mod pick;
 pub mod postfx;
 pub mod procedural;
 pub mod scene;
+pub mod scene_desc;
 pub mod scene_schema;
 pub mod scene_stack;
 pub mod shadow_cull;
@@ -90,7 +91,10 @@ pub use morph::{
     MAX_EXCLUSIVE_GROUP_MEMBERS, MAX_MORPH_TARGETS, MORPH_SLOT_CAPACITY, MORPH_WEIGHT_GROUPS,
     NO_EXCLUSIVE_GROUP,
 };
-pub use node::{AssetId, BuiltinMesh, MeshRef, Node, NodeId};
+pub use node::{
+    normalize_interact_radius, normalize_tags, AssetId, BuiltinMesh, MeshRef, Node, NodeId,
+    MAX_NODE_TAGS, NODE_TAG_MAX_LEN,
+};
 pub use occlusion::{
     plan_occlusion, project_aabb, test_aabb, DepthPyramid, OcclusionCullPlan, OcclusionSettings,
     OcclusionVerdict, ScreenBounds, DEFAULT_DEPTH_BIAS, DEFAULT_MARGIN_PX, DEFAULT_MAX_TILES,

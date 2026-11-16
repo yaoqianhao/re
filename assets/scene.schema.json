@@ -552,6 +552,14 @@
             "null"
           ]
         },
+        "interact_radius": {
+          "description": "可交互半径（世界单位）；省略表示该物件不可交互。\n\n非有限值与 `<= 0` 一律按「不声明」处理（经 [`crate::normalize_interact_radius`]）。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "material": {
           "anyOf": [
             {
@@ -620,6 +628,16 @@
           },
           "maxItems": 3,
           "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "语义标签（如 `door` / `pickup` / `enemy`）；省略或空数组表示无标签。\n\n写入前经 [`crate::normalize_tags`] 收敛：去首尾空白、丢空串、去重（保序）、\n单标签截到 [`crate::NODE_TAG_MAX_LEN`] 个字符、总量截到 [`crate::MAX_NODE_TAGS`] 条。",
+          "items": {
+            "type": "string"
+          },
           "type": [
             "array",
             "null"

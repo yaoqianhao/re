@@ -23,104 +23,7 @@ use crate::{
     Node, NodeId, OcclusionSettings, PostFxSettings, SurfaceMaterial, Transform,
 };
 
-/// 单个物件在场景文件 / 脚本 `spawn` 中的描述。
-#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct ObjectDesc {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mesh: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub position: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rotation: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scale: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<[f32; 4]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visible: Option<bool>,
-    /// 物理描述：只做数据承载，真正生效取决于启用的 `PhysicsBackend`。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub physics: Option<PhysicsDesc>,
-    /// PBR 表面材质（metallic / roughness / emissive）；省略表示不覆盖网格资产材质。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub material: Option<SurfaceMaterial>,
-}
-
-/// 物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。
-#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct PhysicsDesc {
-    /// "dynamic" | "static" | "kinematic"
-    #[serde(
-        default = "default_body_kind",
-        skip_serializing_if = "is_default_body_kind"
-    )]
-    pub body: String,
-    #[serde(default = "default_mass", skip_serializing_if = "is_default_mass")]
-    pub mass: f32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restitution: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub friction: Option<f32>,
-    /// "box" | "sphere" | "cylinder"，缺省由 mesh 推导
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collider: Option<String>,
-    /// 碰撞体半尺寸，缺省由 scale 推导
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub half_extents: Option<[f32; 3]>,
-    /// 连续碰撞检测（CCD）：高速物体不穿过薄墙。
-    ///
-    /// 省略表示「跟场景级 `physics.ccd`」（再缺省为开）；显式写 `false` 可让
-    /// 单个物件退出 CCD（例如大量慢速道具，省掉 sweep 开销）。
-    /// 后端不申报 `ccd` 能力时该字段无效。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ccd: Option<bool>,
-}
-
-/// 场景级物理配置：对应场景 JSON 顶层 `physics` 字段。
-///
-/// 所有字段都是可选的，缺省值由 `r3e_physics::PhysicsConfig` 决定：
-/// 默认 enabled=false（物理关闭）、backend="builtin"、重力 -9.81、地面 y=0。
-#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct PhysicsSceneDesc {
-    /// 是否启用物理模拟。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    /// "builtin"（内置最简物理）| "null"（空转，只登记刚体）| "rapier"（需构建时启用）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backend: Option<String>,
-    /// 重力加速度向量，缺省 [0.0, -9.81, 0.0]。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gravity: Option<[f32; 3]>,
-    /// 地面平面高度，缺省 0.0。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ground: Option<f32>,
-    /// 所有刚体的 CCD 缺省开关（逐物件 `physics.ccd` 优先）。
-    ///
-    /// 缺省 `true`：后端申报 `ccd` 能力时默认开启，避免「高速物件穿墙」
-    /// 这种一看就是缺陷的表现。脚本可用 `physics_set_ccd(false)` 全局关。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ccd: Option<bool>,
-}
-
-fn default_body_kind() -> String {
-    "dynamic".to_string()
-}
-fn default_mass() -> f32 {
-    1.0
-}
-
-/// `PhysicsDesc::body` 的缺省值是 `"dynamic"`：等于缺省值时不写进 JSON。
-fn is_default_body_kind(body: &str) -> bool {
-    body == "dynamic"
-}
-
-/// `PhysicsDesc::mass` 的缺省值是 `1.0`：等于缺省值时不写进 JSON。
-fn is_default_mass(mass: &f32) -> bool {
-    *mass == 1.0
-}
+pub use crate::scene_desc::{ObjectDesc, PhysicsDesc, PhysicsSceneDesc};
 
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CameraDesc {
@@ -551,6 +454,15 @@ impl Scene {
         node.physics = desc.physics;
         // 场景文件里的材质在写入前收敛：NaN / inf / 超界值不进场景
         node.material = desc.material.map(|m| m.sanitized());
+        // 标签与交互半径同理：收敛在唯一入口做，查询面看到的就是文件里语义上的那部分
+        node.tags = desc
+            .tags
+            .as_deref()
+            .map(crate::normalize_tags)
+            .unwrap_or_default();
+        node.interact_radius = desc
+            .interact_radius
+            .and_then(crate::normalize_interact_radius);
 
         if let Some(parent_name) = desc.parent {
             let pid = *self
@@ -2473,6 +2385,9 @@ impl Scene {
             visible: (!node.visible).then_some(false),
             physics: node.physics.clone(),
             material: node.material,
+            // 空标签 / 不可交互不落盘：旧场景 roundtrip 不该凭空多出这两个字段
+            tags: (!node.tags.is_empty()).then(|| node.tags.clone()),
+            interact_radius: node.interact_radius,
         }
     }
 }

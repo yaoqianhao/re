@@ -1,20 +1,20 @@
 {
-  "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。M0-S5：r3e-editor 101->72、新增 r3e-protocol 29（协议层 29 条内嵌测试整体迁出，合计仍 1457，只搬家不减少）；D2 能力生成器：r3e-doc 82->86（ISSUE_CODES 表 4 条自检）、r3e-protocol 29->33（caps DTO 4 条）+ 34（RPC_METHODS 与 dispatch 臂对齐门），合计 1466。D6 不变量三源门：r3e-doc 86->96（10 条缺反例的不变量补齐负向测试，B 源追平登记表），合计 1476。",
+  "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。M0-S5：r3e-editor 101->72、新增 r3e-protocol 29（协议层 29 条内嵌测试整体迁出，合计仍 1457，只搬家不减少）；D2 能力生成器：r3e-doc 82->86（ISSUE_CODES 表 4 条自检）、r3e-protocol 29->33（caps DTO 4 条）+ 34（RPC_METHODS 与 dispatch 臂对齐门），合计 1466。D6 不变量三源门：r3e-doc 86->96（10 条缺反例的不变量补齐负向测试，B 源追平登记表），合计 1476。M1-S1：r3e-protocol 34->49（tx.begin/commit/abort/patch/status 五方法各自的方法表、dispatch 臂与 DTO 对齐守卫），r3e-doc 96->107（TxSession 影子场景提交/回滚/冲突各路径），合计 1504。M1-S2-C：r3e-core 576->585（node_tags 9 条：spawn 收敛、条数与长度上限、半径语义、node_desc 携带、roundtrip 不增字段）、r3e-doc 107->109（state_hash 覆盖 tags 与 interact_radius 两条扰动），合计 1513。",
   "crates": {
-    "r3e-core": 576,
-    "r3e-doc": 96,
+    "r3e-core": 585,
+    "r3e-doc": 109,
     "r3e-render": 307,
     "r3e-script": 132,
     "r3e-editor": 72,
     "r3e-asset": 61,
     "r3e-editor-host": 58,
     "r3e-plugin": 47,
-    "r3e-protocol": 34,
+    "r3e-protocol": 49,
     "r3e-audio": 29,
     "r3e-physics": 28,
     "r3e-runtime": 14,
     "r3e-app": 11,
     "r3e-replay": 11
   },
-  "total": 1476
+  "total": 1513
 }

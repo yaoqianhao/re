@@ -245,6 +245,19 @@ fn mix_node(h: &mut u64, n: &Node) {
         mix_u64(h, *c);
     }
     mix_mesh(h, &n.mesh);
+    // 语义标签：先混条数再逐条混，`["a","b"]` 与 `["ab"]` 不会撞车
+    mix_u64(h, n.tags.len() as u64);
+    for t in &n.tags {
+        mix_str(h, t);
+    }
+    // 可交互半径：`None` 与 `Some(0.0)` 语义不同，用判别位区分
+    match n.interact_radius {
+        Some(r) => {
+            mix_u64(h, 1);
+            mix_f32(h, r);
+        }
+        None => mix_u64(h, 0),
+    }
 }
 
 // ---------- 摄像机 / 灯光 / 环境 / 后处理 ----------

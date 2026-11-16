@@ -65,6 +65,7 @@ pub(crate) fn spawn_asset_nodes(
                 visible: Some(true),
                 physics: None,
                 material: None,
+                ..ObjectDesc::default()
             };
             match scene.spawn(desc) {
                 Ok(node_id) => {
@@ -275,6 +276,7 @@ pub(crate) fn spawn_asset_anim(
         visible: Some(false),
         physics: None,
         material: None,
+        ..ObjectDesc::default()
     }) {
         log::warn!("资产实例根 `{root_name}` 创建失败: {e}");
         return None;
@@ -323,6 +325,7 @@ pub(crate) fn spawn_asset_anim(
                 visible: Some(false),
                 physics: None,
                 material: None,
+                ..ObjectDesc::default()
             };
             match scene.spawn(desc) {
                 Ok(id) => {
@@ -355,6 +358,7 @@ pub(crate) fn spawn_asset_anim(
                     visible: Some(false),
                     physics: None,
                     material: None,
+                    ..ObjectDesc::default()
                 }) {
                     if let Some(n) = scene.get_mut(id) {
                         n.transform.rotation = glam::Quat::from_array(node.rotation);
@@ -401,6 +405,7 @@ pub(crate) fn spawn_asset_anim(
                 visible: Some(true),
                 physics: None,
                 material: None,
+                ..ObjectDesc::default()
             }) {
                 Ok(_) => markers += 1,
                 Err(e) => log::warn!("骨架标记 `{prefix}/bone#{i}` 创建失败: {e}"),

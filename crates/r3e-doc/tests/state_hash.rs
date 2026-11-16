@@ -84,6 +84,24 @@ fn every_covered_field_changes_hash() {
             }),
         ),
         (
+            "node.tags",
+            Box::new(|s: &mut Scene| {
+                let id = s.find_id("a").unwrap();
+                if let Some(n) = s.get_mut(id) {
+                    n.tags = vec!["door".to_string()];
+                }
+            }),
+        ),
+        (
+            "node.interact_radius",
+            Box::new(|s: &mut Scene| {
+                let id = s.find_id("b").unwrap();
+                if let Some(n) = s.get_mut(id) {
+                    n.interact_radius = Some(2.5);
+                }
+            }),
+        ),
+        (
             "scene.name",
             Box::new(|s: &mut Scene| s.name = "other".to_string()),
         ),

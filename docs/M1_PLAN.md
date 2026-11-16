@@ -95,6 +95,10 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 | S2-B | 协议面 `query.*`（`query.find` / `query.describe` / `query.stats`），复用 S1 的事务只读语义（查询不产生写点） | RPC 可调用；查询后 `StateHash` 不变 |
 | S2-C | `tags` / `interact_radius` 字段落地：`node.rs` / `scene.rs` / schema / `state_hash` **四处同改**，且 `node_desc` 必须同步（漏改会静默丢字段） | 新增字段参与哈希；`node_desc` 输出含新字段；三个问答用例（"场景里有哪些可交互物"等）全过 |
 
+> **执行顺序调整**：S2 实际按 **C → A → B** 推进。理由：`tags` / `interact_radius` 是 S2-A `WorldQuery` 投影字段（`{id,name,tags,pos,interact_radius}`）与 S2-B `query.*` DTO 的**前置**，字段不先落地上层无物可投影；S1-D 的解绑顺序也依赖 `query.*`，字段越早稳定越好。
+
+**S2-C 执行结果（2026-11-16）**：四处同改全部落地——① `r3e-core/src/node.rs` 的 `Node` 增 `tags: Vec<String>` / `interact_radius: Option<f32>`；② `r3e-core/src/scene.rs` 的 `ObjectDesc` 同名增参，`spawn` 入口经 `normalize_tags` / `normalize_interact_radius` 收敛（去空白、去重、截断 `MAX_NODE_TAGS` / `NODE_TAG_MAX_LEN`、半径非法值归 `None`），`node_desc`（`to_scene_file` 回写）仅在非空时输出，roundtrip 不增生字段；③ `assets/scene.schema.json` 重新生成（43,796 字节）；④ `r3e-doc/src/state_hash.rs` 的 `mix_node` 按「条数 + 逐条」混 `tags`、按「判别位 + 值」混 `interact_radius`，语义不同不碰撞。配套：`r3e-core/tests/node_tags.rs` 9 条（收敛/上限/半径语义/`node_desc` 携带/roundtrip 不增字段）、`r3e-doc/tests/state_hash.rs` 覆盖守卫增 2 条扰动，R3「静默丢字段」风险已用断言封住。附带把 `scene.rs` 的 `ObjectDesc` / `PhysicsDesc` / `PhysicsSceneDesc` 拆到 `scene_desc.rs`（`scene.rs` 4,057 → 3,972 行，`size_debt` 基线同步）。单测 1,504 → 1,513，`cargo xtask verify` 十项全绿。
+
 ### M1-S3 意图命令 + 变更半径（3 卡）
 
 | 卡 | 内容 | 验收 |
