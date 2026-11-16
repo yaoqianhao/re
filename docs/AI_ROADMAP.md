@@ -46,7 +46,7 @@ AIGC:
 | 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增） | 记账可查 | `xtask/dep_debt.json` |
 | 能力清单漂移 | 0（`capabilities.json` 369 命令 / 39 RPC / 24 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
 | 不变量三源 | 24 = 24 = 24 | 三源一致 | `cargo xtask invariants` |
-| `verify` 时长 | 20.4s（热缓存，九道门全硬） | <120s | 实测 |
+| `verify` 时长 | 20.4s（热缓存，九道门全硬；同机实测区间 16.5–25.4s，视缓存态） | <120s | 实测 |
 | 回放确定性 | **已达成** `final=59d48dedf2b0677e` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 | `doc-gate` | 256 个 `.rs` / 14 个 crate / 6 条规则 / 白名单 10 项 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
 
@@ -189,7 +189,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | M0-6 | 能力清单自动生成 | 清单与实现不一致 → CI 失败 | S5-02~03 | ✅ |
 | M0-7 | Headless 确定性回放框架 | 同输入两次运行，帧状态哈希完全相同 | S4-05~06 | ✅ |
 | M0-8 | CPU 不变量校验器 v0 | 故意注入非法场景 → 必须报错，有负向测试守护 | S3-04 | ✅ |
-| M0-9 | `dep-check` 依赖门禁进 CI | 故意加一条违规依赖 → CI 红 | S0-08~09、S5-04~05 | 🟨 报告态已进 CI，硬门禁待 S5 |
+| M0-9 | `dep-check` 依赖门禁进 CI | 故意加一条违规依赖 → CI 红 | S0-08~09、S5-04~05 | ✅ S5-04~05 已转硬门禁（严格四判定 + 故障注入演练，见 `M0S5_PROTOCOL.md` §13.7） |
 
 **M0 退出条件（Gate 0）**：AI 改完代码后只跑 `cargo xtask verify` 就能判断是否改对，全程不起 GPU。**这一条不达成，不进 M1。**
 
@@ -633,7 +633,7 @@ cargo xtask invariants        # 不变量三源比对（ISSUE_CODES / RPC_METHOD
 cargo xtask replay --seed 42 --frames 600   # 确定性回放，输出状态哈希（逐行比对两次运行）
 ```
 
-`verify` 单次实测 20.4s（热缓存），是新代码进入仓库前唯一必跑的命令；细则见 `docs/AI_WORKFLOW.md`。
+`verify` 单次实测 20.4s（热缓存；同机区间 16.5–25.4s），是新代码进入仓库前唯一必跑的命令；细则见 `docs/AI_WORKFLOW.md`。
 
 ## 附录 C：任务卡模板
 
