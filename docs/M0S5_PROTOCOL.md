@@ -72,7 +72,7 @@ M0 最后一个 Sprint。七张卡里 **5 张可原样执行**，**1 张（S5-04
 
 | 违规 crate | 边 | 代码引用点实测 | 成本 | 结论 |
 |---|---|---|---|---|
-| `r3e-script` | → `r3e-physics` + → `r3e-audio`（两条件合计） | `lib.rs` 16 行 + `api/mod.rs` 4 行 + `api/audio.rs` 1 行 = **21 行**（按行计，未按符号细分） | 中：`CapabilityHost` 端口已存在，需补物理/音频入口 | **S5-04 内修掉** |
+| `r3e-script` | → `r3e-physics` + → `r3e-audio` | src 6 行（`lib.rs` 3 + `api/mod.rs` 2 + `api/audio.rs` 1）+ `tests/` 15 行 = **21 行**；**按符号细分**是 **53 个互不相同的方法**（physics 16 / audio 37）、**704 行绑定代码**（`api/physics.rs` 339 + `api/audio.rs` 365） | **高**（原判「中」有误）：`CapabilityHost` 端口**不存在**——全仓 0 命中、`r3e-script/src` 0 个 trait；路线图 §2.2 的「只能经 `CapabilityHost` 注入」是**目标态**，本方案误读为现状（§13.4 D4-1） | **记账 → M1**（S5-04 降级，决议见 §13.6） |
 | `r3e-editor-host` | → `asset` / `audio` / `render` / `physics` / `script` | `api/mod.rs`:19,36,37,38（`use r3e_audio::{Audio,…}` / `r3e_physics::Physics` / `r3e_render::Renderer` / `r3e_script::ScriptHost`）+ `info.rs`:93 | **极高**：`LocalEngineApi` 字段直接是 `&Rc<RefCell<Physics>>`、`&mut ScriptHost`、`Option<&mut Renderer>`；要满足规则必须把 4000 行 `api/*` 整体下沉 `r3e-runtime` | **改规则**（决定 2） |
 | `r3e-plugin` | → `r3e-core` | `locate.rs`:18,19,20 + `tools.rs`:11,12,13,241–244,1000,1012,1031 | 高：需把场景解析改成协议 DTO，重写 1405 行 `tools.rs` | **登记债务 → M1** |
 | `r3e-plugin` | → `r3e-physics` | `Cargo.toml` `rapier = ["r3e-physics/rapier"]`（独立 bin 的可选后端） | 高：feature 直通，需拆出独立后端 crate | **登记债务 → M1** |
@@ -169,7 +169,7 @@ pub use server::{Job, RpcServer};
 
 | 违规 | 性质 | 处置 |
 |---|---|---|
-| `script → physics/audio` | **代码没守规矩**，3 条边、21 处引用，`CapabilityHost` 端口已存在 | 修代码 |
+| `script → physics/audio` | **规则描的是目标态，不是现状**：`CapabilityHost` trait 全仓不存在（0 命中），3 条边背后是 53 个方法 / 704 行绑定 / 14 个测试直连门面，且 `physics`/`audio` 自身已有门面 + 可插拔后端 | 记账 → M1（§13.6）；本 Sprint 代码零改动 |
 | `editor-host → 5 条边` | **规矩没描准现实**。`r3e-editor-host` 的职责就是"把 RPC 落到主线程持有的 Scene/Physics/ScriptHost/Renderer 上"（`api/mod.rs` 头注释原话）。它必须是适配器，适配器必须认识被适配的东西 | 改 `dep_rules.json` + §2.2 表：`editor-host allow = [core, doc, protocol, runtime, render, physics, audio, script, asset]`，附 note「**叶子适配器**：可依赖下层全部；禁止被任何下层反向依赖；对 protocol 只认 `EngineApi` trait，不认识 JSON 细节」 |
 | `plugin → core/physics` | **历史路径依赖**。plugin 是独立 bin，`tools.rs` 1405 行直接用 `Scene`/`BodyDesc` 做场景定位 | `dep_debt.json` 记账 2 条，`plan: M1-S1` |
 
@@ -352,8 +352,8 @@ docs/
 | D1 | **纯搬迁**：建 `r3e-protocol`，按 §1.2 分段切文件，dispatch 拆 3 文件，29 测试迁 `tests/rpc_contract.rs`；`r3e-editor` 留 `server.rs` + re-export；同步 workspace members、两个 Cargo.toml、`tests_baseline`、`size_debt` | S5-01 | `cargo tree -p r3e-protocol --edges normal,dev` 仅 serde/serde_json；`cargo test --workspace` 1 457 绿；`use r3e_editor::*` 的 69 条集成测试零改动通过 |
 | D2 | **能力生成器**：`r3e-doc` 加 `ISSUE_CODES`（24 条）；`r3e-protocol::caps` 定义 DTO；`xtask/gen_capabilities.rs` 重写（读 `cmd_spec::all()` + `ISSUE_CODES` + `RPC_METHODS`）；`xtask` 加依赖 | S5-02 | `cargo xtask gen-capabilities` 产出 `docs/capabilities.json`，`counts` = 369/39/330/17/24，重跑字节一致 |
 | D3 | **一致性门 + 演练**：`--check` 模式；临时注释 `cmd_spec` 里 `scene.spawn` 一条 → `--check` 必须红；恢复后绿 | S5-03 | 演练双向：删表项红 / 删实现（`dispatch` 臂）红；`git diff` 可审 |
-| D4 | **script 端口化**：`CapabilityHost` 补物理/音频入口，替换 `r3e-script` 21 处引用，删 `Cargo.toml` 两条依赖 | S5-04(1/3) | `cargo tree -p r3e-script` 无 physics/audio；132 测试不减 |
-| D5 | **dep 债务 + 转硬**：建 `dep_debt.json`（2 条）；`--strict` 四判定；改 `dep_rules.json`（host/script/editor/protocol）；CI 撤 `continue-on-error`；演练"临时给 `r3e-doc` 加 `r3e-render` 依赖 → CI 红" | S5-04(2/3,3/3) + S5-05 | `dep-check --strict` → `违规 0 条；债务 2 条`；故障注入演练红 |
+| D4 | **script 端口契约（不端口化）**：原「`CapabilityHost` 补物理/音频入口」被实测否掉；改为产出 53 条端口契约草案（作 M1 实施清单）+ 债务登记，`r3e-script` 代码零改动（决议见 §13.6） | S5-04(1/3)（降级） | `dep_debt.json` 增 `script→physics` / `script→audio` 2 条；`cargo test -p r3e-script` 132 条不减 |
+| D5 | **dep 债务 + 转硬**：建 `dep_debt.json`（4 条：`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`）；`--strict` 四判定；改 `dep_rules.json`（host/script/editor/protocol；其中 `script` 的 note 由「目标态口径」改写为「M1 目标 + 现存债见 `dep_debt.json`」，避免下轮再把目标态读成现状）；CI 撤 `continue-on-error`；演练"临时给 `r3e-doc` 加 `r3e-render` 依赖 → CI 红" | S5-04(2/3,3/3) + S5-05 | `dep-check --strict` → `违规 0 条；债务 4 条`；故障注入演练红 |
 | D6 | **invariants + verify 收敛**：`xtask/invariants.rs` 三源比对；`verify` 序列加 3 项（dep-check --strict / invariants / gen-capabilities --check）；计时 | S5-06 | `cargo xtask verify` 绿且 `<120s`，打印全段耗时 |
 | D7 | **文档同频 + Gate 0**：写 `AI_WORKFLOW.md`；`AI_ROADMAP` 看板/§2.2/§3.1.7/附录回填；`ARCHITECTURE.md` 加 protocol 层职责与 dispatch 分层；本文档 §13 回填 | S5-07 | 三个可复制命令块；全仓 `grep r3e_editor::` 无悬空引用；最后一笔 docs 提交 |
 
@@ -367,7 +367,7 @@ docs/
 |---|---|---|---|
 | R1 | dispatch 896 行拆 3 文件时臂顺序/默认分支错乱，导致某命令静默失效 | 中 | 判据：29 条迁移测试 + 69 条集成测试全绿才算过；任一红 → 退回单文件 `dispatch.rs`（接受 896 行进 `size_debt`，登记理由"M0 收尾稳定性优先"） |
 | R2 | `r3e-protocol` 的 dev-dependency 被拉进 `r3e-core`（想复用测试夹具） | 低 | 硬规矩：protocol 的 `tests/` 只许用内部 mock，`cargo tree --edges dev` 出现任何 `r3e-*` 即失败 |
-| R3 | `script` 端口化后 132 测试中 3–5 条物理/音频行为测试失效 | 中 | 改测试夹具走 `CapabilityHost` mock，**不许删测试**（`check-tests` 会红）；超 8 条失效则 S5-04 只做 physics 一边，audio 边入 debt |
+| R3 | `script` 端口化后 132 测试中 3–5 条失效 | **已兑现（比预估更糟）** | 实测 0 端口、14 个测试直连门面，远超「超 8 条」阈值 → 按本条熔断：**S5-04 整条转 debt**（physics + audio 两侧都不做），契约草案留作 M1 清单，见 §13.6 |
 | R4 | Gate 0 的"24 → ~12"做不到 | **必然** | 已在 §1.1/§5 显式修订为 24 → ≤23，余 11 个顺延 M1；**不因判据修订而放松其余门禁** |
 | R5 | `capabilities.json` 2 800 行每次生成产生噪声 diff | 中 | 键排序 + 固定字段序 + 2 空格缩进；若仍噪声大则改生成"每行一条命令"的紧凑数组 |
 | R6 | `editor-host` 规则放开被后续当作"什么都能依赖"的口实 | 中 | 规则 note 写明三条不变式，且 `forbid_engine_all` 不动；反向依赖仍是一条都红 |
@@ -439,7 +439,7 @@ cargo xtask verify
 | 2 | `feat(doc): ISSUE_CODES 常量表（24 条不变量）` | `r3e-doc` 导出 + 测试改为引用常量 |
 | 3 | `feat(xtask): gen-capabilities 三源交叉生成 capabilities.json` | 生成器 + `r3e-protocol::caps` + `docs/capabilities.json` + xtask 依赖 |
 | 4 | `feat(xtask): capabilities --check 一致性门` | `--check` + 沿 `assert` 硬判据 |
-| 5 | `refactor(script): CapabilityHost 端口化，去除 physics/audio 直连` | `r3e-script` 21 处引用替换 + Cargo.toml 两条删除 |
+| 5 | `chore(dep): S5-04 降级——script→physics/audio 记债` | 只改文档：§1.3 / 决定 2 / D4 / R3 / §13.4 D4-1·D4-2 / §13.6；`r3e-script` 代码与 `Cargo.toml` **零改动**（端口化退 M1） |
 | 6 | `feat(xtask): dep-check --strict + dep_debt 只减不增` | `dep_debt.json` + 四判定 + `dep_rules.json` 修订 |
 | 7 | `ci: gate 撤 continue-on-error，接 strict/invariants/caps-check` | `ci.yml` + `xtask/main.rs` 用法文本 |
 | 8 | `feat(xtask): invariants 三源比对门` | `invariants.rs` + verify 序列 |
@@ -508,6 +508,8 @@ cargo xtask verify
 | D2-2 `capabilities.json` 2 800 → **4 744 行** | 实际每条命令 ~12.8 行（`name`/`domain`/`rpc`/`params[]`/`returns`/`reversible`/`cost`/`since` 八字段多行展开 + 中文说明），`lint-size` 只扫 `*.rs` 故不触发阈值 |
 | D2-3 生成器位置 | 方案写 `xtask/src/gen_capabilities.rs` 重写 + `xtask/main.rs` 562→640；实际新建独立模块 271 行，`main.rs` 只加 `mod` 声明、`--check` 参数与分发臂（net 增 5 行），旧 37 行占位函数整体删除 |
 | D2-4 硬断言口径 | 方案要求「命令数 == cmd_spec::len()」；实现改为对常量 `EXPECTED_COMMANDS = 369` 硬断言 + RPC 集合与 `RPC_METHODS` 双向差集校验，把「加命令」变成必须显式改常量的动作 |
+| D4-1 端口存在性 | 方案 §1.3 与决定 2 均称「`CapabilityHost` 端口已存在，需补物理/音频入口」；实测全仓 `CapabilityHost` **0 命中**、`r3e-script/src` **0 个 trait**。真相是路线图 §2.2 把该 trait 写成**目标态**（原文「只能经 `CapabilityHost` 注入；现仍直连，S5-04 还债」），方案把目标态读成了现状 | S5-04 由「改代码修 1 条边」降级为「记账 2 条 → M1」；判据由 `cargo tree` 干净改为 `dep_debt` 只减不增（决议见 §13.6） |
+| D4-2 成本口径 | 方案按「21 行文本引用」估成本；实测是 **53 个方法**（physics 16 / audio 37）、**704 行绑定代码**、**14 / 15 个测试文件**直接 `use r3e_physics::Physics`。行数口径严重低估，因为一个 `use` 行背后是一整组 API 绑定 | §1.3 成本由「中」改「高」，并按符号位重新记账 |
 
 ### 13.5 故障注入演练（D3 实测，四项全部按预期变红/回绿）
 
@@ -520,4 +522,63 @@ cargo xtask verify
 
 > 演练本身不留痕：四处注入全部原样还原，`git status` 干净后才提交。
 > C/D 是两种不同的失效面——C 抓「实现被删」，D 抓「清单被手改或忘重生成」，二者互补，缺一都会漏。
+
+### 13.6 S5-04 降级决议：script 为什么不端口化（D4 实测）
+
+#### 13.6.1 这张卡本来要干什么
+
+S5-04 不为「代码更漂亮」，它只服务一个目标：**`dep-check` 转硬之后，`r3e-script` 不能再有违规边**。`dep_rules.json` 对该 crate 的 note 写的是「脚本层只能经 `CapabilityHost` trait 端口注入子系统，不得直连具体实现」，路线图 §2.2 同口径并标注「S5-04 还债」。这条规则背后是三个可验证的收益预期：
+
+1. **可选择性链接**：脚本层若能脱开 physics/audio 单独编译，未来做 headless 脚本服务 / wasm 目标 / 把 rhai 脚本当独立库分发时，不必拖进物理栈与音频设备栈。
+2. **可测试性**：脚本单测不必构造真 `Physics` / `Audio`，可用端口 mock。
+3. **能力面收敛**：脚本「能对引擎做什么」由一个 trait 的方法集构成，审计面从散落的 `api/*.rs` 收拢到一处。
+
+目的本身正当。问题出在**对现状的判断**：这三个收益里的第 3 条，D2 已经用另一条路（`docs/capabilities.json`，369 命令清单 + 一致性门）拿到了；第 2 条现状已可用 `Physics::new()`（Null 后端、`enabled=false`）与 `Audio::silent()` 满足，成本≈0；只剩第 1 条是端口化独有收益。
+
+#### 13.6.2 实测：端口不存在，成本比方案估计高一个数量级
+
+| 项 | 方案假设 | D4 实测 |
+|---|---|---|
+| `CapabilityHost` | 已存在，只需补物理/音频入口 | 全仓 **0 命中**；`r3e-script/src` **0 个 trait** |
+| 需改动的引用 | 21 处文本引用 | **53 个方法**（physics 16 / audio 37），**704 行绑定代码**（`api/physics.rs` 339 + `api/audio.rs` 365） |
+| 测试影响 | 改夹具走 mock | **14 / 15 个测试文件**直接 `use r3e_physics::Physics` |
+| 改动性质 | 加几个入口方法 | 新建 trait + 53 条方法签名 + 引擎类型 DTO 化（`BodyDesc` / `Ray` / `ShapeCast` / `PhysicsKind` / `BackendCaps` / `SpatialSettings` / `ListenerPose` / `DistanceModel` / `AudioError` …）+ 宿主实现 + 测试夹具重写 |
+
+「21 行 vs 53 方法」的落差来自口径：一个 `use r3e_physics::{Physics, …}` 行背后是一整组 API 绑定，按行数估成本会低估一个数量级。
+
+#### 13.6.3 决定性事实：抽象已经在 physics/audio 内部做好了
+
+- **`r3e-physics`**（1 930 行）：`Physics` 门面 → `Box<dyn PhysicsBackend>` → Builtin / Rapier / Null 三后端。用 `BackendCaps` **按能力位分支而不是按后端名分支**；源码明写「新增后端（Jolt / PhysX / 刚体树）只需如实申报一份位表」，且 `rapier3d` / `parry` 类型只允许出现在 `rapier_backend.rs`。
+- **`r3e-audio`**（1 376 行）：`Audio` 门面 → `AudioBackend` → Rodio / Silent 两实现；非空间化基线 + 空间化叠加层，门面对上层是同一套 API。
+
+即：**「后端可替换」已在子系统内部闭环**。script 直连的是 `Physics` / `Audio` 门面，不是具体引擎。再套一层 `CapabilityHost`，等于在门面之上造新层，抽象层数 3 → 4，且每个方法要在三处同步（门面 / trait / impl）。
+
+#### 13.6.4 对「物理音频扩容」与「兼容别的引擎」的影响（结论：记账零影响，端口化是负影响）
+
+| 后续动作 | A 记账（现状，D4 采用） | B 端口化（本 Sprint 未做） |
+|---|---|---|
+| 换物理引擎（Jolt / PhysX / 自研） | 在 `r3e-physics` 新增一个 `impl PhysicsBackend` + 申报 `BackendCaps`；门面与 16 个 `physics_*` 脚本 API **一行不改** | 同样要新增后端，**另需**确认 16 条端口方法与新后端能力位语义对齐 → 多一处同步点 |
+| 物理能力扩容（关节 / CCD / 碰撞事件 / 形状查询） | 门面加方法 → `BackendCaps` 加位 → 各后端实现 → script 加 1 个注册函数 | 再加 trait 方法 + trait 实现：**从 4 处变 6 处** |
+| 换音频系统（Fmod / Wwise / 自研） | 在 `r3e-audio` 新增 `impl AudioBackend`；门面与 37 个 `audio_*` 脚本 API 不变 | 同样要新增后端，另需同步 37 条端口方法 |
+| 新增一条脚本 API | `api/*.rs` 加 1 个注册函数（+ 命令表 1 条） | 加函数 + trait 方法 + impl，共 3 处 |
+| headless / wasm 编译不链物理音频 | **做不到**（`Cargo.toml` 仍依赖两 crate）——记账方案唯一保留的短板 | 能做到（端口化的独有收益） |
+
+**一句话**：「兼容别的物理引擎 / 音频系统」的支点在后端 trait 与 `BackendCaps`，不在脚本层端口。在脚本层加端口，只会让换后端时多一处要跟着改的地方，与目标反向；真实代价只有 headless/wasm 那条，且今天没有需求。
+
+#### 13.6.5 三条路的取舍
+
+| 选项 | 内容 | 成本 | 判断 |
+|---|---|---|---|
+| **A 记账（采用）** | `dep_debt.json` 增 `script→physics` / `script→audio` 2 条；`--strict` 仍拦**新增**违规，存量只减不增 | ≈0 | 唯一不与「零行为变化」冲突的选项；M1 有契约草案可循 |
+| B 端口化 | 新建 trait + 53 方法 + 引擎类型 DTO 化 + 宿主 impl + 14 个测试夹具重写 | ≥3 工作日 + 行为差异面（能力位语义、错误类型映射） | 与 D1–D3 建立的「零改动 / 可审 diff」纪律冲突 |
+| C 绑定下沉 | 把 `api/physics.rs` + `api/audio.rs` 移到认识两 crate 的宿主（runtime/host），`r3e-script` 只留 `register_extension` 钩子 | 中，但要改 `ScriptHost` 构造契约，波及 editor-host 与 14 个测试 | 方向正确，属架构动作，超 M0 收尾范围 |
+
+R3 熔断条款（「超 8 条测试失效则 audio 入 debt」）在本例中被触发且更极端：实测 0 端口、14 个测试直连门面，**两侧一起转 debt** 是条款内许可的动作，不是临时起意。
+
+#### 13.6.6 什么条件下重开这张卡（M1 触发条件）
+
+1. 出现 headless 脚本服务 / wasm 目标 / 独立分发脚本库的真实需求（即「可选择性链接」成为刚需）；
+2. 或 `script` 的物理/音频绑定继续膨胀（现值 704 行），使「脚本能做哪些物理/音频操作」无法靠 `capabilities.json` 审计。
+
+届时落点**不是 53 方法 trait，而是 C（绑定下沉）+ 可选 feature 条件编译**：把绑定从 `r3e-script` 挪到认识子系统的宿主，比在 script 里造端口更省，且不增加抽象层数。
 *（内容由AI生成，仅供参考）*
