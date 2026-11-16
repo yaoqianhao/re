@@ -5,7 +5,7 @@
 //! - `cargo xtask verify`：fmt + clippy + test + 下面三项自查，任一失败即非 0 退出
 //! - `cargo xtask lint-size`：单文件行数不许超线（白名单只许减不许加）
 //! - `cargo xtask check-tests`：每个 crate 的单测数不许低于基线快照
-//! - `cargo xtask dep-check`：crate 间依赖方向对照规则表（v0 只报告，`--strict` 才失败）
+//! - `cargo xtask dep-check`：crate 间依赖方向门禁（默认严格；存量债见 `xtask/dep_debt.json`，只减不增）
 //! - `cargo xtask doc-gate`：文档层收口六条规则（M0-S3 的 doc.write 唯一写入口不许回退）
 //!
 //! 设计约束：不引第三方 CLI 框架、不做花哨输出。门禁本身越简单越不容易坏。
@@ -25,7 +25,7 @@ const USAGE: &str = "\
   verify             fmt --check + clippy -D warnings + test + lint-size + check-tests + doc-gate + dep-check
   lint-size          单文件行数门禁（白名单只许减不许加）
   check-tests        单测数不得低于 xtask/tests_baseline.json
-  dep-check          crate 依赖方向对照 xtask/dep_rules.json（v0 只报告，--strict 失败）
+  dep-check          crate 依赖方向门禁（默认严格；--report 只报告。债务见 xtask/dep_debt.json）
   doc-gate           文档层收口六条规则（RefCell<Scene> / &mut Scene / DerefMut / 解析入口 / 依赖登记 / 闭包重入）
   gen-capabilities   生成 docs/capabilities.json（三源交叉；--check 只校验不写盘）
 ";
@@ -33,7 +33,8 @@ const USAGE: &str = "\
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().cloned().unwrap_or_else(|| "help".to_string());
-    let strict = args.iter().any(|a| a == "--strict");
+    // dep-check 自 M0-S5 起默认严格；`--report` 显式降级为只报告（`--strict` 保留为同义写法）。
+    let strict = !args.iter().any(|a| a == "--report");
     let check = args.iter().any(|a| a == "--check");
     let code = match cmd.as_str() {
         "verify" => verify(),
@@ -166,8 +167,10 @@ fn verify() -> i32 {
     if doc_gate::run(&root) != 0 {
         failed.push("doc-gate".into());
     }
-    // dep-check v0 只报告：债务还没有还完，阻塞会让人习惯性绕过门禁。
-    dep_check(false);
+    // dep-check 自 M0-S5 起是硬门禁：白名单外违规、债务新增、债务残留都红。
+    if dep_check(true) != 0 {
+        failed.push("dep-check".into());
+    }
 
     if failed.is_empty() {
         println!("\n[verify] 全部通过");
@@ -406,16 +409,49 @@ fn check_tests() -> i32 {
 
 // ---------------------------------------------------------------- dep-check
 
+/// 依赖方向门禁（M0-S5 起为硬门禁，默认严格）。
+///
+/// 四种判定，任一命中即失败（`--report` 可降级为只报告，verify 与 CI 永远用严格模式）：
+/// 1. 白名单外违规：依赖了 `dep_rules.json` 不允许的引擎 crate，且没登记在 `dep_debt.json`；
+/// 2. 债务残留：`dep_debt.json` 里的边在代码里已经不存在（或已被规则放开）——债还了就得销账；
+/// 3. 债务超限：条目数超过 `limit`，只许减不许增；
+/// 4. 规则缺失：`crates/` 下有 crate 没登记规则，会被静默放行。
 fn dep_check(strict: bool) -> i32 {
     let root = root();
     let rules = read_json(&root.join("xtask/dep_rules.json"));
+    let debt = read_json(&root.join("xtask/dep_debt.json"));
+    let debt_limit = debt["limit"].as_u64().unwrap_or(0) as usize;
+
+    // 债务清单只需要键做判定，plan 用于把「为什么还欠着」直接打在输出里。
+    let mut debt_edges: Vec<(String, String)> = Vec::new();
+    let mut debt_plan: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(entries) = debt["entries"].as_array() {
+        for e in entries {
+            let c = e["crate"].as_str().unwrap_or("").trim().to_string();
+            let d = e["dep"].as_str().unwrap_or("").trim().to_string();
+            if c.is_empty() || d.is_empty() {
+                println!("  dep_debt.json 有条目缺 crate/dep 字段：{e}");
+                continue;
+            }
+            if debt_edges.iter().any(|(ec, ed)| *ec == c && *ed == d) {
+                continue;
+            }
+            debt_plan.insert(
+                format!("{c} -> {d}"),
+                e["plan"].as_str().unwrap_or("").to_string(),
+            );
+            debt_edges.push((c, d));
+        }
+    }
+
     let engine: Vec<String> = crate_dirs(&root)
         .iter()
         .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
         .collect();
 
-    // 违规按 crate 聚合：一个 crate 违反方向约束算一条，便于和债务清单对齐。
-    let mut violations: Vec<(String, Vec<String>, String)> = Vec::new();
+    // 违规逐边记录（crate, dep），聚合只在输出层做，判定要精确到边。
+    let mut violations: Vec<(String, String)> = Vec::new();
+    let mut notes: BTreeMap<String, String> = BTreeMap::new();
     let mut missing_rule: Vec<String> = Vec::new();
 
     for dir in crate_dirs(&root) {
@@ -436,53 +472,106 @@ fn dep_check(strict: bool) -> i32 {
             })
             .unwrap_or_default();
         let forbid_all = rule["forbid_all_engine"].as_bool().unwrap_or(true);
-        let note = rule["note"].as_str().unwrap_or("").to_string();
+        notes.insert(
+            name.clone(),
+            rule["note"].as_str().unwrap_or("").to_string(),
+        );
 
-        let mut bad: Vec<String> = Vec::new();
         let (prod, _dev) = crate_deps(&dir.join("Cargo.toml"));
         for dep in prod {
             if !engine.contains(&dep) || dep == name {
                 continue;
             }
-            let allowed = allow.contains(&dep);
-            if !allowed && forbid_all {
-                bad.push(dep);
+            if !allow.contains(&dep) && forbid_all {
+                violations.push((name.clone(), dep));
             }
         }
-        if !bad.is_empty() {
-            bad.sort();
-            bad.dedup();
-            violations.push((name, bad, note));
-        }
     }
+    violations.sort();
+    violations.dedup();
+
+    let in_debt = |c: &str, d: &str| debt_edges.iter().any(|(ec, ed)| ec == c && ed == d);
+    let uncovered: Vec<&(String, String)> =
+        violations.iter().filter(|(c, d)| !in_debt(c, d)).collect();
+    let covered: Vec<&(String, String)> =
+        violations.iter().filter(|(c, d)| in_debt(c, d)).collect();
+    let stale: Vec<&(String, String)> = debt_edges
+        .iter()
+        .filter(|(c, d)| !violations.iter().any(|(vc, vd)| vc == c && vd == d))
+        .collect();
 
     println!(
-        "[dep-check] 规则表 {} 个 crate",
-        rules["crates"].as_object().map(|m| m.len()).unwrap_or(0)
+        "[dep-check] 规则表 {} 个 crate，扫描 {} 个引擎 crate；债务白名单 {} 条（上限 {} 条）",
+        rules["crates"].as_object().map(|m| m.len()).unwrap_or(0),
+        engine.len(),
+        debt_edges.len(),
+        debt_limit
     );
-    if !missing_rule.is_empty() {
-        println!("  未登记规则的 crate: {}", missing_rule.join(", "));
-    }
-    if violations.is_empty() {
-        println!("[dep-check] 无违规");
-    } else {
-        let total: usize = violations.iter().map(|(_, d, _)| d.len()).sum();
-        println!(
-            "[dep-check] 违规 {} 条（涉及 {} 条依赖边）：",
-            violations.len(),
-            total
-        );
-        for (name, deps, note) in &violations {
-            println!("  {name} -> {}", deps.join(", "));
-            if !note.is_empty() {
-                println!("      规则：{note}");
+    println!(
+        "[dep-check] 违规 {} 条：白名单外 {} 条，债务内 {} 条",
+        violations.len(),
+        uncovered.len(),
+        covered.len()
+    );
+    for (c, d) in &violations {
+        if in_debt(c, d) {
+            println!("  债务 {c} -> {d}");
+            if let Some(p) = debt_plan.get(&format!("{c} -> {d}")) {
+                if !p.is_empty() {
+                    println!("      偿还计划：{p}");
+                }
             }
+        } else {
+            println!(
+                "  违规 {c} -> {d}（未登记；规则：{}）",
+                notes.get(c).map(String::as_str).unwrap_or("")
+            );
         }
-        println!("  说明：v0 只报告不阻塞（债务逐 Sprint 偿还），加 --strict 才返回非 0");
     }
-    if strict && (!violations.is_empty() || !missing_rule.is_empty()) {
-        return 1;
+    for (c, d) in &stale {
+        println!("  残留 {c} -> {d}：这条已在代码里消失（或规则已放开），请从 dep_debt.json 删掉");
     }
+
+    let mut fail = false;
+    if !uncovered.is_empty() {
+        println!(
+            "  × 判定 1 白名单外违规 {} 条：改依赖方向，或在 dep_debt.json 登记 why/plan（条数只减不增）",
+            uncovered.len()
+        );
+        fail = true;
+    }
+    if !stale.is_empty() {
+        println!(
+            "  × 判定 2 债务残留 {} 条：还清了就得删条，否则免死金牌会留着发霉",
+            stale.len()
+        );
+        fail = true;
+    }
+    if debt_edges.len() > debt_limit {
+        println!(
+            "  × 判定 3 债务超限 {} > {}：只许减不许增，真加了债请同步下调 limit 之外的理由",
+            debt_edges.len(),
+            debt_limit
+        );
+        fail = true;
+    }
+    if !missing_rule.is_empty() {
+        println!("  × 判定 4 未登记规则的 crate：{}", missing_rule.join(", "));
+        fail = true;
+    }
+
+    if fail {
+        if strict {
+            println!("[dep-check] FAIL（严格模式）");
+            return 1;
+        }
+        println!("[dep-check] 发现问题；--report 模式不阻塞，但 verify / CI 会红");
+        return 0;
+    }
+    println!(
+        "[dep-check] ok（白名单外 0 条，债务 {} 条，全部已登记）",
+        covered.len()
+    );
     0
 }
 

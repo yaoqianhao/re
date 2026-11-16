@@ -1,5 +1,5 @@
 {
-  "_comment": "依赖方向规则表（对照 AI_ROADMAP.md §2.2 映射到当前 crate 集）。allow=引擎 crate 白名单，未列入者即违规；forbid_all_engine=除 allow 外一律禁止。v0 只报告不阻塞，M0-S5 后转硬门禁。M0-S5 起 r3e-protocol 独立成 crate（allow 空），r3e-editor 只依赖它。",
+  "_comment": "依赖方向规则表（对照 AI_ROADMAP.md §2.2 映射到当前 crate 集）。allow=引擎 crate 白名单，未列入者即违规；forbid_all_engine=除 allow 外一律禁止。v0 报告态已于 M0-S5 转硬门禁：白名单外违规、债务新增、债务残留都红，存量债见 xtask/dep_debt.json（只减不增）。note 写的是当下生效的规则；若写的是目标态，必须同时指出现存债在哪儿，避免把目标态读成现状。M0-S5 起 r3e-protocol 独立成 crate（allow 空），r3e-editor 只依赖它。",
   "forbid_engine_all": [
     "r3e-core",
     "r3e-doc",
@@ -54,9 +54,10 @@
     "r3e-script": {
       "allow": [
         "r3e-core",
-        "r3e-doc"
+        "r3e-doc",
+        "r3e-protocol"
       ],
-      "note": "脚本层只能经 CapabilityHost trait 端口注入子系统，不得直连具体实现；场景写走 doc 写入口"
+      "note": "M1 目标：只能经 CapabilityHost trait 端口注入子系统，不得直连具体实现；场景写走 doc 写入口。现状：全仓无 CapabilityHost，script→physics / script→audio 两条直连债已登记在 xtask/dep_debt.json，勿把本行读成现状"
     },
     "r3e-protocol": {
       "allow": [],
@@ -70,7 +71,7 @@
     },
     "r3e-plugin": {
       "allow": [],
-      "note": "插件是进程外工具，只许依赖 protocol；当前直连 core/physics 属债务"
+      "note": "M1 目标：插件是进程外工具，只许依赖 protocol；现状 plugin→core / plugin→physics 两条直连债已登记在 xtask/dep_debt.json（重写 tools.rs 1405 行属 M1-S1）"
     },
     "r3e-runtime": {
       "allow": [
@@ -88,11 +89,16 @@
       "allow": [
         "r3e-core",
         "r3e-doc",
-        "r3e-editor",
         "r3e-protocol",
-        "r3e-runtime"
+        "r3e-editor",
+        "r3e-runtime",
+        "r3e-asset",
+        "r3e-audio",
+        "r3e-physics",
+        "r3e-render",
+        "r3e-script"
       ],
-      "note": "编辑器宿主只许 protocol + doc + runtime；直连 render/physics/script 属债务"
+      "note": "叶子适配器：把 EngineApi 桥到运行时，允许依赖下层全部子系统（反向则一条都不许）。三条不变式：① 不得被任何下层 crate 反向依赖；② 不得依赖 plugin（进程外工具）；③ forbid_engine_all 不因此放开"
     },
     "r3e-app": {
       "allow": [

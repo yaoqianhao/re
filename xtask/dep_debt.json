@@ -1,0 +1,30 @@
+{
+  "_comment": "依赖方向债务白名单（M0-S5 建立）。每条 = 一条「按 dep_rules.json 不该有、但当下确实存在」的依赖边：crate 依赖 dep。规则只减不增：entries 条数不得超过 limit；边消失后必须删条（否则门禁红，防止债还了还挂着免死金牌）；全清空时把 limit 改成 0。why = 为什么现在还不能改代码，plan = 什么条件下删掉这条。",
+  "limit": 4,
+  "entries": [
+    {
+      "crate": "r3e-plugin",
+      "dep": "r3e-core",
+      "why": "插件入口的工具层直连 core 的类型与名册（crates/r3e-plugin/src/tools.rs，1405 行），改成只依赖 protocol 等于重写整个工具层",
+      "plan": "M1-S1：tools.rs 按 protocol 的 tools/* 契约重写、DTO 由 r3e-protocol 提供后删条（重写成本>本 Sprint 预算，见 M0S5_PROTOCOL.md §8）"
+    },
+    {
+      "crate": "r3e-plugin",
+      "dep": "r3e-physics",
+      "why": "features.rapier 要把物理后端编进插件二进制（rapier = [\"r3e-physics/rapier\"]），物理查询直接走 physics 门面",
+      "plan": "M1-S1：物理查询改为经 protocol 调用子进程外的宿主能力，插件不再链接 physics 后删条"
+    },
+    {
+      "crate": "r3e-script",
+      "dep": "r3e-physics",
+      "why": "脚本 API 直连 physics 门面。实测全仓 CapabilityHost 命名 0 命中，53 个绑定方法 / 704 行直接连具体实现，端口化属架构重排（与 M0「零行为变化」冲突，D4 熔断，见 M0S5_PROTOCOL.md §13.6）",
+      "plan": "M1：按 §13.6 的 53 条端口契约草案补 CapabilityHost 的物理入口，绑定改走端口后删条"
+    },
+    {
+      "crate": "r3e-script",
+      "dep": "r3e-audio",
+      "why": "同上：音频绑定直连 audio 门面（端口不存在，成本与物理侧同量级）",
+      "plan": "M1：端口注入音频能力后删条，与 physics 那条同批偿还"
+    }
+  ]
+}
