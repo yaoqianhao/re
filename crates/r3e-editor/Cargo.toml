@@ -5,9 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "r3e 编辑器桥：TCP + NDJSON 上的 JSON-RPC 2.0 协议与传输层"
+description = "r3e 编辑器桥的传输层：TCP + NDJSON；协议层见 r3e-protocol"
 
 [dependencies]
+# 协议层（消息 / Patch / EngineApi / dispatch）。本 crate 只做传输，并把它的 API
+# 整体再导出，保持 `use r3e_editor::…` 的旧调用方零改动。
+r3e-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true

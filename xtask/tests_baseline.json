@@ -1,14 +1,15 @@
 {
-  "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。",
+  "_comment": "测试数基线快照：任一项低于本表即失败（只许增不许减）。更新需说明理由。M0-S5：r3e-editor 101->72、新增 r3e-protocol 29（协议层 29 条内嵌测试整体迁出，合计仍 1457，只搬家不减少）。",
   "crates": {
     "r3e-core": 576,
     "r3e-doc": 82,
     "r3e-render": 307,
     "r3e-script": 132,
-    "r3e-editor": 101,
+    "r3e-editor": 72,
     "r3e-asset": 61,
     "r3e-editor-host": 58,
     "r3e-plugin": 47,
+  "r3e-protocol": 29,
     "r3e-audio": 29,
     "r3e-physics": 28,
     "r3e-runtime": 14,

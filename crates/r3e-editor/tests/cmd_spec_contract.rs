@@ -10,22 +10,33 @@ use std::collections::BTreeSet;
 
 use r3e_core::cmd_spec;
 
-const LIB_SRC: &str = include_str!("../src/lib.rs");
+/// `dispatch` 的实现自 M0-S5 起在 `r3e-protocol` 的三个文件里：`mod.rs` 元命令、
+/// `scene.rs` / `media.rs` 分组臂。扫描的是**源码文本**，与 crate 依赖方向无关，
+/// 所以契约测试仍留在本 crate（`r3e-core::cmd_spec` 是本 crate 的 dev-dependency，
+/// 而协议 crate 一个引擎依赖都不许有）。
+const META_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/mod.rs");
+const SCENE_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/scene.rs");
+const MEDIA_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/media.rs");
 
-/// 扫 `pub fn dispatch` 里 `match` 的分支键（只认恰好 8 空格缩进的分支头，
+/// 扫某个 `dispatch*` 函数里 `match` 的分支键（只认恰好 8 空格缩进的分支头，
 /// 嵌套 `match` 里的分支缩进更深，不会被误收）。
-fn dispatch_keys() -> Vec<&'static str> {
+fn scan_branches(src: &'static str, marker: &str) -> Vec<&'static str> {
     let mut out = Vec::new();
     let mut inside = false;
-    for line in LIB_SRC.lines() {
-        if line.starts_with("pub fn dispatch(") {
+    for line in src.lines() {
+        // 用 `contains`：子文件里是 `pub(super) fn dispatch_scene(`，带可见性前缀。
+        if line.contains(marker) {
             inside = true;
             continue;
         }
         if !inside {
             continue;
         }
-        if line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with('}') {
+        if line.starts_with("fn ")
+            || line.starts_with("pub fn ")
+            || line.starts_with("pub(super) fn ")
+            || line.starts_with('}')
+        {
             break;
         }
         if !line.starts_with("        \"") {
@@ -37,6 +48,14 @@ fn dispatch_keys() -> Vec<&'static str> {
         // 一个分支头可能挂多个别名：`"engine.stats" | "enginestats" =>`。
         out.extend(quoted_parts(head));
     }
+    out
+}
+
+/// 三处 `dispatch*` 的分支键并起来，才是完整方法表。
+fn dispatch_keys() -> Vec<&'static str> {
+    let mut out = scan_branches(META_SRC, "pub fn dispatch(");
+    out.extend(scan_branches(SCENE_SRC, "fn dispatch_scene("));
+    out.extend(scan_branches(MEDIA_SRC, "fn dispatch_media("));
     out
 }
 

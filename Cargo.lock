@@ -2331,6 +2331,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "r3e-core",
+ "r3e-protocol",
  "serde",
  "serde_json",
 ]
@@ -2370,6 +2371,14 @@ version = "0.1.0"
 dependencies = [
  "r3e-core",
  "r3e-physics",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "r3e-protocol"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]

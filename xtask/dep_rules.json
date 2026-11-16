@@ -1,5 +1,5 @@
 {
-  "_comment": "依赖方向规则表（对照 AI_ROADMAP.md §2.2 映射到当前 crate 集）。allow=引擎 crate 白名单，未列入者即违规；forbid_all_engine=除 allow 外一律禁止。v0 只报告不阻塞，M0-S5 后转硬门禁。",
+  "_comment": "依赖方向规则表（对照 AI_ROADMAP.md §2.2 映射到当前 crate 集）。allow=引擎 crate 白名单，未列入者即违规；forbid_all_engine=除 allow 外一律禁止。v0 只报告不阻塞，M0-S5 后转硬门禁。M0-S5 起 r3e-protocol 独立成 crate（allow 空），r3e-editor 只依赖它。",
   "forbid_engine_all": [
     "r3e-core",
     "r3e-doc",
@@ -9,6 +9,7 @@
     "r3e-asset",
     "r3e-audio",
     "r3e-editor",
+    "r3e-protocol",
     "r3e-plugin",
     "r3e-runtime",
     "r3e-editor-host",
@@ -57,11 +58,15 @@
       ],
       "note": "脚本层只能经 CapabilityHost trait 端口注入子系统，不得直连具体实现；场景写走 doc 写入口"
     },
+    "r3e-protocol": {
+      "allow": [],
+      "note": "协议层零引擎依赖：只认 JSON 值，deps 仅 serde/serde_json（M0-S5 从 r3e-editor 剥离）"
+    },
     "r3e-editor": {
       "allow": [
-        "r3e-core"
+        "r3e-protocol"
       ],
-      "note": "协议库应零引擎依赖（M0-5 剥离为 r3e-protocol）"
+      "note": "只剩传输层：只许依赖 protocol，不得回连 core/render/physics 等（M0-S5 已完成剥离）"
     },
     "r3e-plugin": {
       "allow": [],
@@ -84,6 +89,7 @@
         "r3e-core",
         "r3e-doc",
         "r3e-editor",
+        "r3e-protocol",
         "r3e-runtime"
       ],
       "note": "编辑器宿主只许 protocol + doc + runtime；直连 render/physics/script 属债务"

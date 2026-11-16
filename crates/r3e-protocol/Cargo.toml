@@ -1,0 +1,12 @@
+[package]
+name = "r3e-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "r3e 编辑器桥的协议层：JSON-RPC 2.0 数据层 + EngineApi 抽象 + dispatch（零引擎依赖）"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
