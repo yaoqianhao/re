@@ -290,3 +290,130 @@ pub(super) fn tx_rollback(api: &mut LocalEngineApi<'_>, tx_id: &str) -> Result<V
         "version": rolled.version,
     }))
 }
+
+/// 意图白名单（M1-S3-A）。每加一个意图，必须同时给出「展开成哪些命令」。
+///
+/// 白名单只活在宿主，不进协议：意图名是业务能力，跟引擎版本跑得不一样快。
+const INTENTS: &[&str] = &["scene.spawn_prefab"];
+
+/// `scene.spawn_prefab` 单次最多实例化多少个节点。
+///
+/// 一次意图展开成 N 条命令、占撤销栈一格，N 没有上限就等于给了 AI 一个
+/// 「一笔改爆场景，一次 undo 全退」的开关。256 够搭一个常规道具组。
+const SPAWN_PREFAB_MAX_NODES: usize = 256;
+
+/// 一条已解析、尚未落到场景上的**意图**（M1-S3-A）。
+///
+/// 与 [`Intent`]（一条 `op` = 一条命令）的区别只在「展开粒度」：这里的每个变体
+/// 展开成 **N 条** `CommandKind`，N 由参数决定。
+enum IntentPlan {
+    /// 一次性实例化一组节点：一组组件 = 一条意图 = 一格撤销。
+    SpawnPrefab(Vec<ObjectDesc>),
+}
+
+impl IntentPlan {
+    /// 参数整形。失败属于调用方的错（`INVALID_PARAMS` / `TX_REJECTED`），
+    /// 此时事务一个字节都没动。
+    fn parse(intent: &str, args: &Value) -> Result<Self, RpcFailure> {
+        match intent {
+            "scene.spawn_prefab" => {
+                let items =
+                    match args.get("nodes") {
+                        Some(Value::Array(items)) => items,
+                        Some(_) => return Err(RpcFailure::invalid_params(
+                            "参数 `nodes` 需要数组（每项一个物件描述，字段与 `scene.spawn` 相同）",
+                        )),
+                        None => return Err(RpcFailure::invalid_params("缺少参数 `nodes`")),
+                    };
+                if items.is_empty() {
+                    return Err(RpcFailure::invalid_params(
+                        "参数 `nodes` 不能为空数组（空意图不攒进事务）",
+                    ));
+                }
+                if items.len() > SPAWN_PREFAB_MAX_NODES {
+                    return Err(RpcFailure::invalid_params(format!(
+                        "参数 `nodes` 最多 {SPAWN_PREFAB_MAX_NODES} 项，收到 {}",
+                        items.len()
+                    )));
+                }
+                let mut nodes = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let desc: ObjectDesc = serde_json::from_value(item.clone()).map_err(|e| {
+                        RpcFailure::invalid_params(format!("`nodes[{i}]` 物件描述不合法: {e}"))
+                    })?;
+                    nodes.push(desc);
+                }
+                Ok(Self::SpawnPrefab(nodes))
+            }
+            other => Err(RpcFailure::new(
+                TX_REJECTED,
+                format!(
+                    "`{other}` 未纳入意图白名单（M1-S3-A 仅 {}）",
+                    INTENTS.join(" / ")
+                ),
+            )),
+        }
+    }
+
+    /// 在影子场景上把意图展开成命令序列。
+    ///
+    /// 这里做的是**影子之外的预检**（重名冲突、父子引用能不能落地）：这些错一旦
+    /// 留到 apply 才炸，就是「前 k 条命令已经改了影子再回退」，白白多一次回退。
+    /// 预检通过后仍可能因场景状态在命令间变化而失败——那种才交给文档层逆序回退。
+    fn build(self, scene: &Scene) -> Result<Vec<CommandKind>, DocError> {
+        match self {
+            Self::SpawnPrefab(nodes) => {
+                let mut seen: Vec<&str> = Vec::with_capacity(nodes.len());
+                for desc in &nodes {
+                    let name = desc.name.as_str();
+                    if seen.contains(&name) {
+                        return Err(DocError::Rejected(format!(
+                            "意图内节点名 `{name}` 重复（同批建的两个节点不能同名）"
+                        )));
+                    }
+                    if scene.find_id(name).is_some() {
+                        return Err(DocError::Rejected(format!(
+                            "物件 `{name}` 已存在；`scene.spawn_prefab` 只新建不覆盖，请换名或先删"
+                        )));
+                    }
+                    if let Some(parent) = &desc.parent {
+                        let in_batch = seen.contains(&parent.as_str());
+                        if !in_batch && scene.find_id(parent).is_none() {
+                            return Err(DocError::Rejected(format!(
+                                "节点 `{name}` 的父物件 `{parent}` 既不在本意图内、也不在场景里\
+                                 （父物件须排在同一意图的前面，或已存在于场景）"
+                            )));
+                        }
+                    }
+                    seen.push(name);
+                }
+                Ok(nodes.into_iter().map(CommandKind::spawn_node).collect())
+            }
+        }
+    }
+}
+
+/// `tx.intent`：把一条意图展开成 N 条命令暂存进事务。
+///
+/// 回包与 [`tx_apply`] 的区别是多了 `commands`（本条意图展开出几条）与 `intents`
+/// （事务内累计步数）——`staged` 仍是命令总数，因为 `tx.commit` 提交的是命令条数。
+pub(super) fn tx_intent(
+    api: &mut LocalEngineApi<'_>,
+    tx_id: &str,
+    intent: &str,
+    args: &Value,
+) -> Result<Value, RpcFailure> {
+    let plan = IntentPlan::parse(intent, args)?;
+    let staged = api
+        .scene
+        .borrow_mut()
+        .tx_apply_intent(tx_id, intent, |scene| plan.build(scene))
+        .map_err(map_doc)?;
+    Ok(json!({
+        "txId": tx_id,
+        "intent": staged.intent,
+        "commands": staged.commands,
+        "staged": staged.staged,
+        "intents": staged.intents,
+    }))
+}

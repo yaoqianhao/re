@@ -56,6 +56,24 @@ pub(super) fn dispatch_tx(
                 Err(f) => Response::fail(id, f),
             }
         }
+        "tx.intent" => {
+            let tx = match require_tx_id(params) {
+                Ok(t) => t,
+                Err(f) => return Response::fail(id, f),
+            };
+            let intent = match require_intent(params) {
+                Ok(i) => i,
+                Err(f) => return Response::fail(id, f),
+            };
+            let args = match opt_args(params) {
+                Ok(a) => a,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.tx_intent(tx, intent, &args) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         "tx.preview" => match require_tx_id(params).and_then(|tx| api.tx_preview(tx)) {
             Ok(r) => Response::ok(id, r),
             Err(f) => Response::fail(id, f),
@@ -88,19 +106,37 @@ fn require_tx_id(params: &Value) -> Result<&str, RpcFailure> {
 /// 协议层不持有白名单，是因为白名单随 M1-S3 的意图命令扩张，把它写进协议会让
 /// 「协议版本」跟着业务能力一起跳。
 fn require_op(params: &Value) -> Result<&str, RpcFailure> {
-    let op = match require_str(params, "op") {
-        Ok(op) => op,
-        Err(_) => return Err(RpcFailure::invalid_params("缺少字符串参数 `op`")),
+    require_dotted(params, "op")
+}
+
+/// 取 `intent`：与 `op` 同一套形态校验（必填、非空、点分名）。
+///
+/// 分成两个字段名而不是复用 `op`，是为了让 `tx.intent` 的**意图**与
+/// `tx.apply` 的**裸命令**在日志与回包里一眼可辨：前者是「一次命中多条命令」的
+/// 高层动作（M1-S3），后者是 M1-S1 的原子写。
+fn require_intent(params: &Value) -> Result<&str, RpcFailure> {
+    require_dotted(params, "intent")
+}
+
+/// 点分方法名的形态校验（`op` / `intent` 共用）。
+fn require_dotted<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcFailure> {
+    let value = match require_str(params, key) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(RpcFailure::invalid_params(format!(
+                "缺少字符串参数 `{key}`"
+            )))
+        }
     };
-    if op.trim().is_empty() {
-        return Err(RpcFailure::invalid_params("参数 `op` 不能为空"));
+    if value.trim().is_empty() {
+        return Err(RpcFailure::invalid_params(format!("参数 `{key}` 不能为空")));
     }
-    if !op.contains('.') {
+    if !value.contains('.') {
         return Err(RpcFailure::invalid_params(format!(
-            "参数 `op` 应为点分方法名（如 `scene.settransform`），收到 `{op}`"
+            "参数 `{key}` 应为点分方法名（如 `scene.settransform`），收到 `{value}`"
         )));
     }
-    Ok(op)
+    Ok(value)
 }
 
 /// 取 `args`：缺省 / `null` 得到 `null`；给了必须是对象。

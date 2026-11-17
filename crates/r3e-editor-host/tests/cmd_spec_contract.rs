@@ -1,4 +1,4 @@
-//! 契约：宿主侧 `impl EngineApi for LocalEngineApi` 的 47 个方法 ↔ 命令表 RPC 条目。
+//! 契约：宿主侧 `impl EngineApi for LocalEngineApi` 的 48 个方法 ↔ 命令表 RPC 条目。
 //!
 //! 前三处契约管的是「脚本注册 ↔ 表」和「dispatch ↔ 表」；这里管第三边：宿主到底把
 //! 哪些 RPC 方法实出来了。少实现一个方法，线上就是 `unsupported`；多实现一个没人认的
@@ -86,8 +86,8 @@ fn 宿主实现的每个方法都能在表里找到rpc() {
     let methods = host_methods();
     assert_eq!(
         methods.len(),
-        47,
-        "宿主 EngineApi 方法数应为 47，实际 {}",
+        48,
+        "宿主 EngineApi 方法数应为 48，实际 {}",
         methods.len()
     );
 

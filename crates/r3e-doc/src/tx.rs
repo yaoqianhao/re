@@ -37,10 +37,42 @@ pub struct TxSession {
     base_version: u64,
     /// 主场景在 `begin` 时刻的副本；`apply` 在这上面推进。
     shadow: Scene,
-    /// 已成功暂存的命令（按执行顺序）。`commit` 时整组入撤销栈。
-    staged: Vec<CommandKind>,
-    /// 与 `staged` 一一对应的意图名（`scene.settransform` 之类），供回包与诊断用。
-    ops: Vec<String>,
+    /// 已成功暂存的动作（按执行顺序）。每一步是一条意图或一条裸命令。
+    staged: Vec<TxStep>,
+}
+
+/// 事务里的一步：一条意图（展开成 N 条命令）或一条裸命令（M1-S1 的 `tx.apply`）。
+///
+/// 分组的唯一理由是**记账粒度**：`commit` 时每一步各自入撤销栈一格，于是
+/// 「一条意图 = 一次 undo 全退」这条语义在文档层就成立，不必让 `UndoStack`
+/// 去猜哪些命令属于同一意图。裸命令每步只有一条，退化成 S1 的既有行为。
+#[derive(Debug)]
+pub struct TxStep {
+    name: String,
+    intent: bool,
+    cmds: Vec<CommandKind>,
+}
+
+impl TxStep {
+    /// 意图名 / 方法名（宿主回包与诊断用）。
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// 是不是意图（`tx.intent` 攒的）而非裸命令（`tx.apply`）。
+    pub fn is_intent(&self) -> bool {
+        self.intent
+    }
+
+    /// 本步展开出的命令条数。
+    pub fn len(&self) -> usize {
+        self.cmds.len()
+    }
+
+    /// 本步是否一条命令都没有。
+    pub fn is_empty(&self) -> bool {
+        self.cmds.is_empty()
+    }
 }
 
 impl TxSession {
@@ -59,9 +91,9 @@ impl TxSession {
         self.base_version
     }
 
-    /// 已暂存命令条数。
+    /// 已暂存**命令**条数（意图展开后的总数，不是步数）。
     pub fn len(&self) -> usize {
-        self.staged.len()
+        self.staged.iter().map(TxStep::len).sum()
     }
 
     /// 是否还没暂存任何命令。
@@ -69,9 +101,14 @@ impl TxSession {
         self.staged.is_empty()
     }
 
-    /// 已暂存的意图名（按执行顺序）。
-    pub fn ops(&self) -> &[String] {
-        &self.ops
+    /// 已暂存的步数（一条意图算一步，一条裸命令也算一步）。
+    pub fn steps(&self) -> usize {
+        self.staged.len()
+    }
+
+    /// 已暂存的动作名（按执行顺序，意图与裸命令混排）。
+    pub fn ops(&self) -> Vec<&str> {
+        self.staged.iter().map(TxStep::name).collect()
     }
 
     /// 影子场景的只读视图：= 「事务提交后的样子」。
@@ -106,6 +143,21 @@ pub struct TxStaged {
     pub op: String,
     /// 本步之后的暂存条数。
     pub staged: usize,
+    /// 本步之后的暂存步数（`tx.apply` 每步 +1）。
+    pub intents: usize,
+}
+
+/// `tx_apply_intent` 的回包。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxIntentStaged {
+    /// 意图名（`spawn_prefab` / `place_light` / `paint_terrain` 之一）。
+    pub intent: String,
+    /// 本条意图展开出的命令条数。
+    pub commands: usize,
+    /// 本步之后的暂存命令总数。
+    pub staged: usize,
+    /// 本步之后的暂存步数。
+    pub intents: usize,
 }
 
 /// `tx_preview` 的回包。
@@ -119,6 +171,11 @@ pub struct TxPreview {
     pub current: StateHash,
     /// 影子哈希（= 提交后将得到的哈希）。
     pub shadow: StateHash,
+    /// 已暂存的动作清单：`(名字, 展开的命令数)`，按执行顺序。
+    ///
+    /// 这是「变更半径」的第一层：AI 提交前据此确认自己到底攒了哪几条意图，
+    /// 每条意图各有多大。
+    pub intents: Vec<(String, usize)>,
 }
 
 /// `tx_commit` 的回包。
@@ -158,7 +215,7 @@ impl Document {
             return Err(DocError::Busy(format!(
                 "已有未决事务 `{}`（{} 条待提交）",
                 open.id,
-                open.staged.len()
+                open.len()
             )));
         }
         let id = id.into();
@@ -170,7 +227,6 @@ impl Document {
             base_version,
             shadow: self.scene.clone(),
             staged: Vec::new(),
-            ops: Vec::new(),
         });
         Ok(TxBegin {
             id,
@@ -210,11 +266,105 @@ impl Document {
             self.tx = None;
             return Err(err);
         }
-        session.staged.push(cmd);
-        session.ops.push(op.clone());
+        session.staged.push(TxStep {
+            name: op.clone(),
+            intent: false,
+            cmds: vec![cmd],
+        });
         Ok(TxStaged {
             op,
-            staged: session.staged.len(),
+            staged: session.len(),
+            intents: session.steps(),
+        })
+    }
+
+    /// 在影子场景上暂存**一条意图**（M1-S3-A）：意图展开成 N 条原子命令，一起入栈。
+    ///
+    /// 与 [`Document::tx_apply`] 的两点差别，都是为了让 AI 能放心发大事：
+    ///
+    /// 1. **记账粒度**：N 条命令作为一个 [`TxStep`] 入事务（`tx_preview().intents` 按意图
+    ///    聚合成一行），AI 看到的是「做了一件事」，而不是「撒了 N 条命令」。撤销粒度仍
+    ///    按整笔事务算——一经 `commit`，一次 `undo` 全退，不会留下「地块画了一半」。
+    /// 2. **失败原子性止于意图**：意图内某条命令执行失败时，本意图已应用的命令**逆序
+    ///    回退**，影子回到意图之前的状态，**事务本身保留**（AI 改参数可以接着攒）。
+    ///    这与 `tx_apply` 的「一步失败即整笔作废」并不矛盾：那边一步只有一条命令，
+    ///    半截命令 = 不可解释状态，只能整笔作废；这边半截**意图**才是需要清掉的东西。
+    ///
+    /// 唯一例外：回退不精确（某条 `undo` 没能还原影子）时影子已不可信，整笔事务作废并
+    /// 在错误里说明——**主场景始终一个字节都没动过**，作废只是让 AI 重开一笔。
+    ///
+    /// 空意图（展开出 0 条命令）直接拒：它要么是参数写错了，要么是刷了个空区域，
+    /// 攒进事务只会让「提交了几条」和「AI 以为改了什么」对不上。
+    pub fn tx_apply_intent(
+        &mut self,
+        id: &str,
+        intent: impl Into<String>,
+        build: impl FnOnce(&Scene) -> Result<Vec<CommandKind>, DocError>,
+    ) -> Result<TxIntentStaged, DocError> {
+        let session = self
+            .tx
+            .as_mut()
+            .ok_or_else(|| DocError::TxNotFound(format!("没有未决事务，`{id}` 无从应用意图")))?;
+        if session.id != id {
+            return Err(DocError::TxNotFound(format!(
+                "未决事务是 `{}`，不是 `{id}`",
+                session.id
+            )));
+        }
+        let intent = intent.into();
+        // 构造失败（比如目标节点不存在）：影子还没被碰过，事务照旧。
+        let cmds = build(&session.shadow)?;
+        if cmds.is_empty() {
+            return Err(DocError::Rejected(format!(
+                "意图 `{intent}` 没有展开出任何命令（参数写错，或作用范围里没有可改的东西）"
+            )));
+        }
+
+        let mut applied = 0;
+        let mut failure = None;
+        for cmd in &cmds {
+            match cmd.apply(&mut session.shadow) {
+                Ok(()) => applied += 1,
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            }
+        }
+        if let Some(err) = failure {
+            // 逆序回退本意图已应用的部分。
+            //
+            // **不能拿哈希判「回退干净」**：`SpawnNode` 的 undo 只按名删节点，`next_id`
+            // 不回退（撤销不等于时空倒流，`state_hash` 契约明确要覆盖 `next_id`），
+            // 所以含 spawn 的意图回退后哈希必然与之前不同。这里只认 `undo` 自己的返回。
+            let mut undone = 0;
+            for cmd in cmds[..applied].iter().rev() {
+                if cmd.undo(&mut session.shadow).is_ok() {
+                    undone += 1;
+                }
+            }
+            if undone != applied {
+                // 回退不精确：影子已不可信，整笔作废（主场景未受影响）。
+                self.tx = None;
+                return Err(DocError::Rejected(format!(
+                    "意图 `{intent}` 执行中断且回退不精确（已应用 {applied} 条，仅 {undone} 条\
+                     还原成功），事务已作废；主场景未受影响，请重开一笔"
+                )));
+            }
+            return Err(err);
+        }
+
+        let commands = cmds.len();
+        session.staged.push(TxStep {
+            name: intent.clone(),
+            intent: true,
+            cmds,
+        });
+        Ok(TxIntentStaged {
+            intent,
+            commands,
+            staged: session.len(),
+            intents: session.steps(),
         })
     }
 
@@ -233,10 +383,15 @@ impl Document {
             )));
         }
         Ok(TxPreview {
-            staged: session.staged.len(),
+            staged: session.len(),
             base: session.base,
             current: self.state_hash(),
             shadow: session.shadow_hash(),
+            intents: session
+                .staged
+                .iter()
+                .map(|step| (step.name().to_string(), step.len()))
+                .collect(),
         })
     }
 
@@ -272,36 +427,49 @@ impl Document {
                 open.id,
                 base.raw(),
                 current.raw(),
-                open.staged.len()
+                open.len()
             )));
         }
 
         let session = self.tx.take().expect("上面刚确认过存在");
-        let total = session.staged.len();
-        if total == 0 {
+        if session.is_empty() {
             return Ok(TxCommit {
                 committed: 0,
                 hash: current,
                 version: self.version,
             });
         }
+        // 摊平成命令序列重放，但**保留每一步的边界**：入撤销栈时按步分组，
+        // 因此「一条意图 = 一格撤销」在文档层兑现（见 [`TxStep`]）。
+        let steps: Vec<Vec<CommandKind>> = session.staged.into_iter().map(|s| s.cmds).collect();
+        let total: usize = steps.iter().map(Vec::len).sum();
 
         let mut applied = 0;
         let mut failure: Option<DocError> = None;
-        for cmd in &session.staged {
-            match cmd.apply(&mut self.scene) {
-                Ok(()) => applied += 1,
-                Err(err) => {
-                    failure = Some(err);
-                    break;
+        'replay: for cmds in &steps {
+            for cmd in cmds {
+                match cmd.apply(&mut self.scene) {
+                    Ok(()) => applied += 1,
+                    Err(err) => {
+                        failure = Some(err);
+                        break 'replay;
+                    }
                 }
             }
         }
         if let Some(err) = failure {
+            // 逆序回退：从最后一步的最后一条命令往回走，只撤 `applied` 条。
             let mut undone = 0;
-            for cmd in session.staged[..applied].iter().rev() {
-                if cmd.undo(&mut self.scene).is_ok() {
-                    undone += 1;
+            let mut remaining = applied;
+            'undo: for cmds in steps.iter().rev() {
+                for cmd in cmds.iter().rev() {
+                    if remaining == 0 {
+                        break 'undo;
+                    }
+                    if cmd.undo(&mut self.scene).is_ok() {
+                        undone += 1;
+                    }
+                    remaining -= 1;
                 }
             }
             self.invalidate_hash_cache();
@@ -316,7 +484,13 @@ impl Document {
             return Err(err);
         }
 
-        self.undo.push_group(session.staged);
+        // 整笔事务 = 撤销栈一格（S1 契约）：摊平成一条命令序列再入栈。
+        //
+        // 步边界只服务于「记账可读」（`TxStep` / `tx_preview` 的 `intents` 清单），
+        // **不插手撤销粒度**——一笔事务就是一次 `undo` 全退，否则「提交了 3 条命令
+        // 却要按 3 次」既反直觉，也让 S3 的意图（本来就是整笔的一部分）白拿一层格。
+        let commands: Vec<CommandKind> = steps.into_iter().flatten().collect();
+        self.undo.push_group(commands);
         self.touch();
         Ok(TxCommit {
             committed: total,
@@ -341,7 +515,7 @@ impl Document {
         }
         let session = self.tx.take().expect("上面刚确认过存在");
         Ok(TxRollback {
-            dropped: session.staged.len(),
+            dropped: session.len(),
             hash: self.state_hash(),
             version: self.version,
         })

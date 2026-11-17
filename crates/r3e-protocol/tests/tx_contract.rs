@@ -8,13 +8,15 @@
 use r3e_protocol::*;
 use serde_json::{json, Value};
 
-/// 记录调用轨迹的桩：`tx.*` 五条全部接住，把入参原样回显成回包。
+/// 记录调用轨迹的桩：`tx.*` 六条全部接住，把入参原样回显成回包。
 #[derive(Default)]
 struct TxStub {
-    /// 已收到的调用序列（`begin` / `apply` / `preview` / `commit` / `rollback`）。
+    /// 已收到的调用序列（`begin` / `apply` / `intent` / `preview` / `commit` / `rollback`）。
     calls: Vec<&'static str>,
     /// 最近一次 `tx.apply` 的入参（`txId` / `op` / `args`）。
     last_apply: Option<(String, String, Value)>,
+    /// 最近一次 `tx.intent` 的入参（`txId` / `intent` / `args`）。
+    last_intent: Option<(String, String, Value)>,
 }
 
 impl EngineApi for TxStub {
@@ -31,6 +33,18 @@ impl EngineApi for TxStub {
         self.calls.push("apply");
         self.last_apply = Some((tx_id.to_string(), op.to_string(), args.clone()));
         Ok(json!({ "txId": tx_id, "staged": 1, "op": op }))
+    }
+
+    fn tx_intent(&mut self, tx_id: &str, intent: &str, args: &Value) -> Result<Value, RpcFailure> {
+        self.calls.push("intent");
+        self.last_intent = Some((tx_id.to_string(), intent.to_string(), args.clone()));
+        Ok(json!({
+            "txId": tx_id,
+            "intent": intent,
+            "commands": 2,
+            "staged": 2,
+            "intents": 1,
+        }))
     }
 
     fn tx_preview(&mut self, _tx_id: &str) -> Result<Value, RpcFailure> {
@@ -74,6 +88,7 @@ fn tx_methods_are_declared() {
     for m in [
         "tx.begin",
         "tx.apply",
+        "tx.intent",
         "tx.preview",
         "tx.commit",
         "tx.rollback",
@@ -238,6 +253,92 @@ fn tx_apply_rejects_array_args() {
     let err = res.error.expect("数组 args 应报错");
     assert_eq!(err.code, INVALID_PARAMS);
     assert!(api.calls.is_empty(), "参数非法时不应调用宿主");
+}
+
+#[test]
+fn tx_apply_intent_requires_intent() {
+    let mut api = TxStub::default();
+    let res = dispatch(&mut api, &request("tx.intent", json!({ "txId": "tx-1" })));
+    let err = res.error.expect("缺 intent 应报错");
+    assert_eq!(err.code, INVALID_PARAMS);
+    assert!(
+        err.message.contains("intent"),
+        "错误消息应点名 intent: {}",
+        err.message
+    );
+    assert!(api.calls.is_empty(), "参数非法时不应调用宿主");
+}
+
+#[test]
+fn tx_apply_intent_rejects_blank_and_non_dotted_intent() {
+    // 空白串与非点分名（脚本函数形态 / 光秃秃的单词）都不收：
+    // 意图名要和 RPC 方法一样可索引，否则宿主的白名单无从对齐。
+    for intent in ["   ", "spawn_prefab", "spawnprefab"] {
+        let mut api = TxStub::default();
+        let res = dispatch(
+            &mut api,
+            &request("tx.intent", json!({ "txId": "tx-1", "intent": intent })),
+        );
+        let err = res.error.expect("非法 intent 应报错");
+        assert_eq!(err.code, INVALID_PARAMS, "intent = {intent:?}");
+        assert!(api.calls.is_empty(), "intent = {intent:?} 时不应调用宿主");
+    }
+}
+
+#[test]
+fn tx_apply_intent_passes_intent_and_args_through() {
+    let mut api = TxStub::default();
+    let args = json!({ "prefab": "desk", "position": [1.0, 0.0, 2.0] });
+    let res = dispatch(
+        &mut api,
+        &request(
+            "tx.intent",
+            json!({ "txId": "tx-3", "intent": "scene.spawn_prefab", "args": args }),
+        ),
+    );
+    assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+    let result = res.result.expect("应有回包");
+    assert_eq!(
+        result["intent"],
+        json!("scene.spawn_prefab"),
+        "回包要回显意图名"
+    );
+    assert_eq!(result["commands"], json!(2), "回包要报展开出的命令条数");
+    assert_eq!(result["intents"], json!(1), "回包要报步数（意图数）");
+
+    let (tx, intent, passed) = api.last_intent.clone().expect("应调用宿主");
+    assert_eq!(
+        (tx.as_str(), intent.as_str()),
+        ("tx-3", "scene.spawn_prefab")
+    );
+    assert_eq!(passed, args, "对象参数应原样透传，协议层不改写");
+}
+
+#[test]
+fn tx_apply_intent_defaults_args_to_null() {
+    let mut api = TxStub::default();
+    let res = dispatch(
+        &mut api,
+        &request(
+            "tx.intent",
+            json!({ "txId": "tx-1", "intent": "scene.spawn_prefab" }),
+        ),
+    );
+    assert!(res.error.is_none(), "不应报错: {:?}", res.error);
+    let (_, _, args) = api.last_intent.clone().expect("应调用宿主");
+    assert_eq!(args, Value::Null, "省略 args 应交给宿主 null");
+}
+
+#[test]
+fn tx_apply_intent_requires_tx_id() {
+    let mut api = TxStub::default();
+    let res = dispatch(
+        &mut api,
+        &request("tx.intent", json!({ "intent": "scene.spawn_prefab" })),
+    );
+    let err = res.error.expect("缺 txId 应报错");
+    assert_eq!(err.code, INVALID_PARAMS);
+    assert!(api.calls.is_empty());
 }
 
 #[test]

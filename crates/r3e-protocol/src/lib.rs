@@ -48,7 +48,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「47 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「48 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
@@ -57,6 +57,17 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// M1-S1 增 5 条 `tx.*`（39 → 44）：事务协议上链。M1-S2-B 增 3 条 `query.*`（44 → 47）：
 /// 语义查询面。这两批都**不新增脚本函数**，故只动本表与 `cmd_spec` 的 `Meta` 域，
 /// 脚本契约测试不受影响；S3/S4 的写入口则是 `tx.apply` 的 `op` 白名单，不再动本表。
+///
+/// M1-S3-A 增 1 条 `tx.intent`（47 → 48）：意图原子单元。**这是本表第一次为
+/// S3 扩容**——S3 的意图需要一个独立的 RPC 面来携带「一次命中 N 条命令」的语义
+/// （`tx.apply` 的 `op` 白名单只能表达一条命令）。具体意图名仍走 `intent` 参数的
+/// 宿主白名单，加意图不动本表。
+///
+/// 命名铁律：本表里的名字必须是 `dispatch::canonical()` 归一后的形态——只含小写
+/// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
+/// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
+/// `rpc名唯一且是点分小写` 也会红）。所以意图那条叫 `tx.intent`，Rust 侧方法名
+/// 仍是 `tx_intent`。
 pub const RPC_METHODS: &[&str] = &[
     "audio.spatial.clear",
     "audio.spatial.list",
@@ -99,6 +110,7 @@ pub const RPC_METHODS: &[&str] = &[
     "tx.apply",
     "tx.begin",
     "tx.commit",
+    "tx.intent",
     "tx.preview",
     "tx.rollback",
     "ui.list",

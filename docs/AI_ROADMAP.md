@@ -35,6 +35,8 @@ AIGC:
 | M0-S4 | 事务 / Undo / 确定性 | ✅ 2026-11-15 | `Transaction` 198 行 / `StateHash` 604 行（FNV-1a64）/ `UndoStack` 168 行；新建 `r3e-replay` 546 行 11 测，600 帧两次同哈希 |
 | M0-S5 | 协议剥离 + 能力清单 + 门禁转硬 | ✅ 2026-11-16 | `r3e-protocol` 8 文件 2,326 行仅 serde / `r3e-editor` 缩至 505 行传输层；`capabilities.json` 4,744 行 369 命令；`dep-check --strict` 硬门 0 违规 + 4 条债记账；`invariants` 三源 24/24/24；`verify` 20.4s 九道门；`AI_WORKFLOW.md` 落地 |
 | M1-S1 | 事务协议上链（4 卡） | ✅ 2026-11-16（S1-D 降级） | `tx.*` 五方法上线：RPC 39 → **44**、命令表 369 → **374**、`capabilities.json` 重生成；事务态挂 `Document` 影子场景（跨 RPC 存活，主场景 commit 前零字节变动）；`doc_gate` 第 7 条写点台账（5 crate / 226 处，新增未登记即红）；单测 1,476 → **1,504**；`verify` 十项全绿。**S1-D 未还债**：R2「替代清单先行」前置未满足，4 项离线能力无协议承接方，改出 `docs/M1_S1D_SUBSTITUTION.md` |
+| M1-S2 | 语义查询（3 卡） | ✅ 2026-11-17（C→A→B） | `tags` / `interact_radius` 落 `Node` 与 `to_scene_file`（roundtrip 不增生字段）、`StateHash` 覆盖；`r3e-core/src/query.rs` 443 行 `WorldQuery`（八类判据 + 标签 AND/OR + 区域含边界 + 九位组件位，`describe` 与 `query` 共用 `Facts`）；`query.find/describe/stats` 三条只读 RPC：RPC 44 → **47**、命令表 374 → **377**；单测 1,504 → **1,546**；`verify` 十项全绿 |
+| M1-S3 | 意图命令（S3-A 已完成） | 🟡 2026-11-17（A 完） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；`scene.spawn_prefab` 白名单 + 256 上限 + 影子外预检（重名 / 父引用）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；RPC 47 → **48**、命令表 377 → **378**；单测 1,546 → **1,564**；`verify` 十项全绿 |
 
 ### 0.2 门禁现状（`cargo xtask verify`，2026-11-16 实测）
 

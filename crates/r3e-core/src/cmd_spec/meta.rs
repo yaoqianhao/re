@@ -226,6 +226,24 @@ pub(super) static ALL: &[CommandSpec] = &[
         cost: Cost::Cheap,
         since: "M1-S1",
     },
+    // ---- M1-S3-A 意图原子单元：1 条纯 RPC 方法 ----
+    //
+    // 与 `tx.apply` 并列而不合并，是因为两者的**记账单位**不同：`tx.apply` 攒的是
+    // 一条命令、一次 undo 就是那条命令；`tx.intent` 攒的是「一条意图展开出的
+    // N 条命令」，`staged` 涨 N、`intents` 涨 1，撤销时仍是整笔事务一格（M1-S3-A 契约：
+    // 提交与撤销都以**事务**为单位）。合成一个方法只会让「这条到底算几步」靠 `op`
+    // 里有没有冒号来猜。
+    CommandSpec {
+        name: "tx.intent",
+        rpc: Some("tx.intent"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 同 `tx.apply`：只攒暂存，不碰场景、不推版本。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M1-S3-A",
+    },
     // ---- M1-S2-B 语义查询：3 条纯 RPC 方法，同样无对应脚本函数 ----
     //
     // 脚本侧不开放查询面的理由与 `tx.*` 不同：脚本里拿到的就是 `&mut Scene`，直接

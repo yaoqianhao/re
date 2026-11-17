@@ -31,7 +31,9 @@ use r3e_core::Scene;
 pub use command::{Command, CommandKind};
 pub use state_hash::{mix_f32, mix_str, mix_u64, scene_hash, world_hash, StateHash, FNV_OFFSET};
 pub use transaction::Transaction;
-pub use tx::{TxBegin, TxCommit, TxPreview, TxRollback, TxSession, TxStaged};
+pub use tx::{
+    TxBegin, TxCommit, TxIntentStaged, TxPreview, TxRollback, TxSession, TxStaged, TxStep,
+};
 pub use undo::{Mark, UndoGroup, UndoStack};
 pub use validate::{
     errors as validate_errors, issue_code_by_code, validate, Issue, IssueCode, Severity,

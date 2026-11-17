@@ -1,6 +1,6 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 47 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 48 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
 
 use serde_json::Value;
@@ -313,6 +313,29 @@ pub trait EngineApi {
     /// 回包契约：`{ "txId", "staged": usize, "op": String }`。暂存不落场景、不推版本。
     fn tx_apply(&mut self, _tx_id: &str, _op: &str, _args: &Value) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("tx.apply"))
+    }
+
+    /// 把一条**意图**暂存进事务（M1-S3-A）：一次意图展开成 N 条命令，一起入栈。
+    ///
+    /// 与 `tx.apply` 的分工：`tx.apply` 收的是**裸命令**（一个 `op` 一条命令），
+    /// 供 M1-S1 的原子写用；本方法收的是**意图**（`spawn_prefab` / `place_light` /
+    /// `paint_terrain`），一个 `intent` 在宿主侧展开成多条命令，记账时占撤销栈一格，
+    /// 因此「一条意图 = 一次 undo 全退」。
+    ///
+    /// 回包契约：`{ "txId", "intent": String, "commands": usize, "staged": usize,
+    /// "intents": usize }`。`commands` 是本条意图展开的命令数，`staged` 是事务内命令
+    /// 总数，`intents` 是事务内步数。
+    ///
+    /// 失败语义：意图内某条命令失败时，本意图已应用的部分会逆序回退，**事务保留**
+    /// 供调用方改参数重试（裸命令的 `tx.apply` 失败则整笔作废）——见
+    /// `r3e_doc::Document::tx_apply_intent` 的注释。
+    fn tx_intent(
+        &mut self,
+        _tx_id: &str,
+        _intent: &str,
+        _args: &Value,
+    ) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("tx.apply_intent"))
     }
 
     /// 影子预演：在**不改场景**的前提下算出提交后的哈希与受影响对象。

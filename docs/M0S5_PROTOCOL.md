@@ -248,7 +248,7 @@ C = docs/capabilities.json 的 invariants[].code 集合
   "generated_by": "cargo xtask gen-capabilities",
   "engine": "r3e",
   "protocol_version": 1,
-  "counts": { "commands": 377, "rpc": 47, "script_only": 330, "domains": 17, "invariants": 24 },
+  "counts": { "commands": 378, "rpc": 48, "script_only": 330, "domains": 17, "invariants": 24 },
   "domains": ["scene", "scene_flow", "anim", "anim_blend", "anim_sync", "env", "render",
               "shadow", "ui", "text", "light", "audio", "physics", "input", "query", "pick", "meta"],
   "commands": [

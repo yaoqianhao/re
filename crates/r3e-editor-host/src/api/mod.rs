@@ -232,6 +232,9 @@ impl EngineApi for LocalEngineApi<'_> {
     fn tx_apply(&mut self, tx_id: &str, op: &str, args: &Value) -> Result<Value, RpcFailure> {
         tx::tx_apply(self, tx_id, op, args)
     }
+    fn tx_intent(&mut self, tx_id: &str, intent: &str, args: &Value) -> Result<Value, RpcFailure> {
+        tx::tx_intent(self, tx_id, intent, args)
+    }
     fn tx_preview(&mut self, tx_id: &str) -> Result<Value, RpcFailure> {
         tx::tx_preview(self, tx_id)
     }

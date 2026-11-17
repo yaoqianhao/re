@@ -303,3 +303,160 @@ fn 换场景会清掉未决事务() {
     assert!(doc.tx_session().is_none(), "换场景后未决事务作废");
     assert!(matches!(doc.tx_commit("t1"), Err(DocError::TxNotFound(_))));
 }
+
+// ---------- M1-S3-A：意图（一次意图 = N 条命令 = 一格撤销）----------
+
+/// 「实例化一组节点」的意图：第一条为根，其余挂到根下（父名 = 批内第一个）。
+///
+/// 故意让后续组件依赖批内第一条命令的效果——若文档层不按顺序把命令应用到影子，
+/// 第 2 条起会因为「父物件不存在」直接失败，这个用例就会红。
+fn prefab(s: &Scene, names: &[&str]) -> Result<Vec<CommandKind>, DocError> {
+    let _ = s;
+    Ok(names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            CommandKind::spawn_node(ObjectDesc {
+                name: (*name).to_string(),
+                parent: if i == 0 {
+                    None
+                } else {
+                    Some(names[0].to_string())
+                },
+                ..ObjectDesc::default()
+            })
+        })
+        .collect())
+}
+
+#[test]
+fn 一条意图展开三条命令只占一格撤销() {
+    let mut doc = seeded();
+    doc.tx_begin("t1").unwrap();
+    let staged = doc
+        .tx_apply_intent("t1", "spawn_prefab", |s| {
+            prefab(s, &["desk", "leg1", "leg2"])
+        })
+        .expect("意图应当被接受");
+
+    assert_eq!(staged.intent, "spawn_prefab");
+    assert_eq!(staged.commands, 3, "一条意图展开三条命令");
+    assert_eq!(staged.staged, 3, "`staged` 报的是命令总数");
+    assert_eq!(staged.intents, 1, "`intents` 报的是步数");
+
+    let preview = doc.tx_preview("t1").expect("预演应当成功");
+    assert_eq!(
+        preview.intents,
+        vec![("spawn_prefab".to_string(), 3)],
+        "预演要能列出每条意图的展开规模"
+    );
+
+    let done = doc.tx_commit("t1").expect("提交应当成功");
+    assert_eq!(done.committed, 3);
+    assert_eq!(doc.undo_depth(), 1, "整笔事务只占一格");
+    assert_eq!(doc.undo_commands(), 3, "一格里有三条命令");
+    assert!(doc.find_id("leg2").is_some());
+    let parent = doc.get(doc.find_id("leg1").unwrap()).unwrap().parent;
+    assert_eq!(parent, doc.find_id("desk"), "批次内的父子关系要保住");
+
+    doc.undo().expect("undo 应当成功");
+    // 注意：`SpawnNode` 的 undo 只按名删节点，`next_id` 不回退（撤销不等于时空倒流），
+    // 所以这里不能拿 `state_hash` 断言「回到提交前」——只断言节点全退干净。
+    for name in ["desk", "leg1", "leg2"] {
+        assert!(doc.find_id(name).is_none(), "`{name}` 应当被一起退掉");
+    }
+    assert_eq!(doc.undo_depth(), 0, "一格退完，撤销栈见底");
+}
+
+#[test]
+fn 裸命令与意图混攒_一次undo全退() {
+    let mut doc = seeded();
+    doc.tx_begin("t1").unwrap();
+    doc.tx_apply("t1", "scene.settransform", |s| move_to(s, "a", 4.0))
+        .unwrap();
+    doc.tx_apply_intent("t1", "spawn_prefab", |s| prefab(s, &["p1", "p2"]))
+        .unwrap();
+
+    let done = doc.tx_commit("t1").expect("提交应当成功");
+    assert_eq!(done.committed, 3, "一裸命令 + 两命令意图");
+    assert_eq!(doc.undo_depth(), 1, "整笔事务一格，意图不另立一格");
+
+    doc.undo().expect("undo 应当成功");
+    assert!(doc.find_id("p1").is_none(), "意图那两条一起退掉");
+    assert_eq!(x_of(&doc, "a"), 0.0, "裸命令也一起退掉");
+}
+
+#[test]
+fn 意图内某条失败_影子回到意图前且事务保留() {
+    let mut doc = seeded();
+    doc.tx_begin("t1").unwrap();
+    doc.tx_apply("t1", "scene.settransform", |s| move_to(s, "b", 7.0))
+        .unwrap();
+    let before_commands = doc.tx_session().expect("事务在").len();
+
+    let err = doc
+        .tx_apply_intent("t1", "spawn_prefab", |s| {
+            let mut cmds = prefab(s, &["ghost"])?;
+            // 第二条故意指向不存在的节点：apply 阶段必然失败（构造阶段拦不住）。
+            cmds.push(CommandKind::SetVisible {
+                id: 999_999,
+                old: true,
+                new: false,
+            });
+            Ok(cmds)
+        })
+        .expect_err("意图中途失败应当报错");
+
+    assert!(
+        matches!(err, DocError::NotFound(_)),
+        "错误应当来自文档层: {err:?}"
+    );
+    assert_eq!(
+        doc.tx_session().expect("事务在").len(),
+        before_commands,
+        "失败的意图不该留下暂存"
+    );
+    assert!(
+        doc.tx_session().is_some(),
+        "意图失败不作废事务，可改参数重试"
+    );
+    // 半截意图必须被清掉：提交只应带上前面那条裸命令，`ghost` 不许混进主场景。
+    let done = doc.tx_commit("t1").expect("提交应当成功");
+    assert_eq!(done.committed, 1, "只提交前一步那条裸命令");
+    assert!(
+        doc.find_id("ghost").is_none(),
+        "失败的意图不该把半个 prefab 提交进主场景"
+    );
+    assert_eq!(x_of(&doc, "b"), 7.0, "前一步裸命令照常生效");
+}
+
+#[test]
+fn 空意图被拒且事务保留() {
+    let mut doc = seeded();
+    doc.tx_begin("t1").unwrap();
+    let err = doc
+        .tx_apply_intent("t1", "paint_terrain", |_| Ok(Vec::new()))
+        .expect_err("空意图应当被拒");
+    assert!(
+        matches!(err, DocError::Rejected(_)),
+        "空意图按 Rejected 拒: {err:?}"
+    );
+    assert!(doc.tx_session().is_some(), "空意图不该作废事务");
+    assert_eq!(doc.tx_session().expect("事务在").steps(), 0);
+}
+
+#[test]
+fn 意图的txid对不上或没有事务都报txnotfound() {
+    let mut doc = seeded();
+    assert!(matches!(
+        doc.tx_apply_intent("t1", "spawn_prefab", |s| prefab(s, &["x"])),
+        Err(DocError::TxNotFound(_))
+    ));
+
+    doc.tx_begin("t1").unwrap();
+    assert!(matches!(
+        doc.tx_apply_intent("t2", "spawn_prefab", |s| prefab(s, &["x"])),
+        Err(DocError::TxNotFound(_))
+    ));
+    assert_eq!(doc.tx_session().expect("事务在").len(), 0, "错 id 不碰影子");
+}

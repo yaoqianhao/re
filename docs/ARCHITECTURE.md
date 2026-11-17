@@ -244,7 +244,7 @@ M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次�
 
 `base` 只在 `begin` 时取一次，`commit` 成功后强制重取（方案风险 R4：「事务态与 `StateHash` 双源」的处置）。哈希出网形态是字符串不是数字：JSON 数字进 JS 会被 `Number` 截到 53 位有效位，而冲突判定恰好依赖这个值。
 
-测试面：`crates/r3e-doc/tests/tx.rs` 13 个用例（影子隔离、提交记账、冲突、回滚、换场景作废）、`crates/r3e-protocol/tests/tx_contract.rs`（五方法可分发 + 参数整形）、`crates/r3e-editor/tests/cmd_spec_contract.rs`（`tx.*` 进能力表）。
+测试面：`crates/r3e-doc/tests/tx.rs` 18 个用例（影子隔离、提交记账、冲突、回滚、换场景作废；M1-S3-A 增意图记账：`staged` 涨 N 而 `intents` 涨 1、一次 `undo` 全退）、`crates/r3e-protocol/tests/tx_contract.rs`（`tx.*` **六**方法可分发 + 参数整形，M1-S3-A 增 `tx.intent`）、`crates/r3e-editor-host/src/api/tests/tx.rs`（M1-S3-A：`scene.spawn_prefab` 意图的记账口径、白名单拒绝、`nodes` 整形与 256 上限、影子外预检）、`crates/r3e-editor/tests/cmd_spec_contract.rs`（`tx.*` 进能力表）。
 
 ### 3.2 代码规模
 
@@ -255,20 +255,21 @@ M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次�
 | r3e-asset | 5,979 | 894 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-script | 6,230 | 3,367 | 132 | `api/`（17 文件，最大 `mod.rs` 428 行；M0-S2 由单文件 4,070 拆出）/ `lib.rs`（2,021）；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
 | r3e-runtime | 4,338 | — | 14 | `app.rs`（3,066：窗口 / 主循环 / 时间步）/ `asset_scene.rs`（474：资产装配 spawn / 形变 / 蒙皮 / 动画，M0-S3 抽出）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
-| r3e-editor-host | 4,287 | 127 | 58 | `api/`（14 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出，M1-S1 增 `api/tx.rs` 269）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
+| r3e-editor-host | 4,287 | 127 | 58 | `api/`（15 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出；M1-S1 增 `api/tx.rs`，M1-S2-B 增 `api/query.rs`，M1-S3-A 把意图展开与影子外预检落在 `api/tx.rs`）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
-| r3e-protocol | 2,518 | 1,037 | 49 | `msg.rs` / `patch.rs` / `api.rs`（`EngineApi` trait）/ `caps.rs`（能力清单 DTO）/ `dispatch/`（4 文件：`mod.rs` 313 路由 + `scene.rs` 471 + `media.rs` 250 + `tx.rs` 102 事务面，M1-S1 从 `mod.rs` 拆出）/ `tests/rpc_contract.rs`（`RPC_METHODS` 与 dispatch 臂双向对齐 + 清单 DTO 契约）/ `tests/tx_contract.rs`（`tx.*` 五方法分发与参数整形） |
+| r3e-protocol | 2,518 | 1,037 | 49 | `msg.rs` / `patch.rs` / `query.rs`（M1-S2-B：`QuerySpec` DTO）/ `api.rs`（`EngineApi` trait）/ `caps.rs`（能力清单 DTO）/ `dispatch/`（5 文件：`mod.rs` 路由 + `scene.rs` + `media.rs` + `tx.rs` 事务面（M1-S1 从 `mod.rs` 拆出、M1-S3-A 增 `tx.intent` 臂）+ `query.rs` 查询面（M1-S2-B）；行数以 `cargo xtask lint-size` 为准）/ `tests/rpc_contract.rs`（`RPC_METHODS` 与 dispatch 臂双向对齐 + 清单 DTO 契约）/ `tests/tx_contract.rs`（`tx.*` 六方法分发与参数整形） |
 | r3e-editor | 505 | 1,875 | 72 | `lib.rs`（35：只做 `pub use r3e_protocol::*` 再导出，保证旧 `use r3e_editor::` 调用方零改动）/ `server.rs`（470：TCP / NDJSON 传输 + 资源上限单测）；协议数据层已于 M0-S5 迁往 `r3e-protocol` |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
-| **r3e-doc** | 3,045 | 1,924 | 109 | `lib.rs`（315：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`state_hash.rs`（604：`StateHash` 唯一实现 + 13 组字段覆盖表 + 哈希缓存）、`transaction.rs`（198：`begin` / `preview` / `commit` / `rollback` + `RollbackFailed`）、`tx.rs`（277：M1-S1 会话式事务，`TxSession` 影子场景 + `TX_BUSY` 单笔约束）、`undo.rs`（168：`UndoStack` 一事务一格 + `rollback_to` 水位）、`write.rs`（80：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 337 最大，`Command` trait；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，24 个 issue code，M0-S5 补齐最后 10 条的反例测试） |
+| **r3e-doc** | 3,045 | 1,924 | 109 | `lib.rs`（315：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`state_hash.rs`（604：`StateHash` 唯一实现 + 13 组字段覆盖表 + 哈希缓存）、`transaction.rs`（198：`begin` / `preview` / `commit` / `rollback` + `RollbackFailed`）、`tx.rs`（M1-S1 会话式事务，`TxSession` 影子场景 + `TX_BUSY` 单笔约束；M1-S3-A 增意图记账 `tx_apply_intent`——一次意图的 N 条命令共用一格撤销）、`undo.rs`（168：`UndoStack` 一事务一格 + `rollback_to` 水位）、`write.rs`（80：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 337 最大，`Command` trait；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，24 个 issue code，M0-S5 补齐最后 10 条的反例测试） |
 | r3e-replay | 546 | — | 11 | `lib.rs`（427：`ReplayConfig` / LCG / `run()` 每帧 9 条命令、每 10 帧一笔事务、每 60 帧一个采样点）、`main.rs`（119：命令行与逐行输出契约，供 `xtask replay` 比对） |
 | r3e-app | 36 | 1,437 | 11 | `main.rs`（薄壳：日志 + argv + 编辑器桥开关）；`tests/visual_regression.rs`（像素回归入口 + 基准图） |
 | **合计** | **80,438** | **18,719** | **1,504** | **约 8.04 万行 Rust + 1,512 行 WGSL（按 `crates/**/src/**/*.wgsl` 实测）；`cargo test --workspace --all-features --features rapier` 实测 1,504 passed / 0 failed（含 lib/bin/集成/doctest 全部 harness；M1-S1 由 1,476 增 28 条：`r3e-doc/tests/tx.rs` 13 + protocol 15）** |
 
 行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算，并在 2026-11-16 M0-S5 收口时按同一口径再全量重算一次（新增 `r3e-protocol` 行、`r3e-editor` 缩为传输层、单测总数随 D6 补 10 条反例测试 1,466 → 1,476）：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，
-该快照是硬门禁，只许涨不许跌）。2026-11-14 M0-S0 那次统计存在 glob 漏计（`r3e-render` 记 10,520，同一口径递归实测 13,074），
+该快照是硬门禁，只许涨不许跌）。M1 各卡（S1 → S3-A）只把**增量**记进快照与 `docs/M1_PLAN.md`，本节 crate 级数字仍是 M0-S5 全量重算口径、未逐卡回填，
+因此以单测数看当前真值应直接读 `xtask/tests_baseline.json`（M1-S3-A 后合计 **1,564**），行数看 `cargo xtask lint-size`。2026-11-14 M0-S0 那次统计存在 glob 漏计（`r3e-render` 记 10,520，同一口径递归实测 13,074），
 本版按递归全量对全部 crate 重算修正，因此合计与旧版不可逐字对比，只与 `src`/`tests` 实测值对比。
 下表历史段落记录各扩展的**增量**，用于回溯当时的边际成本，不与本节合计行相加；其中出现的 `renderer.rs` 一律指
 M0-S1 拆分**前**的单文件（5,582 行），拆分后对应内容分布在 `crates/r3e-render/src/renderer/` 下 17 个模块里：
