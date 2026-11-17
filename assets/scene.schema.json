@@ -1067,6 +1067,90 @@
       },
       "type": "object"
     },
+    "TerrainPatch": {
+      "description": "一块地表。\n\n字段一律用数组而非 `Vec2` / `Vec3`，与场景 JSON（`\"size\": [16, 16]`）严格对称，\n也不给 glam 加 serde feature —— 与 `LocalLight` / `UiElement` 保持同一约定。",
+      "properties": {
+        "albedo": {
+          "default": [
+            0.44999998807907104,
+            0.41999998688697815,
+            0.36000001430511475
+          ],
+          "description": "线性 RGB 反照率，逐通道夹到 `[0, 1]`。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "heights": {
+          "default": [],
+          "description": "高度样本（行主序，长度 = `resolution.0 * resolution.1`）。\n\n**空数组表示平坦地面**（M1 的常见形态）；非空时按分辨率补齐 / 截断，\n非有限值一律归零。M1 不高求值它，只保证「写进去什么、读出来什么」。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "name": {
+          "default": "",
+          "description": "脚本 / RPC / 场景里的唯一主键。重复写同名 = 整体覆盖。",
+          "type": "string"
+        },
+        "origin": {
+          "default": [
+            0.0,
+            0.0
+          ],
+          "description": "世界坐标下的矩形左下角（XZ 平面）。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "resolution": {
+          "default": [
+            1,
+            1
+          ],
+          "description": "高度样本网格的分辨率（列数, 行数），逐轴夹到 `1..=`[`TERRAIN_MAX_RESOLUTION`]。",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "roughness": {
+          "default": 0.6000000238418579,
+          "description": "粗糙度，夹到 [`MIN_ROUGHNESS`]`..=1`。",
+          "format": "float",
+          "type": "number"
+        },
+        "size": {
+          "default": [
+            16.0,
+            16.0
+          ],
+          "description": "世界单位下的矩形尺寸（XZ 平面），逐轴下限 [`TERRAIN_MIN_SIZE`]。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "TextAlign": {
       "description": "水平对齐方式。",
       "enum": [
@@ -1403,6 +1487,13 @@
         }
       ],
       "description": "HDR 后处理链（扩展十三）。缺省表示直通（曝光 0 / 不调色 / 无泛光 / 无 FXAA），\n画面与「没有 postfx 段」的旧场景逐像素一致。"
+    },
+    "terrain": {
+      "description": "地形数据壳（M1-S3-C）：一块地表 = 名字 + 世界矩形 + 高度样本 + 地表材质参数。\n空表示场景没有地形。M1 只承载数据、不出几何（M2 才求值三角网）。",
+      "items": {
+        "$ref": "#/$defs/TerrainPatch"
+      },
+      "type": "array"
     },
     "texts": {
       "description": "2D 屏幕空间文本（HUD）。空表示场景没有文本层。",

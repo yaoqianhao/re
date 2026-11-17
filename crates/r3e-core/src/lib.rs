@@ -28,10 +28,12 @@ pub mod scene;
 pub mod scene_desc;
 pub mod scene_schema;
 pub mod scene_stack;
+pub mod scene_tables;
 pub mod shadow_cull;
 pub mod skin;
 pub mod ssao;
 pub mod tangent;
+pub mod terrain;
 pub mod text;
 pub mod texture_slot;
 pub mod transform;
@@ -136,6 +138,10 @@ pub use ssao::{
     DEFAULT_SSAO_INTENSITY, DEFAULT_SSAO_RADIUS, DEFAULT_SSAO_SAMPLES, MAX_SSAO_INTENSITY,
     MAX_SSAO_RADIUS, MAX_SSAO_SAMPLES, MIN_AO_FACTOR, MIN_SSAO_BIAS, MIN_SSAO_RADIUS,
     MIN_SSAO_SAMPLES,
+};
+pub use terrain::{
+    TerrainPatch, TERRAIN_MAX_PATCHES, TERRAIN_MAX_RESOLUTION, TERRAIN_MIN_SIZE,
+    TERRAIN_NAME_MAX_LEN,
 };
 pub use text::{
     estimate_text_height, estimate_text_width, layout_text, measure_text, ApproxMetrics, FontSet,

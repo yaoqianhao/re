@@ -555,6 +555,7 @@ Release 二进制 14.3 MB（14,957,056 字节；`[profile.release]` 已开 `lto 
 | `scene.rs` | 场景容器、生命周期、层次变换、文件加载 | `Scene`, `ObjectDesc`, `SceneFile` |
 | `camera.rs` | 透视相机与轨道控制 | `Camera` |
 | `light.rs` | 单方向光 + 环境光 + 局部光源表 + 局部光源阴影的选灯/槽位/面相机（纯函数，零 wgpu） | `Light`, `LocalLight`, `plan_local_shadows`, `point_shadow_face`, `shadow_face_view_projection` |
+| `terrain.rs` | 地形块数据壳（M1-S3-C）：高度样本表 + 尺寸/分辨率/材质参数，表操作（同名覆盖 / 按名移除 / 全表收敛），**不生成几何**（网格与 LOD 属 M2） | `TerrainPatch`, `TERRAIN_MAX_PATCHES`, `TERRAIN_MAX_RESOLUTION`, `TERRAIN_NAME_MAX_LEN`, `TERRAIN_MIN_SIZE`, `upsert_patch`, `remove_patch`, `find_patch`, `normalize_all` |
 | `text.rs` | 字体加载、字形位图接口、排版（换行 / 对齐 / 缺字回退）、屏幕文本节点 | `FontSet`, `GlyphSource`, `TextLayout`, `ScreenText`, `TextAlign` |
 | `ui.rs` | 屏幕空间 UI 元素、锚点与单位换算、层级排序（纯数学，不碰 GPU） | `UiElement`, `UiKind`, `Anchor`, `UiUnit`, `UiValue`, `UiRect`, `resolve_rect`, `sort_by_layer` |
 | `glyph_atlas.rs` | 字形图集的货架式分配与分页 | `GlyphAtlas`, `ShelfAllocator`, `GlyphKey` |
@@ -1052,7 +1053,7 @@ composite：color *= AO.r ──▶ 曝光 → 色调映射 → FXAA
 | 代码入口 | `r3e_core::scene_schema::{scene_schema, scene_schema_pretty, SCENE_SCHEMA_PATH}` |
 
 覆盖的结构：`SceneFile` / `CameraDesc` / `LightDesc` / `ShadowDesc` / `ObjectDesc` /
-`PhysicsDesc` / `PhysicsSceneDesc` / `LocalLight` / `LocalLightKind` / `EnvironmentSettings` /
+`PhysicsDesc` / `PhysicsSceneDesc` / `LocalLight` / `LocalLightKind` / `TerrainPatch` / `EnvironmentSettings` /
 `PostFxSettings` / `BloomSettings` / `TonemapMode` / `SsaoSettings` / `SurfaceMaterial` /
 `AssetDecl` / `AnimDecl` / `ScreenText` / `TextAlign` / `UiElement` / `UiKind` / `Anchor` /
 `UiUnit` / `UiValue`。

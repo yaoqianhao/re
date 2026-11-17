@@ -16,6 +16,7 @@
 //!   background → camera → light(含 shadow/cascade)
 //!   environment(有无 + 内容) → postfx(有无 + 内容)
 //!   lights + lights_enabled
+//!   terrain（块数 + 每块内容）
 //!   texts + text_enabled
 //!   ui + ui_enabled + ui_above_text
 //!   occlusion → environment_map(有无 + 内容)
@@ -34,6 +35,7 @@
 //! | `name` / `background` / `camera` / `light` | `SetCamera` 直接改 |
 //! | `environment` / `postfx` / `lights` / `texts` / `ui` / 三个 `*_enabled` / `ui_above_text` | `SetEnvironment` / `SetPostFx` / `Upsert*` / `Remove*` 直接改 |
 //! | `occlusion` / `environment_map` / `physics` / `assets` / `morphs` | 文档语义的一部分，成本低 |
+//! | `terrain`（M1-S3-C：名字 / 矩形 / 分辨率 / 材质 / 高度样本） | `paint_terrain` 直接改，AI 写入必须能被差分哈希看见 |
 //!
 //! | 不覆盖 | 理由 |
 //! |---|---|
@@ -52,7 +54,7 @@ use r3e_core::{
     AnimDecl, AssetDecl, BloomSettings, Camera, CascadeSettings, EnvironmentMapSettings,
     EnvironmentSettings, Light, LocalLight, LocalLightKind, MeshRef, MorphInstance, Node,
     OcclusionSettings, PhysicsSceneDesc, PostFxSettings, Scene, ScreenText, ShadowSettings,
-    SsaoSettings, SurfaceMaterial, TonemapMode, UiElement, UiKind, UiUnit, UiValue,
+    SsaoSettings, SurfaceMaterial, TerrainPatch, TonemapMode, UiElement, UiKind, UiUnit, UiValue,
 };
 
 use crate::Document;
@@ -493,6 +495,19 @@ fn mix_asset(h: &mut u64, a: &AssetDecl) {
     }
 }
 
+fn mix_terrain(h: &mut u64, t: &TerrainPatch) {
+    mix_str(h, &t.name);
+    mix_f32s(h, &t.origin);
+    mix_f32s(h, &t.size);
+    mix_u64(h, u64::from(t.resolution[0]));
+    mix_u64(h, u64::from(t.resolution[1]));
+    mix_f32s(h, &t.albedo);
+    mix_f32(h, t.roughness);
+    // 高度样本逐点入哈希：`paint_terrain` 改一个顶点也必须让差分哈希看见。
+    mix_u64(h, t.heights.len() as u64);
+    mix_f32s(h, &t.heights);
+}
+
 fn mix_morph(h: &mut u64, m: &MorphInstance) {
     mix_u64(h, m.mesh_node);
     mix_u64(h, m.target_count as u64);
@@ -536,6 +551,11 @@ pub fn scene_hash(scene: &Scene) -> StateHash {
         mix_local_light(&mut h, l);
     }
     mix_bool(&mut h, scene.lights_enabled);
+    // 地形块表（M1-S3-C）：块数 + 每块内容，顺序即插入序（同名覆盖不改变位置）。
+    mix_u64(&mut h, scene.terrain.len() as u64);
+    for t in &scene.terrain {
+        mix_terrain(&mut h, t);
+    }
     mix_u64(&mut h, scene.texts.len() as u64);
     for t in &scene.texts {
         mix_text(&mut h, t);

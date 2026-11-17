@@ -18,6 +18,7 @@ use crate::text::ScreenText;
 use crate::ui::UiElement;
 
 use crate::skin::SkinInstance;
+use crate::terrain::{self, TerrainPatch};
 use crate::{
     AnimClip, AnimInstance, Camera, EnvironmentMapSettings, EnvironmentSettings, Light, MeshRef,
     Node, NodeId, OcclusionSettings, PostFxSettings, SurfaceMaterial, Transform,
@@ -186,6 +187,10 @@ pub struct SceneFile {
     pub environment_map: Option<EnvironmentMapSettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
+    /// 地形数据壳（M1-S3-C）：一块地表 = 名字 + 世界矩形 + 高度样本 + 地表材质参数。
+    /// 空表示场景没有地形。M1 只承载数据、不出几何（M2 才求值三角网）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terrain: Vec<TerrainPatch>,
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texts: Vec<ScreenText>,
@@ -257,6 +262,10 @@ pub struct Scene {
     /// 局部光源总开关（脚本 `set_lights_enabled`）。false 时渲染层整帧跳过局部光循环，
     /// 数据保留，再打开即原样恢复——用于对比「有灯 / 无灯」或临时省 GPU。
     pub lights_enabled: bool,
+    /// 地形数据壳（M1-S3-C）。每块地表 = 名字 + 世界矩形 + 高度样本 + 地表材质参数，
+    /// 名字是唯一主键（同名覆盖、顺序不变），上限 [`TERRAIN_MAX_PATCHES`]。
+    /// M1 只承载数据：渲染层不读它，几何求值属 M2。
+    pub terrain: Vec<TerrainPatch>,
     /// 遮挡剔除参数（扩展二十二）。`enabled = false`（缺省）时渲染层整帧跳过遮挡判定，
     /// 不建金字塔、不读回深度，画面与「只有视锥剔除」逐像素一致。
     pub occlusion: OcclusionSettings,
@@ -305,50 +314,13 @@ impl Scene {
             ui_above_text: false,
             lights: Vec::new(),
             lights_enabled: true,
+            terrain: Vec::new(),
             occlusion: OcclusionSettings::default(),
             environment_map: None,
         }
     }
 
     // ---------- 局部光源（扩展十五） ----------
-
-    /// 按 key 覆盖式写入一盏局部光源。
-    ///
-    /// 语义与 `ui::upsert` 一致：同 key 原地替换（顺序不变），新 key 追加；
-    /// 满载时只拒绝新增，同 key 更新仍然生效。返回值即「这次写入是否生效」。
-    /// 入参在这里统一跑 `sanitized()`，所以脚本传 NaN 也污染不了场景。
-    pub fn upsert_local_light(&mut self, light: LocalLight) -> bool {
-        if light.key.is_empty() {
-            return false;
-        }
-        light::upsert_local(&mut self.lights, light)
-    }
-
-    /// 按 key 移除一盏局部光源。
-    pub fn remove_local_light(&mut self, key: &str) -> bool {
-        light::remove_local(&mut self.lights, key)
-    }
-
-    /// 按 key 查一盏局部光源。
-    pub fn local_light(&self, key: &str) -> Option<&LocalLight> {
-        light::find_local(&self.lights, key)
-    }
-
-    /// 按 key 改一盏局部光源；key 不存在时返回 `None`（不新建，避免拼错名字后
-    /// 悄悄多出一盏灯）。
-    pub fn with_local_light<F>(&mut self, key: &str, f: F) -> bool
-    where
-        F: FnOnce(&mut LocalLight),
-    {
-        light::with_local(&mut self.lights, key, f).is_some()
-    }
-
-    /// 清空全部局部光源。
-    pub fn clear_local_lights(&mut self) -> usize {
-        let n = self.lights.len();
-        self.lights.clear();
-        n
-    }
 
     // ---------- 遮挡剔除（扩展二十二） ----------
 
@@ -2236,6 +2208,8 @@ impl Scene {
         for obj in file.objects {
             scene.spawn(obj)?;
         }
+        // 地形：丢空名、同名后者覆盖前者、超上限截断（收敛在 core，加载与命令共用一套）
+        scene.terrain = terrain::normalize_all(file.terrain);
         scene.texts = file.texts.into_iter().map(|t| t.sanitized()).collect();
         scene.ui = file.ui.into_iter().map(|u| u.sanitized()).collect();
         scene.update_world_transforms();
@@ -2286,6 +2260,7 @@ impl Scene {
                 .filter_map(|id| self.nodes.get(id))
                 .map(|node| self.node_desc(node))
                 .collect(),
+            terrain: self.terrain.clone(),
             physics: if physics_desc_is_empty(&self.physics) {
                 None
             } else {

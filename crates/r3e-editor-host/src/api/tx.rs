@@ -32,7 +32,7 @@ use super::support::*;
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use r3e_core::MAX_LOCAL_LIGHTS;
+use r3e_core::{TerrainPatch, DEFAULT_ROUGHNESS, MAX_LOCAL_LIGHTS, TERRAIN_MAX_PATCHES};
 use r3e_doc::{CommandKind, DocError, StateHash};
 use r3e_editor::{TX_APPLY_FAILED, TX_BUSY, TX_CONFLICT, TX_NOT_FOUND, TX_REJECTED};
 
@@ -292,10 +292,14 @@ pub(super) fn tx_rollback(api: &mut LocalEngineApi<'_>, tx_id: &str) -> Result<V
     }))
 }
 
-/// 意图白名单（M1-S3-A / S3-B）。每加一个意图，必须同时给出「展开成哪些命令」。
+/// 意图白名单（M1-S3-A / S3-B / S3-C）。每加一个意图，必须同时给出「展开成哪些命令」。
 ///
 /// 白名单只活在宿主，不进协议：意图名是业务能力，跟引擎版本跑得不一样快。
-const INTENTS: &[&str] = &["scene.spawn_prefab", "scene.place_light"];
+const INTENTS: &[&str] = &[
+    "scene.spawn_prefab",
+    "scene.place_light",
+    "scene.paint_terrain",
+];
 
 /// `scene.spawn_prefab` 单次最多实例化多少个节点。
 ///
@@ -309,6 +313,84 @@ const SPAWN_PREFAB_MAX_NODES: usize = 256;
 /// 「意图上限 64、场景只装得下 16」这种两处出处迟早对不上。
 const PLACE_LIGHT_MAX_LIGHTS: usize = MAX_LOCAL_LIGHTS;
 
+/// `scene.paint_terrain` 单次最多刷几块地。
+///
+/// 同 `PLACE_LIGHT_MAX_LIGHTS`：直接取地形表容量（`TERRAIN_MAX_PATCHES`），
+/// 不另立数字。
+const PAINT_TERRAIN_MAX_PATCHES: usize = TERRAIN_MAX_PATCHES;
+
+/// 一条意图的**副作用清单**（M1-S3-C）。
+///
+/// 只描述「这一笔动了什么」，不参与 `StateHash`、不进撤销栈：AI 拿它判断
+/// 「我刚才到底改到哪儿了」，省得为了确认再发一串 `query.*` 读回。四个字段
+/// 恒定存在（空数组也输出），结构稳定才好解析。
+#[derive(Debug, Default)]
+struct Impact {
+    /// 新建 / 覆盖的物件名。
+    objects: Vec<String>,
+    /// 新建的灯光 `key`。
+    lights: Vec<String>,
+    /// 新建 / 刷新的地形块名。
+    terrain: Vec<String>,
+    /// 触及的材质参数（物体材质与地表材质都记在这里）。
+    materials: Vec<MaterialTouch>,
+}
+
+/// 某个目标上被改到的材质参数名。
+#[derive(Debug)]
+struct MaterialTouch {
+    /// 目标名（物件名或地形块名）。
+    target: String,
+    /// 参数名，按 `metallic` / `roughness` / `emissive` / `albedo` 顺序。
+    params: Vec<&'static str>,
+}
+
+impl Impact {
+    /// 转成回包里的 JSON。手写而不 derive `Serialize`：宿主没直接依赖 `serde`
+    /// （只依赖 `serde_json`），为四个字段去加一条依赖不划算。
+    fn to_json(&self) -> Value {
+        json!({
+            "objects": self.objects,
+            "lights": self.lights,
+            "terrain": self.terrain,
+            "materials": self
+                .materials
+                .iter()
+                .map(|m| json!({ "target": m.target, "params": m.params }))
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl MaterialTouch {
+    /// 只记「与缺省不同」的参数——否则每条命中都要带上三个可能没改的键，
+    /// AI 反而分不清哪些是被显式写入的。
+    fn surface(target: &str, material: &r3e_core::SurfaceMaterial) -> Self {
+        let mut params = Vec::new();
+        if material.metallic != 0.0 {
+            params.push("metallic");
+        }
+        if material.roughness != DEFAULT_ROUGHNESS {
+            params.push("roughness");
+        }
+        if material.emissive != [0.0; 3] {
+            params.push("emissive");
+        }
+        Self {
+            target: target.to_string(),
+            params,
+        }
+    }
+
+    /// 地表材质（`albedo` + `roughness`）：地形的两项总是显式写入，故不做缺省比较。
+    fn terrain(patch: &TerrainPatch) -> Self {
+        Self {
+            target: patch.name.trim().to_string(),
+            params: vec!["albedo", "roughness"],
+        }
+    }
+}
+
 /// 一条已解析、尚未落到场景上的**意图**（M1-S3-A）。
 ///
 /// 与 [`Intent`]（一条 `op` = 一条命令）的区别只在「展开粒度」：这里的每个变体
@@ -318,6 +400,8 @@ enum IntentPlan {
     SpawnPrefab(Vec<ObjectDesc>),
     /// 一次性放一组局部光源（M1-S3-B）：一批灯 = 一条意图 = 一格撤销。
     PlaceLight(Vec<LocalLight>),
+    /// 一次性刷一组地形块（M1-S3-C）：一批地 = 一条意图 = 一格撤销。
+    PaintTerrain(Vec<TerrainPatch>),
 }
 
 impl IntentPlan {
@@ -388,6 +472,42 @@ impl IntentPlan {
                 }
                 Ok(Self::PlaceLight(lights))
             }
+            "scene.paint_terrain" => {
+                let items = match args.get("patches") {
+                    Some(Value::Array(items)) => items,
+                    Some(_) => return Err(RpcFailure::invalid_params(
+                        "参数 `patches` 需要数组（每项一块地形，字段与场景 `terrain` 条目相同）",
+                    )),
+                    None => return Err(RpcFailure::invalid_params("缺少参数 `patches`")),
+                };
+                if items.is_empty() {
+                    return Err(RpcFailure::invalid_params(
+                        "参数 `patches` 不能为空数组（空意图不攒进事务）",
+                    ));
+                }
+                if items.len() > PAINT_TERRAIN_MAX_PATCHES {
+                    return Err(RpcFailure::invalid_params(format!(
+                        "参数 `patches` 最多 {PAINT_TERRAIN_MAX_PATCHES} 块（地形表容量），收到 {}",
+                        items.len()
+                    )));
+                }
+                let mut patches = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let patch: TerrainPatch =
+                        serde_json::from_value(item.clone()).map_err(|e| {
+                            RpcFailure::invalid_params(format!(
+                                "`patches[{i}]` 地形描述不合法: {e}"
+                            ))
+                        })?;
+                    if patch.name.trim().is_empty() {
+                        return Err(RpcFailure::invalid_params(format!(
+                            "`patches[{i}]` 的 `name` 不能为空——撤销要按 name 找回这块地"
+                        )));
+                    }
+                    patches.push(patch);
+                }
+                Ok(Self::PaintTerrain(patches))
+            }
             other => Err(RpcFailure::new(
                 TX_REJECTED,
                 format!(
@@ -403,7 +523,8 @@ impl IntentPlan {
     /// 这里做的是**影子之外的预检**（重名冲突、父子引用能不能落地）：这些错一旦
     /// 留到 apply 才炸，就是「前 k 条命令已经改了影子再回退」，白白多一次回退。
     /// 预检通过后仍可能因场景状态在命令间变化而失败——那种才交给文档层逆序回退。
-    fn build(self, scene: &Scene) -> Result<Vec<CommandKind>, DocError> {
+    /// 返回值第二项是 [`Impact`]（这一笔改到什么），由 [`tx_intent`] 塞进回包。
+    fn build(self, scene: &Scene) -> Result<(Vec<CommandKind>, Impact), DocError> {
         match self {
             Self::SpawnPrefab(nodes) => {
                 let mut seen: Vec<&str> = Vec::with_capacity(nodes.len());
@@ -430,7 +551,17 @@ impl IntentPlan {
                     }
                     seen.push(name);
                 }
-                Ok(nodes.into_iter().map(CommandKind::spawn_node).collect())
+                let mut impact = Impact::default();
+                for desc in &nodes {
+                    impact.objects.push(desc.name.clone());
+                    if let Some(material) = &desc.material {
+                        impact
+                            .materials
+                            .push(MaterialTouch::surface(&desc.name, material));
+                    }
+                }
+                let cmds = nodes.into_iter().map(CommandKind::spawn_node).collect();
+                Ok((cmds, impact))
             }
             Self::PlaceLight(lights) => {
                 let room = MAX_LOCAL_LIGHTS.saturating_sub(scene.lights.len());
@@ -457,10 +588,51 @@ impl IntentPlan {
                     }
                     seen.push(key);
                 }
-                Ok(lights
+                let impact = Impact {
+                    lights: lights.iter().map(|l| l.key.clone()).collect(),
+                    ..Impact::default()
+                };
+                let cmds = lights
                     .into_iter()
                     .map(|light| CommandKind::upsert_local_light(scene, light))
-                    .collect())
+                    .collect();
+                Ok((cmds, impact))
+            }
+            Self::PaintTerrain(patches) => {
+                // 与 `place_light` 不同：paint 的语义就是**覆盖**，同名块重刷是正事，
+                // 只有「新名字的块数超过剩余空位」才是容量问题。
+                let mut seen: Vec<&str> = Vec::with_capacity(patches.len());
+                let mut fresh = 0usize;
+                for patch in &patches {
+                    let name = patch.name.trim();
+                    if seen.contains(&name) {
+                        return Err(DocError::Rejected(format!(
+                            "意图内地形块名 `{name}` 重复（同批刷的两块地不能同名，\
+                             第二块会盖掉第一块的前像）"
+                        )));
+                    }
+                    if !scene.terrain.iter().any(|t| t.name == name) {
+                        fresh += 1;
+                    }
+                    seen.push(name);
+                }
+                let room = TERRAIN_MAX_PATCHES.saturating_sub(scene.terrain.len());
+                if fresh > room {
+                    return Err(DocError::Rejected(format!(
+                        "地形表只剩 {room} 个空位（上限 {TERRAIN_MAX_PATCHES}），\
+                         本意图要新建 {fresh} 块"
+                    )));
+                }
+                let impact = Impact {
+                    terrain: seen.iter().map(|n| n.to_string()).collect(),
+                    materials: patches.iter().map(MaterialTouch::terrain).collect(),
+                    ..Impact::default()
+                };
+                let cmds = patches
+                    .into_iter()
+                    .map(|patch| CommandKind::upsert_terrain_patch(scene, patch))
+                    .collect();
+                Ok((cmds, impact))
             }
         }
     }
@@ -477,10 +649,17 @@ pub(super) fn tx_intent(
     args: &Value,
 ) -> Result<Value, RpcFailure> {
     let plan = IntentPlan::parse(intent, args)?;
+    // `tx_apply_intent` 的闭包只交出命令序列；副作用清单从旁路带出来，避免为了
+    // 「回包多一个字段」去改文档层的签名。
+    let impact = std::cell::RefCell::new(Impact::default());
     let staged = api
         .scene
         .borrow_mut()
-        .tx_apply_intent(tx_id, intent, |scene| plan.build(scene))
+        .tx_apply_intent(tx_id, intent, |scene| {
+            let (cmds, touched) = plan.build(scene)?;
+            *impact.borrow_mut() = touched;
+            Ok(cmds)
+        })
         .map_err(map_doc)?;
     Ok(json!({
         "txId": tx_id,
@@ -488,5 +667,6 @@ pub(super) fn tx_intent(
         "commands": staged.commands,
         "staged": staged.staged,
         "intents": staged.intents,
+        "impact": impact.into_inner().to_json(),
     }))
 }

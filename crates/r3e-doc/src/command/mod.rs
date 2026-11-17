@@ -14,6 +14,7 @@
 //! | 节点 | `SpawnNode` `SetTransform` `SetVisible` `SetNodeColor` `SetNodeMaterial` |
 //! | 环境 | `SetCamera` `SetEnvironment` `SetPostFx` |
 //! | 灯光 | `UpsertLocalLight` `RemoveLocalLight` |
+//! | 地形 | `UpsertTerrainPatch` |
 //! | UI / 文本 | `UpsertUi` `RemoveUi` `UpsertText` `RemoveText` |
 //!
 //! 未纳入（M1）：`DespawnNode` / `RenameNode` / `SetAnim*` / `SetMorph*`。前者需要 core
@@ -22,11 +23,12 @@
 
 mod env;
 mod scene;
+mod terrain;
 mod ui;
 
 use r3e_core::{
     Camera, EnvironmentSettings, LocalLight, NodeId, ObjectDesc, PostFxSettings, Scene, ScreenText,
-    SurfaceMaterial, Transform, UiElement, Vec4,
+    SurfaceMaterial, TerrainPatch, Transform, UiElement, Vec4,
 };
 
 use crate::{DocError, Document, Mark, UndoGroup};
@@ -162,6 +164,13 @@ pub enum CommandKind {
         /// 被删文本。
         old: ScreenText,
     },
+    /// 按 name 写地形块（同名覆盖，M1-S3-C）。
+    UpsertTerrainPatch {
+        /// 新地形块。
+        next: TerrainPatch,
+        /// 前像；`None` 表示此前没有这块地形，撤销即删除。
+        old: Option<TerrainPatch>,
+    },
 }
 
 impl CommandKind {
@@ -182,6 +191,7 @@ impl CommandKind {
             Self::RemoveUi { .. } => "删 UI",
             Self::UpsertText { .. } => "写文本",
             Self::RemoveText { .. } => "删文本",
+            Self::UpsertTerrainPatch { .. } => "写地形",
         }
     }
 
@@ -202,6 +212,7 @@ impl CommandKind {
             Self::RemoveUi { old } => ui::remove_ui(s, &old.key),
             Self::UpsertText { next, .. } => ui::write_text(s, next),
             Self::RemoveText { old } => ui::remove_text(s, &old.key),
+            Self::UpsertTerrainPatch { next, .. } => terrain::write_patch(s, next),
         }
     }
 
@@ -231,6 +242,10 @@ impl CommandKind {
                 None => ui::remove_text(s, &next.key),
             },
             Self::RemoveText { old } => ui::write_text(s, old),
+            Self::UpsertTerrainPatch { next, old } => match old {
+                Some(old) => terrain::write_patch(s, old),
+                None => terrain::remove_patch(s, &next.name),
+            },
         }
     }
 
@@ -245,6 +260,7 @@ impl CommandKind {
             Self::RemoveUi { old } => Some(&old.key),
             Self::UpsertText { next, .. } => Some(&next.key),
             Self::RemoveText { old } => Some(&old.key),
+            Self::UpsertTerrainPatch { next, .. } => Some(&next.name),
             _ => None,
         }
     }

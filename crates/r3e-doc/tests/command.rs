@@ -5,7 +5,7 @@
 
 use r3e_core::{
     Camera, EnvironmentSettings, LocalLight, ObjectDesc, PostFxSettings, Scene, ScreenText,
-    SurfaceMaterial, UiElement, Vec4,
+    SurfaceMaterial, TerrainPatch, UiElement, Vec4, TERRAIN_MAX_PATCHES,
 };
 use r3e_doc::{Command, CommandKind, DocError, Document};
 
@@ -43,6 +43,13 @@ fn lamp(key: &str, intensity: f32) -> LocalLight {
         intensity,
         ..Default::default()
     }
+}
+
+/// 造一块地形：`flat` 给形状，这里只改想断言的字段（粗糙度）。
+fn patch(name: &str, roughness: f32) -> TerrainPatch {
+    let mut p = TerrainPatch::flat(name, [0.0, 0.0], [10.0, 10.0]);
+    p.roughness = roughness;
+    p
 }
 
 fn hud(key: &str) -> UiElement {
@@ -401,4 +408,65 @@ fn labels_and_targets_are_populated() {
     assert_eq!(by_name.target_name(), Some("cube"));
     let by_id = CommandKind::set_visible(&doc, id, false).unwrap();
     assert_eq!(by_id.target_name(), None, "按 id 寻址的命令没有名字目标");
+}
+
+// ---------- 地形域（M1-S3-C） ----------
+
+#[test]
+fn new_terrain_patch_undo_deletes_it() {
+    let mut doc = base_doc();
+    let cmd = CommandKind::upsert_terrain_patch(&doc, patch("ground", 0.9));
+    apply_then_undo(&mut doc, cmd);
+    assert!(doc.terrain.is_empty(), "此前不存在的地块，撤销应删除");
+}
+
+#[test]
+fn overwritten_terrain_patch_undo_restores_old() {
+    let mut doc = base_doc();
+    doc.write(|s| s.upsert_terrain_patch(patch("ground", 0.2)));
+    // paint 语义就是覆盖：同名再刷一次必须生效，撤销时前像要把旧粗糙度带回。
+    let cmd = CommandKind::upsert_terrain_patch(&doc, patch("ground", 0.95));
+    apply_then_undo(&mut doc, cmd);
+    assert_eq!(doc.terrain.len(), 1, "覆盖不得多出一块");
+    assert!(
+        (doc.terrain[0].roughness - 0.2).abs() < 1e-6,
+        "撤销应恢复旧粗糙度"
+    );
+}
+
+#[test]
+fn terrain_patch_label_and_target() {
+    let doc = base_doc();
+    let cmd = CommandKind::upsert_terrain_patch(&doc, patch("ground", 0.5));
+    assert_eq!(cmd.label(), "写地形");
+    assert_eq!(cmd.target_name(), Some("ground"));
+}
+
+#[test]
+fn upsert_terrain_patch_over_capacity_is_rejected() {
+    let mut doc = Document::default();
+    doc.write(|s| {
+        for i in 0..TERRAIN_MAX_PATCHES {
+            assert!(
+                s.upsert_terrain_patch(patch(&format!("p{i}"), 0.5)),
+                "空表逐块写入应当成功"
+            );
+        }
+    });
+    let version = doc.version();
+    let depth = doc.undo_depth();
+    let err = doc
+        .apply(&CommandKind::upsert_terrain_patch(
+            &doc,
+            patch("extra", 0.5),
+        ))
+        .expect_err("表满后新名字必须被拒");
+    assert!(matches!(err, DocError::Rejected(_)), "容量错是 Rejected");
+    assert_eq!(doc.version(), version, "失败的 apply 不得推进版本");
+    assert_eq!(doc.undo_depth(), depth, "失败的 apply 不得入撤销栈");
+
+    // 表满时**覆盖**仍然要放行——否则「p0 想改个粗糙度」都得先腾位子。
+    doc.apply(&CommandKind::upsert_terrain_patch(&doc, patch("p0", 0.8)))
+        .expect("覆盖不受容量限制");
+    assert_eq!(doc.terrain.len(), TERRAIN_MAX_PATCHES);
 }

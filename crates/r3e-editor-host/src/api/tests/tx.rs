@@ -24,6 +24,11 @@ fn lights(items: Value) -> Value {
     json!({ "lights": items })
 }
 
+/// `scene.paint_terrain`（M1-S3-C）的 `args`：`{ "patches": [...] }`。
+fn patches(items: Value) -> Value {
+    json!({ "patches": items })
+}
+
 #[test]
 fn tx_intent_按命令数记staged_按意图数记步数() {
     let (scene, physics, mut scripts) = fixture();
@@ -444,4 +449,191 @@ fn tx_intent_place_light_重key或表满都拒绝且不碰场景() {
         1,
         "只有先提交的那一笔占一格撤销"
     );
+}
+
+#[test]
+fn tx_intent_paint_terrain_按块数记账并回带impact() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = begin(&mut api);
+
+    let value = api
+        .tx_intent(
+            &tx,
+            "scene.paint_terrain",
+            &patches(json!([
+                { "name": "sand", "origin": [0.0, 0.0], "size": [20.0, 20.0], "roughness": 0.9 },
+                { "name": "rock", "origin": [0.0, 20.0], "size": [20.0, 8.0], "albedo": [0.4, 0.4, 0.45] },
+            ])),
+        )
+        .expect("白名单意图应被接收");
+
+    assert_eq!(value["intent"], json!("scene.paint_terrain"));
+    assert_eq!(value["commands"], json!(2), "一条意图展开成 2 条命令");
+    assert_eq!(value["staged"], json!(2));
+    assert_eq!(value["intents"], json!(1), "两块地仍算一步");
+
+    // 副作用清单：AI 靠它判断「刚才改到哪儿」，不进状态哈希。
+    assert_eq!(value["impact"]["terrain"], json!(["sand", "rock"]));
+    assert_eq!(
+        value["impact"]["objects"],
+        json!([]),
+        "没动物件就该是空数组"
+    );
+    assert_eq!(value["impact"]["lights"], json!([]));
+    assert_eq!(
+        value["impact"]["materials"],
+        json!([
+            { "target": "sand", "params": ["albedo", "roughness"] },
+            { "target": "rock", "params": ["albedo", "roughness"] },
+        ])
+    );
+
+    assert!(
+        scene.borrow().terrain.is_empty(),
+        "暂存期不许碰主场景的地表"
+    );
+
+    let committed = api.tx_commit(&tx).expect("提交不该失败");
+    assert_eq!(committed["committed"], json!(2), "提交的是命令条数");
+    assert_eq!(scene.borrow().terrain.len(), 2, "两块地应落地");
+    assert_eq!(scene.borrow().undo_depth(), 1, "两块地只占一格撤销");
+
+    scene.borrow_mut().undo().expect("撤销不该失败");
+    assert!(
+        scene.borrow().terrain.is_empty(),
+        "一次 undo 把两块地全退干净"
+    );
+    assert_eq!(scene.borrow().undo_depth(), 0);
+}
+
+#[test]
+fn tx_intent_paint_terrain_参数整形错误码() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = begin(&mut api);
+
+    let missing = api
+        .tx_intent(&tx, "scene.paint_terrain", &json!({}))
+        .expect_err("缺 patches 应报错");
+    assert_eq!(missing.code, INVALID_PARAMS, "{}", missing.message);
+    assert!(
+        missing.message.contains("patches"),
+        "错误信息应点名 patches：{}",
+        missing.message
+    );
+
+    let empty = api
+        .tx_intent(&tx, "scene.paint_terrain", &patches(json!([])))
+        .expect_err("空数组应报错");
+    assert_eq!(empty.code, INVALID_PARAMS, "{}", empty.message);
+    assert!(
+        empty.message.contains("不能为空"),
+        "空意图的拒绝理由要写清：{}",
+        empty.message
+    );
+
+    let wrong_type = api
+        .tx_intent(
+            &tx,
+            "scene.paint_terrain",
+            &patches(json!({ "name": "sand" })),
+        )
+        .expect_err("patches 不是数组应报错");
+    assert_eq!(wrong_type.code, INVALID_PARAMS, "{}", wrong_type.message);
+
+    // `name` 是撤销找回这块地的凭据，缺了就不许进事务。
+    let no_name = api
+        .tx_intent(
+            &tx,
+            "scene.paint_terrain",
+            &patches(json!([{ "size": [4.0, 4.0] }])),
+        )
+        .expect_err("name 为空应报错");
+    assert_eq!(no_name.code, INVALID_PARAMS, "{}", no_name.message);
+    assert!(
+        no_name.message.contains("name"),
+        "错误信息应点名 name：{}",
+        no_name.message
+    );
+
+    // 上限就是地形表容量，多一块都不收。
+    let too_many: Vec<Value> = (0..=32)
+        .map(|i| json!({ "name": format!("p{i}") }))
+        .collect();
+    let over = api
+        .tx_intent(&tx, "scene.paint_terrain", &patches(Value::Array(too_many)))
+        .expect_err("超过地形表容量应报错");
+    assert_eq!(over.code, INVALID_PARAMS, "{}", over.message);
+    assert!(
+        over.message.contains("最多"),
+        "错误信息应给出上限：{}",
+        over.message
+    );
+
+    let preview = api.tx_preview(&tx).expect("事务应保留");
+    assert_eq!(preview["staged"], json!(0), "被拒的意图不该留下暂存");
+}
+
+#[test]
+fn tx_intent_paint_terrain_同批重名与空位不足都拒绝_同名覆盖放行() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = begin(&mut api);
+
+    let dup = api
+        .tx_intent(
+            &tx,
+            "scene.paint_terrain",
+            &patches(json!([{ "name": "sand" }, { "name": "sand" }])),
+        )
+        .expect_err("同批重名应拒绝");
+    assert_eq!(dup.code, TX_REJECTED, "{}", dup.message);
+    assert!(
+        dup.message.contains("重复"),
+        "拒绝理由应说明重名：{}",
+        dup.message
+    );
+
+    // 一次刷满整张地形表（32 块 = 容量上限），提交后空位归零。
+    let full: Vec<Value> = (0..32)
+        .map(|i| json!({ "name": format!("t{i}") }))
+        .collect();
+    api.tx_intent(&tx, "scene.paint_terrain", &patches(Value::Array(full)))
+        .expect("同批重名被拒后，事务仍可继续攒");
+    api.tx_commit(&tx).expect("提交不该失败");
+    assert_eq!(scene.borrow().terrain.len(), 32, "32 块应全部落地");
+
+    let tx = begin(&mut api);
+
+    let over = api
+        .tx_intent(
+            &tx,
+            "scene.paint_terrain",
+            &patches(json!([{ "name": "extra" }])),
+        )
+        .expect_err("表满后新名字应拒绝");
+    assert_eq!(over.code, TX_REJECTED, "{}", over.message);
+    assert!(
+        over.message.contains("空位"),
+        "拒绝理由应给出剩余空位：{}",
+        over.message
+    );
+
+    // 表满时**覆盖**仍要走得通：paint 的语义就是重刷，不是 only-new。
+    let repaint = api
+        .tx_intent(
+            &tx,
+            "scene.paint_terrain",
+            &patches(json!([{ "name": "t0", "roughness": 0.2 }])),
+        )
+        .expect("覆盖已存在的地块不该被容量拦下");
+    assert_eq!(repaint["commands"], json!(1));
+    api.tx_commit(&tx).expect("提交不该失败");
+    assert_eq!(scene.borrow().terrain.len(), 32, "覆盖不得多出一块");
+    assert!(
+        (scene.borrow().terrain[0].roughness - 0.2).abs() < 1e-6,
+        "覆盖应真的写进去"
+    );
+    assert_eq!(scene.borrow().undo_depth(), 2, "两次提交各占一格撤销");
 }

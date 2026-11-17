@@ -36,7 +36,7 @@ AIGC:
 | M0-S5 | 协议剥离 + 能力清单 + 门禁转硬 | ✅ 2026-11-16 | `r3e-protocol` 8 文件 2,326 行仅 serde / `r3e-editor` 缩至 505 行传输层；`capabilities.json` 4,744 行 369 命令；`dep-check --strict` 硬门 0 违规 + 4 条债记账；`invariants` 三源 24/24/24；`verify` 20.4s 九道门；`AI_WORKFLOW.md` 落地 |
 | M1-S1 | 事务协议上链（4 卡） | ✅ 2026-11-16（S1-D 降级） | `tx.*` 五方法上线：RPC 39 → **44**、命令表 369 → **374**、`capabilities.json` 重生成；事务态挂 `Document` 影子场景（跨 RPC 存活，主场景 commit 前零字节变动）；`doc_gate` 第 7 条写点台账（5 crate / 226 处，新增未登记即红）；单测 1,476 → **1,504**；`verify` 十项全绿。**S1-D 未还债**：R2「替代清单先行」前置未满足，4 项离线能力无协议承接方，改出 `docs/M1_S1D_SUBSTITUTION.md` |
 | M1-S2 | 语义查询（3 卡） | ✅ 2026-11-17（C→A→B） | `tags` / `interact_radius` 落 `Node` 与 `to_scene_file`（roundtrip 不增生字段）、`StateHash` 覆盖；`r3e-core/src/query.rs` 443 行 `WorldQuery`（八类判据 + 标签 AND/OR + 区域含边界 + 九位组件位，`describe` 与 `query` 共用 `Facts`）；`query.find/describe/stats` 三条只读 RPC：RPC 44 → **47**、命令表 374 → **377**；单测 1,504 → **1,546**；`verify` 十项全绿 |
-| M1-S3 | 意图命令（S3-A / S3-B 已完成） | 🟡 2026-11-17（A、B 完） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；意图白名单两条：`scene.spawn_prefab`（256 上限、重名 / 父引用预检）与 `scene.place_light`（上限 = 光源表容量 16、`key` 必填、同批重 key / 场景已有 key / 空位不够三重预检）——**意图名不进协议**，加意图只改宿主常量、协议零改动（RPC 仍 **48**、命令表仍 **378**）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；单测 1,546 → 1,567；`verify` 十项全绿 |
+| M1-S3 | 意图命令（3 卡） | ✅ 2026-11-17（A→B→C） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；意图白名单三条：`scene.spawn_prefab`（256 上限、重名 / 父引用预检）、`scene.place_light`（上限 = 光源表容量 16、`key` 必填、同批重 key / 场景已有 key / 空位不够三重预检）、`scene.paint_terrain`（数据壳 32 块上限、**同名重刷放行**、`sanitized` 幂等收敛、高度样本逐点入 `StateHash`）——**意图名不进协议**，加意图只改宿主常量、协议零改动（RPC 仍 **48**、命令表仍 **378**）；`impact { objects, lights, terrain, materials }` 四字段恒定回带（不进哈希、不入撤销栈）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；单测 1,546 → **1,574**；`verify` 十项全绿。**M1-S3-C 只做数据壳**：地形网格生成与 LOD 按 D3 裁决留 M2 |
 
 ### 0.2 门禁现状（`cargo xtask verify`，2026-11-16 实测）
 
@@ -44,14 +44,14 @@ AIGC:
 |---|---|---|---|
 | 最大文件行数 | 4057（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
 | `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 8 文件最大 486 行） |
-| `#[test]` 总数 | 1504（M1-S1 后） | 只增不减 | `cargo xtask check-tests` 快照比对 |
+| `#[test]` 总数 | 1574（M1-S3 后） | 只增不减 | `cargo xtask check-tests` 快照比对 |
 | 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
 | 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增；前两条原定 M1-S1 偿还，因 R2 替代清单前置未满足顺延，见 `docs/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
-| 能力清单漂移 | 0（`capabilities.json` 374 命令 / 44 RPC / 24 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
+| 能力清单漂移 | 0（`capabilities.json` 378 命令 / 48 RPC / 24 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
 | 不变量三源 | 24 = 24 = 24 | 三源一致 | `cargo xtask invariants` |
 | `verify` 时长（热态） | 14.6–20.4s（九道门全硬）；冷缓存 25.4s；含 crate 重编译最长实测 138.5s（编译成本，不计入门禁判据） | <120s（热态口径） | 实测 |
-| 回放确定性 | **已达成** `final=59d48dedf2b0677e` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
-| `doc-gate` | 261 个 `.rs` / 14 个 crate / **7 条规则**（M1-S1 加写点台账）/ 白名单 10 项 / 写点 5 crate 226 处 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
+| 回放确定性 | **已达成** `final=15b5652e98b3346c` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
+| `doc-gate` | 273 个 `.rs` / 14 个 crate / **7 条规则**（M1-S1 加写点台账）/ 白名单 10 项 / 写点 5 crate 228 处 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
 
 ### 0.3 仓库结构现状
 
@@ -346,12 +346,12 @@ cargo xtask invariants              # ✅ 24 = 24 = 24
 | Sprint | 主题 | 关键卡 | 退出演示 | 对应交付物 |
 |---|---|---|---|---|
 | M1-S1 ✅ 2026-11-16 | 事务协议上链路 | ✅ `tx.begin/apply/preview/commit/rollback` 已走 `r3e-protocol`（44 RPC）；✅ `doc_gate` 第 7 条写点台账；⏸ `r3e-plugin` 只依赖 protocol / 能力声明 `scene.write` `doc.transaction` → **顺延**（能力承接方未就位，见 `docs/M1_S1D_SUBSTITUTION.md`） | ✅ 外部进程 dry-run 返回结构化 diff（`tx.preview` 三哈希），`commit` 前场景哈希不变 | M1-1 完成 / M1-2 部分 |
-| M1-S2 | 语义查询 | `WorldQuery`：按 kind/tag/bbox/component 过滤，结果含 `{id,name,tags,pos,interact_radius}` | AI 不读裸 JSON 就能回答"场景里有哪些可交互物"（3 个问答用例） | M1-3 |
-| M1-S3 | 意图命令 + 变更半径 | `spawn_prefab` / `paint_terrain` / `place_light`；一次意图 = N 条原子命令，undo 一次全退；输出含 `impact` | 一条意图命令的 `impact` 能列出受影响对象/材质 | M1-4、M1-7 |
+| M1-S2 ✅ 2026-11-17 | 语义查询 | ✅ `WorldQuery`：按 kind/tag/bbox/component 过滤，结果含 `{id,name,tags,pos,interact_radius}`；✅ `query.find/describe/stats` 三条只读 RPC（RPC 47 / 命令表 377） | ✅ AI 不读裸 JSON 就能回答"场景里有哪些可交互物"（`query.*` 三条只读方法 + 9 条宿主用例） | M1-3 |
+| M1-S3 ✅ 2026-11-17 | 意图命令 + 变更半径 | `spawn_prefab` / `paint_terrain` / `place_light`；一次意图 = N 条原子命令，undo 一次全退；输出含 `impact` | 一条意图命令的 `impact` 能列出受影响对象与材质；`paint_terrain` 不生成几何（M2） | ✅ `scene.spawn_prefab` / `scene.place_light` / `scene.paint_terrain` 三条意图走 `tx.intent`（意图名不进协议）；`impact` 四字段恒定回带；数据壳 32 块上限 + 高度样本逐点入哈希 |
 | M1-S4 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5 |
 | M1-S5 | CLI + 三范式 | `r3e-cli tx/query/verify/replay`；三个从零可复现的 AI 任务范式 | **Gate 1** | M1-6、M1-8 |
 
-**待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 4057 行按域拆），随 M1-S1 一并处理。
+**待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 按域拆）。行数已从 4,057 降到 **3,947**（M1-S2-C 拆 `scene_desc.rs`、M1-S3-C 拆 `scene_tables.rs`），私有化仍留 M2——冲击全仓读点，与 M1 并行风险过高（D2 裁决）。
 
 **Gate 1（M1 退出）**：一个不改引擎代码的 AI Agent，仅用 `r3e-cli` + 协议完成"生成可通行小场景 → 验证 → 失败回滚重试 → 成功提交"，全过程命令可复制粘贴。
 
