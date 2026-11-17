@@ -31,29 +31,32 @@ pub mod caps;
 pub mod dispatch;
 pub mod msg;
 pub mod patch;
+pub mod query;
 
 pub use self::dispatch::dispatch;
 pub use api::EngineApi;
 pub use msg::*;
 pub use patch::*;
+pub use query::*;
 
 pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// 对外 RPC 能力方法表（44 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+/// 对外 RPC 能力方法表（47 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
 ///
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「44 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「47 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
 /// gen-capabilities` 会立刻红）。
 ///
-/// M1-S1 增 5 条 `tx.*`（39 → 44）：事务协议上链，这是 M1 唯一新增的 RPC 面，
-/// 之后 S2/S3/S4 只加 `op` 白名单条目，不再动本表。
+/// M1-S1 增 5 条 `tx.*`（39 → 44）：事务协议上链。M1-S2-B 增 3 条 `query.*`（44 → 47）：
+/// 语义查询面。这两批都**不新增脚本函数**，故只动本表与 `cmd_spec` 的 `Meta` 域，
+/// 脚本契约测试不受影响；S3/S4 的写入口则是 `tx.apply` 的 `op` 白名单，不再动本表。
 pub const RPC_METHODS: &[&str] = &[
     "audio.spatial.clear",
     "audio.spatial.list",
@@ -69,6 +72,9 @@ pub const RPC_METHODS: &[&str] = &[
     "light.remove",
     "light.set",
     "light.setenabled",
+    "query.describe",
+    "query.find",
+    "query.stats",
     "scene.animlayers",
     "scene.animlayerset",
     "scene.archive.load",

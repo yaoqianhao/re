@@ -23,6 +23,7 @@ use r3e_core::scene_stack::{SceneArchive, SceneCommand, ARCHIVE_FORMAT, ARCHIVE_
 use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUpsert, UiValue};
 use r3e_core::ui_text;
+use r3e_core::Aabb;
 use r3e_core::{AnimLayer, BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
@@ -30,8 +31,8 @@ use r3e_doc::Document;
 use r3e_editor::{
     AnimLayerPatch, AudioSpatialPatch, EngineApi, EngineInfo, EnvironmentMapPatch,
     EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, NodeBrief, PhysicsInfo,
-    PostFxPatch, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
-    SERVER_BUSY,
+    PostFxPatch, QuerySpec, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch,
+    PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_physics::Physics;
 use r3e_render::Renderer;
@@ -76,6 +77,7 @@ mod env;
 mod info;
 mod light;
 mod postfx;
+mod query;
 mod scene;
 mod scene_flow;
 mod script;
@@ -238,6 +240,15 @@ impl EngineApi for LocalEngineApi<'_> {
     }
     fn tx_rollback(&mut self, tx_id: &str) -> Result<Value, RpcFailure> {
         tx::tx_rollback(self, tx_id)
+    }
+    fn query_find(&mut self, spec: QuerySpec) -> Result<Value, RpcFailure> {
+        query::query_find(self, spec)
+    }
+    fn query_describe(&mut self, node: &str) -> Result<Value, RpcFailure> {
+        query::query_describe(self, node)
+    }
+    fn query_stats(&mut self) -> Result<Value, RpcFailure> {
+        query::query_stats(self)
     }
 }
 

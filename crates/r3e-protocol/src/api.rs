@@ -1,12 +1,13 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 39 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 47 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
 
 use serde_json::Value;
 
 use crate::msg::{EngineInfo, NodeBrief, RpcFailure};
 use crate::patch::*;
+use crate::query::QuerySpec;
 
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
@@ -339,5 +340,34 @@ pub trait EngineApi {
     /// 「真应用 + 影子记录」时才可能出现。
     fn tx_rollback(&mut self, _tx_id: &str) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("tx.rollback"))
+    }
+
+    /// 语义查询（M1-S2-B）：按类别 / 标签 / 区域 / 组件位过滤，返回五字段投影。
+    ///
+    /// 回包契约：`{ "count": usize, "limit": usize, "truncated": bool,
+    /// "unfiltered": bool, "nodes": [NodeView...] }`。
+    ///
+    /// `limit` 缺省由宿主填 `r3e_core::query::DEFAULT_LIMIT`，`limit: 0` 表示不限；
+    /// `truncated` 说明「还有更多命中的没返回」，AI 该接着问而不是以为这就是全部。
+    /// 本方法**只读**：不建事务、不推版本，`StateHash` 前后必须一致。
+    fn query_find(&mut self, _spec: QuerySpec) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("query.find"))
+    }
+
+    /// 单节点语义投影（M1-S2-B）：五字段 + 命中的组件位与类别。
+    ///
+    /// 回包契约：`{ "node": NodeView, "components": [String...], "kinds": [String...] }`。
+    /// 节点不存在回 `NOT_FOUND`（不是空对象）——「查不到」和「查到了但啥都没有」
+    /// 对 AI 是两种完全不同的下一步。
+    fn query_describe(&mut self, _node: &str) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("query.describe"))
+    }
+
+    /// 场景普查（M1-S2-B）：总量与分布，用来「先看全貌再决定查什么」。
+    ///
+    /// 回包契约：`{ "nodes", "visible", "interactable", "tagged",
+    /// "byKind": {String: usize}, "tags": {String: usize} }`。
+    fn query_stats(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("query.stats"))
     }
 }

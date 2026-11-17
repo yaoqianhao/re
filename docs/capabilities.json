@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 374,
-    "rpc": 44,
+    "commands": 377,
+    "rpc": 47,
     "script_only": 330,
     "domains": 17,
     "invariants": 24
@@ -2559,6 +2559,36 @@
       "reversible": true,
       "cost": "cheap",
       "since": "M0-backfill"
+    },
+    {
+      "name": "query.describe",
+      "domain": "meta",
+      "rpc": "query.describe",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M1-S2-B"
+    },
+    {
+      "name": "query.find",
+      "domain": "meta",
+      "rpc": "query.find",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S2-B"
+    },
+    {
+      "name": "query.stats",
+      "domain": "meta",
+      "rpc": "query.stats",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S2-B"
     },
     {
       "name": "rand",

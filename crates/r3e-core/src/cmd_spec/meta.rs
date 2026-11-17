@@ -226,4 +226,41 @@ pub(super) static ALL: &[CommandSpec] = &[
         cost: Cost::Cheap,
         since: "M1-S1",
     },
+    // ---- M1-S2-B 语义查询：3 条纯 RPC 方法，同样无对应脚本函数 ----
+    //
+    // 脚本侧不开放查询面的理由与 `tx.*` 不同：脚本里拿到的就是 `&mut Scene`，直接
+    // 调 `Scene::query` 比绕一圈 RPC 更短；这三条是**给 AI / 远端**的语义入口。
+    CommandSpec {
+        name: "query.find",
+        rpc: Some("query.find"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只读：不建事务、不产生写点、不动 StateHash。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M1-S2-B",
+    },
+    CommandSpec {
+        name: "query.describe",
+        rpc: Some("query.describe"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 单节点投影 + 组件位：只看一个节点，不遍历场景。
+        reversible: true,
+        cost: Cost::Cheap,
+        since: "M1-S2-B",
+    },
+    CommandSpec {
+        name: "query.stats",
+        rpc: Some("query.stats"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 普查要逐节点算九位组件与八个类别，量级随规模涨。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M1-S2-B",
+    },
 ];

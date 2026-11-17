@@ -114,7 +114,7 @@ pub use postfx::{
     MAX_BLOOM_INTENSITY, MAX_BLOOM_KNEE, MAX_BLOOM_THRESHOLD, MAX_EXPOSURE_EV, MIN_EXPOSURE_EV,
 };
 pub use procedural::ProceduralProvider;
-pub use query::{Component, NodeKind, NodeView, Query, QueryStats, DEFAULT_LIMIT};
+pub use query::{Component, NodeDetail, NodeKind, NodeView, Query, QueryStats, DEFAULT_LIMIT};
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
 };

@@ -424,6 +424,41 @@ impl Scene {
         }
         stats
     }
+
+    /// 单节点语义投影：五字段 + 命中的组件位与类别（`query.describe` 的回包，M1-S2-B）。
+    ///
+    /// 只读，判据与 [`Scene::query`] / [`Scene::query_stats`] **共用同一份 [`Facts`]**，
+    /// 所以「`find` 查得到的组件位」与「`describe` 报出来的组件位」不会打架。
+    /// 节点不存在返回 `None`，由协议层翻译成 `NOT_FOUND`。
+    pub fn describe(&self, id: NodeId) -> Option<NodeDetail> {
+        let node = self.get(id)?;
+        let facts = Facts::collect(self);
+        Some(NodeDetail {
+            view: NodeView::from_node(node),
+            components: Component::ALL
+                .iter()
+                .copied()
+                .filter(|component| facts.has_component(node, *component))
+                .collect(),
+            // `Any` 是「不做过滤」的总真类别，列进详情没有信息量，跳过。
+            kinds: NodeKind::ALL
+                .iter()
+                .copied()
+                .filter(|kind| *kind != NodeKind::Any && facts.matches_kind(node, *kind))
+                .collect(),
+        })
+    }
+}
+
+/// [`Scene::describe`] 的回包：单个物件的投影 + 命中的组件位与类别。
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeDetail {
+    /// 五字段投影，与 [`Scene::query`] 的元素同构（同一个 [`NodeView::from_node`]）。
+    pub view: NodeView,
+    /// 命中的组件位（按 [`Component::ALL`] 顺序，没命中的位不出现）。
+    pub components: Vec<Component>,
+    /// 命中的类别（按 [`NodeKind::ALL`] 顺序，跳过恒真的 [`NodeKind::Any`]）。
+    pub kinds: Vec<NodeKind>,
 }
 
 /// [`Scene::query_stats`] 的回包。
