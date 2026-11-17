@@ -32,6 +32,7 @@ use super::support::*;
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use r3e_core::MAX_LOCAL_LIGHTS;
 use r3e_doc::{CommandKind, DocError, StateHash};
 use r3e_editor::{TX_APPLY_FAILED, TX_BUSY, TX_CONFLICT, TX_NOT_FOUND, TX_REJECTED};
 
@@ -291,16 +292,22 @@ pub(super) fn tx_rollback(api: &mut LocalEngineApi<'_>, tx_id: &str) -> Result<V
     }))
 }
 
-/// 意图白名单（M1-S3-A）。每加一个意图，必须同时给出「展开成哪些命令」。
+/// 意图白名单（M1-S3-A / S3-B）。每加一个意图，必须同时给出「展开成哪些命令」。
 ///
 /// 白名单只活在宿主，不进协议：意图名是业务能力，跟引擎版本跑得不一样快。
-const INTENTS: &[&str] = &["scene.spawn_prefab"];
+const INTENTS: &[&str] = &["scene.spawn_prefab", "scene.place_light"];
 
 /// `scene.spawn_prefab` 单次最多实例化多少个节点。
 ///
 /// 一次意图展开成 N 条命令、占撤销栈一格，N 没有上限就等于给了 AI 一个
 /// 「一笔改爆场景，一次 undo 全退」的开关。256 够搭一个常规道具组。
 const SPAWN_PREFAB_MAX_NODES: usize = 256;
+
+/// `scene.place_light` 单次最多放几盏灯。
+///
+/// 直接取局部光源表容量（`MAX_LOCAL_LIGHTS`），不另立一个数字——否则
+/// 「意图上限 64、场景只装得下 16」这种两处出处迟早对不上。
+const PLACE_LIGHT_MAX_LIGHTS: usize = MAX_LOCAL_LIGHTS;
 
 /// 一条已解析、尚未落到场景上的**意图**（M1-S3-A）。
 ///
@@ -309,6 +316,8 @@ const SPAWN_PREFAB_MAX_NODES: usize = 256;
 enum IntentPlan {
     /// 一次性实例化一组节点：一组组件 = 一条意图 = 一格撤销。
     SpawnPrefab(Vec<ObjectDesc>),
+    /// 一次性放一组局部光源（M1-S3-B）：一批灯 = 一条意图 = 一格撤销。
+    PlaceLight(Vec<LocalLight>),
 }
 
 impl IntentPlan {
@@ -345,10 +354,44 @@ impl IntentPlan {
                 }
                 Ok(Self::SpawnPrefab(nodes))
             }
+            "scene.place_light" => {
+                let items =
+                    match args.get("lights") {
+                        Some(Value::Array(items)) => items,
+                        Some(_) => return Err(RpcFailure::invalid_params(
+                            "参数 `lights` 需要数组（每项一盏灯，字段与场景 `lights` 条目相同）",
+                        )),
+                        None => return Err(RpcFailure::invalid_params("缺少参数 `lights`")),
+                    };
+                if items.is_empty() {
+                    return Err(RpcFailure::invalid_params(
+                        "参数 `lights` 不能为空数组（空意图不攒进事务）",
+                    ));
+                }
+                if items.len() > PLACE_LIGHT_MAX_LIGHTS {
+                    return Err(RpcFailure::invalid_params(format!(
+                        "参数 `lights` 最多 {PLACE_LIGHT_MAX_LIGHTS} 盏（局部光源表容量），收到 {}",
+                        items.len()
+                    )));
+                }
+                let mut lights = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let light: LocalLight = serde_json::from_value(item.clone()).map_err(|e| {
+                        RpcFailure::invalid_params(format!("`lights[{i}]` 灯光描述不合法: {e}"))
+                    })?;
+                    if light.key.trim().is_empty() {
+                        return Err(RpcFailure::invalid_params(format!(
+                            "`lights[{i}]` 的 `key` 不能为空——撤销要按 key 找回这盏灯"
+                        )));
+                    }
+                    lights.push(light);
+                }
+                Ok(Self::PlaceLight(lights))
+            }
             other => Err(RpcFailure::new(
                 TX_REJECTED,
                 format!(
-                    "`{other}` 未纳入意图白名单（M1-S3-A 仅 {}）",
+                    "`{other}` 未纳入意图白名单（M1-S3 仅 {}）",
                     INTENTS.join(" / ")
                 ),
             )),
@@ -388,6 +431,36 @@ impl IntentPlan {
                     seen.push(name);
                 }
                 Ok(nodes.into_iter().map(CommandKind::spawn_node).collect())
+            }
+            Self::PlaceLight(lights) => {
+                let room = MAX_LOCAL_LIGHTS.saturating_sub(scene.lights.len());
+                if lights.len() > room {
+                    return Err(DocError::Rejected(format!(
+                        "局部光源表只剩 {room} 个空位（上限 {MAX_LOCAL_LIGHTS}），\
+                         本意图要放 {} 盏",
+                        lights.len()
+                    )));
+                }
+                let mut seen: Vec<&str> = Vec::with_capacity(lights.len());
+                for light in &lights {
+                    let key = light.key.as_str();
+                    if seen.contains(&key) {
+                        return Err(DocError::Rejected(format!(
+                            "意图内灯光 key `{key}` 重复（同批放的两盏灯不能同 key）"
+                        )));
+                    }
+                    if scene.lights.iter().any(|l| l.key == key) {
+                        return Err(DocError::Rejected(format!(
+                            "灯光 `{key}` 已存在；`scene.place_light` 只新建不覆盖\
+                             （要改参数先删再放）"
+                        )));
+                    }
+                    seen.push(key);
+                }
+                Ok(lights
+                    .into_iter()
+                    .map(|light| CommandKind::upsert_local_light(scene, light))
+                    .collect())
             }
         }
     }

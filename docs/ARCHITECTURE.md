@@ -244,7 +244,7 @@ M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次�
 
 `base` 只在 `begin` 时取一次，`commit` 成功后强制重取（方案风险 R4：「事务态与 `StateHash` 双源」的处置）。哈希出网形态是字符串不是数字：JSON 数字进 JS 会被 `Number` 截到 53 位有效位，而冲突判定恰好依赖这个值。
 
-测试面：`crates/r3e-doc/tests/tx.rs` 18 个用例（影子隔离、提交记账、冲突、回滚、换场景作废；M1-S3-A 增意图记账：`staged` 涨 N 而 `intents` 涨 1、一次 `undo` 全退）、`crates/r3e-protocol/tests/tx_contract.rs`（`tx.*` **六**方法可分发 + 参数整形，M1-S3-A 增 `tx.intent`）、`crates/r3e-editor-host/src/api/tests/tx.rs`（M1-S3-A：`scene.spawn_prefab` 意图的记账口径、白名单拒绝、`nodes` 整形与 256 上限、影子外预检）、`crates/r3e-editor/tests/cmd_spec_contract.rs`（`tx.*` 进能力表）。
+测试面：`crates/r3e-doc/tests/tx.rs` 18 个用例（影子隔离、提交记账、冲突、回滚、换场景作废；M1-S3-A 增意图记账：`staged` 涨 N 而 `intents` 涨 1、一次 `undo` 全退）、`crates/r3e-protocol/tests/tx_contract.rs`（`tx.*` **六**方法可分发 + 参数整形，M1-S3-A 增 `tx.intent`）、`crates/r3e-editor-host/src/api/tests/tx.rs`（M1-S3-A：`scene.spawn_prefab` 意图的记账口径、白名单拒绝、`nodes` 整形与 256 上限、影子外预检；M1-S3-B 增 `scene.place_light`：按灯数记账、一次 `undo` 全退、`key` 必填与光源表容量预检）、`crates/r3e-editor/tests/cmd_spec_contract.rs`（`tx.*` 进能力表）。
 
 ### 3.2 代码规模
 
@@ -255,7 +255,7 @@ M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次�
 | r3e-asset | 5,979 | 894 | 61 | `air_import.rs` / `lib.rs`（FBX）/ `gltf_import.rs` / `importer.rs` / `visual_regression.rs`（像素比对纯函数） |
 | r3e-script | 6,230 | 3,367 | 132 | `api/`（17 文件，最大 `mod.rs` 428 行；M0-S2 由单文件 4,070 拆出）/ `lib.rs`（2,021）；文本 / UI / 音频 / 材质 / 环境 / 遮蔽 / 动画层 / 拾取绑定 |
 | r3e-runtime | 4,338 | — | 14 | `app.rs`（3,066：窗口 / 主循环 / 时间步）/ `asset_scene.rs`（474：资产装配 spawn / 形变 / 蒙皮 / 动画，M0-S3 抽出）/ `capture.rs` / `cli.rs` / `port.rs`（`EditorService` 端口） |
-| r3e-editor-host | 4,287 | 127 | 58 | `api/`（15 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出；M1-S1 增 `api/tx.rs`，M1-S2-B 增 `api/query.rs`，M1-S3-A 把意图展开与影子外预检落在 `api/tx.rs`）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
+| r3e-editor-host | 4,287 | 127 | 58 | `api/`（15 文件，最大 `support.rs` 433 行；M0-S2 由单文件 3,552 拆出；M1-S1 增 `api/tx.rs`，M1-S2-B 增 `api/query.rs`，M1-S3-A 把意图展开与影子外预检落在 `api/tx.rs`，M1-S3-B 扩白名单到两条意图）/ `host.rs`（帧内请求消化与资源上限）/ `tests/cmd_spec_contract.rs` |
 | r3e-plugin | 3,703 | — | 47 | `main.rs` / `host.rs`（宿主与 ABI）/ `protocol.rs` / `rpc.rs` / `spec.rs`（工具 schema）/ `tools.rs`（读写侧工具集）/ `locate.rs` / `smoke.rs` |
 | r3e-protocol | 2,518 | 1,037 | 49 | `msg.rs` / `patch.rs` / `query.rs`（M1-S2-B：`QuerySpec` DTO）/ `api.rs`（`EngineApi` trait）/ `caps.rs`（能力清单 DTO）/ `dispatch/`（5 文件：`mod.rs` 路由 + `scene.rs` + `media.rs` + `tx.rs` 事务面（M1-S1 从 `mod.rs` 拆出、M1-S3-A 增 `tx.intent` 臂）+ `query.rs` 查询面（M1-S2-B）；行数以 `cargo xtask lint-size` 为准）/ `tests/rpc_contract.rs`（`RPC_METHODS` 与 dispatch 臂双向对齐 + 清单 DTO 契约）/ `tests/tx_contract.rs`（`tx.*` 六方法分发与参数整形） |
 | r3e-editor | 505 | 1,875 | 72 | `lib.rs`（35：只做 `pub use r3e_protocol::*` 再导出，保证旧 `use r3e_editor::` 调用方零改动）/ `server.rs`（470：TCP / NDJSON 传输 + 资源上限单测）；协议数据层已于 M0-S5 迁往 `r3e-protocol` |
