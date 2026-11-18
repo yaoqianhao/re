@@ -364,3 +364,32 @@ fn regions_report_and_disconnect_point_agree() {
     assert!(nav.is_walkable(cut), "断开点必须落在可走面上");
     assert_eq!(nav.region_of(cut), nav.region_of(a), "断开点必须与起点同块");
 }
+
+#[test]
+fn bake_scene_entry_points_agree_with_bake() {
+    let mut scene = flat_scene();
+    add_wall(&mut scene, "wall", 8.0, 3.0);
+
+    // 公共装配入口（S4-C）：`bake_scene` 是 `bake` 的动作名版本，
+    // 两者必须给出同一份导航数据，否则「编辑器烘焙」与「运行时烘焙」会分家。
+    let plain = Nav::bake(&scene).expect("bake 成功");
+    let named = Nav::bake_scene(&scene).expect("bake_scene 成功");
+    assert_eq!(plain.report().dims, named.report().dims);
+    assert_eq!(plain.report().regions, named.report().regions);
+    assert_eq!(plain.report().walkable, named.report().walkable);
+}
+
+#[test]
+fn bake_scene_with_sanitizes_config_like_bake_with() {
+    let scene = flat_scene();
+    // 故意给一组非法参数：格子 0（除零）、角色半径 NaN。
+    // 入口必须自己收敛，而不是把非法值丢进烘焙。
+    let bad = NavConfig {
+        cell_size: 0.0,
+        agent_radius: f32::NAN,
+        ..NavConfig::default()
+    };
+    let nav = Nav::bake_scene_with(&scene, bad).expect("非法参数应被收敛而不是报错");
+    assert!(nav.report().cell_size > 0.0, "格子边长必须为正");
+    assert_eq!(nav.report().regions, 1, "平地仍应是一个连通块");
+}

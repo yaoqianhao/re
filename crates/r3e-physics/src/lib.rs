@@ -23,6 +23,9 @@
 use glam::Vec3;
 use r3e_core::{Aabb, MeshData, Node, NodeId, PhysicsSceneDesc, Scene};
 
+mod bind;
+pub use bind::BindReport;
+
 #[cfg(feature = "rapier")]
 mod rapier_backend;
 
@@ -317,45 +320,6 @@ impl BodyDesc {
             scale,
             ..Default::default()
         }
-    }
-
-    /// 从场景节点推导刚体描述：节点需带 `physics` 段，否则返回 `None`。
-    ///
-    /// 缺省规则与场景文件约定一致：碰撞形状由 `collider` 指定、否则由 mesh 推导；
-    /// 半尺寸由 `half_extents` 指定、否则取 scale * 0.5；质量缺省 1.0。
-    pub fn from_node(node: &Node) -> Option<Self> {
-        Self::from_node_with(node, None)
-    }
-
-    /// 同 [`BodyDesc::from_node`]，但可用网格真实包围盒推导碰撞体尺寸。
-    ///
-    /// 外部导入网格的真实尺寸往往远不是 1×1×1，退化成
-    /// `scale * 0.5` 会让碰撞体明显偏小；这里让 AABB 参与推导。
-    /// 显式写了 `half_extents` 的场景仍然以场景为准（人工调过的值优先）。
-    pub fn from_node_with(node: &Node, mesh: Option<&MeshData>) -> Option<Self> {
-        let p = node.physics.as_ref()?;
-        let shape = p
-            .collider
-            .as_deref()
-            .map(ColliderShape::parse)
-            .unwrap_or_else(|| mesh.map(infer_shape).unwrap_or(ColliderShape::Box));
-        let scale = node.transform.scale.abs();
-        let half_extents = p
-            .half_extents
-            .map(|h| Vec3::from(h).abs())
-            .unwrap_or_else(|| half_extents_from(mesh.map(|m| m.aabb_box()), scale));
-        Some(Self {
-            kind: BodyKind::parse(&p.body),
-            shape,
-            half_extents,
-            mass: if p.mass > 1e-4 { p.mass } else { 1.0 },
-            restitution: p.restitution.unwrap_or(0.2),
-            friction: p.friction.unwrap_or(0.6),
-            position: node.world_position(),
-            rotation: node.transform.rotation,
-            scale,
-            continuous: p.ccd,
-        })
     }
 }
 
@@ -665,6 +629,16 @@ pub trait PhysicsBackend {
 
     fn body_count(&self) -> usize;
 
+    /// 可选：句柄在本后端是否仍然活着。
+    ///
+    /// [`Physics::bind_scene`] 的幂等判定全靠它：节点上记着 `body` 只是「上次绑过」的
+    /// 痕迹，后端重建（切后端 / 清空刚体）之后同一个数字指向的已经是别人的刚体，
+    /// 或者干脆什么都不指。默认 `false` 是有意的——**没自己实现的后端一律按「不知道
+    /// 就当没有」处理，宁可重建一次，也不假装复用一条死句柄**。
+    fn has_body(&self, _handle: BodyHandle) -> bool {
+        false
+    }
+
     /// 可选：返回所有现存句柄，便于整体清空。默认返回 `None`（后端自行管理）。
     fn take_all_handles(&self) -> Option<Vec<BodyHandle>> {
         None
@@ -779,6 +753,12 @@ impl PhysicsBackend for NullBackend {
 
     fn destroy_body(&mut self, handle: BodyHandle) {
         self.bodies.retain(|h| *h != handle);
+    }
+
+    /// 空后端不模拟，但它**确实**发出过句柄，句柄表是准的——
+    /// 复用判定要如实回答，否则每次装配都重建一遍，报告里的数字就没意义了。
+    fn has_body(&self, handle: BodyHandle) -> bool {
+        self.bodies.contains(&handle)
     }
 
     fn apply_impulse(&mut self, _handle: BodyHandle, _impulse: Vec3) {}
@@ -1023,6 +1003,10 @@ impl PhysicsBackend for BuiltinBackend {
         self.bodies.len()
     }
 
+    fn has_body(&self, handle: BodyHandle) -> bool {
+        self.bodies.iter().any(|b| b.handle == handle)
+    }
+
     fn take_all_handles(&self) -> Option<Vec<BodyHandle>> {
         Some(self.bodies.iter().map(|b| b.handle).collect())
     }
@@ -1245,6 +1229,12 @@ pub struct Physics {
     /// 配置世代号：开关 / 后端 / 刚体表的任何重置都会自增，
     /// 供上层（app）判断是否需要重新绑定场景里声明的刚体。
     generation: u64,
+    /// 上一次 [`Physics::bind_scene`] 产出的「节点 → 句柄」表。
+    ///
+    /// 存在的唯一原因：让**只读**装配入口自己就能幂等。只读调用方（内容验证器）
+    /// 不会把句柄写回场景，若幂等只能靠 `Node::body` 判断，它每调一次就会重建一批
+    /// 刚体——同一个场景两次校验得到两套句柄，验证结果也就跟着漂。
+    last_bindings: Vec<(NodeId, u64)>,
 }
 
 impl std::fmt::Debug for Physics {
@@ -1278,6 +1268,7 @@ impl Physics {
             overrides: PhysicsConfig::default(),
             ccd_default: true,
             generation: 1,
+            last_bindings: Vec::new(),
         }
     }
 
@@ -1292,6 +1283,7 @@ impl Physics {
             overrides: PhysicsConfig::default(),
             ccd_default: true,
             generation: 1,
+            last_bindings: Vec::new(),
         }
     }
 
@@ -1427,6 +1419,9 @@ impl Physics {
         self.backend.set_gravity(self.gravity);
         self.backend.set_ground(self.ground);
         self.backend.set_ccd_default(self.ccd_default);
+        // 切后端后旧句柄在后端里全部失效，缓存必须跟着清，
+        // 否则下一次装配会拿一批死句柄去「复用」。
+        self.last_bindings.clear();
         self.generation += 1;
     }
 

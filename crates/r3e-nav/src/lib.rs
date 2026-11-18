@@ -250,6 +250,15 @@ impl Nav {
         Self::bake(scene)
     }
 
+    /// 与 [`Self::bake_with`] 同义，用动作命名 + 显式参数，和 `bake_scene` 配成一对。
+    ///
+    /// 编辑器改格子参数、验证器按内容自带的 `nav` 段烘焙时都走这里，
+    /// 不要各自 `NavConfig { .. }` 拼完再调 `bake`——那样参数收敛
+    /// （[`NavConfig::sanitized`]）就有被绕过的机会。
+    pub fn bake_scene_with(scene: &Scene, cfg: NavConfig) -> Result<Self, NavError> {
+        Self::bake_with(scene, cfg.sanitized())
+    }
+
     /// 用指定参数烘焙。
     pub fn bake_with(scene: &Scene, cfg: NavConfig) -> Result<Self, NavError> {
         let grid = bake::bake(scene, cfg)?;

@@ -183,6 +183,30 @@ impl Aabb {
         (tmax >= 0.0).then_some(tmin)
     }
 
+    /// 两个包围盒是否相交（**含相切**：共面 / 共边 / 只碰一个角点都算相交）。
+    ///
+    /// 语义与 [`Aabb::is_empty`] 对齐：任一方为空即 `false`——没有体积的盒子挡不住
+    /// 任何东西，不该在穿模初筛里报命中。
+    ///
+    /// 这是**保守**判定，不是精确相交：两个盒子各自包着一团几何，盒子相交只能说明
+    /// 「可能碰到」。穿模初筛要的是「宁可多报不可漏报」，精确判定交给形状层
+    /// （`r3e-physics` 的 `shape_cast` / 窄相）。
+    ///
+    /// 之所以下沉到 `r3e-core` 而不是各 crate 各写一份：内容验证器的穿模初筛、
+    /// 导航栅格化的障碍判定、查询层的粗筛用的是同一条语义，写三份必然长出三种边界
+    /// 口径（≥ 还是 >、空盒算不算）。
+    pub fn intersects(&self, other: &Self) -> bool {
+        if self.is_empty() || other.is_empty() {
+            return false;
+        }
+        self.min.x <= other.max.x
+            && other.min.x <= self.max.x
+            && self.min.y <= other.max.y
+            && other.min.y <= self.max.y
+            && self.min.z <= other.max.z
+            && other.min.z <= self.max.z
+    }
+
     pub fn to_tuple(self) -> (Vec3, Vec3) {
         (self.min, self.max)
     }
@@ -255,5 +279,38 @@ mod tests {
         assert_eq!(a.inflate_relative(0.5).size(), Vec3::splat(4.0));
         // 相对外扩不改变中心
         assert_eq!(a.inflate_relative(0.25).center(), a.center());
+    }
+
+    #[test]
+    fn intersects_detects_overlap_and_touch() {
+        let a = Aabb::new(Vec3::ZERO, Vec3::splat(2.0));
+        // 真正重叠
+        assert!(a.intersects(&Aabb::new(Vec3::splat(1.0), Vec3::splat(3.0))));
+        // 一方完全包住另一方
+        assert!(a.intersects(&Aabb::from_center_half(Vec3::ONE, Vec3::splat(0.5))));
+        // 相切也算相交：共面
+        assert!(a.intersects(&Aabb::new(Vec3::new(2.0, 0.0, 0.0), Vec3::splat(3.0))));
+        // 只碰一个角点
+        assert!(a.intersects(&Aabb::new(Vec3::splat(2.0), Vec3::splat(3.0))));
+        // 相交是对称的
+        let b = Aabb::new(Vec3::splat(1.5), Vec3::splat(2.5));
+        assert_eq!(a.intersects(&b), b.intersects(&a));
+    }
+
+    #[test]
+    fn intersects_rejects_separated_and_empty() {
+        let a = Aabb::new(Vec3::ZERO, Vec3::splat(2.0));
+        // 单轴拉开就算分离——不能只看中心距离
+        assert!(!a.intersects(&Aabb::new(Vec3::new(2.001, 0.5, 0.5), Vec3::splat(3.0))));
+        assert!(!a.intersects(&Aabb::new(
+            Vec3::new(0.5, 5.0, 0.5),
+            Vec3::new(3.0, 6.0, 3.0)
+        )));
+        // 斜对角的分离盒
+        assert!(!a.intersects(&Aabb::new(Vec3::new(3.0, 3.0, 3.0), Vec3::splat(4.0))));
+        // 任一方为空 → 不挡任何东西
+        assert!(!a.intersects(&Aabb::EMPTY));
+        assert!(!Aabb::EMPTY.intersects(&a));
+        assert!(!Aabb::EMPTY.intersects(&Aabb::EMPTY));
     }
 }

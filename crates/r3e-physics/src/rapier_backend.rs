@@ -450,6 +450,12 @@ impl PhysicsBackend for RapierBackend {
         self.records.len()
     }
 
+    fn has_body(&self, handle: BodyHandle) -> bool {
+        // 以 records 为准而不是 bodies：地面刚体在 RigidBodySet 里但没有 record，
+        // 它不该被当成「某节点已绑定」的证据。
+        self.records.contains_key(&handle)
+    }
+
     fn take_all_handles(&self) -> Option<Vec<BodyHandle>> {
         Some(self.records.keys().copied().collect())
     }

@@ -13,7 +13,7 @@ AIGC:
 
 # M1-S4 方案 V3：能力全量前置（导航 + 材质全功能）
 
-> 状态：方案待执行（V3 取代 V2 的「部分外排」裁决）
+> 状态：S4-A / S4-B / S4-C 已落地；S4-D 起待执行（V3 取代 V2 的「部分外排」裁决）
 > 日期：2026-11-17
 > 归属：`docs/AI_ROADMAP.md` §3.2 M1「AI 写入闭环」第四 Sprint
 > 前置：S1（事务协议）、S2（WorldQuery）、S3（意图命令 + impact）已收口，单测基线 1,574，`cargo xtask verify` 十项全绿
@@ -184,11 +184,16 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 
 ### S4-C 装配 / 查询公共面下沉
 
-- `r3e-physics`：`Physics::bind_scene(&mut self, &Scene) -> BindReport`（把 `runtime/app.rs:1501` 逻辑搬下来，`ColliderShape::infer` 一行不改），runtime 改为薄包装；新增 `tests/bind_scene.rs`；
-- `r3e-nav`：`Nav::bake_scene` 同样以公共入口形式存在（S4-B 内自带，此处只做「runtime 装配调用化」）；
-- `r3e-core`：补 `Aabb::intersects`（C8，穿模初筛 + 栅格化共用）。
+**状态：✅ 已落地（2026-11-18）**。
 
-**验收**：runtime 全量测试不改一行即通过；重复调用幂等；`backend` 不支持时如实回报而非静默。
+- `r3e-physics`：新增 `src/bind.rs`（`lib.rs` 在债务白名单里只许减不许增，装配与 `BodyDesc::from_node*` 一并搬进该文件），公开 `Physics::bind_scene(&mut self, &Scene, &dyn MeshProvider) -> BindReport`；`BindReport` 增 `bindings: Vec<(NodeId, u64)>` 句柄表；
+- **签名与计划的一处偏离（有意）**：`bind_scene` 收的是 `&Scene` 而**不是** `&mut Scene`，装配本身不回写 `Node::body`，只产出句柄表。原因：内容验证器（S4-E）必须能调同一个入口，而它手里只有只读场景；若签名是 `&mut Scene`，验证器要么伪造可变场景、要么绕开入口另写一份装配——正是本卡要消灭的分叉。写回交给持有写通道的一方（运行时的 `Document::write` 闭包）。
+- **只读入口的幂等靠两级复用**：`Node::body` 里仍存活的句柄优先，其次是 `Physics::last_bindings`（上一轮 `bind_scene` 自己的产出）。只读调用方不写回场景，若幂等只依赖 `Node::body`，验证器每调一次就重建一批刚体，两次校验拿到两套句柄、结论跟着漂。`rebuild_backend()` 清空该缓存（切后端后旧句柄全部失效）；
+- `r3e-runtime`：新增 `src/physics_bind.rs`（`SceneMeshProvider` + `rebind()`），`app.rs::sync_physics_bindings` 只剩「判世代 → 调用 → 记日志」；`node_mesh_data` 提为 `pub(crate)` 供两侧共用，装配与渲染仍看同一份网格；
+- `r3e-nav`：`Nav::bake_scene` / `bake_scene_with` 公共入口就位（S4-B 自带，本卡只确认运行时侧调用口径）；
+- `r3e-core`：`Aabb::intersects` 已就位（含相切语义、空盒一律 `false`，带两组单测）。
+
+**验收结果**：runtime 全量测试**未改一行**、`cargo test --workspace` 122 套全绿；`bind_scene` 连调两次句柄表逐项相同（`readonly_bind_scene_is_idempotent`）；`NullBackend` 下属实 `simulated() == false` 并在 `summary()` 里写明（`readonly_bind_scene_reports_unsimulated_backend`）；`cargo fmt --all` + `cargo xtask verify` 十项全绿。
 
 ---
 

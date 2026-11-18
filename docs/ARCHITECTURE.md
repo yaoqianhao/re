@@ -6973,6 +6973,7 @@ Scene（地形高度图 + 节点几何 + physics.half_extents + spawns）
 | `crates/r3e-render/src/ssao.rs` | `SsaoPass`：`R8Unorm` 遮蔽图两份（raw / final）、生成 + 散焦两条全屏管线、`SsaoParams`（416 B，含 16 样本核）、`SsaoStats`、`generation` 世代号、`planned_passes` |
 | `crates/r3e-render/src/ssao.wgsl` | 全屏三角形顶点现算、`fs_ssao`（深度重建 + 半球核遮挡率）、`fs_blur`（4×4 盒式散焦） |
 | `crates/r3e-physics/src/lib.rs` | `PhysicsBackend` trait、`BackendCaps`、`BodyDesc`、`NullBackend`、`BuiltinBackend`、`PhysicsConfig`、`Physics` 门面、查询层契约（`Ray` / `OverlapHit` / `CastShape`） |
+| `crates/r3e-physics/src/bind.rs` | 装配唯一入口：`Physics::bind_scene(&Scene, &dyn MeshProvider) -> BindReport`（**只读场景**，句柄经 `BindReport::bindings` 交回，写回由持有写通道的一方做）、`BindReport`（`created` / `reused` / `skipped` / `simulated` / `summary`）、`BodyDesc::from_node` / `from_node_with`（网格几何推碰撞体）。幂等靠「`Node::body` 存活句柄 → 上一轮 `last_bindings` 缓存」两级复用，所以只读调用方连调两次不会重建刚体；S4-C 从 `runtime/app.rs` 下沉 |
 | `crates/r3e-physics/src/rapier_backend.rs` | Rapier 后端：刚体/碰撞体映射、接触求解、碰撞事件回传、parry 窄相查询（raycast / overlap / shape-cast） |
 | `crates/r3e-audio/src/lib.rs` | `Audio` 门面：实例账本、单条 × 总音量、通道开关、错误计数、`sanitize_volume`、静默降级；空间化覆盖层（注册表 / `tick_spatial` / 增益与倍速合成 / 开关 / 32 上限）、18 个单测（含 `MockBackend`） |
 | `crates/r3e-audio/src/backend.rs` | `AudioBackend` 契约（含 `set_speed` / `supports_speed`）、`RodioBackend`（一 key 一 `Player` + mixer 混音，倍速夹 `0.1 ..= 8.0`）、`SilentBackend`（解码校验但不出声，`supports_speed() == false`） |
@@ -6992,6 +6993,7 @@ Scene（地形高度图 + 节点几何 + physics.half_extents + spawns）
 | `crates/r3e-script/src/lib.rs` | `ScriptHost`、加载/每帧/热重载/重放、`has_fn` |
 | `crates/r3e-script/src/api.rs` | 全部 Rhai API 绑定、`Clock`、`ScriptContext`、xorshift 随机 |
 | `crates/r3e-runtime/src/app.rs` | `EngineApp`、帧循环、输入、文件监视、REPL 通道、`drive_spatial_audio`（听者 ← 活动相机、声源 ← 绑定节点世界坐标，再 `tick_spatial`） |
+| `crates/r3e-runtime/src/physics_bind.rs` | 运行时装配半边：`SceneMeshProvider`（资产优先 + 内置图元兜底的 `MeshProvider`，与渲染同源）+ `rebind()`（在 `Document::write` 闭包里调 `Physics::bind_scene` 并把 `bindings` 写回 `Node::body`）；S4-C 从 `app.rs` 抽出，`app.rs` 只剩「判世代 → 调用 → 记日志」 |
 | `crates/r3e-app/src/main.rs` | 参数解析、项目根三级兜底、事件循环启动 |
 | `docs/PHYSICS.md` | 物理子系统完整说明：三层开关、场景字段、脚本 API、内置规则、实测与限制 |
 | `docs/ASSETS.md` | 资产管线完整说明：FBX / glTF 导入、AIR 统一格式与不变量、动画/蒙皮、分阶段验收与已知限制 |

@@ -23,7 +23,7 @@ use r3e_core::{
     SceneCommand, SceneStack, StackEntry, UiInteraction,
 };
 use r3e_doc::{mix_u64, Document, FNV_OFFSET};
-use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
+use r3e_physics::{Physics, PhysicsConfig, PhysicsKind};
 use r3e_render::ui::UiImageProvider;
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -1511,6 +1511,10 @@ impl EngineApp {
     ///
     /// 物理开关 / 后端切换 / 刚体表清空都会让世代号自增，这里只在世代变化时重绑一次，
     /// 因此脚本用 `attach_body` 手动绑的刚体不会被覆盖。
+    ///
+    /// 装配逻辑本身在 [`r3e_physics::Physics::bind_scene`]——运行时只做三件本地事：
+    /// 判世代、递网格来源、把报告写进日志。编辑器与内容验证器走同一个入口，
+    /// 「运行时撞到的东西」与「校验器认为该有的东西」才不会各说各话。
     fn sync_physics_bindings(&mut self) {
         let (gen, enabled) = {
             let p = self.physics.borrow();
@@ -1523,41 +1527,20 @@ impl EngineApp {
 
         let scene_rc = Rc::clone(&self.scene);
         let physics_rc = Rc::clone(&self.physics);
+        let assets: Arc<AssetLibrary> = Arc::clone(&self.assets.borrow());
         let mut physics = physics_rc.borrow_mut();
-        let assets = self.assets.borrow().clone();
-        let mut bound = 0usize;
-        scene_rc.borrow_mut().write(|scene| {
-            let ids: Vec<NodeId> = scene
-                .iter()
-                .filter(|n| n.physics.is_some())
-                .map(|n| n.id)
-                .collect();
-            if ids.is_empty() {
-                return;
-            }
+        let report = crate::physics_bind::rebind(&mut physics, &scene_rc, &assets);
 
-            for id in ids {
-                // 物理与渲染同源：碰撞体形状/尺寸都从 AIR 网格几何推出，
-                // 内置图元与外部资产走同一条路（S4 去来源分支）。
-                let node_mesh = scene
-                    .get(id)
-                    .and_then(|node| node_mesh_data(&assets, node.mesh));
-                let Some(desc) = scene
-                    .get(id)
-                    .and_then(|node| BodyDesc::from_node_with(node, node_mesh.as_ref()))
-                else {
-                    continue;
-                };
-                if let Some(handle) = physics.try_create_body(id, desc) {
-                    if let Some(node) = scene.get_mut(id) {
-                        node.body = Some(handle.0);
-                    }
-                    bound += 1;
-                }
-            }
-        });
-        if bound > 0 {
-            log::info!("物理已绑定 {bound} 个场景刚体");
+        if report.bound() > 0 {
+            log::info!("物理已绑定 {} 个场景刚体", report.bound());
+        }
+        // 有节点推不出刚体参数时不静默：这类场景能跑起来但物件不会动，
+        // 事后排查只看「没报错」是找不出原因的。
+        if report.skipped > 0 {
+            log::warn!("{}", report.summary());
+        }
+        if report.bound() > 0 && !report.simulated() {
+            log::warn!("{}", report.summary());
         }
     }
 
