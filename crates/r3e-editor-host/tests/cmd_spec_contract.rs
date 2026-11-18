@@ -94,8 +94,8 @@ fn 宿主实现的每个方法都能在表里找到rpc() {
     let methods = host_methods();
     assert_eq!(
         methods.len(),
-        57,
-        "宿主 EngineApi 方法数应为 57，实际 {}",
+        58,
+        "宿主 EngineApi 方法数应为 58（M1-S4-H 起 `physics.bind` 也在内），实际 {}",
         methods.len()
     );
 

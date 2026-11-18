@@ -326,6 +326,24 @@ pub(super) static ALL: &[CommandSpec] = &[
         cost: Cost::Linear,
         since: "M1-S4-D",
     },
+    // ---- M1-S4-H：编辑态的显式装配口 ----
+    //
+    // `physics.bind` 是这批里**唯一会动物理世界**的命令，但场景仍只读：装配产出句柄表，
+    // 不写 `Node::body`、不进撤销栈、`StateHash` 前后一致，所以照样是 `reversible`。
+    // 放在 `Meta` 域的理由与上面八条相同：脚本侧直接拿着 `&mut Physics` 与 `&Scene`，
+    // 这条是给 AI / 远端补「编辑态没有装配入口」的那道口子。
+    CommandSpec {
+        name: "physics.bind",
+        rpc: Some("physics.bind"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 不写场景 ⇒ 没有撤销语义要补偿。
+        reversible: true,
+        // 逐节点取网格推 `BodyDesc`；幂等那一路只查句柄表，代价按节点数线性。
+        cost: Cost::Linear,
+        since: "M1-S4-H",
+    },
     CommandSpec {
         name: "nav.bake",
         rpc: Some("nav.bake"),

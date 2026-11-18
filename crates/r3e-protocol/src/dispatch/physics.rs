@@ -89,6 +89,12 @@ pub(super) fn dispatch_physics(
                 Err(f) => Response::fail(id, f),
             }
         }
+        // 无参：装配谁、装哪一层都由宿主按「主场景 + 主世界」定，协议层不搬任何选择。
+        // 显式忽略 `params` 是因为客户端习惯性带一个 `{}`，不该因此报参数错误。
+        "physics.bind" => match api.physics_bind() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
         _ => nav::dispatch_nav(api, id, params, method, raw),
     }
 }

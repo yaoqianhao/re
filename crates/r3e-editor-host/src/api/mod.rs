@@ -286,6 +286,11 @@ impl EngineApi for LocalEngineApi<'_> {
     fn physics_cast(&mut self, query: CastQuery) -> Result<Value, RpcFailure> {
         physics::physics_cast(self, query)
     }
+    /// 显式装配主世界（M1-S4-H）：协议面 57 → 58 条里唯一会写物理世界的入口，
+    /// 且**不写场景**——见 `api::physics::physics_bind`。
+    fn physics_bind(&mut self) -> Result<Value, RpcFailure> {
+        physics::physics_bind(self)
+    }
     fn nav_bake(&mut self, options: NavBakeOptions) -> Result<Value, RpcFailure> {
         nav::nav_bake(self, options)
     }

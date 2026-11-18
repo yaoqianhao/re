@@ -1,4 +1,4 @@
-//! `physics.*` 三条探测查询的宿主实现（M1-S4-D）。
+//! `physics.*` 三条探测查询（M1-S4-D）与显式装配口（M1-S4-H）的宿主实现。
 //!
 //! 协议层只搬值（`[f32; 3]` + 字符串标签），引擎类型全部在这里翻译：
 //! 归一化、缺省射程、退化形状、NaN 检查一律落在宿主侧——同一个非法入参
@@ -12,13 +12,17 @@
 //!   该位回 [`BACKEND_UNSUPPORTED`]，**不返回空表**——空表会被读成
 //!   「场景里真没东西」，从而去改本来就对的场景。
 //! * **只读**：三条都不 `borrow_mut`，`StateHash` 前后一致。
+//!
+//! 第四条是 `physics.bind` 自带的（M1-S4-H）：它**是**第一个会 `borrow_mut`
+//! 物理世界的入口，但**仍然不碰场景**——装配只产出句柄表，`Node::body` 一个都不写，
+//! 回包用 `wroteBackScene: false` + `stateHash` 把「没写场景」变成可验证的事实。
 
 use super::support::check_finite;
 use super::*;
 use r3e_core::query::DEFAULT_LIMIT;
 use r3e_core::NodeId;
 use r3e_editor::CastShapeSpec;
-use r3e_editor::{BACKEND_UNSUPPORTED, PHYSICS_DISABLED};
+use r3e_editor::{BACKEND_UNSUPPORTED, MESH_SOURCE_UNAVAILABLE, PHYSICS_DISABLED};
 use r3e_physics::{CastShape, Physics, Ray};
 
 /// `maxDistance` 的宿主缺省射程（米）。
@@ -219,6 +223,89 @@ pub(super) fn physics_cast(
         "handle": hit.handle.0,
         "backend": backend,
         "capabilities": caps,
+    }))
+}
+
+/// `physics.bind`：把主场景的刚体**显式**装配进主世界（M1-S4-H）。
+///
+/// 这条口子存在的唯一理由：编辑态一暂停，运行时的 `sync_physics_bindings` 就不跑，
+/// 主世界永远是空的——于是 `physics.raycast` 的 `hit: false` 既可能是「真没打中」，
+/// 也可能是「世界没装」。两种答案共用一个回包，就是静默不可信。
+///
+/// 三条口径：
+/// * **不写回场景**：`bind_scene` 只回句柄表，`Node::body` 一个都不改，`stateHash`
+///   前后一致；句柄只活在世界的句柄表里，回包用 `wroteBackScene: false` 明说。
+/// * **幂等**：连调两次，第二次 `created = 0` 且 `reused = bound()`——这是「世界确实
+///   和这份场景对齐」的证据，不是副作用。
+/// * **宁可报错也不糊过去**：物理关着回 [`PHYSICS_DISABLED`]、没有网格来源回
+///   [`MESH_SOURCE_UNAVAILABLE`]，绝不回 `bound: 0` 让调用方以为场景本来就没刚体。
+pub(super) fn physics_bind(api: &mut LocalEngineApi<'_>) -> Result<Value, RpcFailure> {
+    // 先看开关：这是比「缺网格」更根本的原因，先报它调用方才不会去补资产库。
+    if !api.physics.borrow().enabled() {
+        return Err(RpcFailure::new(
+            PHYSICS_DISABLED,
+            "物理已关闭（physics.enabled = false）：本次没有做任何装配，先打开物理再 bind",
+        ));
+    }
+    // 装配的形状与尺寸只能来自 `MeshData`（`BodyDesc::from_node_with` 的唯一来源），
+    // 拿不到就不装配——按 `scale * 0.5` 猜一个，会绑出看不见的错尺寸碰撞体。
+    let Some(meshes) = api.meshes.as_ref() else {
+        return Err(RpcFailure::new(
+            MESH_SOURCE_UNAVAILABLE,
+            "宿主没有拿到网格来源（`EngineAccess::meshes` 为空）：本次没有做任何装配，\
+             物理层结论仍不可信。运行时会逐帧递进该来源，headless 用例可用内置图元顶替",
+        ));
+    };
+
+    // 快照 + 刷世界矩阵：`bind_scene` 读节点的世界变换，编辑态刚放的节点若没刷过，
+    // 会被当成「还在原点」，绑出来的碰撞体位置全错。刷在**副本**上，不碰真文档。
+    let (snapshot, state_hash) = {
+        let document = api.scene.borrow();
+        let mut snapshot = Scene::clone(&document);
+        snapshot.update_world_transforms();
+        (snapshot, document.state_hash())
+    };
+
+    // 装配主世界。句柄回收进 `last_bindings`，所以连调两次不会重建刚体。
+    let (report, body_count) = {
+        let mut physics = api.physics.borrow_mut();
+        let report = physics.bind_scene(&snapshot, meshes.as_ref());
+        let body_count = physics.body_count();
+        (report, body_count)
+    };
+    let bound = report.bound();
+    let summary = report.summary();
+
+    // 句柄翻成物件名：AI 拿到一串 `7` 认不出绑的是谁。
+    let document = api.scene.borrow();
+    let scene: &Scene = &document;
+    Ok(json!({
+        "backend": report.backend,
+        "enabled": report.enabled,
+        "capabilities": report.capabilities.enabled_keys(),
+        // 后端会不会真的模拟这些刚体（`null` 空转后端只记账）：别看到 `bound > 0`
+        // 就以为物体会动。
+        "simulated": report.simulated(),
+        "candidates": report.candidates,
+        "created": report.created,
+        "reused": report.reused,
+        "skipped": report.skipped,
+        "bound": bound,
+        // 世界里的刚体总数。与 `bound` 对不上说明世界里还有「场景之外的刚体」
+        // （脚本手动 attach 的、或场景删了对象而世界还留着），照实给出，不替调用方解释。
+        "bodyCount": body_count,
+        "bindings": report
+            .bindings
+            .iter()
+            .map(|(id, handle)| json!({
+                "node": node_name(scene, *id),
+                "handle": handle,
+            }))
+            .collect::<Vec<_>>(),
+        // 显式声明：本方法**没有**写回 `Node::body`。调用方不必再自己比一遍哈希。
+        "wroteBackScene": false,
+        "stateHash": super::tx::hex(state_hash),
+        "summary": summary,
     }))
 }
 

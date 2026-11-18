@@ -89,6 +89,16 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// （`tx.apply` 的 `op` 白名单只能表达一条命令）。具体意图名仍走 `intent` 参数的
 /// 宿主白名单，加意图不动本表。
 ///
+/// M1-S4-H 增 1 条 `physics.bind`（57 → 58）：编辑态的**显式装配口**。
+///
+/// 运行时的装配发生在主循环里（`if !paused` 分支），编辑态一暂停主世界就永不装配，
+/// 于是 `physics.*` 三条在编辑态拿到的是「世界是空的」这个既不可信、又不报错的答案
+/// （`hit: false` 与「世界没装」用同一种回包），`scene.verify` 的物理层也永远被记
+/// `unchecked`。这条口子把「装配」变成调用方能显式请求的动作：
+/// 绑的是**主世界**、**不写回** `Node::body`（回包显式带 `wroteBackScene: false`），
+/// 幂等靠后端句柄表（连调两次第二次全是 `reused`）。
+/// 同样不新增脚本函数，登记在 `cmd_spec` 的 `Meta` 域。
+///
 /// 命名铁律：本表里的名字必须是 `dispatch::canonical()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
@@ -112,6 +122,7 @@ pub const RPC_METHODS: &[&str] = &[
     "nav.bake",
     "nav.path",
     "nav.reachability",
+    "physics.bind",
     "physics.cast",
     "physics.overlap",
     "physics.raycast",
@@ -197,3 +208,9 @@ pub const PHYSICS_DISABLED: i32 = -32020;
 pub const BACKEND_UNSUPPORTED: i32 = -32021;
 /// 导航数据还没烘焙（宿主侧 `Nav` 槽位为空），`nav.path` / `nav.reachability` 无从计算。
 pub const NAV_NOT_BAKED: i32 = -32022;
+/// 宿主拿不到网格来源（`EngineAccess::meshes` 为空），`physics.bind` 无从装配。
+///
+/// 为什么不与 `BACKEND_UNSUPPORTED` 合用：那是「后端不会」，这是「宿主这份进程里
+/// 根本没有几何来源」（headless / 资产库未就绪）。两者该做的事不同——前者换后端，
+/// 后者补网格来源——合成一个码等于让调用方去猜。
+pub const MESH_SOURCE_UNAVAILABLE: i32 = -32023;

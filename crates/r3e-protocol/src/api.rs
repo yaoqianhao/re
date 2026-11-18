@@ -438,6 +438,33 @@ pub trait EngineApi {
         Err(RpcFailure::unsupported("physics.cast"))
     }
 
+    /// 显式装配主世界的刚体（M1-S4-H）：把场景里声明了 `physics` 段的节点绑进
+    /// **主世界**，让编辑态的 `physics.*` 查询有可信的世界可查。
+    ///
+    /// 为什么需要这条口子：装配在运行时是主循环的事（`if !paused` 才每帧 sync），
+    /// 编辑态一暂停就永不装配，于是 `physics.raycast` 拿到的是「空世界」——
+    /// 回 `hit: false`，与「真的没打中」用同一种回包，这是静默不可信。
+    ///
+    /// 回包契约：`{ "backend": String, "enabled": true,
+    /// "capabilities": [String...], "simulated": bool,
+    /// "candidates": usize, "created": usize, "reused": usize, "skipped": usize,
+    /// "bound": usize, "bodyCount": usize,
+    /// "bindings": [{ "node": String|null, "handle": u64 }...],
+    /// "wroteBackScene": false, "stateHash": String, "summary": String }`。
+    ///
+    /// 三条硬约束：
+    /// * **不写回场景**：`Node::body` 一个都不改，`stateHash` 前后必须一致，
+    ///   回包显式带 `wroteBackScene: false`；句柄只活在世界的句柄表里。
+    /// * **幂等**：连调两次，第二次 `created = 0`、`reused = bound()`（后端句柄表判活）。
+    /// * **区分「没有」和「不会」**：物理关着回 `PHYSICS_DISABLED`、宿主没有网格来源
+    ///   回 `MESH_SOURCE_UNAVAILABLE`，**绝不回 `bound: 0`** 糊过去。
+    ///
+    /// 幂等 + 不写回意味着它是「按需对齐」而不是「自动装配」：不想对齐就不调，
+    /// 没人会在编辑时偷偷替你建世界。
+    fn physics_bind(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("physics.bind"))
+    }
+
     /// 烘焙导航网格（M1-S4-D）。产物挂在宿主侧，**不写场景**。
     ///
     /// 回包契约：`{ "baked": bool, "dims": [u32;2], "cellSize": f32, "cells": usize,

@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 387,
-    "rpc": 57,
+    "commands": 388,
+    "rpc": 58,
     "script_only": 330,
     "domains": 17,
     "invariants": 38
@@ -2286,6 +2286,16 @@
       "reversible": true,
       "cost": "cheap",
       "since": "M0-backfill"
+    },
+    {
+      "name": "physics.bind",
+      "domain": "meta",
+      "rpc": "physics.bind",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S4-H"
     },
     {
       "name": "physics.cast",

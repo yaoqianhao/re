@@ -187,6 +187,7 @@ fn env_map_patch(equirect: Option<&str>, faces: Option<Vec<String>>) -> Environm
 
 mod anim_audio;
 mod core;
+mod physics_bind;
 mod physics_nav;
 mod query;
 mod route;
