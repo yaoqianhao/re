@@ -16,6 +16,7 @@ members = [
     "crates/r3e-runtime",
     "crates/r3e-editor-host",
     "crates/r3e-replay",
+    "crates/r3e-cli",
     "xtask",
 ]
 

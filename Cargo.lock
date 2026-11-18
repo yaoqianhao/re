@@ -2306,6 +2306,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-cli"
+version = "0.1.0"
+dependencies = [
+ "r3e-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "r3e-core"
 version = "0.1.0"
 dependencies = [

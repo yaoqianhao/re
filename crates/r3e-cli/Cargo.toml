@@ -1,0 +1,19 @@
+[package]
+name = "r3e-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AI 远程调用 r3e 引擎的唯一命令行入口（只依赖协议层）"
+
+[[bin]]
+name = "r3e-cli"
+path = "src/main.rs"
+
+[dependencies]
+# 依赖面被 xtask/dep_rules.json 钉死：只认协议层 + JSON。
+# 一旦这里多出任何引擎 crate（core / doc / editor-host …），dep-check 立刻红——
+# 这不是洁癖，是为了让 CLI 能脱离引擎源码独立分发（AI 侧只装一个二进制）。
+r3e-protocol = { workspace = true }
+serde_json = { workspace = true }
