@@ -154,7 +154,7 @@ AIGC:
 | 夹具 | `assets/verify/` 6 个（3 反例 + 3 正向对照）+ `expect.json` |
 | `xtask scene-verify` | `verify` 第 11 步；6/6 通过；**元检查**：故意把 `overlap_ok` 的 `must` 写成 `overlap.penetration` → 门禁按预期红（`rc=1`），证明它抓得住 |
 | ~~未做~~ → 已补 | 物理 / 导航层的 `violations`（D1=B/C）已由 **M1-S4-G** 补齐：`impact.violations` 的 `layers` 现在按层登记 `static` / `physics` / `nav`，`notChecked` 只留真的没跑的层 |
-| 未做 | `physics.bind` 类新 RPC（D2=P3，仍列 M2 前置债：编辑态一次「先绑后验」是原子动作，值得一条专用 RPC，本轮不扩） |
+| ~~未做~~ → 已补 | `physics.bind` 类新 RPC（D2=P3）已由 **M1-S4-H** 落地：编辑态可显式装配主世界再复验，`scene.verify` 的新鲜度守卫有了消除路径（RPC 57→58、命令表 387→388） |
 
 实现期与提案的两处偏差，均为实证修正而非缩水：
 
@@ -178,7 +178,7 @@ AIGC:
 
 ## 7. 明确不做
 
-- 不做 `physics.bind` / `scene.rebind` 类新 RPC（D2 的 P3）——已登记为 M2 前置债，见 §8；
+- ~~不做 `physics.bind` / `scene.rebind` 类新 RPC（D2 的 P3）~~ → M1-S4-H 已补，见 §8；
 - ~~不做 `violations` 的物理 / 导航层（D1 的 B/C）~~ → M1-S4-G 已补，见 §8；
 - 不做 Gate 1 演练本身（S5 范围），本卡只交付「Gate 1 可以开始了」的前置校验。
 *（内容由AI生成，仅供参考）*
@@ -200,4 +200,4 @@ D1=B/C 落地方式与三处口径：
 
 `cargo xtask verify` 11 步仍全绿（lint-size 白名单 23 项未涨、doc-gate 台账 234 处、invariants A=B=C=38）。
 
-尚未做的一件事留待 M2：`physics.bind` / `scene.rebind` 类 RPC（D2=P3）——它要解决的是「编辑态想先绑后验」，与本卡的「影子世界当场重建」不冲突，属于把临时世界换成持久世界的另一条路。
+~~尚未做的一件事留待 M2：`physics.bind` / `scene.rebind` 类 RPC（D2=P3）~~ → **已由 M1-S4-H 落地**：`physics.bind` 无参装配主世界、`wroteBackScene: false`、物理关回 `PHYSICS_DISABLED`、无网格来源回 `-32023 MESH_SOURCE_UNAVAILABLE`；与本卡的影子世界当场重建不冲突——本卡仍走临时世界求差，`physics.bind` 走持久世界，两条路并存。

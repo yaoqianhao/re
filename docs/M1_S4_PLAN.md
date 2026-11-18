@@ -14,7 +14,7 @@ AIGC:
 # M1-S4 方案 V3：能力全量前置（导航 + 材质全功能）
 
 > 状态：S4-A / S4-B / S4-C / S4-D / S4-E / S4-F 已全部落地（S4-E 含前置补债 + 三层验证器 + 坐标化 Issue；S4-F 含 `scene.verify` RPC、`impact.violations`、六夹具与 `xtask scene-verify`，2026-11-18）
-> 补记：S4-F 原列为 M2 前置债的 D1=B/C 已由 **S4-G** 补齐——`impact.violations` 现在覆盖物理 / 导航两层，`notChecked` 不留已跑的层；仅剩 D2=P3（`physics.bind` 类 RPC）仍挂 M2
+> 补记：S4-F 原列为 M2 前置债的 D1=B/C 已由 **S4-G** 补齐——`impact.violations` 现在覆盖物理 / 导航两层，`notChecked` 不留已跑的层；**S4-H** 再把最后一项 D2=P3（`physics.bind` 类 RPC）落地：编辑态可由调用方显式装配主世界，`scene.verify` 的新鲜度守卫有了消除路径（RPC 57→58、命令表 387→388）
 > 日期：2026-11-17
 > 归属：`docs/AI_ROADMAP.md` §3.2 M1「AI 写入闭环」第四 Sprint
 > 前置：S1（事务协议）、S2（WorldQuery）、S3（意图命令 + impact）已收口，单测基线 1,574，`cargo xtask verify` 十项全绿
@@ -310,7 +310,16 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 - **做法**：影子场景当场重建临时物理世界、当场烘影子导航网格，两层结论与静态层走**同一个基线**求差；拿不到网格来源 / 烘不出网格就逐条写 `unchecked`，绝不把「没检查」写成「通过」。
 - **不改协议面**：RPC 仍 57、命令表仍 387——`layers` / `unchecked` 是既有回包字段的填充变化，不新增方法。网格来源经 `EngineAccess::meshes` 从运行时递进，与主循环装配共用一套「资产优先、图元兜底」。
 - **验收**：`xtask verify` 11 步全绿，`#[test]` 1,718 → 1,721（`r3e-editor-host` 116 → 119，含清掉 1 条临时基准测试）。
-- **仍未做**：`physics.bind` / `scene.rebind` 类 RPC（D2=P3），留 M2。
+- **仍未做**：`physics.bind` / `scene.rebind` 类 RPC（D2=P3）——**已由 S4-H 收口**（见下节）。
+
+### S4-H `physics.bind` 编辑态装配主世界（S4-G 的 M2 前置债 · 已落地）
+
+- **触发**：宿主不装配 → 编辑态物理层结论不可信，但 `physics.cast` 在世界为空时照常回 `hit:false`，把「世界没同步」伪装成「没有东西挡住」，违反能力位铁律；`scene.verify` 的 `passed` 也因此恒为 `false`，门禁实际失效。
+- **做法**：新增 `physics.bind`（无参）——先查 `physics.enabled`（关则 `PHYSICS_DISABLED`）、再查 `EngineAccess::meshes` 是否有网格来源（没有则回新错误码 `-32023 MESH_SOURCE_UNAVAILABLE`，**绝不**回空表），随后快照刷世界矩阵、调唯一装配入口 `Physics::bind_scene`，回 `BindReport` 全字段（`backend` / `capabilities` / `simulated` / `bound` / `candidates` / `created` / `reused` / `skipped` / `bindings` / `bodyCount`）+ `wroteBackScene: false` + `stateHash`。
+- **不写回场景**：只建物理世界，不改 `Node::body`、不动 `StateHash`——装配是运行态的事，文档仍是唯一权威；改场景后重跑即幂等（`reused` 涨、`created` 归零）。清理口仍是 `Physics::clear_bodies()`。
+- **`scene.verify` 文案指路**：新鲜度守卫的 `reason` 由「宿主不自行装配」改为「先调 `physics.bind` 装配主世界再重跑」，`passed` 恢复为可用门禁（先绑后验即绿）。
+- **不改的东西**：不自动装配（只在显式请求下装）、不碰 `r3e-runtime`、不动影子世界那条路（`impact.violations` 仍是临时世界求差，M2 再统一）。
+- **验收**：`cargo xtask verify` 全绿（`gen-capabilities` commands=388 / rpc=58），`#[test]` 1,721 → 1,725（`r3e-editor-host` 119 → 123：装配且不写回、连调幂等、物理关闭报 `PHYSICS_DISABLED`、无网格来源报 `MESH_SOURCE_UNAVAILABLE`）。
 
 ---
 
