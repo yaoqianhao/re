@@ -383,4 +383,26 @@ pub(super) static ALL: &[CommandSpec] = &[
         cost: Cost::Cheap,
         since: "M1-S4-D",
     },
+    // ---- M1-S4-F 协议面一条：三层体检 ----
+    //
+    // 同 `query.*` / `physics.*` 的口径：归 `Meta` 域、无脚本函数（脚本里直接调
+    // `r3e-doc` / `r3e-physics` / `r3e-nav` 更短），这条是**给 AI / 远端 / CI** 的。
+    //
+    // 回包契约的硬约束（与其余「可能没查」的入口一致）：
+    // * `ok` 只表示「没有 Error」，`passed` 才表示「三层都跑过且没有 Error」——
+    //   `unchecked` 非空时 `ok` 仍可能为 `true`，调用方判门禁必须用 `passed`；
+    // * 物理关闭 / 后端不申报 `shape_cast` / 导航未烘焙一律落 `unchecked`，
+    //   **绝不**把「没检查」写成「通过」，也绝不回空表冒充「查过了」。
+    CommandSpec {
+        name: "scene.verify",
+        rpc: Some("scene.verify"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只读：不建事务、不产生写点、不动 StateHash。
+        reversible: true,
+        // 静态层全场景扫一遍 + 物理层装配 + 导航层按目标点跑 A* 连通，量级随规模涨。
+        cost: Cost::Heavy,
+        since: "M1-S4-F",
+    },
 ];

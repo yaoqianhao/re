@@ -145,3 +145,4 @@ mod query;
 mod route;
 mod tx;
 mod ui_light;
+mod verify;

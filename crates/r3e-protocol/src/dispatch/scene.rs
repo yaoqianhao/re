@@ -3,6 +3,7 @@
 //! 命中不到本组时交给 [`super::media::dispatch_media`]，不在本文件回错误。
 
 use super::*;
+use crate::verify::{VerifyQuery, VerifyTarget};
 
 pub(super) fn dispatch_scene(
     api: &mut dyn EngineApi,
@@ -498,6 +499,17 @@ pub(super) fn dispatch_scene(
                 Err(f) => Response::fail(id, f),
             }
         }
+        // 三层体检（M1-S4-F）：只读，不建事务、不推版本、不动 StateHash。
+        "scene.verify" => {
+            let query = match verify_query_from(params) {
+                Ok(v) => v,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.scene_verify(query) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         _ => media::dispatch_media(api, id, params, method, raw),
     }
 }
@@ -524,5 +536,56 @@ fn material_upsert_from(params: &Value) -> Result<MaterialUpsert, RpcFailure> {
         occlusion: opt_str(params, "occlusion")?.map(str::to_string),
         emissive_map: opt_str(params, "emissiveMap")?.map(str::to_string),
         uv_scale: opt_f32_array::<2>(params, "uvScale")?,
+    })
+}
+
+/// 从 RPC 参数解析 [`VerifyQuery`]（`scene.verify`，M1-S4-F）。
+///
+/// `targets` 的**形状**在这里管（数组、每项 `{name, at}`、`at` 必须是三元数组），
+/// 数值是否有限留给宿主判——协议层的规矩是「形状错是调用方的错，语义错是场景的错」。
+/// 空数组 / 缺省都合法：那是「只做场景自洽体检」。
+fn verify_query_from(params: &Value) -> Result<VerifyQuery, RpcFailure> {
+    let mut targets = Vec::new();
+    match param(params, "targets") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for (i, item) in items.iter().enumerate() {
+                let name = match item.get("name").and_then(Value::as_str) {
+                    Some(s) if !s.trim().is_empty() => s.to_string(),
+                    _ => {
+                        return Err(RpcFailure::invalid_params(format!(
+                            "参数 `targets[{i}].name` 应为非空字符串"
+                        )))
+                    }
+                };
+                let Some(Value::Array(at)) = item.get("at") else {
+                    return Err(RpcFailure::invalid_params(format!(
+                        "参数 `targets[{i}].at` 应为三元数组"
+                    )));
+                };
+                if at.len() != 3 {
+                    return Err(RpcFailure::invalid_params(format!(
+                        "参数 `targets[{i}].at` 应为三元数组"
+                    )));
+                }
+                let mut xyz = [0.0f32; 3];
+                for (axis, v) in at.iter().enumerate() {
+                    let Some(n) = v.as_f64() else {
+                        return Err(RpcFailure::invalid_params(format!(
+                            "参数 `targets[{i}].at` 应为三元数组"
+                        )));
+                    };
+                    xyz[axis] = n as f32;
+                }
+                targets.push(VerifyTarget { name, at: xyz });
+            }
+        }
+        Some(_) => {
+            return Err(RpcFailure::invalid_params("参数 `targets` 应为数组"));
+        }
+    }
+    Ok(VerifyQuery {
+        targets,
+        limit: opt_limit(params)?,
     })
 }

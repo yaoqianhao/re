@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 386,
-    "rpc": 56,
+    "commands": 387,
+    "rpc": 57,
     "script_only": 330,
     "domains": 17,
     "invariants": 38
@@ -2820,6 +2820,16 @@
       "reversible": true,
       "cost": "cheap",
       "since": "M0-backfill"
+    },
+    {
+      "name": "scene.verify",
+      "domain": "meta",
+      "rpc": "scene.verify",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M1-S4-F"
     },
     {
       "name": "scene_back",

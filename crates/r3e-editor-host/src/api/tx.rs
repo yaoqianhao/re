@@ -59,7 +59,7 @@ fn next_tx_id() -> String {
 ///
 /// 不直接给 `u64` 数值——JSON 数字进 JS 会被 `Number` 截到 53 位有效位，
 /// 事务冲突判定恰好依赖这个值。
-fn hex(hash: StateHash) -> String {
+pub(super) fn hex(hash: StateHash) -> String {
     format!("0x{:016x}", hash.raw())
 }
 

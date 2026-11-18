@@ -1,6 +1,6 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 56 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 57 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
 
 use serde_json::Value;
@@ -11,6 +11,7 @@ use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
 use crate::patch::*;
 use crate::probe::{CastQuery, OverlapQuery, RayQuery};
 use crate::query::QuerySpec;
+use crate::verify::VerifyQuery;
 
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
@@ -490,5 +491,28 @@ pub trait EngineApi {
     /// 名字收敛后为空回参数错误；表满且是新名字回 `ENGINE_ERROR`（不是静默失败）。
     fn material_upsert(&mut self, _decl: MaterialUpsert) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.material.upsert"))
+    }
+
+    /// 三层体检（M1-S4-F）：静态近似 → 物理精确 → 导航可达，合成一份报告。
+    ///
+    /// 回包契约：`{ "ok": bool, "passed": bool, "counts": { "error": usize,
+    /// "warn": usize, "byLayer": { "static": usize, "physics": usize, "nav": usize } },
+    /// "issues": [ { "code", "layer", "severity", "category", "path", "target", "msg",
+    /// "location", "hint", "approximate" }... ], "truncated": bool,
+    /// "unchecked": [ { "layer", "reason" }... ], "layers": [String...],
+    /// "stateHash": String }`。
+    ///
+    /// `ok` / `passed` 的**分工**是这条方法的重点：
+    ///
+    /// * `ok` = 没有 `Error`（场景自洽）；
+    /// * `passed` = `ok` **且** `unchecked` 为空（三层都真的跑过）。
+    ///
+    /// 少了后半条就成了「绿灯装饰」——物理关闭 / 后端不申报 `shape_cast` /
+    /// 导航没烘焙时报告里明明什么都没查，`ok` 却会是 `true`。调用方判门禁请用
+    /// `passed`，要看「哪里不对」用 `issues`，要看「哪里没查」用 `unchecked`。
+    ///
+    /// 能力缺失时**不回空表、也不报 `Error`**：那是「没检查」，落在 `unchecked` 里。
+    fn scene_verify(&mut self, _query: VerifyQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.verify"))
     }
 }

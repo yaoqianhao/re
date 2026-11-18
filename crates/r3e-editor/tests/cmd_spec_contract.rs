@@ -92,8 +92,8 @@ fn quoted_parts(s: &str) -> Vec<&str> {
 fn dispatch的每个点分方法都在命令表里() {
     let keys = dispatch_keys();
     assert!(
-        keys.len() >= 56,
-        "只扫到 {} 个分支，扫描逻辑可能失效（期望 56 个即：39 基础 + 5 事务 + 3 查询 + 1 意图 + 8 物理导航材质）",
+        keys.len() >= 57,
+        "只扫到 {} 个分支，扫描逻辑可能失效（期望 57 个即：39 基础 + 5 事务 + 3 查询 + 1 意图 + 8 物理导航材质 + 1 体检）",
         keys.len()
     );
 

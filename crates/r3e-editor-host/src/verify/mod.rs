@@ -114,6 +114,14 @@ impl VerifyReport {
         &self.unchecked
     }
 
+    /// 追加一条「没检查」的原因（M1-S4-F：宿主的**世界新鲜度守卫**用）。
+    ///
+    /// 只许往里加 `unchecked`，不许改 `issues`：验证口径归三层各自拥有，
+    /// 宿主能补的只有「这一层我没法替你保证」——那正好是 `unchecked` 的语义。
+    pub fn note_unchecked(&mut self, layer: Layer, reason: impl Into<String>) {
+        self.unchecked.push(Unchecked::new(layer, reason));
+    }
+
     /// 某层报了多少条问题。
     pub fn count_by_layer(&self, layer: Layer) -> usize {
         self.issues

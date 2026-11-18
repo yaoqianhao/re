@@ -32,8 +32,8 @@ use r3e_editor::{
     AnimLayerPatch, AudioSpatialPatch, CastQuery, EngineApi, EngineInfo, EnvironmentMapPatch,
     EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, NavBakeOptions,
     NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch, QuerySpec,
-    RayQuery, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
-    SERVER_BUSY,
+    RayQuery, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, VerifyQuery,
+    PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_nav::Nav;
 use r3e_physics::Physics;
@@ -99,6 +99,7 @@ mod shadow;
 mod support;
 mod tx;
 mod ui_rpc;
+mod verify;
 
 impl EngineApi for LocalEngineApi<'_> {
     fn engine_stats(&mut self) -> Result<Value, RpcFailure> {
@@ -291,6 +292,10 @@ impl EngineApi for LocalEngineApi<'_> {
     }
     fn material_upsert(&mut self, decl: MaterialUpsert) -> Result<Value, RpcFailure> {
         material::material_upsert(self, decl)
+    }
+    // ---- M1-S4-F：三层体检（协议面 56 → 57 条） ----
+    fn scene_verify(&mut self, query: VerifyQuery) -> Result<Value, RpcFailure> {
+        verify::scene_verify(self, query)
     }
 }
 

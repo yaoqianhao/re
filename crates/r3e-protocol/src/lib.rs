@@ -40,6 +40,7 @@ pub mod nav;
 pub mod patch;
 pub mod probe;
 pub mod query;
+pub mod verify;
 
 pub use self::dispatch::dispatch;
 pub use api::EngineApi;
@@ -49,17 +50,18 @@ pub use nav::*;
 pub use patch::*;
 pub use probe::*;
 pub use query::*;
+pub use verify::*;
 
 pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// 对外 RPC 能力方法表（56 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+/// 对外 RPC 能力方法表（57 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
 ///
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「56 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「57 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
@@ -76,6 +78,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 这八条同样不新增脚本函数（脚本侧直接拿 `&mut Scene` / `&Physics`），
 /// 所以 `cmd_spec` 里落在 `Meta` 域、`rpc = Some` 与 `name` 同名，
 /// 脚本契约的「域内函数数」断言不受影响。
+///
+/// M1-S4-F 增 1 条 `scene.verify`（56 → 57）：三层体检的**只读**出口。
+/// 它把 S4-E 的三层验证器从「进程内可调」变成「协议面可问」——AI / 远端不必自己
+/// 遍历场景，也不会因为「宿主没接物理或导航」而把未检查误读成通过；
+/// 同样不新增脚本函数，登记在 `cmd_spec` 的 `Meta` 域。
 ///
 /// M1-S3-A 增 1 条 `tx.intent`（47 → 48）：意图原子单元。**这是本表第一次为
 /// S3 扩容**——S3 的意图需要一个独立的 RPC 面来携带「一次命中 N 条命令」的语义
@@ -132,6 +139,7 @@ pub const RPC_METHODS: &[&str] = &[
     "scene.spawn",
     "scene.stack",
     "scene.switch",
+    "scene.verify",
     "script.eval",
     "script.reload",
     "tx.apply",

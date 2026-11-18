@@ -44,7 +44,7 @@ AIGC:
 |---|---|---|---|
 | 最大文件行数 | 4057（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
 | `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 8 文件最大 486 行） |
-| `#[test]` 总数 | 1677（M1-S4-D 后；M1-S3 时为 1574） | 只增不减 | `cargo xtask check-tests` 快照比对 |
+| `#[test]` 总数 | 1714（M1-S4-F 后；M1-S4-D 时为 1677） | 只增不减 | `cargo xtask check-tests` 快照比对 |
 | 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
 | 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增；前两条原定 M1-S1 偿还，因 R2 替代清单前置未满足顺延，见 `docs/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
 | 能力清单漂移 | 0（`capabilities.json` 386 命令 / 56 RPC / 30 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
