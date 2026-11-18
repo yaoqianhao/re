@@ -240,11 +240,15 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 1. `scene.material.upsert` 走 `Document::write` 直写——推版本 / 置脏 / 计写次，但**不入撤销栈**，且在 `tx.begin` 期间提交会改到主场景（宿主其余单条写 RPC 同构，非本卡新引入）。命令层 `CommandKind::UpsertMaterial` **早已就绪**（S4-A 落地），缺的只是本 RPC 还没进 `tx.apply` 白名单；
 2. 补齐代价很小：`api/tx.rs` 白名单加一条 `scene.material.upsert` → `CommandKind::upsert_scene_material` + 宿主改走 `tx_apply`，随后删掉 `WRITE_SITES.md` 里这一处写点。**建议随 S4-E 一起做**（S4-E 要复用材质校验，改同一批文件，避免两次触碰测试基线）。
 
+> **裁决（2026-11-18，用户确认）**：该债**并入 S4-E 一起做**，不单独开卡。执行位置见 S4-E 段「前置补债」，完成后同步删除 `WRITE_SITES.md` 中 `r3e-editor-host/src/api/material.rs` 这一处写点登记。
+
 其余口径已实测：`material.list` 只读、`material.upsert` 的整行声明语义与 `patch` 系 `*Patch` 明确区分（没给的贴图槽 = 这一行没有贴图，想保留就回传 `list` 的原值）。
 
 ---
 
 ### S4-E 分层验证器 + 坐标化 Issue
+
+**前置补债（并入本卡，S4-D 已知债）**：`scene.material.upsert` 从 `Document::write` 直写改走事务——`api/tx.rs` 白名单加 `scene.material.upsert` → `CommandKind::upsert_scene_material`，宿主实现改走 `tx_apply`，随后删 `WRITE_SITES.md` 中 `r3e-editor-host/src/api/material.rs` 那一处写点登记（22 → 21）。验收：该 RPC 提交后进撤销栈、`tx.begin` 期间提交不再污染主场景，既有材质六码测试全绿。
 
 | 层 | crate | 判定对象 | 检查项 |
 |---|---|---|---|
