@@ -5,7 +5,7 @@
 
 use r3e_core::{
     AssetDecl, EnvironmentMapSettings, EnvironmentSettings, ObjectDesc, PostFxSettings, Scene,
-    SceneMaterialDecl, Vec4,
+    SceneMaterialDecl, SpawnDecl, Vec4,
 };
 use r3e_doc::Document;
 
@@ -24,6 +24,7 @@ fn seeded() -> Document {
             };
             s.spawn(desc).unwrap();
         }
+        s.upsert_spawn(SpawnDecl::new("start", [0.0, 0.0, 0.0]));
     });
     doc
 }
@@ -211,6 +212,27 @@ fn every_covered_field_changes_hash() {
                     uv_scale: [2.0, 2.0],
                     ..SceneMaterialDecl::default()
                 });
+            }),
+        ),
+        (
+            "spawns.position",
+            Box::new(|s: &mut Scene| {
+                s.upsert_spawn(SpawnDecl::new("start", [3.0, 0.0, 1.0]));
+            }),
+        ),
+        (
+            "spawns.yaw",
+            Box::new(|s: &mut Scene| {
+                s.upsert_spawn(SpawnDecl {
+                    yaw: 1.25,
+                    ..SpawnDecl::new("start", [0.0, 0.0, 0.0])
+                });
+            }),
+        ),
+        (
+            "spawns.name（新增一条）",
+            Box::new(|s: &mut Scene| {
+                s.upsert_spawn(SpawnDecl::new("respawn", [1.0, 0.0, 1.0]));
             }),
         ),
         (

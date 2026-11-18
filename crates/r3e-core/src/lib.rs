@@ -32,6 +32,7 @@ pub mod scene_stack;
 pub mod scene_tables;
 pub mod shadow_cull;
 pub mod skin;
+pub mod spawn;
 pub mod ssao;
 pub mod tangent;
 pub mod terrain;
@@ -137,6 +138,7 @@ pub use shadow_cull::{
 pub use skin::{
     SkinBinding, SkinData, SkinInstance, SkinJoint, MAX_JOINTS_PER_VERTEX, MAX_JOINT_MATRICES,
 };
+pub use spawn::{SpawnDecl, SPAWN_MAX, SPAWN_NAME_MAX_LEN};
 pub use ssao::{
     ao_from_occlusion, hash_u32, hemisphere_kernel, is_occluded, kernel_dir, kernel_scale,
     kernel_uniform, normal_from_neighbors, reconstruct_view_pos, SsaoSettings, DEFAULT_SSAO_BIAS,

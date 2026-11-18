@@ -1,0 +1,13 @@
+[package]
+name = "r3e-nav"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "r3e 导航子系统：场景几何 → 体素导航网格（烘焙 / 连通块 / A* 路径 / 可达查询）"
+
+[dependencies]
+r3e-core.workspace = true
+r3e-physics.workspace = true
+glam.workspace = true
+log.workspace = true

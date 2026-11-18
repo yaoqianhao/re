@@ -4,7 +4,7 @@
   "files": {
     "crates/r3e-asset/src/air_import.rs": 2010,
     "crates/r3e-asset/src/gltf_import.rs": 1037,
-    "crates/r3e-asset/src/lib.rs": 1865,
+    "crates/r3e-asset/src/lib.rs": 1859,
     "crates/r3e-audio/src/lib.rs": 1375,
     "crates/r3e-core/src/air.rs": 928,
     "crates/r3e-core/src/anim_blend.rs": 2178,
@@ -14,7 +14,7 @@
     "crates/r3e-core/src/light.rs": 1728,
     "crates/r3e-core/src/morph.rs": 1652,
     "crates/r3e-core/src/occlusion.rs": 1147,
-    "crates/r3e-core/src/scene.rs": 3947,
+    "crates/r3e-core/src/scene.rs": 3935,
     "crates/r3e-core/src/scene_stack.rs": 963,
     "crates/r3e-core/src/text.rs": 1111,
     "crates/r3e-core/src/ui.rs": 1652,
@@ -23,7 +23,7 @@
     "crates/r3e-render/src/postfx.rs": 817,
     "crates/r3e-render/src/text.rs": 869,
     "crates/r3e-render/src/ui.rs": 1112,
-    "crates/r3e-runtime/src/app.rs": 3060,
+    "crates/r3e-runtime/src/app.rs": 3040,
     "crates/r3e-script/src/lib.rs": 2018
   }
 }

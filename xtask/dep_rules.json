@@ -14,7 +14,8 @@
     "r3e-runtime",
     "r3e-editor-host",
     "r3e-replay",
-    "r3e-app"
+    "r3e-app",
+    "r3e-nav"
   ],
   "crates": {
     "r3e-core": {
@@ -81,7 +82,8 @@
         "r3e-physics",
         "r3e-script",
         "r3e-asset",
-        "r3e-audio"
+        "r3e-audio",
+        "r3e-nav"
       ],
       "note": "运行时可用下层全部能力，但不得依赖 editor / editor-host / plugin（运行时不懂 RPC）"
     },
@@ -96,7 +98,8 @@
         "r3e-audio",
         "r3e-physics",
         "r3e-render",
-        "r3e-script"
+        "r3e-script",
+        "r3e-nav"
       ],
       "note": "叶子适配器：把 EngineApi 桥到运行时，允许依赖下层全部子系统（反向则一条都不许）。三条不变式：① 不得被任何下层 crate 反向依赖；② 不得依赖 plugin（进程外工具）；③ forbid_engine_all 不因此放开"
     },
@@ -117,6 +120,13 @@
         "r3e-doc"
       ],
       "note": "回放器只允许依赖真值与哈希，不得引入 render/audio/physics"
+    },
+    "r3e-nav": {
+      "allow": [
+        "r3e-core",
+        "r3e-physics"
+      ],
+      "note": "导航只许依赖 core（场景数据 / 地形高度）+ physics（碰撞形状语义，障碍物怎么挡人）；不得依赖 render / runtime / doc——工具链与编辑器都要能在不开启渲染的情况下烘焙与校验"
     }
   }
 }

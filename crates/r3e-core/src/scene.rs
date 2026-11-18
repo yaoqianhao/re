@@ -19,6 +19,7 @@ use crate::ui::UiElement;
 
 use crate::scene_material::{self, SceneMaterialDecl};
 use crate::skin::SkinInstance;
+use crate::spawn::{self, SpawnDecl};
 use crate::terrain::{self, TerrainPatch};
 use crate::{
     AnimClip, AnimInstance, Camera, EnvironmentMapSettings, EnvironmentSettings, Light, MeshRef,
@@ -192,6 +193,10 @@ pub struct SceneFile {
     /// 空表示场景没有地形。M1 只承载数据、不出几何（M2 才求值三角网）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terrain: Vec<TerrainPatch>,
+    /// 出生点声明（M1-S4-B）：导航验证的起点来源。空表示场景没有声明出生点，
+    /// 导航层只能按「调用方给的起点」判定可达性。**不新增节点种类**——出生点不是物件。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawns: Vec<SpawnDecl>,
     /// 场景材质表（M1-S4-A）：材质名 → 参数 + 五张贴图路径。空表示没有共享材质，
     /// 所有物件走内联 `material` 或网格资产材质。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -271,6 +276,10 @@ pub struct Scene {
     /// 名字是唯一主键（同名覆盖、顺序不变），上限 [`TERRAIN_MAX_PATCHES`]。
     /// M1 只承载数据：渲染层不读它，几何求值属 M2。
     pub terrain: Vec<TerrainPatch>,
+    /// 出生点表（M1-S4-B）。名字是唯一主键（同名覆盖、顺序不变），上限
+    /// [`crate::spawn::SPAWN_MAX`]。导航子系统以首个出生点为默认起点，
+    /// 验证器据此判断「出生点是否落在可走格上」「能不能走到目标」。
+    pub spawns: Vec<SpawnDecl>,
     /// 场景材质表（M1-S4-A）。每行 = 名字 + 三标量 + 五张贴图路径 + uv 缩放，
     /// 名字是唯一主键（同名覆盖、顺序不变），上限 [`SCENE_MATERIAL_MAX`]。
     /// 节点通过 [`crate::Node::material_ref`] 按名字引用，一份材质可被多个节点复用。
@@ -331,6 +340,7 @@ impl Scene {
             lights: Vec::new(),
             lights_enabled: true,
             terrain: Vec::new(),
+            spawns: Vec::new(),
             materials: Vec::new(),
             texture_base_dir: None,
             occlusion: OcclusionSettings::default(),
@@ -2184,6 +2194,7 @@ impl Scene {
         }
         // 地形：丢空名、同名后者覆盖前者、超上限截断（收敛在 core，加载与命令共用一套）
         scene.terrain = terrain::normalize_all(file.terrain);
+        scene.spawns = spawn::normalize_all(file.spawns);
         scene.texts = file.texts.into_iter().map(|t| t.sanitized()).collect();
         scene.ui = file.ui.into_iter().map(|u| u.sanitized()).collect();
         scene.update_world_transforms();
@@ -2235,6 +2246,7 @@ impl Scene {
                 .map(|node| self.node_desc(node))
                 .collect(),
             terrain: self.terrain.clone(),
+            spawns: self.spawns.clone(),
             materials: self.materials.clone(),
             physics: if physics_desc_is_empty(&self.physics) {
                 None

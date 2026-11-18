@@ -128,6 +128,22 @@ M1-S4 原计划两卡（验证器五类检查 + 接入 verify 链与 impact）�
 
 ### S4-B 导航子系统（新 crate `r3e-nav`，零 → 一）
 
+**状态：✅ 已落地（2026-11-18）**。口径按用户拍板为「前者：运行时按场景几何自动生成」，非「文档侧 navmesh 声明」。
+交付：workspace 新增 `r3e-nav` 成员（`lib.rs` 402 / `bake.rs` 312 / `grid.rs` 546 / `path.rs` 422 行）+ `r3e-core` 新增 `spawn.rs`（`SpawnDecl`）+ `SceneFile.spawns`；测试 35 条（`tests/bake.rs` 17 / `tests/path.rs` 10 / 内联 8），已入 `xtask/tests_baseline.json` 硬门禁。
+
+**落地与本文原始草案的差异**（以代码为准，此处记录裁决理由）：
+
+| 草案 | 实际 | 理由 |
+| --- | --- | --- |
+| `NavConfig { cell_size 0.25 / agent_radius 0.35 / agent_height 1.8 / max_slope_deg 45 / max_step_height 0.35 }` | `NavConfig { cell_size 0.5 / agent_radius 0.4 / agent_height 1.8 / step_height 0.4 / max_slope_deg 45 / bounds / ignore_tags }` + `sanitized()` | 字段名统一为 `step_height`；补 `bounds`（可固定烘焙范围）与 `ignore_tags`（排除会动的节点——静态烘焙的前提） |
+| `Nav::bake_scene(&Scene, &NavConfig) -> BakeReport` | `Nav::bake` / `bake_scene` / `bake_with` → `Nav { grid, report }`，`NavReport` 由 `Nav::report()` 取 | 报告与网格必须绑在一起：只拿报告没法接着寻路，只拿网格没法解释「为什么这里不可走」 |
+| `agent_radius` 做腐蚀（erosion） | 障碍 AABB **inflate** | 一次判定同时吃掉身体宽度与贴墙缝隙，省掉一遍栅格腐蚀，且窄缝不会被两次收缩吃掉 |
+| 俯视栅格化「每格取顶面高度」+ 法线坡度 | 地形高度场双线性采样 + 「格柱 × 障碍 AABB」判定，坡度/步高取「或」 | M1 场景绝大多数无地形段，需要「无 terrain 即默认平地」的兜底；坡度与步高二选一会误判斜面或台阶 |
+| `path -> Option<Vec<[f32;3]>>` | `PathOutcome` 四态（`Found` / `Unreachable` / `InvalidEndpoint` / `BudgetExceeded`）+ `describe()` | 「摆件悬空」「图太大没算完」都不是「走不到」，混在一起会骗到自己 |
+| `reachable(from) -> RegionSet` | `reachable(from, to) -> bool` + `regions() -> Vec<RegionStat>` | 原签名需要「以 from 为根的子图」，对 A\* 无增量收益；改为「点对可达 + 全区统计」，直接对上 S4-D 的 `nav.reachability` 回包 |
+| `reachability() -> Vec<RegionStat>` | `Nav::regions()`（`id` / `cells` / 世界包围盒） | 同上 |
+| 漏斗法拉直 | 8 邻 A\* + 视线拉直（简化版） | 体素网格上没有多边形边可做漏斗；视线拉直已消除绝大部分锯齿 |
+
 **定位**：`r3e-nav` 依赖 `r3e-core` + `r3e-physics`（不含 render / runtime / doc），workspace 新增成员。
 
 **数据模型**：

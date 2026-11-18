@@ -67,6 +67,7 @@ D:\rust3d-engine
 │   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照（零引擎依赖）
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
+│   ├─ r3e-nav/               # 导航（场景几何 → 体素导航网格：烘焙 / 连通块 / A* / 可达诊断）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
 │   ├─ r3e-audio/             # 音频（rodio 后端 + 静默降级 + 混音门面 + 3D 空间化）
 │   ├─ r3e-doc/               # 文档层：Scene 唯一真值 + Command + 事务 + 撤销栈 + 状态哈希
@@ -83,9 +84,10 @@ D:\rust3d-engine
     └─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
 ```
 
-workspace 共 **13 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：
+workspace 共 **14 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：
 `app → editor-host → (editor, runtime) → render / script / physics / audio / asset → core`，核心层不认识 wgpu；
-旁挂两条：`doc → core`（文档层，场景写入口与哈希）、`replay → core + doc`（回放器）。
+旁挂三条：`doc → core`（文档层，场景写入口与哈希）、`replay → core + doc`（回放器）、
+`nav → core + physics`（导航烘焙只吃 `&Scene`，工具链 / 编辑器 / 运行时共用同一份）。
 `r3e-app` 已收敛成 30 行薄壳，`cargo xtask dep-check` 每次 verify 都会按 `xtask/dep_rules.json` 重算这条线。
 
 ---

@@ -90,6 +90,7 @@ rust3d-engine/
    ├─ r3e-core/                # 内核：数学、变换、节点、场景图、相机、光照（零引擎依赖）
    ├─ r3e-render/              # 渲染：wgpu 设备、管线、程序化网格、WGSL
    ├─ r3e-physics/             # 物理：后端契约 + Null / 内置最简 / Rapier（可选 feature）
+   ├─ r3e-nav/                 # 导航：场景几何 → 体素导航网格（烘焙 / 连通块 / A* / 可达诊断）
    ├─ r3e-script/              # 脚本：Rhai 宿主 + 引擎 API 绑定（含 audio_*）
    ├─ r3e-audio/               # 音频：Audio 门面 + rodio / silent 后端 + 空间化覆盖层
    ├─ r3e-asset/               # 资产：FBX / glTF / GLB 导入，统一输出 AIR
@@ -164,6 +165,10 @@ rust3d-engine/
 - `r3e-app` 是**薄壳**：初始化日志、把 argv 交给运行时、`--rpc-port` 时挂编辑器桥。它不直接依赖 wgpu / winit / gilrs，
   也不认识任何子系统——这一条由 `cargo xtask dep-check` 的规则表（`xtask/dep_rules.json`）机械把关。
 - `r3e-plugin` 是进程外工具（原生 exe + NDJSON over stdio），理想依赖只有协议层；当前仍直连 `r3e-core` / `r3e-physics` 属**已登记债务**。
+- `r3e-nav` 是 M1-S4-B 新建的**导航子系统**（零 → 一），依赖只有 `r3e-core`（场景 / 地形高度图 / `Aabb`）与 `r3e-physics`（碰撞形状语义：什么形状算挡路），
+  **不依赖 `render` / `runtime` / `doc`**：它只吃 `&Scene` 就够——所以同一份烘焙代码既能被无窗口的 `xtask` 校验调用，也能被 `tx` 影子场景调用，
+  还能被编辑器宿主调用，而不会把任何一条上层依赖反向拽进内核。它也**不认识 `Document`**（不需要写场景），因此不涉及写入口纪律。
+  导航与物理的边界：物理回答「这一步有没有撞上」，导航回答「从 A 走不走得到 B」——前者每帧求解，后者一次性烘焙成图，两者共用 `ColliderShape` 语义但不互相调用。
 
 这条约束是引擎"文本能控制画面"的结构性保证：**所有子系统读写同一份内存中的 `Scene`，而不是通过消息或事件副本通信。**
 依赖方向不是靠自觉维持的：`xtask/dep_rules.json` 逐 crate 写了 `allow` 白名单，`cargo xtask dep-check` 每次 verify 都会重算，
@@ -260,6 +265,7 @@ M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次�
 | r3e-protocol | 2,518 | 1,037 | 49 | `msg.rs` / `patch.rs` / `query.rs`（M1-S2-B：`QuerySpec` DTO）/ `api.rs`（`EngineApi` trait）/ `caps.rs`（能力清单 DTO）/ `dispatch/`（5 文件：`mod.rs` 路由 + `scene.rs` + `media.rs` + `tx.rs` 事务面（M1-S1 从 `mod.rs` 拆出、M1-S3-A 增 `tx.intent` 臂）+ `query.rs` 查询面（M1-S2-B）；行数以 `cargo xtask lint-size` 为准）/ `tests/rpc_contract.rs`（`RPC_METHODS` 与 dispatch 臂双向对齐 + 清单 DTO 契约）/ `tests/tx_contract.rs`（`tx.*` 六方法分发与参数整形） |
 | r3e-editor | 505 | 1,875 | 72 | `lib.rs`（35：只做 `pub use r3e_protocol::*` 再导出，保证旧 `use r3e_editor::` 调用方零改动）/ `server.rs`（470：TCP / NDJSON 传输 + 资源上限单测）；协议数据层已于 M0-S5 迁往 `r3e-protocol` |
 | r3e-physics | 2,548 | 660 | 28 | `lib.rs`（契约 + 内置后端）/ `rapier_backend.rs`（Rapier 后端，feature 可选） |
+| r3e-nav | 1,682 | 572 | 35 | `lib.rs`（`Nav` 门面 / `NavConfig` / `NavReport` / `RegionStat` / `bake_scene`）/ `bake.rs`（体素化：地形高度场 + 障碍 AABB 盖章）/ `grid.rs`（`NavGrid`：可走位图 / 高度场 / `flood_regions`）/ `path.rs`（A\* + 视线拉直 + `frontier` 断点定位）；M1-S4-B 新建，口径为「运行时按场景几何自动生成」 |
 | r3e-audio | 2,335 | — | 29 | `lib.rs`（门面 / 账本 / 空间化覆盖层）/ `backend.rs`（rodio + silent，含 `set_speed`）/ `spatial.rs`（衰减 / 多普勒 / 听者纯函数） |
 | **r3e-doc** | 3,045 | 1,924 | 109 | `lib.rs`（315：`Document` 唯一真值持有 / `Deref` 只读 / `DocError` / `parse_scene` 解析入口）、`state_hash.rs`（604：`StateHash` 唯一实现 + 13 组字段覆盖表 + 哈希缓存）、`transaction.rs`（198：`begin` / `preview` / `commit` / `rollback` + `RollbackFailed`）、`tx.rs`（M1-S1 会话式事务，`TxSession` 影子场景 + `TX_BUSY` 单笔约束；M1-S3-A 增意图记账 `tx_apply_intent`——一次意图的 N 条命令共用一格撤销）、`undo.rs`（168：`UndoStack` 一事务一格 + `rollback_to` 水位）、`write.rs`（80：写入口 + `version` / `dirty` / `writes`）、`command/`（`mod.rs` 337 最大，`Command` trait；`scene` / `env` / `ui` 共 14 条声明式命令）、`validate/`（`refs` 引用存在 / `bounds` 越界与唯一性，24 个 issue code，M0-S5 补齐最后 10 条的反例测试） |
 | r3e-replay | 546 | — | 11 | `lib.rs`（427：`ReplayConfig` / LCG / `run()` 每帧 9 条命令、每 10 帧一笔事务、每 60 帧一个采样点）、`main.rs`（119：命令行与逐行输出契约，供 `xtask replay` 比对） |
@@ -6851,6 +6857,93 @@ spatial.rs（纯函数层）  trait AudioBackend          ← 契约新增 set_s
 
 ---
 
+## 16. 导航层：r3e-nav（M1-S4-B，零 → 一）
+
+### 16.1 为什么是「运行时按场景几何自动生成」
+
+导航数据的来源只有两条路：**文档侧声明**（场景文件里写 `navmesh` 段，引擎只负责查询）或**运行时从几何算出来**（引擎烘焙，场景零声明）。
+本项目选后者，理由是它直接决定 AI 写入闭环能不能闭合：
+
+- 文档侧声明要求 AI 每次改完地形 / 墙 / 台阶，还要**同步手写一份导航数据**。两份数据一定会漂移，而漂移的表现是「验证器说通、玩家走不过去」——最难查的一类问题；
+- 运行时烘焙把导航数据变成**场景的纯函数**：`Nav::bake_scene(&scene)` 是确定性的、可重放的，`tx` 影子场景、`--run-seconds` 无头校验、编辑器宿主调的是同一段代码，不存在「三处各有一份导航」；
+- 代价是一次性烘焙成本（见 16.5 的实测基线）与「静态障碍」假设。M1 只承诺静态：会动的节点靠 `NavConfig::ignore_tags` 排除，不做动态重烘焙（属 M2）。
+
+### 16.2 数据流
+
+```
+Scene（地形高度图 + 节点几何 + physics.half_extents + spawns）
+        │
+        ├─ collect_obstacles ──▶ 障碍 AABB 表（按 agent_radius inflate）
+        │
+        ▼
+   bake（体素化）           每个 XZ 格 → 「站不站得住」+ 地面高度
+        │                   · 格柱 [格中心 ± cell/2] × [地面, 地面 + agent_height]
+        │                   · 地形高度双线性采样；无 terrain 段的场景按 y = 0 平地
+        ▼
+   flood_regions（4 邻域）  region 图：0 = 不可走，1..n = 连通块编号
+        │
+        ├──▶ NavReport（dims / cells / walkable / regions / region_sizes / spawns / unresolved）
+        │
+        ▼
+   path（8 邻 A* + 拉直）   PathOutcome 四态 + frontier（断点坐标）
+```
+
+烘焙与寻路**共用同一套边判定**（`NavGrid::can_step` + 对角不切角）。这不是洁癖：两套判定一旦分叉，就会出现「连通块标注说 A、B 通，A\* 说不可达」的自相矛盾，
+而这种矛盾在报告里表现为「随机不可达」，极难定位。
+
+### 16.3 关键语义裁决
+
+| 议题 | 裁决 | 理由 |
+| --- | --- | --- |
+| 出生点如何表达 | `SceneFile` 增 `spawns: Vec<SpawnDecl { name, position, yaw }>`，**不新增 `NodeKind`** | 出生点是场景元数据，不是会渲染的物件。塞进节点图会让渲染 / 剔除 / 物理装配都多一个要跳过的种类 |
+| 出生点名字 | 唯一主键，同名后者覆盖前者、顺序即首次插入序 | 与 `terrain` / `materials` 同一套收敛规则；「第一个 spawn 是默认起点」因此稳定 |
+| 坡度与台阶的关系 | 取**「或」**：连续斜面靠 `can_step` 的坡度判据，离散台阶靠步高判据 | 二选一都会误判另一类地形——斜面按步高判会把缓坡判成断路，台阶按坡度判会把台阶判成悬崖 |
+| 角色半径怎么用 | 障碍 AABB **inflate**（外扩），不做形态学腐蚀 | 一次判定同时吃掉「身体宽度」与「贴墙要留缝」，省掉一遍栅格腐蚀，且不会让窄缝被两次收缩吃掉 |
+| 悬空 / 埋墙的端点 | 单独报 `InvalidEndpoint`，不并入 `Unreachable` | 那是摆件问题，不是关卡连通问题，处理人不同 |
+| 算不完的图 | 单独报 `BudgetExceeded`（`NAV_PATH_MAX_EXPANSIONS = 400_000`） | 结论未知 ≠ 走不到。把它混进「走不到」是最容易骗到自己的地方 |
+| 外部网格资产 | 按 `scale * 0.5` 或显式 `half_extents` 估形状，估不准的记进 `NavReport::unresolved` | 估不准的绝不假装准——报告里必须能看出「这份可达性结论有多少是靠猜的」 |
+| 只报 `false` 不够 | 不可达时额外给 `disconnect_point`（从起点能走到、离终点最近的点） | 关卡作者需要知道**把路补在哪**，而不是只知道「过不去」 |
+
+### 16.4 公开面
+
+| 入口 | 语义 |
+| --- | --- |
+| `Nav::bake` / `Nav::bake_scene` / `Nav::bake_with` | 场景 → 导航数据（后两者分别是「动作命名」与「带配置」的入口，S4-C 起作为公共装配入口，与 `Physics::bind_scene` 对称） |
+| `Nav::{grid, report}` | 拿网格本体 / 体检报告 |
+| `Nav::{is_walkable, ground_height, region_of}` | 单点判定 |
+| `Nav::nearest_walkable(p, max_radius, region)` | 最近的站得住点，可限定连通块（验证器报坐标要用） |
+| `Nav::path` / `reachable` / `frontier` / `check_reach` | 寻路、可达性、断点、「可达性 + 人话说明」 |
+| `Nav::regions` | 各连通块统计（`id` / `cells` / 世界包围盒），供 `nav.reachability` 直接回包 |
+| `Nav::disconnect_point` | `frontier` 的同义入口：不可达关卡失败点位的来源 |
+| `r3e_nav::{spawn_point, default_spawn_point, spawn_points}` | 出生点世界坐标（`Vec3` 转换在这一层完成，`r3e-core` 不依赖 `glam` 的语义之外的东西） |
+
+`NavConfig` 全部字段有缺省值并带 `sanitized()`（非法值回默认而不是带着 NaN 跑出诡异结果）：`cell_size` 0.5 / `agent_radius` 0.4 /
+`agent_height` 1.8 / `step_height` 0.4 / `max_slope_deg` 45 / `bounds`（`None` = 按场景内容自动取）/ `ignore_tags`
+（缺省排除 `character` / `actor` / `player` / `npc` / `dynamic`）。
+
+### 16.5 验收与实测基线
+
+| 验收项 | 结果 |
+| --- | --- |
+| 平地 + 一堵墙 | 两侧分属不同 region（`tests/bake.rs`） |
+| 45° / 60° 斜坡 | 45° 连通、60° 分块（坡度上限 89° 内按配置连通；离散台阶另测） |
+| 0.3 m / 0.6 m 台阶 | 0.3 m 可跨、0.6 m 断开 |
+| 孤立平台 | 自成连通块且 `disconnect_point` 给出可达侧坐标 |
+| 1 km² 场景烘焙 | 单线程基线记录在 `tests/bake.rs` 断言里（图规模由 `NAV_MAX_CELLS` 兜底） |
+| 出生点 | 落在可走格 → 进对应 region；悬空 / 埋墙 → `region == 0` 并进 `floating_spawns()` |
+
+测试面：`crates/r3e-nav/tests/bake.rs` 17 条 + `tests/path.rs` 10 条 + crate 内联单测 8 条 = 35 条（`xtask/tests_baseline.json` 硬门禁）。
+
+### 16.6 已知边界
+
+1. **只有静态导航**：不做动态障碍重烘焙，会动的节点必须靠 `ignore_tags` 排除，否则会把「此刻恰好站在那儿的东西」烘成墙；
+2. **体素而非多边形**：没有 NavMesh 多边形与漏斗法拉直的完整版，只有 8 邻格路径 + 视线拉直——路径够用，但贴墙走不如多边形网格顺；
+3. **外部网格是估的**：glTF 等网格没有碰撞体时按 `scale * 0.5` 估，结果列在 `unresolved` 里；要准确就给节点补 `physics.half_extents`；
+4. **烘焙是整场景的**：没有「局部区域重烘」，大场景改一格也要全场重算（M1 接受，实测基线见 16.5）；
+5. **协议面尚未接**：`nav.bake` / `nav.path` / `nav.reachability` 三条 RPC 与 `scene.verify` 的导航类检查属 S4-D / S4-C，本层只把能力备齐。
+
+---
+
 ## 附：模块与文件对照表
 
 | 文件 | 核心内容 |
@@ -6884,6 +6977,13 @@ spatial.rs（纯函数层）  trait AudioBackend          ← 契约新增 set_s
 | `crates/r3e-audio/src/lib.rs` | `Audio` 门面：实例账本、单条 × 总音量、通道开关、错误计数、`sanitize_volume`、静默降级；空间化覆盖层（注册表 / `tick_spatial` / 增益与倍速合成 / 开关 / 32 上限）、18 个单测（含 `MockBackend`） |
 | `crates/r3e-audio/src/backend.rs` | `AudioBackend` 契约（含 `set_speed` / `supports_speed`）、`RodioBackend`（一 key 一 `Player` + mixer 混音，倍速夹 `0.1 ..= 8.0`）、`SilentBackend`（解码校验但不出声，`supports_speed() == false`） |
 | `crates/r3e-audio/src/spatial.rs` | 3D 空间化纯函数层（零设备依赖）：`DistanceModel` / `SpatialSettings`（含 `sanitized`）、`attenuation` / `radial_velocity` / `doppler_ratio`、`ListenerPose`、`SpatialSource`（位置差分 + 0.4 一阶平滑的速度估计、`advance`）、`MAX_SPATIAL_SOURCES = 32`、`MAX_DOPPLER_SHIFT`、11 个单测 |
+| `crates/r3e-nav/src/lib.rs` | `Nav` 门面（`bake` / `bake_scene` / `bake_with`）、`NavConfig`（格边长 / 角色半径与身高 / 跨步高 / 坡度上限 / 烘焙范围 / 动态标签忽略表，全带 `sanitized`）、`NavError`、`NavReport`（`walkable_ratio` / `floating_spawns` / `summary`）、`RegionStat`、出生点世界坐标辅助（`spawn_point` / `default_spawn_point` / `spawn_points`） |
+| `crates/r3e-nav/src/bake.rs` | 体素化烘焙：地形高度场双线性采样 + 节点几何 / `physics.half_extents` 障碍按角色半径 inflate 后「格柱 × 障碍 AABB」盖章；埋地地基与头顶横梁两类高度豁免；外部网格资产按 `scale * 0.5` 估形状并记进 `NavReport::unresolved`（估不准不假装准） |
+| `crates/r3e-nav/src/grid.rs` | `NavGrid`：可走位图 + 高度场 + 连通块 `flood_regions`（4 邻域）、`can_step`（坡度或步高取「或」，连续斜面靠坡度、离散台阶靠步高）、`nearest_walkable`、`ground_at`；`NAV_MAX_SIDE = 2048` / `NAV_MAX_CELLS = 4_000_000` 两道规模阀 |
+| `crates/r3e-nav/src/path.rs` | 8 邻 A\*（与 `flood_regions` 共用同一套边判定，杜绝「连通块说通、A\* 说不通」）+ 视线拉直；`PathOutcome` 四态（`Found` / `Unreachable` / `InvalidEndpoint` / `BudgetExceeded`——后两者绝不并入「走不到」）；`frontier_nearest` 给出「断在哪」的坐标 |
+| `crates/r3e-nav/tests/bake.rs` | 烘焙验收 17 条：平地加墙必分块、45° 可走 60° 不可走、0.3 m 可跨 0.6 m 不可跨、孤立平台自成连通块、1 km² 性能基线、出生点落点与悬空判定 |
+| `crates/r3e-nav/tests/path.rs` | 寻路验收 10 条：8 邻代价、对角不切角、三态失败区分、`frontier` 坐标落在可达侧、`reachable` 不把 `BudgetExceeded` 算作可达 |
+| `crates/r3e-core/src/spawn.rs` | `SpawnDecl`（`name` / `position` / `yaw`）+ `normalize_all` 收敛 + `Scene::{set_spawns, upsert_spawn, spawn_decl, first_spawn}`（M1-S4-B：出生点是场景元数据，不新增 `NodeKind`） |
 | `crates/r3e-core/src/air.rs` | AIR 契约与 12 条不变量、`finalize` / `audit_entry` 统一校验 |
 | `crates/r3e-core/src/procedural.rs` | 内置程序化图元（cube / sphere / plane / cylinder）统一产出 `MeshData` |
 | `crates/r3e-asset/src/lib.rs` | FBX 导入（ufbx）、材质/贴图元数据、动画与蒙皮数据、`AssetLibrary` |

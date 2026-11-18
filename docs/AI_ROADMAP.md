@@ -128,7 +128,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
   ③ 可回滚：事务边界 / undo 栈 / diff-patch
 ```
 
-### 2.1 crate 目标布局（9 → 13，现状已达成 13）
+### 2.1 crate 目标布局（9 → 13，现状已达成 14：M1-S4-B 增 `r3e-nav`）
 
 | crate | 状态 | 职责 | 关键约束 |
 |---|---|---|---|
@@ -144,7 +144,8 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | `r3e-runtime` | **已建（M0-S0）** | 窗口、主循环、时间步、headless 模式 | 不含任何 RPC |
 | `r3e-editor-host` | **已建（M0-S0）** | RPC 服务端，桥接 protocol ↔ doc | 不含主循环；现依赖过宽（S5-04 收敛） |
 | `r3e-game` | M2 新建 | 游戏层框架：玩家、交互、关卡流程 | 示例游戏宿主，验证"引擎真的能做游戏" |
-| `r3e-nav` / `r3e-terrain` | M2 新建 | NavMesh + A* / 高度图地形 | 独立 crate，不依赖渲染 |
+| `r3e-nav` | **已建（M1-S4-B）** | 导航：场景几何 → 体素导航网格（烘焙 / 连通块 / A\* / 可达诊断） | 只依赖 `core` + `physics`，不依赖 `render` / `runtime` / `doc` |
+| `r3e-terrain` | M2 新建 | 高度图地形（多分辨率 LOD、样条编辑） | 独立 crate，不依赖渲染 |
 | `r3e-plugin` | **重写（M1）** | AI 外部工具进程 | 只依赖 `protocol`，零 core/physics 依赖 |
 | `r3e-editor` | 兼容别名/废弃 | 旧协议壳 | 5 个外部项迁移后删除 |
 
@@ -156,6 +157,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | `doc` | `core` | `render`, `physics`, `audio`, `rhai` |
 | `protocol` | serde | **一切引擎 crate**（含 `core`） |
 | `render/physics/audio/asset` | `core` + 各自平台库 | 互相依赖 |
+| `nav` | `core`, `physics` | `render`, `doc`, `runtime`, `editor-host`（只吃 `&Scene`，工具链与编辑器共用同一份烘焙） |
 | `replay` | `doc`, `core` | `render`, `physics`, `audio`, `winit` |
 | `script` | `doc`, `protocol` + trait 端口 | 直接依赖具体子系统的类型 |
 | `runtime` | 下层全部 + `doc` | `protocol`（运行时不需要懂 RPC） |

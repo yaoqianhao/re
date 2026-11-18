@@ -17,6 +17,7 @@
 //!   environment(有无 + 内容) → postfx(有无 + 内容)
 //!   lights + lights_enabled
 //!   terrain（块数 + 每块内容）
+//!   spawns（条数 + 每条内容：名字 / 位置 / yaw）
 //!   materials（份数 + 每份内容：名字 / 三标量 / 5 贴图槽 / uv 缩放）
 //!   texts + text_enabled
 //!   ui + ui_enabled + ui_above_text
@@ -38,6 +39,7 @@
 //! | `occlusion` / `environment_map` / `physics` / `assets` / `morphs` | 文档语义的一部分，成本低 |
 //! | `terrain`（M1-S3-C：名字 / 矩形 / 分辨率 / 材质 / 高度样本） | `paint_terrain` 直接改，AI 写入必须能被差分哈希看见 |
 //! | `materials`（M1-S4-A：名字 / 三标量 / 5 贴图槽 / uv 缩放） | `UpsertMaterial` / `RemoveMaterial` 直接改，引用解析随之变化 |
+//! | `spawns`（M1-S4-B：名字 / 位置 / yaw） | 出生点是导航验证的起点；移动出生点会改变「可达 / 不可达」的结论，必须可被差分哈希看见 |
 //!
 //! | 不覆盖 | 理由 |
 //! |---|---|
@@ -56,8 +58,8 @@ use r3e_core::{
     AnimDecl, AssetDecl, BloomSettings, Camera, CascadeSettings, EnvironmentMapSettings,
     EnvironmentSettings, Light, LocalLight, LocalLightKind, MeshRef, MorphInstance, Node,
     OcclusionSettings, PhysicsSceneDesc, PostFxSettings, Scene, SceneMaterialDecl, ScreenText,
-    ShadowSettings, SsaoSettings, SurfaceMaterial, TerrainPatch, TonemapMode, UiElement, UiKind,
-    UiUnit, UiValue,
+    ShadowSettings, SpawnDecl, SsaoSettings, SurfaceMaterial, TerrainPatch, TonemapMode, UiElement,
+    UiKind, UiUnit, UiValue,
 };
 
 use crate::Document;
@@ -513,6 +515,16 @@ fn mix_terrain(h: &mut u64, t: &TerrainPatch) {
     mix_f32s(h, &t.heights);
 }
 
+/// 出生点声明（M1-S4-B）：名字 + 位置 + yaw。
+///
+/// `yaw` 走 `f32::to_bits`，因此「同一朝向的不同表示」（7.0 与 7.0 - 2π）在收敛后
+/// 已统一到 `[-π, π]`，哈希不会因输入抖动而变。
+fn mix_spawn(h: &mut u64, s: &SpawnDecl) {
+    mix_str(h, &s.name);
+    mix_f32s(h, &s.position);
+    mix_f32(h, s.yaw);
+}
+
 /// 场景材质表项（M1-S4-A）：名字 + 三标量 + 5 个贴图槽 + uv 缩放。
 ///
 /// 贴图槽按 [`TEXTURE_SLOTS`] 的固定顺序逐槽混，槽位顺序变了等于换哈希。
@@ -574,6 +586,11 @@ pub fn scene_hash(scene: &Scene) -> StateHash {
     mix_u64(&mut h, scene.terrain.len() as u64);
     for t in &scene.terrain {
         mix_terrain(&mut h, t);
+    }
+    // 出生点表（M1-S4-B）：同名覆盖同样原地替换，顺序即插入序。
+    mix_u64(&mut h, scene.spawns.len() as u64);
+    for s in &scene.spawns {
+        mix_spawn(&mut h, s);
     }
     // 场景材质表（M1-S4-A）：同名覆盖也是原地替换，顺序同样即插入序。
     mix_u64(&mut h, scene.materials.len() as u64);

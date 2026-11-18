@@ -1102,6 +1102,38 @@
       },
       "type": "object"
     },
+    "SpawnDecl": {
+      "description": "场景文件里的一个出生点。\n\n字段全部有缺省值：只写 `{ \"name\": \"start\" }` 也是合法的（位置在原点、朝向零）。",
+      "properties": {
+        "name": {
+          "default": "",
+          "description": "唯一主键。空白名字视为无效声明，加载时直接丢弃。",
+          "type": "string"
+        },
+        "position": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "description": "世界坐标位置（米）。非有限值逐分量归零。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "yaw": {
+          "default": 0.0,
+          "description": "绕 Y 轴的朝向（弧度），收敛到 `[-π, π]`。",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
     "SsaoSettings": {
       "description": "场景 `postfx.ssao` 段。\n\n缺省 [`SsaoSettings::default`]（`enabled = false`）与场景里完全不写这一段等价：\n老场景不加 `ssao` 时，composite 采样的是一张 1×1 的白色占位纹理，\n画面与扩展十六逐像素一致。",
       "properties": {
@@ -1593,6 +1625,13 @@
         }
       ],
       "description": "HDR 后处理链（扩展十三）。缺省表示直通（曝光 0 / 不调色 / 无泛光 / 无 FXAA），\n画面与「没有 postfx 段」的旧场景逐像素一致。"
+    },
+    "spawns": {
+      "description": "出生点声明（M1-S4-B）：导航验证的起点来源。空表示场景没有声明出生点，\n导航层只能按「调用方给的起点」判定可达性。**不新增节点种类**——出生点不是物件。",
+      "items": {
+        "$ref": "#/$defs/SpawnDecl"
+      },
+      "type": "array"
     },
     "terrain": {
       "description": "地形数据壳（M1-S3-C）：一块地表 = 名字 + 世界矩形 + 高度样本 + 地表材质参数。\n空表示场景没有地形。M1 只承载数据、不出几何（M2 才求值三角网）。",
