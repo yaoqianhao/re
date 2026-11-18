@@ -32,7 +32,14 @@ mod scene;
 mod tx;
 
 /// 方法名归一化：忽略大小写与下划线，`scene.setTransform` 与 `scene.set_transform` 等价。
-fn canonical(method: &str) -> String {
+///
+/// # 为什么是 `pub`（M1-S5）
+///
+/// 归一化规则是**协议的一部分**：`RPC_METHODS` 里登记的是归一后的形态，客户端若不带
+/// 同一条规则，就只能靠「先发一次、再猜」来撞名字。`r3e-cli` 要在发请求前做本地校验
+/// （见 [`crate::client::is_known_method`]），把它抄一份就是同一逻辑两份实现——
+/// 一旦规则改了，抄的那份会静默失配。所以公开导出，服务端与客户端共用一份。
+pub fn canonical_method(method: &str) -> String {
     method
         .chars()
         .filter(|c| *c != '_')
@@ -163,7 +170,7 @@ fn opt_f32_array<const N: usize>(
 pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
     let id = req.id.clone();
     let params = &req.params;
-    let method = canonical(&req.method);
+    let method = canonical_method(&req.method);
     match method.as_str() {
         "ping" => Response::ok(
             id,
@@ -174,7 +181,7 @@ pub fn dispatch(api: &mut dyn EngineApi, req: &Request) -> Response {
             Err(e) => Response::fail(id, RpcFailure::new(INTERNAL_ERROR, e.to_string())),
         },
         // P0-4 只读反馈：统计采样不改场景，直接透传宿主的快照。
-        // 别名 `enginestats`：`canonical` 会吃掉下划线，`engine_stats` 落到这里正是这个名字，
+        // 别名 `enginestats`：`canonical_method` 会吃掉下划线，`engine_stats` 落到这里正是这个名字，
         // 让插件工具名与 RPC 方法名保持一致，免得模型两边记两套写法。
         "engine.stats" | "enginestats" => match api.engine_stats() {
             Ok(r) => Response::ok(id, r),

@@ -19,6 +19,7 @@
 //! | 文件 | 内容 |
 //! |---|---|
 //! | `msg.rs` | `Request` / `Response` / `RpcError` / `RpcFailure` / 元信息 DTO |
+//! | `client.rs` | 引擎 RPC 客户端（M1-S5：TCP + NDJSON 长连接、令牌注入、方法名校验） |
 //! | `patch.rs` | 14 个 `*Patch`（只给要改的字段，其余保持原值） |
 //! | `api.rs` | `trait EngineApi`（52 方法，全部在主线程调用） |
 //! | `dispatch/mod.rs` | 派发骨架 + 参数解码 + 元命令（`ping` / `engine.*` / `script.*` / `capture.*`） |
@@ -33,6 +34,7 @@
 
 pub mod api;
 pub mod caps;
+pub mod client;
 pub mod dispatch;
 pub mod material;
 pub mod msg;
@@ -42,7 +44,8 @@ pub mod probe;
 pub mod query;
 pub mod verify;
 
-pub use self::dispatch::dispatch;
+pub use self::client::*;
+pub use self::dispatch::{canonical_method, dispatch};
 pub use api::EngineApi;
 pub use material::*;
 pub use msg::*;
@@ -99,7 +102,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 幂等靠后端句柄表（连调两次第二次全是 `reused`）。
 /// 同样不新增脚本函数，登记在 `cmd_spec` 的 `Meta` 域。
 ///
-/// 命名铁律：本表里的名字必须是 `dispatch::canonical()` 归一后的形态——只含小写
+/// 命名铁律：本表里的名字必须是 `dispatch::canonical_method()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
 /// `rpc名唯一且是点分小写` 也会红）。所以意图那条叫 `tx.intent`，Rust 侧方法名
