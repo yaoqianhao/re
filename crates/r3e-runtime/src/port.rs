@@ -12,7 +12,9 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
+use r3e_core::MeshProvider;
 use r3e_doc::Document;
 use r3e_physics::Physics;
 use r3e_render::Renderer;
@@ -28,6 +30,14 @@ pub struct EngineAccess<'a> {
     pub scene: &'a Rc<RefCell<Document>>,
     pub physics: &'a Rc<RefCell<Physics>>,
     pub scripts: &'a mut ScriptHost,
+    /// 网格来源（M1-S4-G）：与主循环装配刚体时**同一个**「资产优先、图元兜底」口径。
+    ///
+    /// 为什么给 `Arc` 而不是借用：装配发生在 `Document::write` 闭包里，借用会和
+    /// 外层 `RefCell` 打架；`Arc` 克隆是 O(1)，一次请求一份也不算成本。
+    ///
+    /// `None` = 该宿主拿不到网格来源（headless 测试）：需要形状的物理复核必须
+    /// 明确回报「装配不了」，而不是拿包围盒猜出来的形状顶上去。
+    pub meshes: Option<Arc<dyn MeshProvider>>,
     /// 窗口 / GPU 未就绪时为 `None`，此时依赖渲染器的请求应明确回报「不可用」。
     pub renderer: Option<&'a mut Renderer>,
     pub frame_ms: FrameTimeStats,

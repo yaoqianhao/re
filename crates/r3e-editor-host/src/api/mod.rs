@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use glam::{Quat, Vec3};
 use r3e_audio::{Audio, DistanceModel, MAX_SPATIAL_SOURCES};
@@ -24,7 +25,7 @@ use r3e_core::ssao::{SsaoSettings, MAX_SSAO_SAMPLES, MIN_SSAO_SAMPLES};
 use r3e_core::ui::{self, Anchor, UiElement, UiKind, UiUpsert, UiValue};
 use r3e_core::ui_text;
 use r3e_core::Aabb;
-use r3e_core::{AnimLayer, BoneMask, LayerMode, LayerSync, MAX_ANIM_LAYERS};
+use r3e_core::{AnimLayer, BoneMask, LayerMode, LayerSync, MeshProvider, MAX_ANIM_LAYERS};
 use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_doc::Document;
@@ -64,6 +65,12 @@ pub struct LocalEngineApi<'a> {
     /// `NAV_NOT_BAKED`，绝不回空表假装「烘过了但一格都没有」。
     pub nav: Option<&'a RefCell<Option<Nav>>>,
     pub scripts: &'a mut ScriptHost,
+    /// 网格来源（M1-S4-G）：影子场景复核要**装配**物理世界，装配就得有形状来源。
+    ///
+    /// 与 `nav` 槽位一样，`None` 是合法状态（headless 测试没有资产库）：此时
+    /// 物理层只能给出纯解析的穿模结论，悬空一律记 `unchecked`，绝不用包围盒
+    /// 顶替真实形状去下结论。
+    pub meshes: Option<Arc<dyn MeshProvider>>,
     /// 渲染器：`engine.stats` 读它的 `RenderStats`，`capture.frame` 用它离屏出图。
     /// 窗口 / GPU 未就绪时为 `None`，此时两个方法都明确回报「不可用」而不是编数字。
     pub renderer: Option<&'a mut Renderer>,
@@ -98,6 +105,7 @@ mod script;
 mod shadow;
 mod support;
 mod tx;
+mod tx_violations;
 mod ui_rpc;
 mod verify;
 

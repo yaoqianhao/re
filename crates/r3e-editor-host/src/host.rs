@@ -52,6 +52,9 @@ impl EditorService for RpcHost {
             // 「上一次烘的网格」在没人要求时不会被悄悄丢弃。
             nav: Some(&self.nav),
             scripts: access.scripts,
+            // 网格来源由运行时按「资产优先、图元兜底」包装好递进来（M1-S4-G）：
+            // 宿主不自己造 provider，否则影子装配与主循环装配迟早看两个不同的网格。
+            meshes: access.meshes,
             renderer: access.renderer,
             frame_ms: access.frame_ms,
             capture_dir: access.capture_dir,

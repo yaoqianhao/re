@@ -8,17 +8,6 @@
 use super::*;
 use r3e_editor::{INVALID_PARAMS, TX_NOT_FOUND, TX_REJECTED};
 
-/// 开一笔事务并取回 txId。
-fn begin(api: &mut LocalEngineApi<'_>) -> String {
-    let value = api.tx_begin().expect("开事务不该失败");
-    value["txId"].as_str().expect("回包应带 txId").to_string()
-}
-
-/// `scene.spawn_prefab` 的 `args`：`{ "nodes": [...] }`。
-fn nodes(items: Value) -> Value {
-    json!({ "nodes": items })
-}
-
 /// `scene.place_light`（M1-S3-B）的 `args`：`{ "lights": [...] }`。
 fn lights(items: Value) -> Value {
     json!({ "lights": items })

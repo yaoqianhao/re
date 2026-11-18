@@ -709,10 +709,15 @@ impl EngineApp {
         // 先算好落盘目录：`capture_dir()` 借用整个 `self`，不能和下面
         // `self.renderer.as_mut()` 同时出现在同一个结构体字面量里。
         let capture_dir = self.capture_dir();
+        // 网格来源要单独提到循环外：`assets` 的 `RefCell` 借用只在这一行发生，
+        // 不跟着每份 `EngineAccess` 走，免得与 `&mut self.scripts` 抢守卫。
+        let meshes: Arc<dyn MeshProvider> =
+            Arc::clone(&self.assets.borrow()) as Arc<dyn MeshProvider>;
         for _ in 0..self.rpc_max_per_frame {
             let access = EngineAccess {
                 scene: &self.scene,
                 physics: &self.physics,
+                meshes: Some(Arc::clone(&meshes)),
                 scripts: &mut self.scripts,
                 renderer: self.renderer.as_mut(),
                 frame_ms: self.frame_times.snapshot(),

@@ -14,7 +14,7 @@ pub mod verify;
 
 pub use api::LocalEngineApi;
 pub use host::RpcHost;
-pub use verify::{Layer, Unchecked, VerifyReport};
+pub use verify::{Layer, PhysicsProbe, Unchecked, VerifyReport};
 
 /// 按命令行给的端口 / 令牌装配一个编辑器宿主。
 ///

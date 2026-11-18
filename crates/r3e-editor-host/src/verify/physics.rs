@@ -63,6 +63,37 @@ pub(super) fn check(
     out: &mut Vec<Issue>,
     unchecked: &mut Vec<Unchecked>,
 ) {
+    check_with(scene, physics, None, out, unchecked);
+}
+
+/// 影子场景的物理层入口（M1-S4-G）：世界**没装配**时也要交出能交的结论。
+///
+/// 事务期没有对影子装配刚体的入口（`bind_scene` 要写句柄，而 `Document::write`
+/// 归文档层所有），所以悬空判定拿不到「这一笔新放的物件有没有碰撞体」。这时候：
+///
+/// * 穿模（纯解析，不查世界）照跑——它本来就只看 `BodyDesc` 与包围盒；
+/// * 悬空一律记 `unchecked` 并写清原因，**绝不**退化成「反正没报就是没悬空」。
+///
+/// `why` 由调用方给：原因可能是「拿不到网格来源」，也可能是「世界没跟着影子重建」，
+/// 只有调用方知道自己为什么装配不了。
+pub(super) fn check_unbound(
+    scene: &Scene,
+    physics: &Physics,
+    why: &str,
+    out: &mut Vec<Issue>,
+    unchecked: &mut Vec<Unchecked>,
+) {
+    check_with(scene, physics, Some(why), out, unchecked);
+}
+
+/// 真正干活的那份：`unbound = None` 表示「世界与这份场景已对齐」。
+fn check_with(
+    scene: &Scene,
+    physics: &Physics,
+    unbound: Option<&str>,
+    out: &mut Vec<Issue>,
+    unchecked: &mut Vec<Unchecked>,
+) {
     if !physics.enabled() {
         unchecked.push(Unchecked::new(
             Layer::Physics,
@@ -74,16 +105,17 @@ pub(super) fn check(
     let bodies = collect(scene);
     let caps = physics.capabilities();
 
-    if caps.shape_cast {
-        support(scene, physics, &bodies, out);
-    } else {
-        unchecked.push(Unchecked::new(
+    match unbound {
+        // 世界没装配：连「后端有没有 shape_cast」都不用问，直接记原因。
+        Some(why) => unchecked.push(Unchecked::new(Layer::Physics, why.to_string())),
+        None if caps.shape_cast => support(scene, physics, &bodies, out),
+        None => unchecked.push(Unchecked::new(
             Layer::Physics,
             format!(
                 "后端 `{}` 未申报 shape_cast：悬空复核跳过，静态层近似结论保留",
                 physics.backend_name()
             ),
-        ));
+        )),
     }
 
     // 穿模判定是纯解析几何（不查后端），但需要知道有多少对被旋转挡在门外。

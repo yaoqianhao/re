@@ -42,8 +42,10 @@ use r3e_core::{
     SceneMaterialDecl, TerrainPatch, DEFAULT_ROUGHNESS, MAX_LOCAL_LIGHTS, SCENE_MATERIAL_MAX,
     TERRAIN_MAX_PATCHES,
 };
-use r3e_doc::{validate_geometry, CommandKind, DocError, Issue, StateHash};
+use r3e_doc::{CommandKind, DocError, StateHash};
 use r3e_editor::{TX_APPLY_FAILED, TX_BUSY, TX_CONFLICT, TX_NOT_FOUND, TX_REJECTED};
+
+use super::tx_violations::impact_with_violations;
 
 /// 进程内事务 id 序列（`tx-1`、`tx-2`……）。
 ///
@@ -312,7 +314,7 @@ const PAINT_TERRAIN_MAX_PATCHES: usize = TERRAIN_MAX_PATCHES;
 /// 「我刚才到底改到哪儿了」，省得为了确认再发一串 `query.*` 读回。四个字段
 /// 恒定存在（空数组也输出），结构稳定才好解析。
 #[derive(Debug, Default)]
-struct Impact {
+pub(super) struct Impact {
     /// 新建 / 覆盖的物件名。
     objects: Vec<String>,
     /// 新建的灯光 `key`。
@@ -339,7 +341,7 @@ impl Impact {
     /// 这里只出**副作用清单**那四个字段；`violations`（M1-S4-F）由
     /// [`impact_with_violations`] 在拿到场景后补上——它需要读影子场景，
     /// 不该让一个纯数据结构的序列化去碰文档。
-    fn to_json(&self) -> Value {
+    pub(super) fn to_json(&self) -> Value {
         json!({
             "objects": self.objects,
             "lights": self.lights,
@@ -402,77 +404,6 @@ impl MaterialTouch {
             params: vec!["albedo", "roughness"],
         }
     }
-}
-
-/// 事务里「这一笔**新引入**」的静态层违规（M1-S4-F，D1=A）。
-///
-/// 口径三条：
-///
-/// 1. **只做静态层**。编辑态没有物理世界装配入口（宿主拿不到 `MeshProvider`，
-///    `docs/M1_S4F_PLAN.md` E5/E6/E7），提交后复验物理层只能对着过期世界下结论——
-///    那是假绿。静态层零副作用、能判死、便宜，适合当「提交前先拦明显穿模」的第一道闸；
-///    物理 / 导航层的新增如实记进 `notChecked`，由 `scene.verify` 或
-///    `xtask scene-verify` 复核。
-/// 2. **基线取主场景，不取空集**。事务期主场景零写入（命令全部落在影子上），所以
-///    主场景的静态层结果就是 `tx.begin` 那一刻的快照。只报差集，「本来就有的违规」
-///    才不会每条意图重报一遍。
-/// 3. **键与去重同口径**：`(code, target, path)`——同一对象同一条码视为同一条问题。
-fn static_violations(doc: &r3e_doc::Document) -> Value {
-    let Some(session) = doc.tx_session() else {
-        return no_violations();
-    };
-    let after = static_issues(session.shadow());
-    // 影子本身干净 = 没有新增，省掉主场景那一趟 O(n²) 比对。
-    if after.is_empty() {
-        return no_violations();
-    }
-    let base = static_issues(doc);
-    let mut known: std::collections::HashSet<(&str, Option<&str>, &str)> =
-        std::collections::HashSet::with_capacity(base.len());
-    for issue in &base {
-        known.insert((issue.code, issue.target.as_deref(), issue.path.as_str()));
-    }
-    let fresh: Vec<&Issue> = after
-        .iter()
-        .filter(|issue| {
-            !known.contains(&(issue.code, issue.target.as_deref(), issue.path.as_str()))
-        })
-        .collect();
-    if fresh.is_empty() {
-        return no_violations();
-    }
-    json!({
-        "count": fresh.len(),
-        // 真跑过的层：宿主只对静态层下结论，物理 / 导航没跑就不许写成空数组。
-        "layers": ["static"],
-        "issues": fresh
-            .iter()
-            .map(|issue| super::verify::issue_value(issue))
-            .collect::<Vec<_>>(),
-        "notChecked": ["physics", "nav"],
-    })
-}
-
-/// 一份场景的静态层体检结果（含世界矩阵刷新）。
-///
-/// `validate_geometry` 的契约是「调用方负责刷 `world`」（`Scene::spawn` 只写局部 TRS，
-/// `geom::node_aabb` 读的是 `node.world`）。事务命令全部落在影子上、影子从没跑过一帧，
-/// 不刷就会把这一笔新放的节点一律当成「还在原点」，凭空报出穿模与悬空。
-/// 主场景那一份同样走这里：headless 测试里的 `Document` 也未必刷过。
-fn static_issues(scene: &Scene) -> Vec<Issue> {
-    let mut probe = scene.clone();
-    probe.update_world_transforms();
-    validate_geometry(&probe)
-}
-
-/// 没有新增违规时的 `violations`：结构恒定，四个键都输出。
-fn no_violations() -> Value {
-    json!({
-        "count": 0,
-        "layers": ["static"],
-        "issues": [],
-        "notChecked": ["physics", "nav"],
-    })
 }
 
 /// 一条已解析、尚未落到场景上的**意图**（M1-S3-A）。
@@ -778,17 +709,4 @@ pub(super) fn tx_intent(
         "intents": staged.intents,
         "impact": impact_with_violations(api, impact.into_inner()),
     }))
-}
-
-/// 把 [`Impact`] 与「这笔意图新引入的静态层违规」拼成回包里的 `impact`。
-///
-/// `violations` 挂在 `impact` 下而不是回包顶层：它回答的是同一个问题——
-/// 「这一笔到底动了什么、动出了什么后果」，AI 读一处就够，不必记两个位置。
-fn impact_with_violations(api: &LocalEngineApi<'_>, impact: Impact) -> Value {
-    let mut value = impact.to_json();
-    let violations = static_violations(&api.scene.borrow());
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("violations".to_string(), violations);
-    }
-    value
 }

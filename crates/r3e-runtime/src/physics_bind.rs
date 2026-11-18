@@ -22,10 +22,17 @@ use crate::app::node_mesh_data;
 /// 存在的意义只有一个：**让装配与渲染看同一个网格**。物理侧不该知道
 /// `AssetLibrary` 与 `ProceduralProvider` 的存在，更不该在库里复制一份
 /// 「先查资产再退图元」的判定——复制出来迟早与 [`node_mesh_data`] 分叉。
-struct SceneMeshProvider {
+pub(crate) struct SceneMeshProvider {
     /// 拿一份 `Arc` 快照而不是借用 `assets`：装配发生在 `write` 闭包里，
     /// 借用会与外层 `RefCell` 冲突。`Arc` 克隆是 O(1)，装配又是低频动作。
     assets: Arc<AssetLibrary>,
+}
+
+impl SceneMeshProvider {
+    /// 每次装配一份即可：构造只包一层 `Arc`，不碰资产库。
+    pub(crate) fn new(assets: Arc<AssetLibrary>) -> Self {
+        Self { assets }
+    }
 }
 
 impl MeshProvider for SceneMeshProvider {
@@ -43,9 +50,7 @@ pub(crate) fn rebind(
     scene: &Rc<RefCell<Document>>,
     assets: &Arc<AssetLibrary>,
 ) -> BindReport {
-    let meshes = SceneMeshProvider {
-        assets: Arc::clone(assets),
-    };
+    let meshes = SceneMeshProvider::new(Arc::clone(assets));
     scene.borrow_mut().write(|scene| {
         let report = physics.bind_scene(scene, &meshes);
         for &(id, handle) in &report.bindings {

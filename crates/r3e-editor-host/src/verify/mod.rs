@@ -70,6 +70,29 @@ impl Unchecked {
     }
 }
 
+/// 物理层这一趟的执行姿态（M1-S4-G）。
+///
+/// 事务影子场景没有自己的物理世界：`bind_scene` 要往节点写句柄，而写通道归文档层
+/// 所有。于是「世界能不能代表这份场景」必须显式说出来，不许让调用方默默传一个
+/// 过期世界下去——那种绿灯比红灯更有害。
+pub enum PhysicsProbe<'a> {
+    /// 世界与这份场景**已对齐**（主场景，或按影子刚重建过的临时世界）。
+    Bound(&'a Physics),
+    /// 世界代表不了这份场景：只出纯解析的穿模结论，悬空记 `unchecked`（附原因）。
+    Unbound(&'a Physics, String),
+}
+
+/// 导航层这一趟的执行姿态（M1-S4-G）。
+///
+/// 与 [`PhysicsProbe`] 同因：影子场景的可达性只能靠「当场烘一份影子网格」判，
+/// 烘不出来就必须说清楚为什么，不能把「没网格」当成「哪都能去」。
+pub enum NavProbe<'a> {
+    /// 跑这一层：`Some` = 本份场景刚烘出来的网格；`None` = 没烘过（由本层记账）。
+    Run(Option<&'a Nav>),
+    /// 不跑这一层：原因原样进 `unchecked`，绝不静默跳过。
+    Skip(String),
+}
+
 /// 一次三层校验的完整结果。
 pub struct VerifyReport {
     issues: Vec<Issue>,
@@ -92,11 +115,44 @@ impl VerifyReport {
         nav: Option<&Nav>,
         targets: &[(String, Vec3)],
     ) -> Self {
+        Self::collect_with(
+            scene,
+            Some(PhysicsProbe::Bound(physics)),
+            NavProbe::Run(nav),
+            targets,
+        )
+    }
+
+    /// 按需跑层（M1-S4-G）：静态层**总是**跑，物理层看 `probe`，导航层看 `nav`。
+    ///
+    /// 为什么静态层不可关：它的近似条目是 [`dedup_superseded`] 的底稿。少了它，
+    /// 精确层的结论不会被「覆盖」而是被当成新条目，差集口径会跟着漂。
+    ///
+    /// `probe = None` 表示这一趟不碰物理层（调用方自己往 `unchecked` 里写原因）。
+    pub fn collect_with(
+        scene: &Scene,
+        probe: Option<PhysicsProbe<'_>>,
+        nav: NavProbe<'_>,
+        targets: &[(String, Vec3)],
+    ) -> Self {
         // 静态层先跑：它的近似条目是后面的底稿，精确层只需覆盖、无需重复遍历场景。
         let mut issues = validate_geometry(scene);
         let mut unchecked = Vec::new();
-        physics::check(scene, physics, &mut issues, &mut unchecked);
-        nav::check(scene, nav, targets, &mut issues, &mut unchecked);
+        match probe {
+            Some(PhysicsProbe::Bound(physics)) => {
+                physics::check(scene, physics, &mut issues, &mut unchecked);
+            }
+            Some(PhysicsProbe::Unbound(physics, why)) => {
+                physics::check_unbound(scene, physics, &why, &mut issues, &mut unchecked);
+            }
+            None => {}
+        }
+        match nav {
+            NavProbe::Run(nav) => nav::check(scene, nav, targets, &mut issues, &mut unchecked),
+            NavProbe::Skip(reason) => {
+                unchecked.push(Unchecked::new(Layer::Nav, reason));
+            }
+        }
         Self {
             // 去重放在最后：先让物理 / 导航层的精确结论落地，才谈得上覆盖静态层近似。
             issues: dedup_superseded(issues),
