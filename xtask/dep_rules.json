@@ -15,7 +15,8 @@
     "r3e-editor-host",
     "r3e-replay",
     "r3e-app",
-    "r3e-nav"
+    "r3e-nav",
+    "r3e-cli"
   ],
   "crates": {
     "r3e-core": {
@@ -127,6 +128,12 @@
         "r3e-physics"
       ],
       "note": "导航只许依赖 core（场景数据 / 地形高度）+ physics（碰撞形状语义，障碍物怎么挡人）；不得依赖 render / runtime / doc——工具链与编辑器都要能在不开启渲染的情况下烘焙与校验"
+    },
+    "r3e-cli": {
+      "allow": [
+        "r3e-protocol"
+      ],
+      "note": "进程外命令行客户端：只许依赖协议，不得链接任何引擎 crate（回放走子进程复用 r3e-replay，而不是把回放器当库拉进来）。M1-S5 起与本表同提交登记"
     }
   }
 }
