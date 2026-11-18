@@ -29,6 +29,160 @@ fn patches(items: Value) -> Value {
     json!({ "patches": items })
 }
 
+// ---- `impact.violations`（M1-S4-F，D1=A：只做静态层、只报新增） ----
+
+/// 一笔意图在原点再放一个 cube：与 fixture 的三个重叠 → 必须报出**新增**违规，
+/// 且「没查的层」要明写，不许用空数组冒充「查过且干净」。
+#[test]
+fn tx_intent_impact_violations_报出这一笔新引入的静态违规() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = begin(&mut api);
+
+    let value = api
+        .tx_intent(
+            &tx,
+            "scene.spawn_prefab",
+            &nodes(json!([{ "name": "extra" }])),
+        )
+        .expect("意图应被接收");
+
+    let violations = &value["impact"]["violations"];
+    assert!(
+        violations["count"].as_u64().expect("count 应为整数") > 0,
+        "原点又多一个 cube，必然新增重叠：{value}"
+    );
+    assert_eq!(
+        violations["layers"],
+        json!(["static"]),
+        "宿主只对静态层下结论：{violations}"
+    );
+    assert_eq!(
+        violations["notChecked"],
+        json!(["physics", "nav"]),
+        "物理 / 导航没跑过，必须逐个点名：{violations}"
+    );
+
+    let issues = violations["issues"].as_array().expect("issues 应为数组");
+    assert_eq!(issues.len() as u64, violations["count"].as_u64().unwrap());
+    for issue in issues {
+        assert!(issue["code"].is_string(), "code 必填：{issue}");
+        assert!(
+            issue["path"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("nodes[")),
+            "结论要能定位到节点：{issue}"
+        );
+        assert!(
+            issue.get("location").is_some(),
+            "空间类结论要带点位（可为 null，但键必须在）：{issue}"
+        );
+    }
+}
+
+/// 基线是**主场景**而不是空集：只改可见性（几何一点没动）时不许把场景里既有的
+/// 重叠当成「这一笔新引入的」再报一遍。
+#[test]
+fn tx_intent_impact_violations_不重报事务前既有违规() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+
+    // 先证明基线确实不干净：fixture 的三个 cube 都在原点。
+    let report = api
+        .scene_verify(VerifyQuery::default())
+        .expect("体检本身不该失败");
+    assert!(
+        report["counts"]["byLayer"]["static"]
+            .as_u64()
+            .expect("静态层计数应为整数")
+            > 0,
+        "前提不成立：基线本来就该有静态违规：{report}"
+    );
+
+    let tx = begin(&mut api);
+    // 放一盏灯：几何一点没动，但场景里那三处重叠仍在基线上。
+    let value = api
+        .tx_intent(
+            &tx,
+            "scene.place_light",
+            &lights(json!([{ "key": "fill", "pos": [0.0, 3.0, 0.0] }])),
+        )
+        .expect("放灯属于白名单");
+
+    assert_eq!(
+        value["impact"]["violations"]["count"],
+        json!(0),
+        "这一笔没动几何，基线里的重叠不许算成新增：{value}"
+    );
+    assert_eq!(
+        value["impact"]["violations"]["issues"],
+        json!([]),
+        "空就是空数组，结构不随内容变：{value}"
+    );
+}
+
+/// 放一个远处贴地的 cube：既不新增重叠也不悬空，也不该被既有违规「感染」。
+/// （反向验证：报错不是「永远报」，否则门禁变成红灯装饰。）
+#[test]
+fn tx_intent_impact_violations_无新问题时报零() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = begin(&mut api);
+
+    let value = api
+        .tx_intent(
+            &tx,
+            "scene.spawn_prefab",
+            // x 远处不与人重叠；y = 0.5 让底面正好落在地面 y = 0 上，不悬空。
+            &nodes(json!([{ "name": "far", "position": [40.0, 0.5, 0.0] }])),
+        )
+        .expect("意图应被接收");
+
+    let violations = &value["impact"]["violations"];
+    assert_eq!(violations["count"], json!(0), "{value}");
+    assert_eq!(violations["layers"], json!(["static"]));
+    assert_eq!(violations["notChecked"], json!(["physics", "nav"]));
+}
+
+/// 提交后基线随主场景推进：上一笔新增的违规成为「原有」，下一笔不再重报。
+#[test]
+fn tx_intent_impact_violations_提交后基线随主场景推进() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+
+    let tx = begin(&mut api);
+    api.tx_intent(
+        &tx,
+        "scene.spawn_prefab",
+        &nodes(json!([{ "name": "extra" }])),
+    )
+    .expect("意图应被接收");
+    api.tx_commit(&tx).expect("提交不该失败");
+
+    // 第二笔：在 60 m 高空放一个节点 → 只有「悬空」这一条新问题。
+    let tx = begin(&mut api);
+    let value = api
+        .tx_intent(
+            &tx,
+            "scene.spawn_prefab",
+            &nodes(json!([{ "name": "sky", "position": [0.0, 60.0, 0.0] }])),
+        )
+        .expect("意图应被接收");
+
+    let violations = &value["impact"]["violations"];
+    assert!(
+        violations["count"].as_u64().expect("count 应为整数") > 0,
+        "高空悬空是这一笔引入的新问题，必须报：{value}"
+    );
+    for issue in violations["issues"].as_array().expect("issues 应为数组") {
+        let target = issue["target"].as_str().unwrap_or_default();
+        assert!(
+            target.contains("sky"),
+            "上一笔的重叠已成为基线，任何一条都不该指向旧对象：{issue}"
+        );
+    }
+}
+
 #[test]
 fn tx_intent_按命令数记staged_按意图数记步数() {
     let (scene, physics, mut scripts) = fixture();

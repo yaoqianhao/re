@@ -1,0 +1,64 @@
+{
+  "name": "r3e-verify-overlap-ok",
+  "terrain": [
+    {
+      "name": "ground",
+      "origin": [
+        -10.0,
+        -10.0
+      ],
+      "size": [
+        20.0,
+        20.0
+      ]
+    }
+  ],
+  "spawns": [
+    {
+      "name": "start",
+      "position": [
+        2.0,
+        0.0,
+        2.0
+      ]
+    }
+  ],
+  "objects": [
+    {
+      "name": "crate_a",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "physics": {
+        "body": "static",
+        "collider": "box"
+      }
+    },
+    {
+      "name": "crate_b",
+      "mesh": "cube",
+      "position": [
+        2.0,
+        0.5,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "physics": {
+        "body": "static",
+        "collider": "box"
+      }
+    }
+  ]
+}

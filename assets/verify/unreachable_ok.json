@@ -1,0 +1,38 @@
+{
+  "name": "r3e-verify-unreachable-ok",
+  "terrain": [
+    {
+      "name": "west",
+      "origin": [
+        0.0,
+        0.0
+      ],
+      "size": [
+        10.0,
+        10.0
+      ]
+    },
+    {
+      "name": "east",
+      "origin": [
+        20.0,
+        0.0
+      ],
+      "size": [
+        10.0,
+        10.0
+      ]
+    }
+  ],
+  "spawns": [
+    {
+      "name": "start",
+      "position": [
+        2.0,
+        0.0,
+        2.0
+      ]
+    }
+  ],
+  "objects": []
+}

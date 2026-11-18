@@ -117,7 +117,10 @@ pub(super) fn scene_verify(
 }
 
 /// 一条 `Issue` 的出网形态。
-fn issue_value(issue: &Issue) -> Value {
+///
+/// `pub(super)`：`api/tx.rs` 的 `impact.violations` 复用同一个投影，避免同一件事
+/// 在 `scene.verify` 与 `tx.intent` 两处出现两套字段名。
+pub(super) fn issue_value(issue: &Issue) -> Value {
     json!({
         "code": issue.code,
         // 层用**登记表**里的那一份（`bounds` / `geom` / `support` / `overlap` /

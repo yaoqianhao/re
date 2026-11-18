@@ -13,3 +13,8 @@ serde_json.workspace = true
 r3e-core.workspace = true
 r3e-doc.workspace = true
 r3e-protocol.workspace = true
+# scene-verify（M1-S4-F）要真跑三层验证器：物理后端、导航烘焙、验证器本体都在引擎里。
+# 同上，dep-check 只扫 crates/，这三条不产生依赖违规。
+r3e-physics.workspace = true
+r3e-nav.workspace = true
+r3e-editor-host.workspace = true

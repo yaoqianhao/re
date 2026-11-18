@@ -11,9 +11,9 @@ AIGC:
 
 # M1-S4-F 执行方案 V1：`scene.verify` + `impact.violations` + 三夹具 + Gate 1 前置
 
-> 状态：**待裁决（D1 / D2 / D3）**，未改动任何代码
+> 状态：**已落地**（D1=A / D2=P1 / D3=子目录夹具；两提交，本地未 push）
 > 日期：2026-11-18
-> 前置：S4-E 已收口（commit `7b2a929`，本地未 push）；RPC 56、命令表 386、`ISSUE_CODES` 38、单测 1,705
+> 前置：S4-E 已收口（commit `7b2a929`）；RPC 57、命令表 387、`ISSUE_CODES` 38、`#[test]` 1,718
 > 归属：`docs/M1_S4_PLAN.md` §4 S4-F；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S4
 
 ---
@@ -123,15 +123,15 @@ AIGC:
 
 - 夹具放 `assets/verify/`（**子目录**）：遵守 E10 的顶层扫描约束，`scene_schema.rs` 非递归 → 零污染；`shipped_scenes_have_no_errors` 是显式清单 → 也不受影响。
 - `xtask` 新增 `r3e-physics` / `r3e-nav` / `r3e-editor-host` 依赖（E11：xtask 不在 dep-check 扫描范围，`Cargo.toml` 注释已声明该前提）。
-- 三个夹具的预期结论（Gate 1 验收表）：
+- 三个夹具的预期结论（Gate 1 验收表，**实际码名为 S4-E 落地值**——提案时的 `*.exact` 是设想，`ISSUE_CODES` 收口用的是下面这三个）：
 
-| 夹具 | 必报码（带 `location`） | 层 |
-|---|---|---|
-| `overlap_bad.json` | `overlap.exact` | physics |
-| `floating_bad.json` | `support.exact`（无支撑） | physics |
-| `unreachable_bad.json` | 不可达目标点（复用 S4-B 的 nav 探测码） | nav |
+| 夹具 | 必报码（带 `location`） | 层 | 正向对照 |
+|---|---|---|---|
+| `overlap_bad.json` | `overlap.penetration` | physics | `overlap_ok.json`（拉开到 1 米间隙） |
+| `floating_bad.json` | `support.floating`（**warn 级**：报出但不拦 `passed`） | physics | `floating_ok.json`（落回 y=0.5 贴地） |
+| `unreachable_bad.json` | `nav.no_path` | nav | `unreachable_ok.json`（目标点落回西岛） |
 
-每个夹具同时要有一条**正向对照**（同一几何改一处即 `passed`），防止「永远报错」的假红。
+每个夹具同时要有一条**正向对照**（同一几何改一处即 `passed`），防止「永远报错」的假红。夹具自带地形与 `spawns`，因此 `xtask scene-verify` 侧导航可逐场景烘焙、`unchecked` 为空。
 
 ---
 
@@ -139,9 +139,25 @@ AIGC:
 
 1. `scene.verify` 对三夹具稳定报出 `location`（非布尔），且 `xtask scene-verify` 侧 `unchecked` 为空；
 2. RPC 56 → 57、命令表 386 → 387、`ISSUE_CODES` 38 → 38（新增码须先登记，否则 `xtask invariants` 红）；
-3. 单测 1,705 → 预估 1,723~1,727（协议契约 + 宿主实现 + impact + 夹具）；
-4. `cargo xtask verify` 11 步全绿；`capabilities.json` 重生成后 `--check` 通过；
+3. `#[test]` 1,705 → 实测 **1,718**（协议契约 4 条并入 `tests/scene_verify_rpc.rs`、宿主实现 18 条、`impact.violations` 4 条）；
+4. `cargo xtask verify` **11 步全绿**；`capabilities.json` 重生成后 `--check` 通过；
 5. 提交仍**只本地 commit，不 push**（沿用既定约束）。
+
+### 5.1 落地结果（2026-11-18 实测）
+
+| 项 | 结果 |
+|---|---|
+| 提交 | `a9019a1`（F-1+F-2：RPC + 宿主体检入口）· 第二提交（F-3+F-4+F-5+F-6：impact + 六夹具 + `scene-verify` + 台账） |
+| `scene.verify` | RPC 57、命令表 387；回包 `ok` / `passed` 分离，`unchecked` 逐层记账 |
+| `impact.violations` | 影子静态层 vs `tx.begin` 基线求差，`notChecked: ["physics","nav"]`；4 条单测（新增要报 / 既有不重报 / 无新问题报零 / 提交后基线推进） |
+| 夹具 | `assets/verify/` 6 个（3 反例 + 3 正向对照）+ `expect.json` |
+| `xtask scene-verify` | `verify` 第 11 步；6/6 通过；**元检查**：故意把 `overlap_ok` 的 `must` 写成 `overlap.penetration` → 门禁按预期红（`rc=1`），证明它抓得住 |
+| 未做 | 物理 / 导航层的 `violations`、`physics.bind` 类 RPC（D1=B/C、D2=P3，均按方案列入 M2 前置债） |
+
+实现期与提案的两处偏差，均为实证修正而非缩水：
+
+1. **码名**：提案写 `overlap.exact` / `support.exact`，S4-E 实际落的是 `overlap.penetration` / `support.floating` / `nav.no_path`；
+2. **悬空是 `warn` 级**：`support.floating` 必须报出、但不拦 `passed`，所以 `floating_bad` 的期望是「报出 + `passed = true`」——门禁的 `must` 与 `passed` 是两件独立的事，写反了会得到一条永远红的假红。
 
 ---
 

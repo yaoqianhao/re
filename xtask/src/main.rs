@@ -9,12 +9,14 @@
 //! - `cargo xtask doc-gate`：文档层收口六条规则（M0-S3 的 doc.write 唯一写入口不许回退）
 //! - `cargo xtask gen-capabilities --check`：能力清单不许与代码漂移
 //! - `cargo xtask invariants`：不变量三源（登记表 / 反例测试 / 能力清单）必须集合相等
+//! - `cargo xtask scene-verify`：`assets/verify` 夹具体检（反例报得出坐标，正向对照干净）
 //!
 //! 设计约束：不引第三方 CLI 框架、不做花哨输出。门禁本身越简单越不容易坏。
 
 mod doc_gate;
 mod gen_capabilities;
 mod invariants;
+mod scene_verify;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,12 +29,14 @@ const USAGE: &str = "\
 子命令:
   verify             fmt --check + clippy -D warnings + test + replay + lint-size + check-tests
                      + doc-gate + dep-check --strict + gen-capabilities --check + invariants
+                     + scene-verify
   lint-size          单文件行数门禁（白名单只许减不许加）
   check-tests        单测数不得低于 xtask/tests_baseline.json
   dep-check          crate 依赖方向门禁（默认严格；--report 只报告。债务见 xtask/dep_debt.json）
   doc-gate           文档层收口六条规则（RefCell<Scene> / &mut Scene / DerefMut / 解析入口 / 依赖登记 / 闭包重入）
   gen-capabilities   生成 docs/capabilities.json（三源交叉；--check 只校验不写盘）
   invariants         不变量三源比对（登记表 / 反例测试 / 能力清单必须集合相等）
+  scene-verify       assets/verify 夹具体检：反例须报出带坐标的码，正向对照须干净
 ";
 
 fn main() {
@@ -50,6 +54,7 @@ fn main() {
         "doc-gate" => doc_gate::run(&root()),
         "gen-capabilities" => gen_capabilities::run(&root(), check),
         "invariants" => invariants::run(&root()),
+        "scene-verify" => scene_verify::run(&root()),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             0
@@ -183,6 +188,11 @@ fn verify() -> i32 {
     }
     if invariants::run(&root) != 0 {
         failed.push("invariants".into());
+    }
+    // 第 11 步：夹具体检。前三步都是「代码与登记表一致」，这一步验的是「验证器真能报出
+    // 问题、也真能放行」——只有它需要跑引擎本体，所以放在最后。
+    if scene_verify::run(&root) != 0 {
+        failed.push("scene-verify".into());
     }
 
     if failed.is_empty() {

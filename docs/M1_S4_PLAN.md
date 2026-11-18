@@ -13,7 +13,7 @@ AIGC:
 
 # M1-S4 方案 V3：能力全量前置（导航 + 材质全功能）
 
-> 状态：S4-A / S4-B / S4-C / S4-D / S4-E 已落地（S4-E 含前置补债 + 三层验证器 + 坐标化 Issue，2026-11-18）；S4-F 待执行（V3 取代 V2 的「部分外排」裁决）
+> 状态：S4-A / S4-B / S4-C / S4-D / S4-E / S4-F 已全部落地（S4-E 含前置补债 + 三层验证器 + 坐标化 Issue；S4-F 含 `scene.verify` RPC、`impact.violations`、六夹具与 `xtask scene-verify`，2026-11-18）
 > 日期：2026-11-17
 > 归属：`docs/AI_ROADMAP.md` §3.2 M1「AI 写入闭环」第四 Sprint
 > 前置：S1（事务协议）、S2（WorldQuery）、S3（意图命令 + impact）已收口，单测基线 1,574，`cargo xtask verify` 十项全绿
@@ -298,6 +298,8 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 2. `tx.intent` 的 `impact` 增 `violations`（提交后自动复验，只报新增）；
 3. `xtask scene-verify` + 三个反例夹具：`scene_overlap_bad.json`（穿模）、`scene_floating_bad.json`（悬空）、`scene_unreachable_bad.json`（**S4-B 落地后才能做的那个**）；
 4. 接入 `cargo xtask verify` 第 11 步；`docs/M1_PLAN.md §5` 台账同步。
+
+**落地实测（2026-11-18，方案见 `docs/M1_S4F_PLAN.md`）**：第 2 条按 D1=A 修正——父计划的「提交后自动复验」在编辑态不成立（宿主无物理装配入口、拿不到 `MeshProvider`，见该方案 E5/E6/E7），`violations` 改挂**事务影子场景的静态层**并与 `tx.begin` 基线求差，物理 / 导航层在 `impact.notChecked` 里如实记账。夹具实际命名 `assets/verify/{overlap,floating,unreachable}_{bad,ok}.json`（子目录避开 `assets/` 顶层 schema 扫描），必报码是 S4-E 实际落地的 `overlap.penetration` / `support.floating` / `nav.no_path`，不是提案里的 `*.exact`。RPC 56→57、命令表 386→387、`ISSUE_CODES` 38 不变、`#[test]` 1,705→1,718，`cargo xtask verify` **11 步全绿**。
 
 **Gate 1 触发条件（V3 改写）**：S4-A…S4-F 全部收口，且 `scene.verify` 对三个反例夹具稳定报出**坐标**、`unchecked` 为空，方可进 S5 Gate 1 演练。
 
