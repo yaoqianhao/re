@@ -281,4 +281,106 @@ pub(super) static ALL: &[CommandSpec] = &[
         cost: Cost::Linear,
         since: "M1-S2-B",
     },
+    // ---- M1-S4-D 协议面八条：物理查询 / 导航查询 / 场景材质表 ----
+    //
+    // 这八条同样没有脚本函数，归 `Meta` 域（与 `tx.*` / `query.*` 一个口径）：脚本里
+    // 拿到的是 `&mut Scene` 与 `&Physics`，直接调本 crate 的函数比绕一圈 RPC 更短；
+    // 这三组是**给 AI / 远端**的查询面与素材入口。
+    //
+    // 回包契约的硬约束（与其余物理/导航入口一致）：
+    // * `physics.*` 三条一律把 `capabilities` 数组带在回包里——AI 不必先问一次
+    //   「这个后端支持不支持」，也能在拿到空结果时区分「真没打到」和「后端不会查」；
+    // * 物理开关关闭回 `PHYSICS_DISABLED`、后端不申报该位回 `BACKEND_UNSUPPORTED`，
+    //   **绝不回空表**；
+    // * `nav.*` 三条在未烘焙时回 `NAV_NOT_BAKED`，而不是「路径为空」。
+    CommandSpec {
+        name: "physics.raycast",
+        rpc: Some("physics.raycast"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只读：不建事务、不产生写点、不动 StateHash。
+        reversible: true,
+        // 后端按刚体表线性扫（内置后端是解析法求交）。
+        cost: Cost::Linear,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "physics.overlap",
+        rpc: Some("physics.overlap"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        // 球体覆盖范围要逐刚体判，命中数还随场景规模涨。
+        cost: Cost::Linear,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "physics.cast",
+        rpc: Some("physics.cast"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "nav.bake",
+        rpc: Some("nav.bake"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只读场景：烘焙不写节点、不推版本，产物挂在宿主侧。
+        reversible: true,
+        // 整场景栅格化：格数随范围平方涨，是本期最重的一条只读命令。
+        cost: Cost::Heavy,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "nav.path",
+        rpc: Some("nav.path"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        // A* 扩展次数上限 `NAV_PATH_MAX_EXPANSIONS`，量级随网格涨。
+        cost: Cost::Heavy,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "nav.reachability",
+        rpc: Some("nav.reachability"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        // 先判连通块（常数级），断连时再找断点（一次邻域扫）。
+        cost: Cost::Linear,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "scene.material.list",
+        rpc: Some("scene.material.list"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        // 遍历材质表（上限 `SCENE_MATERIAL_MAX` 条）。
+        cost: Cost::Linear,
+        since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "scene.material.upsert",
+        rpc: Some("scene.material.upsert"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 写场景材质表：可被事务回滚，但与 `scene.setmaterial` 一样算命令面。
+        reversible: true,
+        // 表内按名定位一次，常数级。
+        cost: Cost::Cheap,
+        since: "M1-S4-D",
+    },
 ];

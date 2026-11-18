@@ -29,11 +29,13 @@ use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_doc::Document;
 use r3e_editor::{
-    AnimLayerPatch, AudioSpatialPatch, EngineApi, EngineInfo, EnvironmentMapPatch,
-    EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, NodeBrief, PhysicsInfo,
-    PostFxPatch, QuerySpec, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch,
-    PROTOCOL_VERSION, SERVER_BUSY,
+    AnimLayerPatch, AudioSpatialPatch, CastQuery, EngineApi, EngineInfo, EnvironmentMapPatch,
+    EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, NavBakeOptions,
+    NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch, QuerySpec,
+    RayQuery, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, PROTOCOL_VERSION,
+    SERVER_BUSY,
 };
+use r3e_nav::Nav;
 use r3e_physics::Physics;
 use r3e_render::Renderer;
 use r3e_script::ScriptHost;
@@ -52,6 +54,15 @@ use r3e_runtime::time::FrameTimeStats;
 pub struct LocalEngineApi<'a> {
     pub scene: &'a Rc<RefCell<Document>>,
     pub physics: &'a Rc<RefCell<Physics>>,
+    /// 导航网格槽位：`nav.bake` 往里写，`nav.path` / `nav.reachability` 往前读。
+    ///
+    /// 为什么由宿主槽位持有而不是挂进场景：导航网格是**烘焙产物**，不是场景数据。
+    /// 写进 `Document` 会让它参与 `state_hash`，于是「烘一次导航」看起来像「改了场景」，
+    /// 撤销栈与脏标记全部失真。
+    ///
+    /// `None` = 该宿主压根没接导航槽位（headless 测试）：三条 `nav.*` 一律回
+    /// `NAV_NOT_BAKED`，绝不回空表假装「烘过了但一格都没有」。
+    pub nav: Option<&'a RefCell<Option<Nav>>>,
     pub scripts: &'a mut ScriptHost,
     /// 渲染器：`engine.stats` 读它的 `RenderStats`，`capture.frame` 用它离屏出图。
     /// 窗口 / GPU 未就绪时为 `None`，此时两个方法都明确回报「不可用」而不是编数字。
@@ -76,6 +87,9 @@ mod audio;
 mod env;
 mod info;
 mod light;
+mod material;
+mod nav;
+mod physics;
 mod postfx;
 mod query;
 mod scene;
@@ -252,6 +266,31 @@ impl EngineApi for LocalEngineApi<'_> {
     }
     fn query_stats(&mut self) -> Result<Value, RpcFailure> {
         query::query_stats(self)
+    }
+    // ---- M1-S4-D：探测查询 / 导航 / 材质表（协议面 48 → 56 条） ----
+    fn physics_raycast(&mut self, query: RayQuery) -> Result<Value, RpcFailure> {
+        physics::physics_raycast(self, query)
+    }
+    fn physics_overlap(&mut self, query: OverlapQuery) -> Result<Value, RpcFailure> {
+        physics::physics_overlap(self, query)
+    }
+    fn physics_cast(&mut self, query: CastQuery) -> Result<Value, RpcFailure> {
+        physics::physics_cast(self, query)
+    }
+    fn nav_bake(&mut self, options: NavBakeOptions) -> Result<Value, RpcFailure> {
+        nav::nav_bake(self, options)
+    }
+    fn nav_path(&mut self, query: NavPathQuery) -> Result<Value, RpcFailure> {
+        nav::nav_path(self, query)
+    }
+    fn nav_reachability(&mut self, query: NavReachQuery) -> Result<Value, RpcFailure> {
+        nav::nav_reachability(self, query)
+    }
+    fn material_list(&mut self) -> Result<Value, RpcFailure> {
+        material::material_list(self)
+    }
+    fn material_upsert(&mut self, decl: MaterialUpsert) -> Result<Value, RpcFailure> {
+        material::material_upsert(self, decl)
     }
 }
 

@@ -20,35 +20,46 @@
 //! |---|---|
 //! | `msg.rs` | `Request` / `Response` / `RpcError` / `RpcFailure` / 元信息 DTO |
 //! | `patch.rs` | 14 个 `*Patch`（只给要改的字段，其余保持原值） |
-//! | `api.rs` | `trait EngineApi`（44 方法，全部在主线程调用） |
+//! | `api.rs` | `trait EngineApi`（52 方法，全部在主线程调用） |
 //! | `dispatch/mod.rs` | 派发骨架 + 参数解码 + 元命令（`ping` / `engine.*` / `script.*` / `capture.*`） |
 //! | `dispatch/tx.rs` | `tx.*` 事务臂（M1-S1：begin / apply / preview / commit / rollback） |
 //! | `dispatch/scene.rs` | `scene.*` / `anim.*` 臂 |
+//! | `dispatch/physics.rs` | `physics.*` 查询臂（M1-S4-D：raycast / overlap / cast） |
+//! | `dispatch/nav.rs` | `nav.*` 臂（M1-S4-D：bake / path / reachability） |
 //! | `dispatch/media.rs` | `ui.*` / `light.*` / `audio.*` 臂 + 未知方法 |
+//! | `probe.rs` | `physics.*` 参数 DTO（形状收敛，不含引擎类型） |
+//! | `nav.rs` | `nav.*` 参数 DTO（`NavConfig` 字段平铺成 `Option`） |
+//! | `material.rs` | `scene.material.upsert` 参数 DTO（整行声明，不是补丁） |
 
 pub mod api;
 pub mod caps;
 pub mod dispatch;
+pub mod material;
 pub mod msg;
+pub mod nav;
 pub mod patch;
+pub mod probe;
 pub mod query;
 
 pub use self::dispatch::dispatch;
 pub use api::EngineApi;
+pub use material::*;
 pub use msg::*;
+pub use nav::*;
 pub use patch::*;
+pub use probe::*;
 pub use query::*;
 
 pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// 对外 RPC 能力方法表（47 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+/// 对外 RPC 能力方法表（56 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
 ///
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「48 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「56 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
@@ -57,6 +68,14 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// M1-S1 增 5 条 `tx.*`（39 → 44）：事务协议上链。M1-S2-B 增 3 条 `query.*`（44 → 47）：
 /// 语义查询面。这两批都**不新增脚本函数**，故只动本表与 `cmd_spec` 的 `Meta` 域，
 /// 脚本契约测试不受影响；S3/S4 的写入口则是 `tx.apply` 的 `op` 白名单，不再动本表。
+///
+/// M1-S4-D 增 8 条（48 → 56），第一次为「只读查询面」扩容：
+/// `physics.raycast` / `physics.overlap` / `physics.cast`（物理探测）、
+/// `nav.bake` / `nav.path` / `nav.reachability`（导航查询）、
+/// `scene.material.list` / `scene.material.upsert`（场景材质表）。
+/// 这八条同样不新增脚本函数（脚本侧直接拿 `&mut Scene` / `&Physics`），
+/// 所以 `cmd_spec` 里落在 `Meta` 域、`rpc = Some` 与 `name` 同名，
+/// 脚本契约的「域内函数数」断言不受影响。
 ///
 /// M1-S3-A 增 1 条 `tx.intent`（47 → 48）：意图原子单元。**这是本表第一次为
 /// S3 扩容**——S3 的意图需要一个独立的 RPC 面来携带「一次命中 N 条命令」的语义
@@ -83,6 +102,12 @@ pub const RPC_METHODS: &[&str] = &[
     "light.remove",
     "light.set",
     "light.setenabled",
+    "nav.bake",
+    "nav.path",
+    "nav.reachability",
+    "physics.cast",
+    "physics.overlap",
+    "physics.raycast",
     "query.describe",
     "query.find",
     "query.stats",
@@ -93,6 +118,8 @@ pub const RPC_METHODS: &[&str] = &[
     "scene.back",
     "scene.get",
     "scene.list",
+    "scene.material.list",
+    "scene.material.upsert",
     "scene.remove",
     "scene.save",
     "scene.setenvironment",
@@ -147,3 +174,18 @@ pub const TX_REJECTED: i32 = -32012;
 pub const TX_CONFLICT: i32 = -32013;
 /// 提交期某条命令执行失败，整笔不落（原子性），事务保持未决。
 pub const TX_APPLY_FAILED: i32 = -32014;
+
+// ---- 探测 / 导航查询业务错误码（M1-S4-D，占用 -32020 起的独立段）----
+//
+// 这三条的语义分界必须守住——它们回答的是不同问题，混用会让 AI 把「能力没有」
+// 当成「查了没有」：
+// * `PHYSICS_DISABLED`：物理总开关是关的，先把开关打开再问；
+// * `BACKEND_UNSUPPORTED`：开关开着，但当前后端不申报这项查询能力；
+// * `NAV_NOT_BAKED`：导航数据压根没烘过。
+
+/// 物理开关是关的（`Physics::enabled() == false`）。**不是**「没命中」。
+pub const PHYSICS_DISABLED: i32 = -32020;
+/// 当前物理后端不申报这项查询能力（`BackendCaps::raycast` / `overlap` / `shape_cast` 为假）。
+pub const BACKEND_UNSUPPORTED: i32 = -32021;
+/// 导航数据还没烘焙（宿主侧 `Nav` 槽位为空），`nav.path` / `nav.reachability` 无从计算。
+pub const NAV_NOT_BAKED: i32 = -32022;

@@ -42,9 +42,21 @@ fn api<'a>(
     physics: &'a Rc<RefCell<Physics>>,
     scripts: &'a mut ScriptHost,
 ) -> LocalEngineApi<'a> {
+    api_with_nav(scene, physics, scripts, None)
+}
+
+/// 带导航槽位的构造（M1-S4-D）：`nav.bake` 要往槽位里写，槽位必须由测试持有，
+/// 才能验「烘完就能查、且场景哈希没变」。
+fn api_with_nav<'a>(
+    scene: &'a Rc<RefCell<Document>>,
+    physics: &'a Rc<RefCell<Physics>>,
+    scripts: &'a mut ScriptHost,
+    nav: Option<&'a RefCell<Option<Nav>>>,
+) -> LocalEngineApi<'a> {
     LocalEngineApi {
         scene,
         physics,
+        nav,
         scripts,
         // 单元测试没有窗口 / GPU：渲染器缺席正是「headless 也得给出可解释结果」的场景。
         renderer: None,
@@ -128,6 +140,7 @@ fn env_map_patch(equirect: Option<&str>, faces: Option<Vec<String>>) -> Environm
 
 mod anim_audio;
 mod core;
+mod physics_nav;
 mod query;
 mod route;
 mod tx;

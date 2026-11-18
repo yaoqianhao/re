@@ -6,7 +6,9 @@
 //!        └─ tx::dispatch_tx       tx.*（M1-S1 事务协议）
 //!             └─ scene::dispatch_scene scene.* / anim.*
 //!                  └─ media::dispatch_media ui.* / light.* / audio.*
-//!                       └─ 未知方法 → METHOD_NOT_FOUND
+//!                       └─ physics::dispatch_physics physics.*（M1-S4-D，只读）
+//!                            └─ nav::dispatch_nav nav.*（M1-S4-D）
+//!                                 └─ 未知方法 → METHOD_NOT_FOUND
 //! ```
 //!
 //! 参数解码辅助（`param` / `opt_f32*` / `with_node` …）也在这里，子模块通过
@@ -15,11 +17,16 @@
 use serde_json::{json, Value};
 
 use crate::api::EngineApi;
+use crate::material::MaterialUpsert;
 use crate::msg::{Request, Response, RpcFailure};
+use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
 use crate::patch::*;
+use crate::probe::{CastQuery, CastShapeSpec, OverlapQuery, RayQuery};
 use crate::{INTERNAL_ERROR, METHOD_NOT_FOUND, PROTOCOL_VERSION};
 
 mod media;
+mod nav;
+mod physics;
 mod query;
 mod scene;
 mod tx;

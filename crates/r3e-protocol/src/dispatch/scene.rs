@@ -481,6 +481,48 @@ pub(super) fn dispatch_scene(
                 Err(f) => Response::fail(id, f),
             }
         }
+        // 材质表（M1-S4-D）：`name` 是主键，读写都以「行」为单位。
+        // 与上面的 `scene.setMaterial`（节点内联材质补丁）是两件事：那个改某个节点
+        // 自己的覆盖值，这两条改全场景共享的材质表。
+        "scene.material.list" => match api.material_list() {
+            Ok(r) => Response::ok(id, r),
+            Err(f) => Response::fail(id, f),
+        },
+        "scene.material.upsert" => {
+            let decl = match material_upsert_from(params) {
+                Ok(v) => v,
+                Err(f) => return Response::fail(id, f),
+            };
+            match api.material_upsert(decl) {
+                Ok(r) => Response::ok(id, r),
+                Err(f) => Response::fail(id, f),
+            }
+        }
         _ => media::dispatch_media(api, id, params, method, raw),
     }
+}
+
+/// 从 RPC 参数解析一份材质表行（[`MaterialUpsert`]，**整行声明而非补丁**）。
+///
+/// 没给的字段一律 `None`，由宿主取缺省——也就是说「没给法线贴图」的意思是
+/// 「这一行没有法线贴图」，不是「别动原来的法线贴图」。想让现有贴图留下，就把
+/// `scene.material.list` 读到的值原样传回来。
+fn material_upsert_from(params: &Value) -> Result<MaterialUpsert, RpcFailure> {
+    let name = match require_str(params, "name") {
+        Ok(s) if !s.trim().is_empty() => s.to_string(),
+        Ok(_) => return Err(RpcFailure::invalid_params("参数 `name` 不能为空")),
+        Err(f) => return Err(f),
+    };
+    Ok(MaterialUpsert {
+        name,
+        metallic: opt_num(params, "metallic")?,
+        roughness: opt_num(params, "roughness")?,
+        emissive: opt_vec3(params, "emissive")?,
+        albedo: opt_str(params, "albedo")?.map(str::to_string),
+        normal: opt_str(params, "normal")?.map(str::to_string),
+        metallic_roughness: opt_str(params, "metallicRoughness")?.map(str::to_string),
+        occlusion: opt_str(params, "occlusion")?.map(str::to_string),
+        emissive_map: opt_str(params, "emissiveMap")?.map(str::to_string),
+        uv_scale: opt_f32_array::<2>(params, "uvScale")?,
+    })
 }

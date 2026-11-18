@@ -1,12 +1,15 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 48 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 56 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
 
 use serde_json::Value;
 
+use crate::material::MaterialUpsert;
 use crate::msg::{EngineInfo, NodeBrief, RpcFailure};
+use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
 use crate::patch::*;
+use crate::probe::{CastQuery, OverlapQuery, RayQuery};
 use crate::query::QuerySpec;
 
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
@@ -392,5 +395,100 @@ pub trait EngineApi {
     /// "byKind": {String: usize}, "tags": {String: usize} }`。
     fn query_stats(&mut self) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("query.stats"))
+    }
+
+    // ---- M1-S4-D：物理探测 / 导航查询 / 场景材质表（八条）----
+    //
+    // 这八条的共同口径（三条铁律，任何实现都不得违反）：
+    //
+    // 1. **能力位随回包走**：`physics.*` 三条必须在回包里带 `capabilities` 数组，
+    //    调用方不必先问一次「你支持不支持」；空结果 + 能力位才解释得清楚。
+    // 2. **区分「没有」和「不会」**：物理关着回 `PHYSICS_DISABLED`、后端不申报该位回
+    //    `BACKEND_UNSUPPORTED`、导航没烘回 `NAV_NOT_BAKED`。**绝不回空表**——
+    //    空表会被 AI 读成「场景里真的没有东西」，从而去改本来就对的场景。
+    // 3. **只读不写**：八条里只有 `scene.material.upsert` 写场景，其余七条
+    //    `StateHash` 前后必须一致；`nav.bake` 的产物挂在宿主侧，不写节点。
+
+    /// 射线查询（M1-S4-D）：从一点朝一个方向打射线，拿最近命中体。
+    ///
+    /// 回包契约：`{ "hit": bool, "distance": f32, "point": [f32;3], "normal": [f32;3],
+    /// "node": String|null, "handle": u64|null, "backend": String,
+    /// "capabilities": [String...] }`。没打到时 `hit: false`，其余字段缺省。
+    ///
+    /// `maxDistance` 缺省由宿主填；方向由宿主归一化，零方向判参数错误。
+    fn physics_raycast(&mut self, _q: RayQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("physics.raycast"))
+    }
+
+    /// 球体重叠查询（M1-S4-D）：给球心与半径，拿覆盖范围内的刚体。
+    ///
+    /// 回包契约：`{ "count": usize, "limit": usize, "truncated": bool,
+    /// "hits": [{ "node": String, "handle": u64, "distance": f32 }...],
+    /// "backend": String, "capabilities": [String...] }`。
+    fn physics_overlap(&mut self, _q: OverlapQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("physics.overlap"))
+    }
+
+    /// 扫掠查询（M1-S4-D）：把球 / 盒沿方向推过去，拿最近一次接触。
+    ///
+    /// 回包契约与 `physics.raycast` 同构（`hit` / `distance` / `point` / `normal` /
+    /// `node` / `handle` / `backend` / `capabilities`）。
+    fn physics_cast(&mut self, _q: CastQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("physics.cast"))
+    }
+
+    /// 烘焙导航网格（M1-S4-D）。产物挂在宿主侧，**不写场景**。
+    ///
+    /// 回包契约：`{ "baked": bool, "dims": [u32;2], "cellSize": f32, "cells": usize,
+    /// "walkable": usize, "walkableRatio": f32, "regions": u32,
+    /// "regionSizes": [u32...], "spawns": [{ "name": String, "region": u32 }...],
+    /// "unresolved": [String...], "floatingSpawns": [String...] }`。
+    ///
+    /// `unresolved` / `floatingSpawns` 非空必须如实带出：它们是「这份导航数据
+    /// 不可信」的直接证据，藏起来会让 AI 基于错网格报「路走不通」。
+    fn nav_bake(&mut self, _opts: NavBakeOptions) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("nav.bake"))
+    }
+
+    /// 寻路（M1-S4-D）：A* 求一条可走路径。
+    ///
+    /// 回包契约：`{ "found": bool, "outcome": String("found"|"unreachable"|
+    /// "invalidEndpoint"|"budgetExceeded"), "reason": String（人话）,
+    /// "points": [[f32;3]...], "count": usize }`。
+    ///
+    /// 四种结局都要如实区分：`unreachable`（分属不同连通块，几何上走不到）与
+    /// `budgetExceeded`（算不完，结论未知）对调用方是完全不同的两个下一步。
+    fn nav_path(&mut self, _q: NavPathQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("nav.path"))
+    }
+
+    /// 可达性（M1-S4-D）：两点是否在同一连通块，断连时给断点。
+    ///
+    /// 回包契约：`{ "reachable": bool, "reason": String, "fromRegion": u32,
+    /// "toRegion": u32, "disconnectPoint": [f32;3]|null }`。
+    fn nav_reachability(&mut self, _q: NavReachQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("nav.reachability"))
+    }
+
+    /// 列场景材质表（M1-S4-D）。
+    ///
+    /// 回包契约：`{ "count": usize, "materials": [{ "name", "metallic", "roughness",
+    /// "emissive": [f32;3], "textures": {String: String}, "uvScale": [f32;2],
+    /// "users": [String...] }...] }`。
+    ///
+    /// `users` 是按 `materialRef` 引用这份材质的物件名——「这份材质有没有人用」
+    /// 决定了能不能删，比让 AI 自己反查全部节点省一圈。
+    fn material_list(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.material.list"))
+    }
+
+    /// 写入 / 覆盖一行场景材质（M1-S4-D）。同名整体覆盖、顺序不变，上限只拦新增。
+    ///
+    /// 回包契约：`{ "name": String, "created": bool, "count": usize,
+    /// "material": { ...与 material.list 单项同构... } }`。
+    ///
+    /// 名字收敛后为空回参数错误；表满且是新名字回 `ENGINE_ERROR`（不是静默失败）。
+    fn material_upsert(&mut self, _decl: MaterialUpsert) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.material.upsert"))
     }
 }

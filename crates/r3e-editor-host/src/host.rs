@@ -4,7 +4,10 @@
 //! 可变状态打包成 `EngineAccess`，再交给协议层排队好的 `Job`。协议层拿不到
 //! 也不持有场景引用，所以不会出现「编辑器攥着 `&mut` 导致主循环借不到」的僵局。
 
+use std::cell::RefCell;
+
 use r3e_editor::RpcServer;
+use r3e_nav::Nav;
 use r3e_runtime::{EditorService, EngineAccess};
 
 use crate::api::LocalEngineApi;
@@ -12,6 +15,11 @@ use crate::api::LocalEngineApi;
 /// 把 JSON-RPC 服务端包装成主循环可用的编辑器挂件。
 pub struct RpcHost {
     server: RpcServer,
+    /// 导航网格槽位（M1-S4-D）：`nav.bake` 写入、`nav.path` / `nav.reachability` 读取。
+    ///
+    /// 由宿主持有、进程内借用，**不进 `Document`**：导航是烘焙产物而非场景数据，
+    /// 混进场景会让烘焙污染 `state_hash` 与撤销栈。
+    nav: RefCell<Option<Nav>>,
 }
 
 impl RpcHost {
@@ -19,7 +27,10 @@ impl RpcHost {
     pub fn bind(port: u16, token: Option<String>) -> std::io::Result<Self> {
         let server = RpcServer::bind(port, token)?;
         log::info!("编辑器桥已就绪: {}", server.local_addr());
-        Ok(Self { server })
+        Ok(Self {
+            server,
+            nav: RefCell::new(None),
+        })
     }
 
     /// 底层服务端（测试与诊断要查连接数 / 令牌）。
@@ -37,6 +48,9 @@ impl EditorService for RpcHost {
         let mut api = LocalEngineApi {
             scene: access.scene,
             physics: access.physics,
+            // 槽位生命周期与 `RpcHost` 同步：同一进程里反复烘焙复用同一格，
+            // 「上一次烘的网格」在没人要求时不会被悄悄丢弃。
+            nav: Some(&self.nav),
             scripts: access.scripts,
             renderer: access.renderer,
             frame_ms: access.frame_ms,

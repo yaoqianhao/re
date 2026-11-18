@@ -2347,6 +2347,7 @@ dependencies = [
  "r3e-core",
  "r3e-doc",
  "r3e-editor",
+ "r3e-nav",
  "r3e-physics",
  "r3e-render",
  "r3e-runtime",

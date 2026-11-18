@@ -1,4 +1,6 @@
-//! `ui.*` / `light.*` / `audio.*` 臂，以及「未知方法」的最后一站。
+//! `ui.*` / `light.*` / `audio.*` 臂。
+//!
+//! 命中不到本组时交给 [`super::physics::dispatch_physics`]，不在本文件回错误。
 
 use super::*;
 
@@ -246,10 +248,6 @@ pub(super) fn dispatch_media(
                 Err(f) => Response::fail(id, f),
             }
         }
-        other => Response::fail(
-            id,
-            RpcFailure::new(METHOD_NOT_FOUND, format!("未知方法 `{}`", raw))
-                .with_data(json!({ "normalized": other })),
-        ),
+        _ => physics::dispatch_physics(api, id, params, method, raw),
     }
 }

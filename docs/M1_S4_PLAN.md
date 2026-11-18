@@ -13,7 +13,7 @@ AIGC:
 
 # M1-S4 方案 V3：能力全量前置（导航 + 材质全功能）
 
-> 状态：S4-A / S4-B / S4-C 已落地；S4-D 起待执行（V3 取代 V2 的「部分外排」裁决）
+> 状态：S4-A / S4-B / S4-C / S4-D 已落地；S4-E 起待执行（V3 取代 V2 的「部分外排」裁决）
 > 日期：2026-11-17
 > 归属：`docs/AI_ROADMAP.md` §3.2 M1「AI 写入闭环」第四 Sprint
 > 前置：S1（事务协议）、S2（WorldQuery）、S3（意图命令 + impact）已收口，单测基线 1,574，`cargo xtask verify` 十项全绿
@@ -40,6 +40,8 @@ M1-S4 原计划两卡（验证器五类检查 + 接入 verify 链与 impact）�
 ---
 
 ## 2. 现状实证（只读核查，V3 修订）
+
+> 本表是 **V3 修订时点（2026-11-17）的快照**，用来证明「为什么先补能力」。S4-A…D 落地后其中多条已过时：C1 的 24 → **30** 条不变量、C3/C7 的 48 → **56** RPC、C6 的装配已下沉为公共入口、C9 的导航底座已建 `r3e-nav`、C10 的材质引用已可写入文档。原表保留原文不改写历史。
 
 | # | 能力 | 实证位置 | 结论 |
 |---|---|---|---|
@@ -212,7 +214,33 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 
 **能力位透传（铁律）**：`physics.*` 回包必须带 `capabilities:{raycast,overlap,shapeCast}`；后端不申报能力时返回 `BACKEND_UNSUPPORTED`，物理关闭时返回 `PHYSICS_DISABLED`，**绝不返回空表**（空表会被 AI 读成「没有东西挡住」）。`nav.*` 在未 bake 时返回 `NAV_NOT_BAKED`。
 
-**契约同步（四处，漏一处即红）**：`cmd_spec_contract` 下限 48 → 56；`r3e-protocol/tests/rpc_contract.rs` 的 `SOURCES` 补 `dispatch/{physics,nav,material}.rs`；`RPC_METHODS` 条数断言；`capabilities.json` 重生成。
+**契约同步（四处，漏一处即红）**：`cmd_spec_contract` 下限 48 → 56；`r3e-protocol/tests/rpc_contract.rs` 的 `SOURCES` 补 `dispatch/{physics,nav}.rs`（`scene.material.*` 两臂落在已有的 `dispatch/scene.rs` 里，被原有扫描覆盖，**没有** `dispatch/material.rs`——计划原文写 `{physics,nav,material}.rs` 与落地不符，此处订正）；`RPC_METHODS` 条数断言；`capabilities.json` 重生成。
+
+**状态：✅ 已落地（2026-11-18）**。四层同改 + 四处契约同步全部到位。
+
+**落地实证**：
+
+1. **core / 依赖层**：S4-C 的 `Physics::bind_scene`、`Nav::bake_scene` 直接复用，本卡零改动；
+2. **protocol 层**：`probe.rs`（`RayQuery` / `OverlapQuery` / `CastQuery` / `CastShapeSpec`）、`nav.rs`（`NavBakeOptions` / `NavPathQuery` / `NavReachQuery`）、`material.rs`（`MaterialUpsert`）三个 DTO 文件；`dispatch/physics.rs` + `dispatch/nav.rs` 两条臂（`physics.rs` 只做参数形状校验，命中不到转 `dispatch_nav`，业务裁决一律在宿主），`scene.rs` 加两条 `scene.material.*`；`RPC_METHODS` 48 → **56**；`api.rs` 八条默认 `unsupported`（带三条铁律注释）；
+3. **editor-host 层**：`src/api/{physics,nav,material}.rs` 三个新文件；`host.rs` 增 `RefCell<Option<Nav>>` 槽位（导航产物住宿主、不进 `Document`），`poll_one` 注入 `LocalEngineApi`；
+4. **cmd_spec 层**：八条登记完毕，`cargo xtask gen-capabilities` 重生成 `capabilities.json`（`commands=386 / rpc=56`）。
+
+**验收结果（`cargo xtask verify` 十项全绿）**：
+
+| 口径 | 结果 |
+|---|---|
+| 命令表 / RPC | 386 / 56（`gen-capabilities --check` 字节一致） |
+| 四处契约 | `r3e-protocol/tests/rpc_contract.rs` 30 条（含补两条 `SOURCES` 后 dispatch 臂全量对齐）、`r3e-editor-host/tests/cmd_spec_contract.rs` 3 条（方法数 48 → 56）、`r3e-editor/tests/cmd_spec_contract.rs` 4 条（补 `physics`/`nav` 两段扫描后「表在骗人」归零） |
+| 宿主层单测 | `physics_nav.rs` **13 条**全绿：物理关闭回 `PHYSICS_DISABLED`、`NullBackend` 不申报能力回 `BACKEND_UNSUPPORTED`（两者不许退化成空表）、成功回包自带 `capabilities` 连空表也带（「没打到」≠「不会打」）、四类非法入参、三条探测不动 `StateHash` 与写次数；材质 upsert 新建/覆盖与 **整行声明语义**（没给贴图＝这一行没有贴图）、`users` 按 `materialRef` 反查、空名拒绝且不留写操作；nav 无槽位与未烘焙同码、`bake` 只写槽位（哈希与写次数都不变）、烘焙失败保留上一次网格 |
+| 写点台账 | `r3e-editor-host` 18 → **22**（1 处真实写点 + 3 处测试夹具），合计 234 处，理由已登记 `docs/WRITE_SITES.md` |
+| 单测基线 | 1650 → **1677**（host 81 → 94） |
+
+**已知债（登记在案，本卡不处理）**：
+
+1. `scene.material.upsert` 走 `Document::write` 直写——推版本 / 置脏 / 计写次，但**不入撤销栈**，且在 `tx.begin` 期间提交会改到主场景（宿主其余单条写 RPC 同构，非本卡新引入）。命令层 `CommandKind::UpsertMaterial` **早已就绪**（S4-A 落地），缺的只是本 RPC 还没进 `tx.apply` 白名单；
+2. 补齐代价很小：`api/tx.rs` 白名单加一条 `scene.material.upsert` → `CommandKind::upsert_scene_material` + 宿主改走 `tx_apply`，随后删掉 `WRITE_SITES.md` 里这一处写点。**建议随 S4-E 一起做**（S4-E 要复用材质校验，改同一批文件，避免两次触碰测试基线）。
+
+其余口径已实测：`material.list` 只读、`material.upsert` 的整行声明语义与 `patch` 系 `*Patch` 明确区分（没给的贴图槽 = 这一行没有贴图，想保留就回传 `list` 的原值）。
 
 ---
 
@@ -258,7 +286,7 @@ S4-A 材质引用（2–3 提交）
 | workspace crate | 15 | 16（`r3e-nav`） |
 | `CommandKind` | 15 | 18 |
 | `ISSUE_CODES` | 24 | 约 36 |
-| 单测 | 1,574 | 约 1,680+ |
+| 单测 | 1,574 | 约 1,680+（实测 S4-D 收口 **1,677**，预估准确） |
 | 预估工期 | — | 2.5–3.5 周（比 V2 多约 1–1.5 周，Gate 1 相应顺延） |
 
 **S4-B 与 S4-A 无代码依赖，可并行**；S4-C 之后所有卡严格串行。

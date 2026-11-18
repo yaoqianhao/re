@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 378,
-    "rpc": 48,
+    "commands": 386,
+    "rpc": 56,
     "script_only": 330,
     "domains": 17,
     "invariants": 30
@@ -2169,6 +2169,36 @@
       "since": "M0-backfill"
     },
     {
+      "name": "nav.bake",
+      "domain": "meta",
+      "rpc": "nav.bake",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M1-S4-D"
+    },
+    {
+      "name": "nav.path",
+      "domain": "meta",
+      "rpc": "nav.path",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M1-S4-D"
+    },
+    {
+      "name": "nav.reachability",
+      "domain": "meta",
+      "rpc": "nav.reachability",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S4-D"
+    },
+    {
       "name": "occlusion_bias",
       "domain": "light",
       "rpc": null,
@@ -2256,6 +2286,36 @@
       "reversible": true,
       "cost": "cheap",
       "since": "M0-backfill"
+    },
+    {
+      "name": "physics.cast",
+      "domain": "meta",
+      "rpc": "physics.cast",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S4-D"
+    },
+    {
+      "name": "physics.overlap",
+      "domain": "meta",
+      "rpc": "physics.overlap",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S4-D"
+    },
+    {
+      "name": "physics.raycast",
+      "domain": "meta",
+      "rpc": "physics.raycast",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S4-D"
     },
     {
       "name": "physics_backend",
@@ -2700,6 +2760,26 @@
       "reversible": true,
       "cost": "linear",
       "since": "M0-backfill"
+    },
+    {
+      "name": "scene.material.list",
+      "domain": "meta",
+      "rpc": "scene.material.list",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S4-D"
+    },
+    {
+      "name": "scene.material.upsert",
+      "domain": "meta",
+      "rpc": "scene.material.upsert",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M1-S4-D"
     },
     {
       "name": "scene.setenvironment",
