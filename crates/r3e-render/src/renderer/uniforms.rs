@@ -36,10 +36,18 @@ pub(crate) enum MaterialKey {
         index: u32,
         surface: SurfaceKey,
     },
+    /// M1-S4-A：场景材质表引用（`node.material_ref` → `Scene::materials[]`）。
+    ///
+    /// 自成一类而不是折进 `Surface`：场景材质能带五张贴图与 uv 缩放，
+    /// 而 [`SurfaceKey`] 只承载三个标量，折进去会让「同名不同贴图」的材质撞成同一键。
+    Scene(super::SceneMaterialKey),
 }
 
 impl MaterialKey {
     /// 叠加物件级 PBR 覆盖；`None` 原样返回。
+    ///
+    /// 场景材质键**不吃覆盖**：它本身已经是完整材质（标量 + 贴图 + uv 都在键里），
+    /// 再叠一层内联覆盖会得到「键说有 A、数据却是 B」的不一致。
     pub(crate) fn with_surface(self, surface: Option<SurfaceKey>) -> Self {
         match (self, surface) {
             (key, None) => key,
@@ -52,20 +60,28 @@ impl MaterialKey {
                 MaterialKey::Surface(surface)
             }
             (key @ MaterialKey::AssetSurface { .. }, Some(_)) => key,
+            (key @ MaterialKey::Scene(_), Some(_)) => key,
         }
     }
 
-    /// 拆成「资产材质来源 + 物件级覆盖」两部分。
-    pub(crate) fn split(self) -> (Option<(AssetId, u32)>, Option<SurfaceKey>) {
+    /// 拆成「资产材质来源 + 物件级覆盖 + 场景材质」。三者至多一个有值。
+    pub(crate) fn split(
+        self,
+    ) -> (
+        Option<(AssetId, u32)>,
+        Option<SurfaceKey>,
+        Option<super::SceneMaterialKey>,
+    ) {
         match self {
-            MaterialKey::Default => (None, None),
-            MaterialKey::Asset { asset, index } => (Some((asset, index)), None),
-            MaterialKey::Surface(surface) => (None, Some(surface)),
+            MaterialKey::Default => (None, None, None),
+            MaterialKey::Asset { asset, index } => (Some((asset, index)), None, None),
+            MaterialKey::Surface(surface) => (None, Some(surface), None),
             MaterialKey::AssetSurface {
                 asset,
                 index,
                 surface,
-            } => (Some((asset, index)), Some(surface)),
+            } => (Some((asset, index)), Some(surface), None),
+            MaterialKey::Scene(material) => (None, None, Some(material)),
         }
     }
 }

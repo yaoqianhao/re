@@ -7,7 +7,7 @@
 //! 与 `SceneCommand`（`r3e-core::scene_stack`）的分工：那是**整个场景**的存档/回放单元
 //! （场景栈换档用），这里是**单个编辑动作**的粒度（编辑器撤销、脚本可审计、S4 差分哈希）。
 //!
-//! v0 落地 14 条，按域分组：
+//! v0 落地 17 条，按域分组：
 //!
 //! | 域 | 命令 |
 //! |---|---|
@@ -15,6 +15,7 @@
 //! | 环境 | `SetCamera` `SetEnvironment` `SetPostFx` |
 //! | 灯光 | `UpsertLocalLight` `RemoveLocalLight` |
 //! | 地形 | `UpsertTerrainPatch` |
+//! | 材质 | `UpsertMaterial` `RemoveMaterial` `SetNodeMaterialRef` |
 //! | UI / 文本 | `UpsertUi` `RemoveUi` `UpsertText` `RemoveText` |
 //!
 //! 未纳入（M1）：`DespawnNode` / `RenameNode` / `SetAnim*` / `SetMorph*`。前者需要 core
@@ -22,13 +23,14 @@
 //! 覆盖动画与形变域，见 `docs/M0S3_DOC_LAYER.md` §7 偏离登记。
 
 mod env;
+mod material;
 mod scene;
 mod terrain;
 mod ui;
 
 use r3e_core::{
-    Camera, EnvironmentSettings, LocalLight, NodeId, ObjectDesc, PostFxSettings, Scene, ScreenText,
-    SurfaceMaterial, TerrainPatch, Transform, UiElement, Vec4,
+    Camera, EnvironmentSettings, LocalLight, NodeId, ObjectDesc, PostFxSettings, Scene,
+    SceneMaterialDecl, ScreenText, SurfaceMaterial, TerrainPatch, Transform, UiElement, Vec4,
 };
 
 use crate::{DocError, Document, Mark, UndoGroup};
@@ -171,6 +173,27 @@ pub enum CommandKind {
         /// 前像；`None` 表示此前没有这块地形，撤销即删除。
         old: Option<TerrainPatch>,
     },
+    /// 按 name 写场景材质（同名覆盖，M1-S4-A）。
+    UpsertMaterial {
+        /// 新材质。
+        next: SceneMaterialDecl,
+        /// 前像；`None` 表示此前没有这份材质，撤销即删除。
+        old: Option<SceneMaterialDecl>,
+    },
+    /// 按 name 删场景材质（M1-S4-A）。
+    RemoveMaterial {
+        /// 被删的材质（撤销即原样写回）。
+        old: SceneMaterialDecl,
+    },
+    /// 改节点的场景材质引用（M1-S4-A）；`None` = 清除引用。
+    SetNodeMaterialRef {
+        /// 目标节点名。
+        name: String,
+        /// 前像（引用名本身，不是解析后的材质）。
+        old: Option<String>,
+        /// 新值。
+        new: Option<String>,
+    },
 }
 
 impl CommandKind {
@@ -192,6 +215,9 @@ impl CommandKind {
             Self::UpsertText { .. } => "写文本",
             Self::RemoveText { .. } => "删文本",
             Self::UpsertTerrainPatch { .. } => "写地形",
+            Self::UpsertMaterial { .. } => "写材质",
+            Self::RemoveMaterial { .. } => "删材质",
+            Self::SetNodeMaterialRef { .. } => "改材质引用",
         }
     }
 
@@ -213,6 +239,11 @@ impl CommandKind {
             Self::UpsertText { next, .. } => ui::write_text(s, next),
             Self::RemoveText { old } => ui::remove_text(s, &old.key),
             Self::UpsertTerrainPatch { next, .. } => terrain::write_patch(s, next),
+            Self::UpsertMaterial { next, .. } => material::write_material(s, next),
+            Self::RemoveMaterial { old } => material::remove_material(s, &old.name),
+            Self::SetNodeMaterialRef { name, new, .. } => {
+                material::write_node_material_ref(s, name, new)
+            }
         }
     }
 
@@ -246,6 +277,14 @@ impl CommandKind {
                 Some(old) => terrain::write_patch(s, old),
                 None => terrain::remove_patch(s, &next.name),
             },
+            Self::UpsertMaterial { next, old } => match old {
+                Some(old) => material::write_material(s, old),
+                None => material::remove_material(s, &next.name),
+            },
+            Self::RemoveMaterial { old } => material::write_material(s, old),
+            Self::SetNodeMaterialRef { name, old, .. } => {
+                material::write_node_material_ref(s, name, old)
+            }
         }
     }
 
@@ -261,6 +300,9 @@ impl CommandKind {
             Self::UpsertText { next, .. } => Some(&next.key),
             Self::RemoveText { old } => Some(&old.key),
             Self::UpsertTerrainPatch { next, .. } => Some(&next.name),
+            Self::UpsertMaterial { next, .. } => Some(&next.name),
+            Self::RemoveMaterial { old } => Some(&old.name),
+            Self::SetNodeMaterialRef { name, .. } => Some(name),
             _ => None,
         }
     }

@@ -149,6 +149,37 @@ pub const ISSUE_CODES: &[IssueCode] = &[
         layer: "refs",
         severity: Severity::Error,
     },
+    // ---------------------------------------------------------------- material.rs
+    IssueCode {
+        code: "material.dup_name",
+        layer: "material",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "material.params_out_of_range",
+        layer: "material",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "material.texture_missing",
+        layer: "material",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "material.ref_missing",
+        layer: "material",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "material.ref_conflict",
+        layer: "material",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "material.unreferenced",
+        layer: "material",
+        severity: Severity::Warn,
+    },
 ];
 
 /// 按 `code` 查表。查不到返回 `None`（代表上报了一个没登记的字面量，属于缺陷）。
@@ -186,7 +217,7 @@ mod tests {
     fn 层名只有校验模块名() {
         for ic in ISSUE_CODES {
             assert!(
-                matches!(ic.layer, "bounds" | "refs"),
+                matches!(ic.layer, "bounds" | "refs" | "material"),
                 "未知校验层 {}（新增校验模块须同步本表）",
                 ic.layer
             );
@@ -202,9 +233,12 @@ mod tests {
     }
 
     #[test]
-    fn 只有蒙皮未求解是warn其余是error() {
+    fn 只有蒙皮未求解与未引用材质是warn其余是error() {
         for ic in ISSUE_CODES {
-            let expect_warn = ic.code == "skin.joint_matrices.unsolved";
+            let expect_warn = matches!(
+                ic.code,
+                "skin.joint_matrices.unsolved" | "material.unreferenced"
+            );
             assert_eq!(
                 ic.severity == Severity::Warn,
                 expect_warn,

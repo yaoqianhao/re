@@ -17,25 +17,27 @@
 //!   environment(有无 + 内容) → postfx(有无 + 内容)
 //!   lights + lights_enabled
 //!   terrain（块数 + 每块内容）
+//!   materials（份数 + 每份内容：名字 / 三标量 / 5 贴图槽 / uv 缩放）
 //!   texts + text_enabled
 //!   ui + ui_enabled + ui_above_text
 //!   occlusion → environment_map(有无 + 内容)
 //!   physics → assets → morphs
 //! 节点（按 Scene::order，插入序，稳定）
 //!   每节点：id → name → transform(9×f32) → visible → color → material(有无 + 内容)
-//!           → parent(有无) → children(按序) → mesh(存在性 + 内容)
+//!           → material_ref(有无 + 名字) → parent(有无) → children(按序) → mesh(存在性 + 内容)
 //! ```
 //!
 //! # 覆盖 / 不覆盖（评审对照表，新增 `Scene` 字段时先看这里）
 //!
 //! | 覆盖 | 理由 |
 //! |---|---|
-//! | `order` + 每节点 id/name/transform/visible/color/material/parent/children/mesh | 命令 v0 的 14 条全部落在这几项上 |
+//! | `order` + 每节点 id/name/transform/visible/color/material/material_ref/parent/children/mesh | 命令 v0 的 17 条全部落在这几项上 |
 //! | `next_id` | **必须覆盖**：不回退它，回放里同一脚本会分配出不同 `NodeId`，哈希假绿 |
 //! | `name` / `background` / `camera` / `light` | `SetCamera` 直接改 |
 //! | `environment` / `postfx` / `lights` / `texts` / `ui` / 三个 `*_enabled` / `ui_above_text` | `SetEnvironment` / `SetPostFx` / `Upsert*` / `Remove*` 直接改 |
 //! | `occlusion` / `environment_map` / `physics` / `assets` / `morphs` | 文档语义的一部分，成本低 |
 //! | `terrain`（M1-S3-C：名字 / 矩形 / 分辨率 / 材质 / 高度样本） | `paint_terrain` 直接改，AI 写入必须能被差分哈希看见 |
+//! | `materials`（M1-S4-A：名字 / 三标量 / 5 贴图槽 / uv 缩放） | `UpsertMaterial` / `RemoveMaterial` 直接改，引用解析随之变化 |
 //!
 //! | 不覆盖 | 理由 |
 //! |---|---|
@@ -53,8 +55,9 @@ use std::fmt;
 use r3e_core::{
     AnimDecl, AssetDecl, BloomSettings, Camera, CascadeSettings, EnvironmentMapSettings,
     EnvironmentSettings, Light, LocalLight, LocalLightKind, MeshRef, MorphInstance, Node,
-    OcclusionSettings, PhysicsSceneDesc, PostFxSettings, Scene, ScreenText, ShadowSettings,
-    SsaoSettings, SurfaceMaterial, TerrainPatch, TonemapMode, UiElement, UiKind, UiUnit, UiValue,
+    OcclusionSettings, PhysicsSceneDesc, PostFxSettings, Scene, SceneMaterialDecl, ScreenText,
+    ShadowSettings, SsaoSettings, SurfaceMaterial, TerrainPatch, TonemapMode, UiElement, UiKind,
+    UiUnit, UiValue,
 };
 
 use crate::Document;
@@ -235,6 +238,8 @@ fn mix_node(h: &mut u64, n: &Node) {
         }
         None => mix_u64(h, 0),
     }
+    // 场景材质引用（M1-S4-A）：只混名字，不混解析结果——表内容由 `materials[]` 段单独覆盖。
+    mix_opt_str(h, n.material_ref.as_deref());
     match n.parent {
         Some(p) => {
             mix_u64(h, 1);
@@ -508,6 +513,20 @@ fn mix_terrain(h: &mut u64, t: &TerrainPatch) {
     mix_f32s(h, &t.heights);
 }
 
+/// 场景材质表项（M1-S4-A）：名字 + 三标量 + 5 个贴图槽 + uv 缩放。
+///
+/// 贴图槽按 [`TEXTURE_SLOTS`] 的固定顺序逐槽混，槽位顺序变了等于换哈希。
+fn mix_scene_material(h: &mut u64, m: &SceneMaterialDecl) {
+    mix_str(h, &m.name);
+    mix_f32(h, m.metallic);
+    mix_f32(h, m.roughness);
+    mix_f32s(h, &m.emissive);
+    for (_, path) in m.textures() {
+        mix_str(h, path);
+    }
+    mix_f32s(h, &m.uv_scale);
+}
+
 fn mix_morph(h: &mut u64, m: &MorphInstance) {
     mix_u64(h, m.mesh_node);
     mix_u64(h, m.target_count as u64);
@@ -555,6 +574,11 @@ pub fn scene_hash(scene: &Scene) -> StateHash {
     mix_u64(&mut h, scene.terrain.len() as u64);
     for t in &scene.terrain {
         mix_terrain(&mut h, t);
+    }
+    // 场景材质表（M1-S4-A）：同名覆盖也是原地替换，顺序同样即插入序。
+    mix_u64(&mut h, scene.materials.len() as u64);
+    for m in &scene.materials {
+        mix_scene_material(&mut h, m);
     }
     mix_u64(&mut h, scene.texts.len() as u64);
     for t in &scene.texts {

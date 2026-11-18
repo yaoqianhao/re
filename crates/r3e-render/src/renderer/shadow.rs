@@ -385,7 +385,7 @@ impl Renderer {
         // 不是主通道那张比较采样器 —— 深度图此刻正被本 pass 写入。
         pass.set_bind_group(3, pass_bind_group, &[]);
         for (group_index, range) in runs {
-            let Some((key, _, _)) = groups.get(*group_index) else {
+            let Some((key, ..)) = groups.get(*group_index) else {
                 continue;
             };
             let Some(gpu) = self.mesh_cache.get(*key) else {

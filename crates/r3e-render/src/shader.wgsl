@@ -35,9 +35,13 @@ struct Material {
     params: vec4<f32>,
     // rgb = 自发光（线性 HDR，只加不减、不参与光照），a 保留
     emissive: vec4<f32>,
-    // 扩展二十一：x/y/z = 法线 / 粗糙度 / AO 贴图是否挂载（0/1），w 保留。
-    // 三位全 0 时着色器完全不采样这三张图，材质行为与扩展十一的纯标量一致。
+    // 扩展二十一：x/y/z = 法线 / 粗糙度 / AO 贴图是否挂载（0/1），
+    // 扩展 S4-A：w = 自发光贴图是否挂载。
+    // x/y/z 全 0 时着色器完全不采样这三张图，材质行为与扩展十一的纯标量一致。
     params2: vec4<f32>,
+    // 扩展 S4-A：xy = 贴图平铺倍率（已夹到 [MIN, MAX]）。
+    // 缺省 (1, 1) 表示不平铺，此时所有采样路径与扩展二十一逐像素相同。
+    uv_scale: vec4<f32>,
 };
 
 @group(1) @binding(0)
@@ -67,6 +71,16 @@ var t_occlusion_map: texture_2d<f32>;
 // 配合 `u_camera.env_probe.x = 0` 保证着色器不会走到采样分支。
 @group(1) @binding(6)
 var t_env_cube: texture_cube<f32>;
+
+// 扩展 S4-A：自发光贴图（sRGB 颜色图，与上面三张数据图的色彩空间不同）。
+// 未挂时绑 1×1 白图，`params2.w = 0` 保证不采样。
+@group(1) @binding(7)
+var t_emissive_map: texture_2d<f32>;
+
+// 扩展 S4-A：平铺专用 Repeat 采样器。binding(2) 的采样器是 ClampToEdge
+// （存量画面靠它保证 uv 越界不出接缝），平铺时必须走 Repeat 才有正确语义。
+@group(1) @binding(8)
+var s_uv: sampler;
 
 // P4：关节矩阵表。所有蒙皮实例共用一块 storage buffer，实例用 `joint_base`
 // 指出自己那段起点；非蒙皮实例权重全 0，不会读到这些槽位。
@@ -883,6 +897,10 @@ fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let geometric_n = normalize(in.world_normal);
+    // 扩展 S4-A：平铺 uv。倍率为 (1,1) 时 `uv_tiled == in.uv`（逐像素相同），
+    // 倍率不为 1 时所有贴图采样一起平铺 —— 只平铺部分贴图会让法线与底色错位。
+    // 采样器走 Repeat：平铺后 uv 会超出 0..1，ClampToEdge 会把边缘拉成条带。
+    let uv_tiled = in.uv * u_material.uv_scale.xy;
     let l = normalize(-u_camera.light_dir.xyz);
     let v = normalize(u_camera.camera_pos.xyz - in.world_position);
     // 光方向与视线正相反时 l+v 退化，直接取法线作半程向量，避免 normalize(0) 出 NaN
@@ -893,7 +911,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 贴图是 sRGB 纹理，采样后已是线性值；材质因子按线性因子直接相乘。
     var albedo = in.color.rgb * u_material.base_color.rgb;
     if u_material.params.z > 0.5 {
-        let sampled = textureSample(t_base_color, s_base_color, in.uv);
+        let sampled = textureSample(t_base_color, s_uv, uv_tiled);
         albedo = albedo * sampled.rgb;
     }
     // 反照率为负会把光"减掉"，与 CPU 侧一样按 0 处理
@@ -917,7 +935,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let t = normalize(tangent);
         let b = cross(geometric_n, t) * in.tangent_handedness;
         // 线性纹理：采样值直接是 [-1,1] 的法线分量，正好用 *2-1 还原
-        let sampled = textureSample(t_normal_map, s_base_color, in.uv).xyz * 2.0 - 1.0;
+        let sampled = textureSample(t_normal_map, s_uv, uv_tiled).xyz * 2.0 - 1.0;
         // Z 分量至少留一点正值，防止贴图误差把法线翻到表面背面
         let tangent_normal = vec3<f32>(sampled.xy, max(sampled.z, 0.05));
         n = normalize(t * tangent_normal.x + b * tangent_normal.y + geometric_n * tangent_normal.z);
@@ -928,14 +946,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 都把粗糙度放在 G）。标量因子是乘数，缺贴图时退化为 params.y 本身。
     var roughness_scalar = u_material.params.y;
     if u_material.params2.y > 0.5 {
-        roughness_scalar = roughness_scalar * textureSample(t_roughness_map, s_base_color, in.uv).g;
+        roughness_scalar = roughness_scalar * textureSample(t_roughness_map, s_uv, uv_tiled).g;
     }
     let roughness = clamp(roughness_scalar, MIN_ROUGHNESS, 1.0);
     // AO 贴图（线性，取 R 通道）：只衰减环境光，直接光由阴影负责，
     // 否则 AO 与阴影会重复压暗、接触处出现脏黑边。
     var ao = 1.0;
     if u_material.params2.z > 0.5 {
-        ao = clamp(textureSample(t_occlusion_map, s_base_color, in.uv).r, 0.0, 1.0);
+        ao = clamp(textureSample(t_occlusion_map, s_uv, uv_tiled).r, 0.0, 1.0);
     }
 
     let ndl = clamp(dot(n, l), 0.0, 1.0);
@@ -997,7 +1015,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         + local_term
         + ambient_term
         // 自发光只加不减：不乘 n·l、不受阴影影响、不参与光照计算
-        + u_material.emissive.rgb;
+        // 扩展 S4-A：自发光贴图是乘性贡献（glTF 语义），未挂时乘 vec3(1) → 与纯标量路径等价。
+    + u_material.emissive.rgb
+        * select(vec3<f32>(1.0), textureSample(t_emissive_map, s_uv, uv_tiled).rgb, u_material.params2.w > 0.5);
 
     return vec4<f32>(lit, in.color.a * u_material.base_color.a);
 }

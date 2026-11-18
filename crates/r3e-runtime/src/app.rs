@@ -30,6 +30,7 @@ use r3e_script::ScriptHost;
 
 use crate::capture::{absolute_path, capture_to_file};
 use crate::port::{EditorService, EngineAccess};
+use crate::scene_material_import;
 use crate::time::{FrameTimeWindow, FRAME_TIME_WINDOW};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -437,13 +438,18 @@ impl EngineApp {
             FALLBACK_SCENE.to_string()
         });
 
-        let scene = match r3e_doc::parse_scene(&scene_src) {
+        let mut scene = match r3e_doc::parse_scene(&scene_src) {
             Ok(s) => s,
             Err(e) => {
                 log::error!("场景解析失败: {e}，使用内置兜底场景");
                 r3e_doc::parse_scene(FALLBACK_SCENE).expect("兜底场景必须合法")
             }
         };
+        // S4-A：材质贴图的相对路径统一按「场景根目录」（`--assets-root` 优先）解析。
+        // 渲染层拿 `Scene` 里的这个目录把路径算成 AssetId，导入贴图也用同一份。
+        let texture_base_dir =
+            scene_material_import::texture_base_dir(&scene_path, cli.assets_root.as_deref());
+        scene.set_texture_base_dir(Some(texture_base_dir.clone()));
         log::info!("场景 `{}` 载入完成：{} 个物件", scene.name, scene.len());
 
         // 资产导入：命令行 `--asset` 与场景文件 `assets` 段合并（命令行排在前面）。
@@ -452,8 +458,15 @@ impl EngineApp {
         let asset_specs =
             collect_asset_specs(&scene, &scene_path, cli.assets_root.as_deref(), &cli.assets);
         let asset_specs = Rc::new(RefCell::new(asset_specs));
-        let assets: Rc<RefCell<Arc<AssetLibrary>>> =
-            Rc::new(RefCell::new(Arc::new(load_assets(&asset_specs.borrow()))));
+        let mut library = scene_material_import::load_assets(&asset_specs.borrow());
+        // S4-A：场景材质表里的贴图是**独立图片**，网格资产导入不会带上它们，
+        // 必须在这里单独进库。缺文件只报警不阻断（文档层校验会报 texture_missing）。
+        scene_material_import::load_scene_material_textures(
+            &mut library,
+            &scene,
+            &texture_base_dir,
+        );
+        let assets: Rc<RefCell<Arc<AssetLibrary>>> = Rc::new(RefCell::new(Arc::new(library)));
 
         // 物理：默认关闭；场景文件 physics 段 -> 命令行覆盖（后者优先且会粘住热重载）
         let mut physics = Physics::new();
@@ -1933,7 +1946,7 @@ impl EngineApp {
             return;
         }
 
-        let library = Arc::new(load_assets(&fresh));
+        let library = Arc::new(scene_material_import::load_assets(&fresh));
         log::info!(
             "场景 assets 段已变更，重新导入资产库: {} 个资产",
             library.len()
@@ -2722,39 +2735,6 @@ fn asset_spec_eq(a: &AssetSpec, b: &AssetSpec) -> bool {
 pub(crate) fn node_mesh_data(assets: &AssetLibrary, mesh: MeshRef) -> Option<MeshData> {
     <AssetLibrary as MeshProvider>::mesh_data(assets, mesh)
         .or_else(|| r3e_core::procedural::ProceduralProvider::new().mesh_data(mesh))
-}
-
-/// 按顺序导入资产；导入失败只记日志，不影响其余资产与启动流程。
-///
-/// 同一路径可能被命令行与多个场景声明同时引用（例如只想换 transform、或 `spawn: false`
-/// 仅供脚本引用），这里按 `AssetId` 去重，避免重复解析同一个 FBX。
-fn load_assets(specs: &[AssetSpec]) -> AssetLibrary {
-    let mut library = AssetLibrary::new();
-    for spec in specs {
-        let key = spec.path.display().to_string();
-        let id = r3e_core::AssetId::from_path(&key);
-        if library.get(id).is_some() {
-            log::debug!("资产已导入过，跳过重复加载: {key}");
-            continue;
-        }
-        match library.load(&spec.path) {
-            Ok(id) => {
-                let (meshes, tris) = library
-                    .get(id)
-                    .map(|e| (e.meshes.len(), e.triangle_total()))
-                    .unwrap_or((0, 0));
-                log::info!(
-                    "资产已导入: {} (id {}) — {} 个网格 / {} 三角形",
-                    spec.path.display(),
-                    id,
-                    meshes,
-                    tris
-                );
-            }
-            Err(e) => log::error!("资产导入失败 {}: {e}", spec.path.display()),
-        }
-    }
-    library
 }
 
 /// 存档默认落点：与场景文件同目录、同名 + `.archive.json`。

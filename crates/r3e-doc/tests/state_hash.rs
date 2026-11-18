@@ -4,7 +4,8 @@
 //! 顺带证明「哈希能力对下游可用」。
 
 use r3e_core::{
-    AssetDecl, EnvironmentMapSettings, EnvironmentSettings, ObjectDesc, PostFxSettings, Scene, Vec4,
+    AssetDecl, EnvironmentMapSettings, EnvironmentSettings, ObjectDesc, PostFxSettings, Scene,
+    SceneMaterialDecl, Vec4,
 };
 use r3e_doc::Document;
 
@@ -169,6 +170,57 @@ fn every_covered_field_changes_hash() {
                 if s.bind_morph_by_name("a", 2) {
                     s.set_morph_weight(id, 0, 0.5);
                 }
+            }),
+        ),
+        // S4-A：场景材质表。三处都要各自进哈希 —— 只混「有这张表」而不混内容，
+        // 会让「改了贴图路径但哈希不变」，回放时贴图换了却判定为同状态。
+        (
+            "materials（新增一条）",
+            Box::new(|s: &mut Scene| {
+                s.upsert_scene_material(SceneMaterialDecl {
+                    name: "brick".to_string(),
+                    ..SceneMaterialDecl::default()
+                });
+            }),
+        ),
+        (
+            "materials.scalars",
+            Box::new(|s: &mut Scene| {
+                s.upsert_scene_material(SceneMaterialDecl {
+                    name: "brick".to_string(),
+                    roughness: 0.9,
+                    ..SceneMaterialDecl::default()
+                });
+            }),
+        ),
+        (
+            "materials.albedo",
+            Box::new(|s: &mut Scene| {
+                s.upsert_scene_material(SceneMaterialDecl {
+                    name: "brick".to_string(),
+                    albedo: Some("tex/a.png".to_string()),
+                    ..SceneMaterialDecl::default()
+                });
+            }),
+        ),
+        (
+            "materials.uv_scale",
+            Box::new(|s: &mut Scene| {
+                s.upsert_scene_material(SceneMaterialDecl {
+                    name: "brick".to_string(),
+                    uv_scale: [2.0, 2.0],
+                    ..SceneMaterialDecl::default()
+                });
+            }),
+        ),
+        (
+            "node.material_ref",
+            Box::new(|s: &mut Scene| {
+                s.upsert_scene_material(SceneMaterialDecl {
+                    name: "brick".to_string(),
+                    ..SceneMaterialDecl::default()
+                });
+                assert!(s.set_node_material_ref("a", Some("brick")));
             }),
         ),
         (

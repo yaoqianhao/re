@@ -36,8 +36,8 @@ pub use tx::{
 };
 pub use undo::{Mark, UndoGroup, UndoStack};
 pub use validate::{
-    errors as validate_errors, issue_code_by_code, validate, Issue, IssueCode, Severity,
-    ISSUE_CODES,
+    errors as validate_errors, issue_code_by_code, validate, validate_in_dir, Issue, IssueCode,
+    Severity, ISSUE_CODES,
 };
 
 /// 文档层错误。
@@ -130,6 +130,11 @@ pub struct Document {
     /// 事务在 `commit` / `rollback` 之前**不动**主场景：命令只在影子副本上跑，
     /// 所以本字段的存在不影响 `scene` / `version` / `undo` 的任何不变量。
     tx: Option<TxSession>,
+    /// 场景文件所在目录（M1-S4-A）。`None` = 不知道文档落盘在哪。
+    ///
+    /// 只用于把 `materials[].albedo` 这类**相对贴图路径**解析成可判存在的绝对路径：
+    /// 校验器据此判 `material.texture_missing`。`None` 时该条检查跳过（不误报）。
+    base_dir: Option<std::path::PathBuf>,
 }
 
 impl Document {
@@ -143,6 +148,7 @@ impl Document {
             undo: UndoStack::new(),
             hash_cache: Cell::new(None),
             tx: None,
+            base_dir: None,
         }
     }
 
@@ -153,8 +159,31 @@ impl Document {
     }
 
     /// 校验整份场景，返回全部问题（不修改文档、不标脏）。
+    ///
+    /// 登记过场景目录（[`Document::set_base_dir`]）时，顺带判 `materials[]` 里的
+    /// 相对贴图路径是否存在（`material.texture_missing`）；没登记则跳过这条，不误报。
     pub fn validate(&self) -> Vec<Issue> {
-        validate::validate(&self.scene)
+        match self.base_dir.as_deref() {
+            Some(dir) => validate::validate_in_dir(&self.scene, dir),
+            None => validate::validate(&self.scene),
+        }
+    }
+
+    /// 登记场景文件所在目录（打开 / 另存场景文件后调用）。
+    ///
+    /// 只影响 [`Document::validate`] 的贴图存在性判定，不改场景、不标脏。
+    pub fn set_base_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
+        let dir = dir.into();
+        // S4-A：渲染层只看得见 `Scene`，材质贴图的相对路径要在那里解析成 AssetId，
+        // 所以目录必须同时登记到场景上。两处取值同源，才不会出现
+        // 「校验时按目录 A 找得到、渲染时按目录 B 算 id 找不到」。
+        self.scene.set_texture_base_dir(Some(dir.clone()));
+        self.base_dir = Some(dir);
+    }
+
+    /// 已登记的场景目录。`None` = 未登记，贴图存在性不参与校验。
+    pub fn base_dir(&self) -> Option<&std::path::Path> {
+        self.base_dir.as_deref()
     }
 
     /// 只读视图。`Deref` 已经覆盖绝大多数场景，这个方法留给需要显式拿到 `&Scene`

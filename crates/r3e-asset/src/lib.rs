@@ -30,6 +30,7 @@ use thiserror::Error;
 pub mod air_import;
 pub mod gltf_import;
 pub mod importer;
+pub mod texture_import;
 pub mod visual_regression;
 
 pub use air_import::{
@@ -40,6 +41,7 @@ pub use air_import::{
 };
 pub use gltf_import::{import_glb, import_gltf, GltfImporter};
 pub use importer::{audit_entry, audit_issues, AssetImporter, FbxImporter, ImporterRegistry};
+pub use texture_import::{import_texture, ImportedTexture};
 pub use visual_regression::{
     assert_png_matches, compare, compare_png, DiffReport, PixelBox, PixelDiff, RgbaFrame,
     Tolerance, VisualDiffError, DEFAULT_BAD_PIXEL_RATIO, DEFAULT_CHANNEL_DELTA, WORST_LIMIT,
@@ -507,16 +509,8 @@ impl r3e_core::mesh::MeshProvider for AssetLibrary {
 
     fn material(&self, asset: AssetId, index: u32) -> Option<MaterialData> {
         let info = self.entries.get(&asset)?.materials.get(index as usize)?;
-        Some(MaterialData {
-            name: info.name.clone(),
-            base_color: info.base_color,
-            metallic: info.metallic,
-            roughness: info.roughness,
-            base_color_texture: info.base_color_texture.map(|t| (asset, t)),
-            normal_texture: info.normal_texture.map(|t| (asset, t)),
-            roughness_texture: info.roughness_texture.map(|t| (asset, t)),
-            occlusion_texture: info.occlusion_texture.map(|t| (asset, t)),
-        })
+        // 装配收在 `texture_import::material_data` 一处（本文件有体量门禁，不再长）。
+        Some(crate::texture_import::material_data(asset, info))
     }
 
     fn texture(&self, asset: AssetId, index: u32) -> Option<TextureImage> {

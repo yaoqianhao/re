@@ -206,6 +206,12 @@ pub struct Node {
     /// `None` 表示「不覆盖」：走网格资产自带的材质，再退到默认材质。
     /// 写入前必须经过 [`crate::SurfaceMaterial::sanitized`] 收敛。
     pub material: Option<crate::SurfaceMaterial>,
+    /// 场景材质表的引用（M1-S4-A）：指向 `Scene::materials[]` 里的 `name`。
+    ///
+    /// 与内联 [`Self::material`] **互斥**：两者同时声明由校验器报
+    /// `material.ref_conflict`（保留内联是为了兼容存量场景，不删字段）。
+    /// 写入前必须经过 [`crate::scene_material::normalize_material_ref`] 收敛。
+    pub material_ref: Option<String>,
     /// 语义标签：给 AI 查询面按语义挑物件用（如 `door` / `pickup` / `enemy`）。
     ///
     /// 写入前必须经过 [`normalize_tags`] 收敛：非空串、去重、保序、条数与长度有上限。
@@ -234,6 +240,7 @@ impl Node {
             body: None,
             physics: None,
             material: None,
+            material_ref: None,
             tags: Vec::new(),
             interact_radius: None,
             world: Mat4::IDENTITY,

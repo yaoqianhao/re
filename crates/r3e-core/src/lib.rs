@@ -26,6 +26,7 @@ pub mod procedural;
 pub mod query;
 pub mod scene;
 pub mod scene_desc;
+pub mod scene_material;
 pub mod scene_schema;
 pub mod scene_stack;
 pub mod scene_tables;
@@ -119,6 +120,10 @@ pub use procedural::ProceduralProvider;
 pub use query::{Component, NodeDetail, NodeKind, NodeView, Query, QueryStats, DEFAULT_LIMIT};
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
+};
+pub use scene_material::{
+    normalize_material_ref, resolve_texture_path, SceneMaterialDecl, SCENE_MATERIAL_MAX,
+    SCENE_MATERIAL_NAME_MAX_LEN, TEXTURE_PATH_MAX_LEN, TEXTURE_SLOTS, UV_SCALE_MAX, UV_SCALE_MIN,
 };
 pub use scene_stack::{
     AnimRuntime, RuntimeSnapshot, SceneArchive, SceneCommand, SceneStack, StackEntry,

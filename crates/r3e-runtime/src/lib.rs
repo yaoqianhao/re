@@ -12,6 +12,7 @@ mod asset_scene;
 pub mod capture;
 pub mod cli;
 pub mod port;
+mod scene_material_import;
 pub mod time;
 
 pub use app::{CliOptions, EngineApp, HeadlessReport, HEADLESS_FIXED_DT};

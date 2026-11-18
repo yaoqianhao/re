@@ -571,6 +571,13 @@
           ],
           "description": "PBR 表面材质（metallic / roughness / emissive）；省略表示不覆盖网格资产材质。"
         },
+        "materialRef": {
+          "description": "场景材质表引用（M1-S4-A）：指向 `materials[].name`，与内联 `material` 互斥。\n\n省略表示不引用（用网格资产材质或内联材质）。经\n[`crate::scene_material::normalize_material_ref`] 收敛：去空白、空串即不声明。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mesh": {
           "type": [
             "string",
@@ -835,6 +842,98 @@
           "$ref": "#/$defs/TonemapMode",
           "default": "none",
           "description": "色调映射曲线。"
+        }
+      },
+      "type": "object"
+    },
+    "SceneMaterialDecl": {
+      "description": "场景材质表的一行：名字 + 三标量 + 五张贴图路径 + uv 缩放。\n\n标量口径与 [`SurfaceMaterial`] 严格一致（同一个 `sanitized` 实现），这样「内联材质」\n与「引用材质」在数值语义上不会漂移：改一个地方，两条路径同时生效。",
+      "properties": {
+        "albedo": {
+          "default": null,
+          "description": "反照率贴图路径（相对场景文件所在目录）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "emissive": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "description": "自发光（线性 RGB），逐通道夹到 `0..=`[`crate::MAX_EMISSIVE`]。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "emissiveMap": {
+          "default": null,
+          "description": "自发光贴图路径。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metallic": {
+          "default": 0.0,
+          "description": "金属度 0..1。",
+          "format": "float",
+          "type": "number"
+        },
+        "metallicRoughness": {
+          "default": null,
+          "description": "金属度 / 粗糙度打包贴图路径（glTF 口径：G 通道粗糙度、B 通道金属度）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": "",
+          "description": "唯一主键，`materialRef` 按它寻址。重复写同名 = 整体覆盖。",
+          "type": "string"
+        },
+        "normal": {
+          "default": null,
+          "description": "法线贴图路径。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occlusion": {
+          "default": null,
+          "description": "环境光遮蔽贴图路径。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "roughness": {
+          "default": 0.6000000238418579,
+          "description": "粗糙度 [`crate::MIN_ROUGHNESS`]`..=1`。",
+          "format": "float",
+          "type": "number"
+        },
+        "uvScale": {
+          "default": [
+            1.0,
+            1.0
+          ],
+          "description": "uv 缩放，逐轴夹到 [`UV_SCALE_MIN`]`..=`[`UV_SCALE_MAX`]。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
         }
       },
       "type": "object"
@@ -1441,6 +1540,13 @@
       "description": "局部光源表（扩展十五：点光 / 聚光）。空表示场景只有方向光，画面与旧场景一致。",
       "items": {
         "$ref": "#/$defs/LocalLight"
+      },
+      "type": "array"
+    },
+    "materials": {
+      "description": "场景材质表（M1-S4-A）：材质名 → 参数 + 五张贴图路径。空表示没有共享材质，\n所有物件走内联 `material` 或网格资产材质。",
+      "items": {
+        "$ref": "#/$defs/SceneMaterialDecl"
       },
       "type": "array"
     },

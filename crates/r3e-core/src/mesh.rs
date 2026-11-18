@@ -316,6 +316,13 @@ pub struct MaterialData {
     pub roughness_texture: Option<(AssetId, u32)>,
     /// 环境光遮蔽贴图（线性数据，取 R 通道）。
     pub occlusion_texture: Option<(AssetId, u32)>,
+    /// 自发光贴图（sRGB 颜色图，与 `emissive` 标量相乘；M1-S4-A 起 RIS 场景材质可声明）。
+    pub emissive_texture: Option<(AssetId, u32)>,
+    /// uv 缩放（xy 有效，zw 保留）。`[1.0, 1.0]` = 不平铺。
+    ///
+    /// 为什么放在材质而不是网格：同一张网格换一批材质就想换平铺密度，
+    /// 把它烘进顶点 UV 就必须重导资产；放在材质 uniform 里则零成本。
+    pub uv_scale: [f32; 2],
 }
 
 impl Default for MaterialData {
@@ -329,6 +336,8 @@ impl Default for MaterialData {
             normal_texture: None,
             roughness_texture: None,
             occlusion_texture: None,
+            emissive_texture: None,
+            uv_scale: [1.0, 1.0],
         }
     }
 }

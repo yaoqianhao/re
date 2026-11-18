@@ -17,11 +17,12 @@ use crate::morph::{MorphInstance, NO_EXCLUSIVE_GROUP};
 use crate::text::ScreenText;
 use crate::ui::UiElement;
 
+use crate::scene_material::{self, SceneMaterialDecl};
 use crate::skin::SkinInstance;
 use crate::terrain::{self, TerrainPatch};
 use crate::{
     AnimClip, AnimInstance, Camera, EnvironmentMapSettings, EnvironmentSettings, Light, MeshRef,
-    Node, NodeId, OcclusionSettings, PostFxSettings, SurfaceMaterial, Transform,
+    Node, NodeId, OcclusionSettings, PostFxSettings, Transform,
 };
 
 pub use crate::scene_desc::{ObjectDesc, PhysicsDesc, PhysicsSceneDesc};
@@ -191,6 +192,10 @@ pub struct SceneFile {
     /// 空表示场景没有地形。M1 只承载数据、不出几何（M2 才求值三角网）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terrain: Vec<TerrainPatch>,
+    /// 场景材质表（M1-S4-A）：材质名 → 参数 + 五张贴图路径。空表示没有共享材质，
+    /// 所有物件走内联 `material` 或网格资产材质。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<SceneMaterialDecl>,
     /// 2D 屏幕空间文本（HUD）。空表示场景没有文本层。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texts: Vec<ScreenText>,
@@ -266,6 +271,17 @@ pub struct Scene {
     /// 名字是唯一主键（同名覆盖、顺序不变），上限 [`TERRAIN_MAX_PATCHES`]。
     /// M1 只承载数据：渲染层不读它，几何求值属 M2。
     pub terrain: Vec<TerrainPatch>,
+    /// 场景材质表（M1-S4-A）。每行 = 名字 + 三标量 + 五张贴图路径 + uv 缩放，
+    /// 名字是唯一主键（同名覆盖、顺序不变），上限 [`SCENE_MATERIAL_MAX`]。
+    /// 节点通过 [`crate::Node::material_ref`] 按名字引用，一份材质可被多个节点复用。
+    pub materials: Vec<SceneMaterialDecl>,
+    /// 场景材质贴图相对路径的基准目录（M1-S4-A）。
+    ///
+    /// 为什么放在场景上而不是只放在 `Document` 上：渲染层要拿它把 `materials[]` 里的
+    /// 相对路径算成 `AssetId`，而渲染层只看得见 `Scene`。它与 **不进序列化** ——
+    /// 目录是「这个文件被打开时在哪」，属于运行期状态，写进 .r3e 会让同一份场景
+    /// 换个目录就变成另一个文件。载入方（`Document::set_base_dir`）负责同步设置。
+    pub texture_base_dir: Option<std::path::PathBuf>,
     /// 遮挡剔除参数（扩展二十二）。`enabled = false`（缺省）时渲染层整帧跳过遮挡判定，
     /// 不建金字塔、不读回深度，画面与「只有视锥剔除」逐像素一致。
     pub occlusion: OcclusionSettings,
@@ -315,6 +331,8 @@ impl Scene {
             lights: Vec::new(),
             lights_enabled: true,
             terrain: Vec::new(),
+            materials: Vec::new(),
+            texture_base_dir: None,
             occlusion: OcclusionSettings::default(),
             environment_map: None,
         }
@@ -426,6 +444,8 @@ impl Scene {
         node.physics = desc.physics;
         // 场景文件里的材质在写入前收敛：NaN / inf / 超界值不进场景
         node.material = desc.material.map(|m| m.sanitized());
+        // 材质引用同理：去空白、空串即「不引用」。表里有没有这份材质由校验器判（可跨文件改）。
+        node.material_ref = scene_material::normalize_material_ref(desc.material_ref);
         // 标签与交互半径同理：收敛在唯一入口做，查询面看到的就是文件里语义上的那部分
         node.tags = desc
             .tags
@@ -536,54 +556,6 @@ impl Scene {
     }
 
     // ---------- PBR 材质 ----------
-
-    /// 读取物件当前生效的材质。
-    ///
-    /// 物件不存在返回 `None`；物件存在但没声明材质时返回缺省材质
-    /// （与渲染侧「回退到网格资产材质 / 默认材质」的可见结果一致）。
-    pub fn material_of(&self, name: &str) -> Option<SurfaceMaterial> {
-        self.find(name)
-            .map(|n| n.material.unwrap_or_default().sanitized())
-    }
-
-    /// 整体写入物件材质。写入前统一收敛（NaN / inf / 超界值不进场景）。
-    ///
-    /// 返回 `false` 表示物件不存在。
-    pub fn set_material(&mut self, name: &str, material: SurfaceMaterial) -> bool {
-        match self.find_mut(name) {
-            Some(node) => {
-                node.material = Some(material.sanitized());
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// 只改 metallic / roughness，保留已有 emissive。
-    pub fn set_material_params(&mut self, name: &str, metallic: f32, roughness: f32) -> bool {
-        let mut material = self.material_of(name).unwrap_or_default();
-        material.metallic = metallic;
-        material.roughness = roughness;
-        self.set_material(name, material)
-    }
-
-    /// 只改自发光（线性 RGB），保留 metallic / roughness。
-    pub fn set_emissive(&mut self, name: &str, emissive: [f32; 3]) -> bool {
-        let mut material = self.material_of(name).unwrap_or_default();
-        material.emissive = emissive;
-        self.set_material(name, material)
-    }
-
-    /// 撤销物件级材质覆盖，回退到网格资产 / 默认材质。返回 `false` 表示物件不存在。
-    pub fn clear_material(&mut self, name: &str) -> bool {
-        match self.find_mut(name) {
-            Some(node) => {
-                node.material = None;
-                true
-            }
-            None => false,
-        }
-    }
 
     /// 按名字前缀查找，返回名字列表。
     pub fn find_all(&self, prefix: &str) -> Vec<String> {
@@ -2205,6 +2177,8 @@ impl Scene {
             let _ = light::upsert_local(&mut scene.lights, light);
         }
 
+        // 场景材质表先落地：物件 spawn 时会带着 materialRef 进来，表在这里收敛一次
+        scene.materials = scene_material::normalize_all(file.materials);
         for obj in file.objects {
             scene.spawn(obj)?;
         }
@@ -2261,6 +2235,7 @@ impl Scene {
                 .map(|node| self.node_desc(node))
                 .collect(),
             terrain: self.terrain.clone(),
+            materials: self.materials.clone(),
             physics: if physics_desc_is_empty(&self.physics) {
                 None
             } else {
@@ -2360,6 +2335,7 @@ impl Scene {
             visible: (!node.visible).then_some(false),
             physics: node.physics.clone(),
             material: node.material,
+            material_ref: node.material_ref.clone(),
             // 空标签 / 不可交互不落盘：旧场景 roundtrip 不该凭空多出这两个字段
             tags: (!node.tags.is_empty()).then(|| node.tags.clone()),
             interact_radius: node.interact_radius,

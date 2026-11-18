@@ -21,16 +21,20 @@ fn parsed() -> naga::Module {
     }
 }
 
-/// uniform 仍必须是 64 字节 / 16 字节对齐（扩展十一的布局不能被挤坏）。
+/// uniform 布局：五个 vec4 = 80 字节，前四个 vec4 的偏移不能被挤动。
+///
+/// S4-A 追加第五个 vec4（`uv_scale`）后总长从 64 变 80。前四个字段的偏移保持不变，
+/// 意味着扩展十一 / 二十一的语义没有被这次追加破坏。
 #[test]
 fn material_uniform_keeps_its_layout() {
-    assert_eq!(std::mem::size_of::<MaterialUniform>(), 64);
+    assert_eq!(std::mem::size_of::<MaterialUniform>(), 80);
     assert_eq!(std::mem::align_of::<MaterialUniform>(), 4);
-    // params2 落在第四个 vec4，即 offset 48
     let uniform = MaterialUniform::default();
     let base = &uniform as *const MaterialUniform as usize;
     let params2 = &uniform.params2 as *const [f32; 4] as usize;
     assert_eq!(params2 - base, 48, "params2 必须落在 offset 48");
+    let uv_scale = &uniform.uv_scale as *const [f32; 4] as usize;
+    assert_eq!(uv_scale - base, 64, "uv_scale 必须落在 offset 64");
 }
 
 /// 没挂贴图时 `params2` 全 0：着色器走纯标量分支，画面与扩展十一逐像素一致。
@@ -57,6 +61,7 @@ fn map_flags_pack_in_xyz_order() {
         normal: true,
         roughness: false,
         occlusion: true,
+        ..PbrMapFlags::default()
     };
     assert_eq!(flags.pack(), [1.0, 0.0, 1.0, 0.0]);
     assert!(flags.any());
@@ -65,6 +70,7 @@ fn map_flags_pack_in_xyz_order() {
         normal: true,
         roughness: true,
         occlusion: true,
+        ..PbrMapFlags::default()
     };
     assert_eq!(all.pack(), [1.0, 1.0, 1.0, 0.0]);
 }
@@ -76,6 +82,7 @@ fn scalars_still_sanitized_with_maps() {
         normal: true,
         roughness: true,
         occlusion: true,
+        ..PbrMapFlags::default()
     };
     let uniform = MaterialUniform::build_with_maps([1.0; 4], f32::NAN, 9.0, [0.0; 3], false, flags);
     let expected = SurfaceMaterial {
@@ -160,12 +167,13 @@ fn shader_builds_tbn_for_normal_map() {
 /// 粗糙度取 G 通道、AO 取 R 通道——与 glTF 的 metallicRoughness / occlusion 约定一致。
 #[test]
 fn shader_samples_expected_channels() {
+    // S4-A 起采样走平铺 uv（`uv_tiled`）与 Repeat 采样器（`s_uv`），通道语义不变。
     assert!(
-        SHADER.contains("textureSample(t_roughness_map, s_base_color, in.uv).g"),
+        SHADER.contains("textureSample(t_roughness_map, s_uv, uv_tiled).g"),
         "粗糙度贴图应取 G 通道"
     );
     assert!(
-        SHADER.contains("textureSample(t_occlusion_map, s_base_color, in.uv).r"),
+        SHADER.contains("textureSample(t_occlusion_map, s_uv, uv_tiled).r"),
         "AO 贴图应取 R 通道"
     );
 }

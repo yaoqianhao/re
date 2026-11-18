@@ -4,7 +4,9 @@
 //! 「非法值不进场景」与「写进去能原样读回来」这两条链路：
 //! 场景文件 spawn → 场景 API → JSON 保存 → 重新加载。
 
-use r3e_core::{ObjectDesc, Scene, SurfaceMaterial, DEFAULT_ROUGHNESS, MAX_EMISSIVE};
+use r3e_core::{
+    ObjectDesc, Scene, SceneMaterialDecl, SurfaceMaterial, DEFAULT_ROUGHNESS, MAX_EMISSIVE,
+};
 
 fn desc(name: &str) -> ObjectDesc {
     ObjectDesc {
@@ -149,4 +151,111 @@ fn partial_material_in_json_uses_defaults() {
     let gold = scene.material_of("gold").unwrap();
     assert_eq!(gold.metallic, 1.0);
     assert_eq!(gold.roughness, DEFAULT_ROUGHNESS);
+}
+
+// ===== S4-A：场景材质表（materials[] + 节点 materialRef）=====
+
+/// 带五张贴图的材质经「场景 API → JSON → 重新加载」后逐字段一致。
+///
+/// 这里不碰磁盘：`to_json_pretty` / `from_json_str` 覆盖的是序列化契约，
+/// 贴图存在性属于 doc 层校验（`material.texture_missing`），不在这一层断言。
+#[test]
+fn scene_material_table_survives_json_roundtrip() {
+    let mut scene = Scene::new();
+    scene.spawn(desc("wall")).expect("spawn");
+
+    assert!(scene.upsert_scene_material(SceneMaterialDecl {
+        name: "brick".to_string(),
+        metallic: 0.0,
+        roughness: 0.8,
+        emissive: [0.1, 0.0, 0.0],
+        albedo: Some("tex/brick_albedo.png".to_string()),
+        normal: Some("tex/brick_normal.png".to_string()),
+        metallic_roughness: Some("tex/brick_mr.png".to_string()),
+        occlusion: Some("tex/brick_ao.png".to_string()),
+        emissive_map: Some("tex/brick_emissive.png".to_string()),
+        uv_scale: [2.0, 3.0],
+    }));
+    assert!(scene.set_node_material_ref("wall", Some("brick")));
+
+    let json = scene.to_json_pretty().expect("序列化");
+    let reloaded = Scene::from_json_str(&json).expect("反序列化");
+
+    let decl = reloaded.scene_material("brick").expect("材质表随场景往返");
+    assert_eq!(decl.metallic, 0.0);
+    assert_eq!(decl.roughness, 0.8);
+    assert_eq!(decl.emissive, [0.1, 0.0, 0.0]);
+    assert_eq!(decl.albedo.as_deref(), Some("tex/brick_albedo.png"));
+    assert_eq!(decl.normal.as_deref(), Some("tex/brick_normal.png"));
+    assert_eq!(decl.metallic_roughness.as_deref(), Some("tex/brick_mr.png"));
+    assert_eq!(decl.occlusion.as_deref(), Some("tex/brick_ao.png"));
+    assert_eq!(decl.emissive_map.as_deref(), Some("tex/brick_emissive.png"));
+    assert_eq!(decl.uv_scale, [2.0, 3.0]);
+
+    // 节点引用也要原样回来，否则渲染侧取不到材质（画面退化成纯标量）
+    assert_eq!(reloaded.material_ref_of("wall"), Some("brick"));
+    assert_eq!(
+        reloaded
+            .node_scene_material(reloaded.find_id("wall").unwrap())
+            .map(|d| d.name.as_str()),
+        Some("brick")
+    );
+}
+
+/// 空材质表不写进场景文件（保持存量场景文件的字节形态不变）。
+#[test]
+fn empty_material_table_is_not_serialized() {
+    let mut scene = Scene::new();
+    scene.spawn(desc("cube")).expect("spawn");
+    let json = scene.to_json_pretty().expect("序列化");
+    assert!(
+        !json.contains("\"materials\""),
+        "空材质表不应写入 JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"materialRef\""),
+        "没有引用时不应写出 materialRef: {json}"
+    );
+}
+
+/// 材质参数在写进场景表那一刻就被收敛：NaN / 越界值不残留。
+#[test]
+fn scene_material_params_are_sanitized_on_upsert() {
+    let mut scene = Scene::new();
+    scene.upsert_scene_material(SceneMaterialDecl {
+        name: "bad".to_string(),
+        metallic: 9.0,
+        roughness: f32::NAN,
+        emissive: [-1.0, 1e9, 0.25],
+        uv_scale: [0.0, -3.0],
+        ..SceneMaterialDecl::default()
+    });
+    let decl = scene.scene_material("bad").expect("材质已写入");
+    assert_eq!(decl.metallic, 1.0, "9.0 应收到上界 1");
+    assert_eq!(decl.roughness, DEFAULT_ROUGHNESS, "NaN 应退回缺省粗糙度");
+    assert_eq!(decl.emissive, [0.0, MAX_EMISSIVE, 0.25]);
+    // uv 倍率为 0 会让整张贴图压成一个像素，必须夹到正数下界
+    assert!(
+        decl.uv_scale[0] > 0.0 && decl.uv_scale[1] > 0.0,
+        "uv 倍率必须被夹到正数: {:?}",
+        decl.uv_scale
+    );
+}
+
+/// 同名材质是「覆盖」而不是「追加」：材质表上限只拦新增。
+#[test]
+fn upsert_scene_material_overwrites_by_name() {
+    let mut scene = Scene::new();
+    assert!(scene.upsert_scene_material(SceneMaterialDecl {
+        name: "wood".to_string(),
+        roughness: 0.9,
+        ..SceneMaterialDecl::default()
+    }));
+    assert!(scene.upsert_scene_material(SceneMaterialDecl {
+        name: "wood".to_string(),
+        roughness: 0.3,
+        ..SceneMaterialDecl::default()
+    }));
+    assert_eq!(scene.materials.len(), 1, "同名覆盖不应追加新条目");
+    assert_eq!(scene.scene_material("wood").unwrap().roughness, 0.3);
 }

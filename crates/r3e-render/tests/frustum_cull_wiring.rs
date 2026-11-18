@@ -94,9 +94,9 @@ fn missing_mask_keeps_instance() {
 fn mask_filter_runs_before_bucketing() {
     let body = prepare_instances_body();
     let mask = body.find("plan.mask.get(slot)").expect("掩码取值丢失");
-    let push = body
-        .find(".entry((key.0, key.1, false))")
-        .expect("分桶丢失");
+    // 只认「入桶」这个动作本身，不认桶键的元数：S4-A 把绘制键从三元组扩到四元组
+    // （多一维场景材质），如果这里写死 `(key.0, key.1, false)` 会跟着一起漂。
+    let push = body.find("buckets.entry(").expect("分桶丢失");
     assert!(
         mask < push,
         "掩码筛选必须排在入桶之前，否则被剪实例仍占实例槽位"

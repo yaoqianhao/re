@@ -4,8 +4,9 @@
 //! 能同时抓出「撤销写错字段」和「撤销多留了一条残留」。
 
 use r3e_core::{
-    Camera, EnvironmentSettings, LocalLight, ObjectDesc, PostFxSettings, Scene, ScreenText,
-    SurfaceMaterial, TerrainPatch, UiElement, Vec4, TERRAIN_MAX_PATCHES,
+    Camera, EnvironmentSettings, LocalLight, ObjectDesc, PostFxSettings, Scene, SceneMaterialDecl,
+    ScreenText, SurfaceMaterial, TerrainPatch, UiElement, Vec4, SCENE_MATERIAL_MAX,
+    TERRAIN_MAX_PATCHES,
 };
 use r3e_doc::{Command, CommandKind, DocError, Document};
 
@@ -469,4 +470,144 @@ fn upsert_terrain_patch_over_capacity_is_rejected() {
     doc.apply(&CommandKind::upsert_terrain_patch(&doc, patch("p0", 0.8)))
         .expect("覆盖不受容量限制");
     assert_eq!(doc.terrain.len(), TERRAIN_MAX_PATCHES);
+}
+
+// ---------- 材质域（M1-S4-A） ----------
+
+fn brick(roughness: f32) -> SceneMaterialDecl {
+    SceneMaterialDecl {
+        name: "brick".to_string(),
+        roughness,
+        albedo: Some("tex/brick_albedo.png".to_string()),
+        normal: Some("tex/brick_normal.png".to_string()),
+        ..SceneMaterialDecl::default()
+    }
+}
+
+#[test]
+fn upsert_material_applies_and_undo_removes() {
+    let mut doc = base_doc();
+    let cmd = CommandKind::upsert_scene_material(&doc, brick(0.8));
+    apply_then_undo(&mut doc, cmd);
+    assert!(
+        doc.as_scene().scene_material("brick").is_none(),
+        "撤销后不留材质表项"
+    );
+}
+
+#[test]
+fn upsert_material_over_existing_undo_restores_old_params() {
+    let mut doc = base_doc();
+    doc.apply(&CommandKind::upsert_scene_material(&doc, brick(0.8)))
+        .expect("首写应当成功");
+    // 同名覆盖：撤销必须回到「第一份」而不是「没有」，否则材质名字会被一起撤掉。
+    let cmd = CommandKind::upsert_scene_material(&doc, brick(0.2));
+    apply_then_undo(&mut doc, cmd);
+    let kept = doc
+        .as_scene()
+        .scene_material("brick")
+        .expect("旧材质应当还在");
+    assert!((kept.roughness - 0.8).abs() < 1e-6, "撤销要还原旧粗糙度");
+}
+
+#[test]
+fn remove_material_applies_and_undo_restores() {
+    let mut doc = base_doc();
+    doc.apply(&CommandKind::upsert_scene_material(&doc, brick(0.8)))
+        .expect("写入应当成功");
+    let cmd = CommandKind::remove_scene_material(&doc, "brick").expect("材质应当存在");
+    apply_then_undo(&mut doc, cmd);
+    assert!(
+        doc.as_scene().scene_material("brick").is_some(),
+        "撤销要把材质整份放回来"
+    );
+}
+
+#[test]
+fn remove_missing_material_errors() {
+    let doc = base_doc();
+    let err = CommandKind::remove_scene_material(&doc, "ghost").expect_err("缺材质必须报错");
+    assert!(matches!(err, DocError::NotFound(_)), "缺材质是 NotFound");
+}
+
+#[test]
+fn set_node_material_ref_applies_and_undo_clears() {
+    let mut doc = base_doc();
+    doc.apply(&CommandKind::upsert_scene_material(&doc, brick(0.8)))
+        .expect("写入应当成功");
+    let cmd = CommandKind::set_node_material_ref(&doc, "cube", Some("brick".to_string()))
+        .expect("构造应当成功");
+    apply_then_undo(&mut doc, cmd);
+    assert_eq!(
+        doc.as_scene().material_ref_of("cube"),
+        None,
+        "撤销后不该留引用"
+    );
+}
+
+#[test]
+fn clear_material_ref_undo_restores_reference() {
+    let mut doc = base_doc();
+    doc.apply(&CommandKind::upsert_scene_material(&doc, brick(0.8)))
+        .expect("写入应当成功");
+    doc.apply(
+        &CommandKind::set_node_material_ref(&doc, "cube", Some("brick".to_string()))
+            .expect("构造应当成功"),
+    )
+    .expect("引用应当写成功");
+    let cmd = CommandKind::set_node_material_ref(&doc, "cube", None).expect("构造应当成功");
+    apply_then_undo(&mut doc, cmd);
+    assert_eq!(
+        doc.as_scene().material_ref_of("cube"),
+        Some("brick"),
+        "清除引用的撤销要写回原引用"
+    );
+}
+
+#[test]
+fn set_material_ref_on_missing_node_errors() {
+    let doc = base_doc();
+    let err = CommandKind::set_node_material_ref(&doc, "ghost", None).expect_err("缺节点必须报错");
+    assert!(matches!(err, DocError::NotFound(_)), "缺节点是 NotFound");
+}
+
+#[test]
+fn upsert_material_over_capacity_is_rejected_but_overwrite_passes() {
+    let mut doc = Document::default();
+    doc.write(|s| {
+        for i in 0..SCENE_MATERIAL_MAX {
+            assert!(
+                s.upsert_scene_material(SceneMaterialDecl {
+                    name: format!("m{i}"),
+                    ..SceneMaterialDecl::default()
+                }),
+                "空表逐份写入应当成功"
+            );
+        }
+    });
+    let version = doc.version();
+    let depth = doc.undo_depth();
+    let err = doc
+        .apply(&CommandKind::upsert_scene_material(
+            &doc,
+            SceneMaterialDecl {
+                name: "extra".to_string(),
+                ..SceneMaterialDecl::default()
+            },
+        ))
+        .expect_err("表满后新名字必须被拒");
+    assert!(matches!(err, DocError::Rejected(_)), "容量错是 Rejected");
+    assert_eq!(doc.version(), version, "失败的 apply 不得推进版本");
+    assert_eq!(doc.undo_depth(), depth, "失败的 apply 不得入撤销栈");
+
+    doc.apply(&CommandKind::upsert_scene_material(
+        &doc,
+        SceneMaterialDecl {
+            name: "m0".to_string(),
+            roughness: 0.9,
+            ..SceneMaterialDecl::default()
+        },
+    ))
+    .expect("覆盖已有材质不受容量限制");
+    assert_eq!(doc.materials.len(), SCENE_MATERIAL_MAX);
 }

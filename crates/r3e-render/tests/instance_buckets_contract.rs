@@ -51,15 +51,15 @@ fn instances_are_collected_into_buckets() {
         body.contains("staged_all.push(StagedInstance"),
         "实例必须收进共享的 staged_all（分桶后统一摊平）"
     );
+    // 桶键的元数不做断言：S4-A 把绘制键从三元组扩到四元组（多了场景材质一维），
+    // 这里只认「入桶动作存在 + 排在剔除之后」这两条契约。
     assert!(
-        body.contains(".entry((key.0, key.1, false))"),
+        body.contains("buckets.entry(") && body.contains("false))"),
         "不透明段的桶丢失"
     );
     // 入桶必须在剔除之后：被视锥剔除的实例不该留下痕迹
     let cull = body.find("culled += 1").expect("视锥剔除计数丢失");
-    let push = body
-        .find(".entry((key.0, key.1, false))")
-        .expect("分桶丢失");
+    let push = body.find("buckets.entry(").expect("分桶丢失");
     assert!(
         cull < push,
         "剔除判定必须排在入桶之前，否则被剔除的实例仍会占实例槽位"
@@ -88,11 +88,11 @@ fn keys_are_registered_per_segment() {
 fn bucket_key_carries_segment_flag() {
     let body = prepare_instances_body();
     assert!(
-        body.contains(".entry((key.0, key.1, true))"),
+        body.contains("key.2, true))"),
         "半透明段的桶丢失：玻璃 / 水面整层会凭空消失"
     );
     assert!(
-        body.contains("buckets.remove(&(key, surface, segment_transparent))"),
+        body.contains("buckets.remove(&(key, surface, scene_material, segment_transparent))"),
         "摊平必须按 (键, 段) 取桶，否则两段互相顶掉"
     );
 }

@@ -9,9 +9,11 @@
 //!
 //! 这里的函数都是纯函数，不碰 wgpu 句柄，可直接单测。
 
+use std::path::Path;
+
 use bytemuck::{Pod, Zeroable};
 use r3e_core::mesh::MaterialData;
-use r3e_core::SurfaceMaterial;
+use r3e_core::{AssetId, SceneMaterialDecl, SurfaceMaterial};
 
 /// 材质 uniform：base color + PBR 标量 + 自发光 + 贴图开关。64 字节，16 字节对齐。
 ///
@@ -33,8 +35,14 @@ pub struct MaterialUniform {
     pub params: [f32; 4],
     /// rgb = 自发光，a 保留（固定 0）。
     pub emissive: [f32; 4],
-    /// x/y/z = 法线 / 粗糙度 / AO 贴图开关（0/1），w 保留（扩展二十一）。
+    /// 扩展二十一：x/y/z = 法线 / 粗糙度 / AO 贴图开关（0/1），w 保留（扩展二十一）。
     pub params2: [f32; 4],
+    /// 扩展 S4-A：x/y = uv 缩放（平铺），zw 保留。
+    ///
+    /// 为什么单开一个 vec4 而不是塞进 `params.w`：uv 缩放是两个分量，
+    /// 拆进现有的保留位会让「哪一位是什么」变得难读，也让 `params2.w` 被占用
+    /// （那位留给自发光贴图开关）。80 字节仍是 16 字节对齐，没有额外成本。
+    pub uv_scale: [f32; 4],
 }
 
 /// 一张材质挂了哪些 PBR 数据贴图（扩展二十一）。
@@ -46,6 +54,8 @@ pub struct PbrMapFlags {
     pub normal: bool,
     pub roughness: bool,
     pub occlusion: bool,
+    /// 自发光贴图（S4-A）：`emissive` 标量当强度、贴图当颜色，两者相乘。
+    pub emissive: bool,
 }
 
 impl PbrMapFlags {
@@ -55,22 +65,26 @@ impl PbrMapFlags {
             normal: material.normal_texture.is_some(),
             roughness: material.roughness_texture.is_some(),
             occlusion: material.occlusion_texture.is_some(),
+            emissive: material.emissive_texture.is_some(),
         }
     }
 
     /// 挂了任意一张数据贴图。
     pub fn any(self) -> bool {
-        self.normal || self.roughness || self.occlusion
+        self.normal || self.roughness || self.occlusion || self.emissive
     }
 
     /// 打包成 `params2`（缺省位补 0，保持与着色器 vec4 对位）。
+    ///
+    /// w = 自发光贴图开关：着色器只在它为 1 时采样 `t_emissive_map`，
+    /// 否则把 `emissive` 标量当纯强度用（与 S4-A 之前的画面逐像素一致）。
     pub fn pack(self) -> [f32; 4] {
         let bit = |on: bool| if on { 1.0 } else { 0.0 };
         [
             bit(self.normal),
             bit(self.roughness),
             bit(self.occlusion),
-            0.0,
+            bit(self.emissive),
         ]
     }
 }
@@ -115,12 +129,44 @@ impl MaterialUniform {
         has_texture: bool,
         maps: PbrMapFlags,
     ) -> Self {
+        Self::build_full(
+            base_color,
+            metallic,
+            roughness,
+            emissive,
+            has_texture,
+            maps,
+            [1.0, 1.0],
+        )
+    }
+
+    /// 完整版：额外带 uv 缩放（S4-A 的场景材质可以平铺贴图）。
+    ///
+    /// 缩放值在这里再收敛一次（非有限 / 非正值回 1.0、超上限夹紧），
+    /// 与 `r3e_core::scene_material` 的 `sanitize_uv_scale` 同一口径——
+    /// 即便调用方绕过文档层直接构造 `MaterialData`，GPU 侧也不会收到 0 或 NaN。
+    pub fn build_full(
+        base_color: [f32; 4],
+        metallic: f32,
+        roughness: f32,
+        emissive: [f32; 3],
+        has_texture: bool,
+        maps: PbrMapFlags,
+        uv_scale: [f32; 2],
+    ) -> Self {
         let surface = SurfaceMaterial {
             metallic,
             roughness,
             emissive,
         }
         .sanitized();
+        let uv = |v: f32| {
+            if !v.is_finite() || v < r3e_core::UV_SCALE_MIN {
+                1.0
+            } else {
+                v.min(r3e_core::UV_SCALE_MAX)
+            }
+        };
         Self {
             base_color,
             params: [
@@ -136,6 +182,7 @@ impl MaterialUniform {
                 0.0,
             ],
             params2: maps.pack(),
+            uv_scale: [uv(uv_scale[0]), uv(uv_scale[1]), 0.0, 0.0],
         }
     }
 }
@@ -196,6 +243,60 @@ impl SurfaceKey {
     }
 }
 
+/// 场景材质表（`Scene::materials[]`）在渲染侧的键（M1-S4-A）。
+///
+/// 为什么不直接拿材质名当键：名字只是文档层的标识，改个名不该换 GPU 资源；
+/// 也没有拿 `Scene` 引用——渲染层不该依赖场景结构体，键必须是**自足的值**。
+/// 这里把「标量 + 五张贴图的 AssetId + uv 缩放」全塞进键里，于是：
+///
+/// - 两份材质只要视觉等价就共用一个 bind group；
+/// - 值一旦不同就是不同键，热重载时自然重建，无需失效通知。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SceneMaterialKey {
+    /// 三标量（metallic / roughness / emissive），沿用物件级的按位打包。
+    params: SurfaceKey,
+    /// uv 缩放（按位存，保持 `Eq + Hash`）。
+    uv: [u32; 2],
+    /// 五张贴图的资产 id，顺序同 [`r3e_core::TEXTURE_SLOTS`]。
+    textures: [Option<AssetId>; 5],
+}
+
+impl SceneMaterialKey {
+    /// 由文档层声明构造键。`base_dir` 用于把相对贴图路径解析成参与散列的绝对路径，
+    /// 必须与运行期导入贴图时用的是同一个目录，否则 id 对不上、贴图会静默缺失。
+    pub fn new(decl: &SceneMaterialDecl, base_dir: Option<&Path>) -> Self {
+        let ids = decl.texture_asset_ids(base_dir);
+        Self {
+            params: SurfaceKey::new(decl.params()),
+            uv: [decl.uv_scale[0].to_bits(), decl.uv_scale[1].to_bits()],
+            textures: ids,
+        }
+    }
+
+    /// 还原成渲染层直吃的材质数据（贴图下标固定 0：独立图片资产里只有一条贴图记录）。
+    pub fn to_material_data(self) -> MaterialData {
+        let params = self.params.material();
+        let slot = |id: Option<AssetId>| id.map(|asset| (asset, 0));
+        MaterialData {
+            name: String::new(),
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            metallic: params.metallic,
+            roughness: params.roughness,
+            base_color_texture: slot(self.textures[0]),
+            normal_texture: slot(self.textures[1]),
+            roughness_texture: slot(self.textures[2]),
+            occlusion_texture: slot(self.textures[3]),
+            emissive_texture: slot(self.textures[4]),
+            uv_scale: [f32::from_bits(self.uv[0]), f32::from_bits(self.uv[1])],
+        }
+    }
+
+    /// 自发光强度（场景材质自带，不必再经物件级覆盖）。
+    pub fn emissive(self) -> [f32; 3] {
+        self.params.emissive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,11 +324,18 @@ mod tests {
         }
     }
 
-    /// uniform 布局：四个 vec4 紧邻，64 字节，无隐藏填充。
+    /// uniform 布局：五个 vec4 紧邻，80 字节，无隐藏填充。
+    ///
+    /// S4-A 追加了第五个 vec4（`uv_scale`）。WGSL 侧的 `struct Material` 必须同步，
+    /// 否则 80 字节只会被读到 64 字节，平铺倍率恒为 0（贴图被压成单个像素）。
     #[test]
     fn uniform_layout_matches_shader() {
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 64);
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 80);
         assert_eq!(std::mem::align_of::<MaterialUniform>(), 4);
+        let uniform = MaterialUniform::build([1.0; 4], 0.0, 0.5, [0.0; 3], false);
+        let base = &uniform as *const MaterialUniform as usize;
+        let uv_scale = &uniform.uv_scale as *const [f32; 4] as usize;
+        assert_eq!(uv_scale - base, 64, "uv_scale 必须落在 offset 64");
     }
 
     /// 扩展二十一：贴图开关落在 `params2`，不带贴图时全 0（老行为不变）。

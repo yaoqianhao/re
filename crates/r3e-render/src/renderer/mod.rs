@@ -43,6 +43,7 @@ pub use uniforms::{
 };
 
 // ---- crate 内部跨模块可见（拆分前是同文件私有项）----
+pub(crate) use crate::pbr::SceneMaterialKey;
 pub(crate) use buffers::{
     create_black_cube_texture, create_depth_target, create_flat_normal_texture,
     create_local_shadow_target, create_msaa_targets, create_shadow_bind_group,

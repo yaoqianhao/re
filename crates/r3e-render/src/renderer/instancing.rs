@@ -9,6 +9,27 @@ use crate::transparency;
 
 use super::*;
 
+/// 批次键：网格 + 物件级 PBR 材质 + 场景材质（`materials[]` 表项解析结果）。
+///
+/// 抽成别名只为压平 clippy 的 `type_complexity`：这个三元组在分组键、
+/// 分桶键、`PreparedNode` 里反复出现，语义是同一个「批次键」。
+type GroupKey = (
+    MeshRef,
+    Option<SurfaceKey>,
+    Option<crate::pbr::SceneMaterialKey>,
+);
+
+/// 分桶键：批次键三元组平铺 + 是否半透明段（同一个批次键可能在两段各成一个桶）。
+///
+/// 用平铺而不是 `(GroupKey, bool)`：插入与取出两侧都按「三元组 + 段标记」书写，
+/// 嵌套写法会让 `buckets.entry((k.0, k.1, k.2, transparent))` 这类调用点全要改。
+type BucketKey = (
+    MeshRef,
+    Option<SurfaceKey>,
+    Option<crate::pbr::SceneMaterialKey>,
+    bool,
+);
+
 impl Renderer {
     /// 把场景里可见的物件整理成按 `MeshRef` 分组的实例区间，并上传到 GPU。
     ///
@@ -94,12 +115,12 @@ impl Renderer {
         // 桶里被收一次，视锥/遮挡剔除与关节槽位分配一并跟进这一遍。桶内顺序仍是场景
         // 迭代顺序，键的登记顺序仍是「首次出现」且不透明在前，所以摊平出来的
         // `groups` 区间与旧实现逐个相同（像素基线不动）。
-        let mut opaque_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
-        let mut transparent_keys: Vec<(MeshRef, Option<SurfaceKey>)> = Vec::new();
+        let mut opaque_keys: Vec<GroupKey> = Vec::new();
+        let mut transparent_keys: Vec<GroupKey> = Vec::new();
         // 桶键带「段」标志：同一个 (网格, 材质) 组合可能同时落在不透明段与半透明段
         // （同一网格的不同物件 alpha 不同），两段各自成桶、各自摊平 —— 与旧实现的
         // 「两段各自全场景过滤一遍」等价，但每个实例只被剔除/构造成一次。
-        let mut buckets: HashMap<(MeshRef, Option<SurfaceKey>, bool), Vec<u32>> = HashMap::new();
+        let mut buckets: HashMap<BucketKey, Vec<u32>> = HashMap::new();
         // 全部待摊平实例，按场景迭代顺序；桶里只存下标，两段共享同一份实例数据
         let mut staged_all: Vec<StagedInstance> = Vec::new();
         // 扩展三十六：本帧被形变的实例数（网格带形状 + 权重非零）
@@ -151,7 +172,11 @@ impl Renderer {
             tree_slot: Option<usize>,
             /// 世界包围盒；`None` = 网格没有 AABB（fail-open，永不剔除）
             world: Option<Aabb>,
-            key: (MeshRef, Option<SurfaceKey>),
+            key: (
+                MeshRef,
+                Option<SurfaceKey>,
+                Option<crate::pbr::SceneMaterialKey>,
+            ),
             world_matrix: Mat4,
             color: Vec4,
             /// 该网格的形变登记（无形状为 `None`），第二遍填进 `InstanceRaw`。
@@ -186,7 +211,19 @@ impl Renderer {
             if !node.visible {
                 continue;
             }
-            let key = (node.mesh, node.material.map(SurfaceKey::new));
+            // S4-A：物件引用了场景材质表里的材质时，它整份取代网格资产材质与
+            // 物件级覆盖，所以此时把 surface 抹掉 —— 留着只会让同一份材质按
+            // 「永远被忽略的 metallic/roughness」拆成多个批次，画面完全一样。
+            let scene_material = scene.node_scene_material(node.id).map(|decl| {
+                crate::pbr::SceneMaterialKey::new(decl, scene.texture_base_dir.as_deref())
+            });
+            let surface = node.material.map(SurfaceKey::new);
+            let surface = if scene_material.is_some() {
+                None
+            } else {
+                surface
+            };
+            let key = (node.mesh, surface, scene_material);
             // 扩展三十八：形变权重每帧只在这里定一次 —— 互斥归一化出的是**副本**，
             // 场景里的权重保持不变（脚本写 1.0 读回还是 1.0，只有着色器吃到 0.5）。
             // 扩展四十：形状掩码也在这里一次定下来。归一层已经把掩码外的槽位清 0，
@@ -462,11 +499,16 @@ impl Renderer {
             // 不再"两段各来一份"。批次键是 (网格, 材质)，不含透明度，段内又收"所有匹配
             // 该键的节点"，于是同一个网格若既有不透明物件又有玻璃物件，不透明段会把玻璃
             // 也当不透明画一遍、半透明段会把实心物件当玻璃再画一遍 —— 一份几何，两次绘制。
+            // 这两条入桶语句保持单行：`instance_buckets_contract` 与
+            // `frustum_cull_wiring` 都在源码里定位 `buckets.entry(` 这个动作
+            // 本身（以及它所在分支的缩进），被 `cargo fmt` 折行会让它们失配。
             if transparent {
                 // 半透明物件不写深度，金字塔里没有它的贡献，因此永不被遮挡剔除
-                buckets.entry((key.0, key.1, true)).or_default().push(slot);
+                #[rustfmt::skip]
+                buckets.entry((key.0, key.1, key.2, true)).or_default().push(slot);
             } else if !occluded {
-                buckets.entry((key.0, key.1, false)).or_default().push(slot);
+                #[rustfmt::skip]
+                buckets.entry((key.0, key.1, key.2, false)).or_default().push(slot);
             }
         }
 
@@ -482,12 +524,20 @@ impl Renderer {
         // 扩展二十五：与实例缓冲同序的节点 id —— 层级剔除靠它把实例挂回场景树
         let mut caster_nodes: Vec<r3e_core::NodeId> = Vec::new();
         // 半透明批次 (组内最远深度, 网格, 材质, 实例)：等全部实例算完后统一排序
-        type TransparentBatch = (f32, MeshRef, Option<SurfaceKey>, Vec<u32>);
+        type TransparentBatch = (
+            f32,
+            MeshRef,
+            Option<SurfaceKey>,
+            Option<crate::pbr::SceneMaterialKey>,
+            Vec<u32>,
+        );
         let mut pending_transparent: Vec<TransparentBatch> = Vec::new();
         for (index, entry) in keys.iter().enumerate() {
             let segment_transparent = index >= opaque_key_count;
-            let (key, surface) = *entry;
-            let Some(order_list) = buckets.remove(&(key, surface, segment_transparent)) else {
+            let (key, surface, scene_material) = *entry;
+            let Some(order_list) =
+                buckets.remove(&(key, surface, scene_material, segment_transparent))
+            else {
                 continue;
             };
             if order_list.is_empty() {
@@ -500,7 +550,7 @@ impl Renderer {
                     let depth = staged_all[slot as usize].depth;
                     far.max(if depth.is_nan() { f32::INFINITY } else { depth })
                 });
-                pending_transparent.push((farthest, key, surface, order_list));
+                pending_transparent.push((farthest, key, surface, scene_material, order_list));
                 continue;
             }
             let start = all.len() as u32;
@@ -511,7 +561,7 @@ impl Renderer {
                 caster_nodes.push(item.node);
             }
             if all.len() as u32 > start {
-                groups.push((key, start..all.len() as u32, surface));
+                groups.push((key, start..all.len() as u32, surface, scene_material));
             }
         }
 
@@ -519,7 +569,7 @@ impl Renderer {
         let mut transparent_start = groups.len();
         // 组间：远组先画（`total_cmp` 下降序，同深度保持首次出现顺序）
         pending_transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, key, surface, order_list) in pending_transparent {
+        for (_, key, surface, scene_material, order_list) in pending_transparent {
             let start = all.len() as u32;
             let depths: Vec<f32> = order_list
                 .iter()
@@ -533,7 +583,7 @@ impl Renderer {
                 caster_bounds.push(item.bounds);
                 caster_nodes.push(item.node);
             }
-            groups.push((key, start..all.len() as u32, surface));
+            groups.push((key, start..all.len() as u32, surface, scene_material));
         }
 
         if joint_overflow > 0 {
@@ -552,7 +602,7 @@ impl Renderer {
 
         // 确保用到的网格都已上传（内置即时生成，资产从注入的 MeshProvider 取）
         let mut uploaded: Vec<MeshRef> = Vec::new();
-        for (key, _, _) in &groups {
+        for (key, ..) in &groups {
             if self.mesh_cache.ensure(&self.device, &self.queue, *key) {
                 uploaded.push(*key);
             }
@@ -562,7 +612,7 @@ impl Renderer {
         if uploaded.len() != groups.len() {
             let mut removed_opaque = 0usize;
             let mut index = 0usize;
-            groups.retain(|(key, _, _)| {
+            groups.retain(|(key, ..)| {
                 let keep = uploaded.contains(key);
                 if !keep && index < transparent_start {
                     removed_opaque += 1;

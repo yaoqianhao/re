@@ -15,6 +15,7 @@ use r3e_core::Scene;
 
 mod bounds;
 mod invariants;
+mod material;
 mod refs;
 
 pub use invariants::{by_code as issue_code_by_code, IssueCode, ISSUE_CODES};
@@ -98,6 +99,24 @@ pub fn validate(scene: &Scene) -> Vec<Issue> {
     let mut out = Vec::new();
     refs::check(scene, &mut out);
     bounds::check(scene, &mut out);
+    material::check(scene, &mut out);
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.code.cmp(b.code))
+            .then_with(|| a.msg.cmp(&b.msg))
+    });
+    out
+}
+
+/// 带场景目录的完整校验：在 [`validate`] 之上额外判定 `materials[].*` 贴图文件是否存在。
+///
+/// `dir` 是场景文件所在目录（相对贴图路径的解析基准）。只读文件元数据，不解码、不改场景。
+pub fn validate_in_dir(scene: &Scene, dir: &std::path::Path) -> Vec<Issue> {
+    let mut out = Vec::new();
+    refs::check(scene, &mut out);
+    bounds::check(scene, &mut out);
+    material::check_in_dir(scene, dir, &mut out);
     out.sort_by(|a, b| {
         a.path
             .cmp(&b.path)

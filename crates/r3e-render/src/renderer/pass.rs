@@ -1,7 +1,6 @@
-use r3e_core::{MeshRef, Scene};
+use r3e_core::Scene;
 
 use crate::mesh::InstanceRaw;
-use crate::pbr::SurfaceKey;
 
 use super::*;
 
@@ -32,7 +31,7 @@ impl Renderer {
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
         let mut draw_calls = 0u32;
         let mut instances = 0u32;
-        for (key, range, surface) in groups {
+        for (key, range, surface, scene_material) in groups {
             let Some(gpu) = self.mesh_cache.get(*key) else {
                 continue;
             };
@@ -46,7 +45,11 @@ impl Renderer {
 
             // 每个材质分区一次 draw：bind group 1 换成该分区材质（含物件级 PBR 覆盖）。
             for part in &gpu.parts {
-                let material_key = part.material.with_surface(*surface);
+                // S4-A：场景材质整份取代网格资产材质与物件级覆盖
+                let material_key = match scene_material {
+                    Some(material) => MaterialKey::Scene(*material),
+                    None => part.material.with_surface(*surface),
+                };
                 let Some(material) = self
                     .material_cache
                     .get(material_key)
@@ -68,18 +71,19 @@ impl Renderer {
     }
 
     /// 收齐本帧要用到的材质并建好 bind group（默认材质也要有一份）。
-    pub(crate) fn prepare_materials(
-        &mut self,
-        groups: &[(MeshRef, std::ops::Range<u32>, Option<SurfaceKey>)],
-    ) {
+    pub(crate) fn prepare_materials(&mut self, groups: &[DrawGroup]) {
         let mut keys: Vec<MaterialKey> = vec![MaterialKey::Default];
-        for (key, _, surface) in groups {
+        for (key, _, surface, scene_material) in groups {
             let Some(gpu) = self.mesh_cache.get(*key) else {
                 continue;
             };
             for part in &gpu.parts {
-                // 网格分区材质 + 物件级覆盖 → 本批次真正要绑的材质键
-                let material = part.material.with_surface(*surface);
+                // 网格分区材质 + 物件级覆盖 → 本批次真正要绑的材质键。
+                // S4-A：批次带场景材质时由它整份取代，网格资产材质不参与。
+                let material = match scene_material {
+                    Some(material) => MaterialKey::Scene(*material),
+                    None => part.material.with_surface(*surface),
+                };
                 if !keys.contains(&material) {
                     keys.push(material);
                 }

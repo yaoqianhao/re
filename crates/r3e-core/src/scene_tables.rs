@@ -6,6 +6,7 @@
 
 use crate::light::{self, LocalLight};
 use crate::scene::Scene;
+use crate::scene_material::{self, SceneMaterialDecl};
 use crate::terrain::{self, TerrainPatch};
 
 impl Scene {
@@ -66,5 +67,26 @@ impl Scene {
     /// 按 name 查一块地形。
     pub fn terrain_patch(&self, name: &str) -> Option<&TerrainPatch> {
         terrain::find_patch(&self.terrain, name)
+    }
+
+    /// 按 name 覆盖式写入一份场景材质（M1-S4-A）。
+    ///
+    /// 与地形表同一套语义：同名原地替换（顺序不变）、新名追加、满载只拦新增。
+    /// 入参在这里统一 `sanitized()`，脚本传 NaN / 越界 uv 都污染不了场景。
+    pub fn upsert_scene_material(&mut self, material: SceneMaterialDecl) -> bool {
+        scene_material::upsert_material(&mut self.materials, material)
+    }
+
+    /// 按 name 移除一份场景材质。
+    ///
+    /// 注意：只删表项，**不处理引用它的节点**——悬空引用由校验器报
+    /// `material.ref_missing`，是否连带清理由上层（编辑器 / 命令）决定。
+    pub fn remove_scene_material(&mut self, name: &str) -> bool {
+        scene_material::remove_material(&mut self.materials, name)
+    }
+
+    /// 按 name 查一份场景材质。
+    pub fn scene_material(&self, name: &str) -> Option<&SceneMaterialDecl> {
+        scene_material::find_material(&self.materials, name)
     }
 }

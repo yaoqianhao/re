@@ -1,4 +1,4 @@
-use r3e_core::{Aabb, MeshRef, Sh9};
+﻿use r3e_core::{Aabb, MeshRef, Sh9};
 
 use crate::envprobe::EnvProbeStats;
 use crate::mesh::{self};
@@ -16,11 +16,21 @@ pub(crate) struct EnvProbeGpu {
     pub(crate) irradiance: Sh9,
 }
 
-/// 一个绘制批次：网格 + 实例区间 + 物件级 PBR 覆盖。
+/// 一个绘制批次：网格 + 实例区间 + 物件级 PBR 覆盖 + 场景共享材质（S4-A）。
 ///
 /// 不透明批次与半透明批次共用同一份实例缓冲，区别只有「落在 `InstancePlan`
 /// 的哪一段」以及绘制时用哪条管线（见 [`InstancePlan`] 的透明段说明）。
-pub(crate) type DrawGroup = (MeshRef, std::ops::Range<u32>, Option<SurfaceKey>);
+///
+/// 第四位是 M1-S4-A 的场景材质：`Some` 时它**整份取代**网格资产材质与物件级覆盖
+/// （完整材质语义），`None` 时走原来的「网格分区材质 + 物件覆盖」链。之所以放在
+/// 批次上而不是只放在材质键里：场景材质是物件级属性，同一节点的所有网格分区都必须
+/// 用同一份，放进分区键会被网格资产材质盖掉。
+pub(crate) type DrawGroup = (
+    MeshRef,
+    std::ops::Range<u32>,
+    Option<SurfaceKey>,
+    Option<crate::pbr::SceneMaterialKey>,
+);
 
 /// `prepare_instances` 的返回值。
 ///
@@ -155,11 +165,11 @@ pub(crate) fn shadow_runs(groups: &[DrawGroup], mask: Option<&[bool]>) -> Vec<Sh
         None => groups
             .iter()
             .enumerate()
-            .map(|(index, (_, range, _))| (index, range.clone()))
+            .map(|(index, (_, range, ..))| (index, range.clone()))
             .collect(),
         Some(mask) => {
             let mut runs = Vec::new();
-            for (index, (_, range, _)) in groups.iter().enumerate() {
+            for (index, (_, range, ..)) in groups.iter().enumerate() {
                 let start = range.start as usize;
                 let end = (range.end as usize).min(mask.len());
                 if start >= end {

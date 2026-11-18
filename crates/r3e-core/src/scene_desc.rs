@@ -32,6 +32,16 @@ pub struct ObjectDesc {
     /// PBR 表面材质（metallic / roughness / emissive）；省略表示不覆盖网格资产材质。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<SurfaceMaterial>,
+    /// 场景材质表引用（M1-S4-A）：指向 `materials[].name`，与内联 `material` 互斥。
+    ///
+    /// 省略表示不引用（用网格资产材质或内联材质）。经
+    /// [`crate::scene_material::normalize_material_ref`] 收敛：去空白、空串即不声明。
+    #[serde(
+        default,
+        rename = "materialRef",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub material_ref: Option<String>,
     /// 语义标签（如 `door` / `pickup` / `enemy`）；省略或空数组表示无标签。
     ///
     /// 写入前经 [`crate::normalize_tags`] 收敛：去首尾空白、丢空串、去重（保序）、

@@ -38,7 +38,7 @@ pub use occlusion::{
     OcclusionCuller, OcclusionStats, DEFAULT_READBACK_INTERVAL, MAX_READBACK_INTERVAL,
     MIN_READBACK_INTERVAL,
 };
-pub use pbr::{MaterialUniform, SurfaceKey};
+pub use pbr::{MaterialUniform, SceneMaterialKey, SurfaceKey};
 pub use postfx::{PostFxPass, PostFxStats, BLOOM_LEVELS, HDR_FORMAT};
 pub use renderer::{
     CapturedFrame, CullStats, LayeredProvider, LightsUniform, LocalLightRaw, LocalShadowUniform,

@@ -8,7 +8,7 @@
     "rpc": 48,
     "script_only": 330,
     "domains": 17,
-    "invariants": 24
+    "invariants": 30
   },
   "domains": [
     "scene",
@@ -4732,6 +4732,36 @@
       "code": "lights.over_limit",
       "layer": "bounds",
       "severity": "error"
+    },
+    {
+      "code": "material.dup_name",
+      "layer": "material",
+      "severity": "error"
+    },
+    {
+      "code": "material.params_out_of_range",
+      "layer": "material",
+      "severity": "error"
+    },
+    {
+      "code": "material.ref_conflict",
+      "layer": "material",
+      "severity": "error"
+    },
+    {
+      "code": "material.ref_missing",
+      "layer": "material",
+      "severity": "error"
+    },
+    {
+      "code": "material.texture_missing",
+      "layer": "material",
+      "severity": "error"
+    },
+    {
+      "code": "material.unreferenced",
+      "layer": "material",
+      "severity": "warn"
     },
     {
       "code": "morph.target_count.over_max",

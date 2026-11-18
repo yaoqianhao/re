@@ -21,6 +21,9 @@ pub(crate) struct GpuMaterial {
 pub(crate) struct MaterialCache {
     pub(crate) layout: wgpu::BindGroupLayout,
     pub(crate) sampler: wgpu::Sampler,
+    /// 扩展 S4-A：平铺用的 Repeat 采样器。`sampler` 是 ClampToEdge（存量画面靠它
+    /// 保证 uv 越界时不出现接缝），平铺场景必须要 Repeat，所以两者并存、按 uv_scale 分支。
+    pub(crate) repeat_sampler: wgpu::Sampler,
     pub(crate) white: wgpu::TextureView,
     /// 未挂法线贴图时绑定的中性法线（0.5, 0.5, 1.0）。着色器按开关跳过采样，
     /// 这里只是让 bind group 永远填满 —— 万一开关与绑定不同步，中性法线也不会改外观。
@@ -110,6 +113,25 @@ impl MaterialCache {
                     },
                     count: None,
                 },
+                // 扩展 S4-A：自发光贴图（sRGB 颜色图，复用 binding(2) 的采样器）。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // 扩展 S4-A：平铺采样器（Repeat）。base color 与数据贴图的正片叠底
+                // 都靠它，uv_scale = 1 时着色器不用这个 binding，存量画面不动。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -118,6 +140,18 @@ impl MaterialCache {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        // 扩展 S4-A：与上面同参数，只有寻址方式换成 Repeat —— 平铺时 uv 会超出 0..1，
+        // ClampToEdge 会把边缘像素拉成条带，Repeat 才是正确的平铺语义。
+        let repeat_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("r3e-material-repeat-sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
@@ -132,6 +166,7 @@ impl MaterialCache {
         let mut cache = Self {
             layout,
             sampler,
+            repeat_sampler,
             white,
             flat_normal,
             env_cube,
@@ -173,20 +208,27 @@ impl MaterialCache {
             return;
         }
 
-        let (asset_material, surface) = key.split();
-        let data = match (asset_material, library) {
-            (Some((asset, index)), Some(library)) => {
-                library.material(asset, index).unwrap_or_else(|| {
-                    log::warn!("资产 {} 缺少材质 {}，回退默认材质", asset, index);
-                    MaterialData::default()
-                })
+        let (asset_material, surface, scene_material) = key.split();
+        // S4-A：场景材质是**完整材质**（标量 + 五张贴图 + uv），不参与资产材质继承，
+        // 也不吃物件级覆盖 —— 它取代整份数据。其余键仍走原来的「资产 → 物件覆盖」链。
+        let data = match scene_material {
+            Some(material) => material.to_material_data(),
+            None => {
+                let base = match (asset_material, library) {
+                    (Some((asset, index)), Some(library)) => {
+                        library.material(asset, index).unwrap_or_else(|| {
+                            log::warn!("资产 {} 缺少材质 {}，回退默认材质", asset, index);
+                            MaterialData::default()
+                        })
+                    }
+                    _ => MaterialData::default(),
+                };
+                // 物件级 PBR 覆盖只改 metallic / roughness，资产的颜色与贴图保持不变
+                match surface {
+                    Some(surface) => surface.overlay(&base),
+                    None => base,
+                }
             }
-            _ => MaterialData::default(),
-        };
-        // 物件级 PBR 覆盖只改 metallic / roughness，资产的颜色与贴图保持不变
-        let data = match surface {
-            Some(surface) => surface.overlay(&data),
-            None => data,
         };
 
         let (view, has_texture) = match (data.base_color_texture, library) {
@@ -233,19 +275,35 @@ impl MaterialCache {
             TextureColorSpace::Linear,
             self.white.clone(),
         );
+        // S4-A：自发光贴图是颜色图（sRGB），与上面三张数据图的色彩空间不同。
+        let (emissive_view, emissive_map) = self.resolve_pbr_map(
+            device,
+            queue,
+            data.emissive_texture,
+            library,
+            TextureColorSpace::Srgb,
+            self.white.clone(),
+        );
         let maps = PbrMapFlags {
             normal: normal_map,
             roughness: roughness_map,
             occlusion: occlusion_map,
+            emissive: emissive_map,
         };
 
-        let uniform = MaterialUniform::build_with_maps(
+        // 自发光强度：场景材质自带一份，物件级覆盖只对旧路径生效
+        let emissive = match scene_material {
+            Some(material) => material.emissive(),
+            None => surface.map(|s| s.emissive()).unwrap_or([0.0; 3]),
+        };
+        let uniform = MaterialUniform::build_full(
             data.base_color,
             data.metallic,
             data.roughness,
-            surface.map(|s| s.emissive()).unwrap_or([0.0; 3]),
+            emissive,
             has_texture,
             maps,
+            data.uv_scale,
         );
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("r3e-material-ubo"),
@@ -287,6 +345,15 @@ impl MaterialCache {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&self.env_cube),
+                },
+                // 扩展 S4-A：自发光贴图 + 平铺采样器
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&emissive_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(&self.repeat_sampler),
                 },
             ],
         });
