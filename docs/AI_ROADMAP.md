@@ -44,7 +44,7 @@ AIGC:
 |---|---|---|---|
 | 最大文件行数 | 4057（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
 | `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 8 文件最大 486 行） |
-| `#[test]` 总数 | 1718（M1-S4-F 后；M1-S4-D 时为 1677） | 只增不减 | `cargo xtask check-tests` 快照比对 |
+| `#[test]` 总数 | 1721（M1-S4-G 后；M1-S4-F 时为 1718） | 只增不减 | `cargo xtask check-tests` 快照比对 |
 | 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
 | 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增；前两条原定 M1-S1 偿还，因 R2 替代清单前置未满足顺延，见 `docs/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
 | 能力清单漂移 | 0（`capabilities.json` 386 命令 / 56 RPC / 30 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
@@ -350,7 +350,7 @@ cargo xtask invariants              # ✅ 24 = 24 = 24
 | M1-S1 ✅ 2026-11-16 | 事务协议上链路 | ✅ `tx.begin/apply/preview/commit/rollback` 已走 `r3e-protocol`（44 RPC）；✅ `doc_gate` 第 7 条写点台账；⏸ `r3e-plugin` 只依赖 protocol / 能力声明 `scene.write` `doc.transaction` → **顺延**（能力承接方未就位，见 `docs/M1_S1D_SUBSTITUTION.md`） | ✅ 外部进程 dry-run 返回结构化 diff（`tx.preview` 三哈希），`commit` 前场景哈希不变 | M1-1 完成 / M1-2 部分 |
 | M1-S2 ✅ 2026-11-17 | 语义查询 | ✅ `WorldQuery`：按 kind/tag/bbox/component 过滤，结果含 `{id,name,tags,pos,interact_radius}`；✅ `query.find/describe/stats` 三条只读 RPC（RPC 47 / 命令表 377） | ✅ AI 不读裸 JSON 就能回答"场景里有哪些可交互物"（`query.*` 三条只读方法 + 9 条宿主用例） | M1-3 |
 | M1-S3 ✅ 2026-11-17 | 意图命令 + 变更半径 | `spawn_prefab` / `paint_terrain` / `place_light`；一次意图 = N 条原子命令，undo 一次全退；输出含 `impact` | 一条意图命令的 `impact` 能列出受影响对象与材质；`paint_terrain` 不生成几何（M2） | ✅ `scene.spawn_prefab` / `scene.place_light` / `scene.paint_terrain` 三条意图走 `tx.intent`（意图名不进协议）；`impact` 四字段恒定回带；数据壳 32 块上限 + 高度样本逐点入哈希 |
-| M1-S4 ◐ 2026-11-18 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5；**V3 改为「先补引擎能力、后接验证器」**：S4-A 材质引用体系 / S4-B `r3e-nav` / S4-C 装配下沉 / S4-D 协议面八条（RPC 48→56、命令表 378→386、`capabilities.json` 重生成）/ S4-E 三层验证器 + 坐标化 Issue（静态 / 物理 / 导航三层落地，`ISSUE_CODES` 24→38，`capabilities.json` 重生成）已落地；S4-F `scene.verify` RPC（RPC 56→57、命令表 386→387）+ `impact.violations`（影子静态层求差）+ `assets/verify` 六夹具 + `cargo xtask scene-verify`（`verify` 第 11 步）已落地，Gate 1 前置校验就位 |
+| M1-S4 ◐ 2026-11-18 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5；**V3 改为「先补引擎能力、后接验证器」**：S4-A 材质引用体系 / S4-B `r3e-nav` / S4-C 装配下沉 / S4-D 协议面八条（RPC 48→56、命令表 378→386、`capabilities.json` 重生成）/ S4-E 三层验证器 + 坐标化 Issue（静态 / 物理 / 导航三层落地，`ISSUE_CODES` 24→38，`capabilities.json` 重生成）已落地；S4-F `scene.verify` RPC（RPC 56→57、命令表 386→387）+ `impact.violations`（影子静态层求差）+ `assets/verify` 六夹具 + `cargo xtask scene-verify`（`verify` 第 11 步）已落地；S4-G 把 `impact.violations` 补到物理 / 导航两层（影子世界当场重建 + 影子导航网格，`notChecked` 不再留已跑的层）已落地，Gate 1 前置校验就位 |
 | M1-S5 | CLI + 三范式 | `r3e-cli tx/query/verify/replay`；三个从零可复现的 AI 任务范式 | **Gate 1** | M1-6、M1-8 |
 
 **待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 按域拆）。行数已从 4,057 降到 **3,947**（M1-S2-C 拆 `scene_desc.rs`、M1-S3-C 拆 `scene_tables.rs`），私有化仍留 M2——冲击全仓读点，与 M1 并行风险过高（D2 裁决）。

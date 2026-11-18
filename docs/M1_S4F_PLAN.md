@@ -12,6 +12,7 @@ AIGC:
 # M1-S4-F 执行方案 V1：`scene.verify` + `impact.violations` + 三夹具 + Gate 1 前置
 
 > 状态：**已落地**（D1=A / D2=P1 / D3=子目录夹具；两提交，本地未 push）
+> 补充：D1 的 B/C（物理 / 导航层 `violations`）已于 M1-S4-G 补齐，见 §5.1 末两行与 §8
 > 日期：2026-11-18
 > 前置：S4-E 已收口（commit `7b2a929`）；RPC 57、命令表 387、`ISSUE_CODES` 38、`#[test]` 1,718
 > 归属：`docs/M1_S4_PLAN.md` §4 S4-F；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S4
@@ -152,7 +153,8 @@ AIGC:
 | `impact.violations` | 影子静态层 vs `tx.begin` 基线求差，`notChecked: ["physics","nav"]`；4 条单测（新增要报 / 既有不重报 / 无新问题报零 / 提交后基线推进） |
 | 夹具 | `assets/verify/` 6 个（3 反例 + 3 正向对照）+ `expect.json` |
 | `xtask scene-verify` | `verify` 第 11 步；6/6 通过；**元检查**：故意把 `overlap_ok` 的 `must` 写成 `overlap.penetration` → 门禁按预期红（`rc=1`），证明它抓得住 |
-| 未做 | 物理 / 导航层的 `violations`、`physics.bind` 类 RPC（D1=B/C、D2=P3，均按方案列入 M2 前置债） |
+| ~~未做~~ → 已补 | 物理 / 导航层的 `violations`（D1=B/C）已由 **M1-S4-G** 补齐：`impact.violations` 的 `layers` 现在按层登记 `static` / `physics` / `nav`，`notChecked` 只留真的没跑的层 |
+| 未做 | `physics.bind` 类新 RPC（D2=P3，仍列 M2 前置债：编辑态一次「先绑后验」是原子动作，值得一条专用 RPC，本轮不扩） |
 
 实现期与提案的两处偏差，均为实证修正而非缩水：
 
@@ -176,7 +178,26 @@ AIGC:
 
 ## 7. 明确不做
 
-- 不做 `physics.bind` / `scene.rebind` 类新 RPC（D2 的 P3）；
-- 不做 `violations` 的物理 / 导航层（D1 的 B/C）；
+- 不做 `physics.bind` / `scene.rebind` 类新 RPC（D2 的 P3）——已登记为 M2 前置债，见 §8；
+- ~~不做 `violations` 的物理 / 导航层（D1 的 B/C）~~ → M1-S4-G 已补，见 §8；
 - 不做 Gate 1 演练本身（S5 范围），本卡只交付「Gate 1 可以开始了」的前置校验。
 *（内容由AI生成，仅供参考）*
+
+---
+
+## 8. 补记：M1-S4-G（物理 / 导航层 `violations`，2026-11-18）
+
+D1=B/C 落地方式与三处口径：
+
+| 项 | 结论 |
+|---|---|
+| 入口 | `tx.intent` 的 `impact.violations` 仍是唯一出口，**不新增 RPC**（RPC 57 / 命令表 387 不变） |
+| 物理层 | 影子场景 → 临时 `Physics` 世界**当场重建**（`bind_scene` 用运行时同一份 `MeshProvider`），跑装配检查；拿到网格来源时悬空是精确结论（`approximate=false`），拿不到就退回「只出解析穿模 + 逐条记 `unchecked`」 |
+| 导航层 | 影子场景当场烘一份影子网格再查可达；烘不出来（无 nav 槽位 / 烘焙失败）如实进 `unchecked`，绝不把「没网格」当「哪都能去」 |
+| 网格来源 | `EngineAccess::meshes: Option<Arc<dyn MeshProvider>>` 由 `r3e-runtime` 逐帧递进（与主循环装配同一个「资产优先、图元兜底」口径）；宿主**不自己造 provider**，否则影子装配与主循环装配迟早看两个不同的网格 |
+| 求差口径 | 与静态层同一个基线（`tx.begin` 快照），物理 / 导航只在「事务前没有、事务后出现」时报，不会把老问题当新引入 |
+| 测试 | `r3e-editor-host` 116 → 119（物理开着 / 导航已烘焙 / 有网格来源出精确结论 / 未烘逐条交代；同批清掉一个临时基准文件里的 1 条测试）；`#[test]` 合计 1,718 → **1,721** |
+
+`cargo xtask verify` 11 步仍全绿（lint-size 白名单 23 项未涨、doc-gate 台账 234 处、invariants A=B=C=38）。
+
+尚未做的一件事留待 M2：`physics.bind` / `scene.rebind` 类 RPC（D2=P3）——它要解决的是「编辑态想先绑后验」，与本卡的「影子世界当场重建」不冲突，属于把临时世界换成持久世界的另一条路。
