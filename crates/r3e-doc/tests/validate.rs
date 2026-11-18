@@ -516,3 +516,75 @@ fn validate_does_not_write_or_dirty() {
     assert_eq!(doc.version(), version, "校验不得经写入口");
     assert_eq!(doc.is_dirty(), dirty, "校验不得改变脏标记");
 }
+
+// ---------- 静态层几何初筛（M1-S4-E） ----------
+
+/// 几何初筛的断言入口。
+///
+/// 与 [`assert_error`] / [`assert_warn`] 同一约定：首个字符串实参固定为 code
+/// （`xtask invariants` 按此约定扫源码）。单独一个 helper 是因为候选来源不同——
+/// `validate_geometry` 不进 [`Document::validate`]，它判的是「空间关系可疑」，
+/// 结论全是 `approximate`，必须由三层验证器里的物理层复核（见 `r3e-editor-host/src/verify`）。
+fn assert_geometry_warn(doc: &Document, code: &str) {
+    let found: Vec<&str> = r3e_doc::validate_geometry(doc.as_scene())
+        .into_iter()
+        .filter(|i| i.severity == Severity::Warn)
+        .map(|i| i.code)
+        .collect();
+    assert!(
+        found.contains(&code),
+        "期望几何 warn {code}，实得 {found:?}"
+    );
+}
+
+#[test]
+fn floating_node_is_geometry_suspect() {
+    // 底面 y = 4.0，下方空无一物：静态层只能给近似候选。
+    //
+    // 几何判据读的是**世界**变换，所以夹具走 `Scene` 建档而不是 `doc.write`：
+    // 写入口刷新 world transform 的职责在宿主（`r3e-editor-host/src/api/scene.rs`），
+    // 文档层不替它做，测试里也不该假设它会做。
+    let mut scene = r3e_core::Scene::new();
+    scene
+        .spawn(ObjectDesc {
+            name: "island".to_string(),
+            position: Some([0.0, 5.0, 0.0]),
+            scale: Some([2.0, 2.0, 2.0]),
+            ..Default::default()
+        })
+        .unwrap();
+    scene.update_world_transforms();
+    let doc = Document::new(scene);
+    assert_geometry_warn(&doc, "support.suspect");
+    let suspect = r3e_doc::validate_geometry(doc.as_scene())
+        .into_iter()
+        .find(|i| i.code == "support.suspect")
+        .expect("应有一条悬空候选");
+    assert!(suspect.approximate, "静态层结论必须标近似");
+    assert_eq!(suspect.location.expect("空间结论必须带坐标")[1], 4.0);
+}
+
+#[test]
+fn aabb_penetration_is_geometry_suspect() {
+    // 两个半边长 1 的立方体中心距 0.5：AABB 一定相交，真实形状也可能是穿模。
+    let mut scene = r3e_core::Scene::new();
+    for name in ["a", "b"] {
+        scene
+            .spawn(ObjectDesc {
+                name: name.to_string(),
+                position: Some([if name == "a" { 0.0 } else { 0.5 }, 1.0, 0.0]),
+                scale: Some([2.0, 2.0, 2.0]),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    scene.update_world_transforms();
+    let doc = Document::new(scene);
+    assert_geometry_warn(&doc, "overlap.suspect");
+    let hit = r3e_doc::validate_geometry(doc.as_scene())
+        .into_iter()
+        .find(|i| i.code == "overlap.suspect")
+        .expect("应有一条穿模候选");
+    assert!(hit.approximate, "静态层结论必须标近似");
+    assert_eq!(hit.target.as_deref(), Some("a|b"), "对象对按名字排序");
+}

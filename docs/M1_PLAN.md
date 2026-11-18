@@ -80,10 +80,10 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 |---|---|---|---|
 | **S1-A** | 协议面新增 `tx.begin / tx.apply / tx.preview / tx.commit / tx.rollback` | `r3e-protocol/src/lib.rs:53`（`RPC_METHODS` 39 条 → 44 条）+ dispatch 三层 match 补臂 + `cmd_spec` + `gen_capabilities` 重生成 | 五个方法可被分发；`cargo xtask gen-capabilities` 后 `capabilities.json` 增量且 `EXPECTED_COMMANDS`（`gen_capabilities.rs:33`，369）不变 |
 | **S1-B** | 宿主事务态 `TxRegistry`：`tx_id → {base_state_hash, staged: Vec<Command>, created_at}`；`tx.apply` 只入队并返回结构化 diff；`tx.commit` 在单个 `&mut Document` 作用域内构造 `doc::Transaction`、逐条 apply、`commit` | `r3e-editor-host`（新增 `tx` 模块 + 宿主 API）+ 复用 `doc` 六入口（`begin/apply/stage/preview/commit/rollback` 均已实现，无需改） | dry-run 返回结构化 diff；`commit` 前 `StateHash` 不变（与基线逐字节相等） |
-| **S1-C** | 命令化边界：定义 **AI 可写域白名单**（scene/light/env/postfx/text/ui/anim 参数），协议层对白名单外域不暴露 `tx.apply`；新增 `.write(` 写点台账与门禁（见 §5） | `docs/WRITE_SITES.md`（新增，写点基线 + 白名单标注 tx 覆盖状态）+ `xtask/src/doc_gate.rs`（新增第 7 条规则：写点只增于白名单或显式登记） | 台账生成可复现；`doc_gate` 第 7 条对新增未登记写点报错 |
+| **S1-C** | 命令化边界：定义 **AI 可写域白名单**（scene/light/env/postfx/text/ui/anim 参数），协议层对白名单外域不暴露 `tx.apply`；新增 `.write(` 写点台账与门禁（见 §5） | `docs/M1_PLAN.md` §5（写点台账本体 + 白名单标注 tx 覆盖状态）+ `xtask/src/doc_gate.rs`（新增第 7 条规则：写点只增于白名单或显式登记） | 台账生成可复现；`doc_gate` 第 7 条对新增未登记写点报错 |
 | **S1-D** | `r3e-plugin` 重写为只依赖 `protocol`；能力声明加 `scene.write` / `doc.transaction` | `crates/r3e-plugin/Cargo.toml` + `src/**`；`dep_debt.json` 偿还 `plugin → core` / `plugin → physics` 两条 | `dep-check --strict` 违规从 4 条降至 2 条；**替代清单先行**（见 §7 风险 R2） |
 
-**S1 执行结果（2026-11-16 收口）**：S1-A ✅ 协议面五方法已上线（RPC 39 → 44、命令表 369 → 374、`dispatch/tx.rs` 102 行）；S1-B ✅ 事务态挂在 `Document` 上（`r3e-doc/src/tx.rs` 277 + `r3e-editor-host/src/api/tx.rs` 269），跨 RPC 存活、`tx.preview` 三哈希、commit 前主场景零字节变动；S1-C ✅ `docs/WRITE_SITES.md` + `doc_gate` 第 7 条写点台账（5 crate / 226 处）；**S1-D ⏸ 顺延**——R2 前置（替代清单）已按决策补齐为 `docs/M1_S1D_SUBSTITUTION.md`，但四项离线能力的协议承接方（`query.*` / 计算类 RPC）尚未就位，本轮不动 `Cargo.toml` 与 `CAPABILITIES`，`dep-check` 仍 4 条债（`limit=4`）。单测 1,476 → 1,504，`cargo xtask verify` 十项全绿。
+**S1 执行结果（2026-11-16 收口）**：S1-A ✅ 协议面五方法已上线（RPC 39 → 44、命令表 369 → 374、`dispatch/tx.rs` 102 行）；S1-B ✅ 事务态挂在 `Document` 上（`r3e-doc/src/tx.rs` 277 + `r3e-editor-host/src/api/tx.rs` 269），跨 RPC 存活、`tx.preview` 三哈希、commit 前主场景零字节变动；S1-C ✅ `docs/M1_PLAN.md` §5 写点台账 + `doc_gate` 第 7 条（5 crate / 226 处）；**S1-D ⏸ 顺延**——R2 前置（替代清单）已按决策补齐为 `docs/M1_S1D_SUBSTITUTION.md`，但四项离线能力的协议承接方（`query.*` / 计算类 RPC）尚未就位，本轮不动 `Cargo.toml` 与 `CAPABILITIES`，`dep-check` 仍 4 条债（`limit=4`）。单测 1,476 → 1,504，`cargo xtask verify` 十项全绿。
 
 **S1 附带（同一 Sprint 内，独立 commit）**：`M1-DOC-FIELDS` 的**文件拆分**部分——`scene.rs` 4,057 行按域拆到 `scene/` 子模块，行为零变化、无 API 变化。字段私有化见 §4 决策 D2。
 
@@ -146,21 +146,65 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 
 ## 5. 写点台账与门禁（S1-C 细则）
 
-`docs/WRITE_SITES.md` 内容结构：
+> 本节是 `cargo xtask doc-gate` **规则 7 的唯一真源**。原 `docs/WRITE_SITES.md` 已于
+> M1-S4-E 并入本节（内容一字未丢，少一个「代码改了、台账文件没跟」的漂移点）。
+> 规则 7 只解析下面那对 `write-sites` 注释锚点（begin / end）包住的表格，
+> 机读字段只有前两列：`| crate 目录名 | 登记写点数 |`；锚点本身全文件只允许出现一次。
 
-```
-基线：224 处 .write(（2026-11-16）
-按 crate 计数表（script 130 / runtime 11 / editor-host 16 / doc 内部 其余）
-逐条标注：{路径:行, 所属域, 是否 AI 可写域, tx 覆盖状态: 已覆盖|排除|待办}
-```
+<!-- write-sites:begin -->
 
-`doc_gate` 第 7 条规则（**登记式**，替代原设想的"禁直改 Scene"静态扫描——那在现有纯文本扫描机制下不可实现）：
+| crate | 登记写点数 | 说明 |
+| --- | --- | --- |
+| r3e-doc | 62 | **合法收口本体**：`Document` 自己执行命令、`#[cfg(test)]` 内的夹具构造。这里的数字跟着新测试涨，收口性质不变，登记数可随测试增长而更新（M1-S3-C 地形命令测试 +2：`tests/command.rs` 的 `paint` 与一次 undo 全退两处夹具；M1-S4-A 材质校验契约 +1：`tests/validate_material.rs` 的「引用与内联材质冲突」夹具绕过命令层直写 `Node.material`，故意造非法态） |
+| r3e-script | 137 | 脚本宿主（`.rhai` 绑定）。绝大多数是「脚本直接改场景」——M1-S3 意图命令要收的对象；眼下是最大单笔债 |
+| r3e-editor-host | 21 | 编辑器宿主写路径（新建节点、属性面板、播放态回写）。M1-S1 之后新写的必须走 `tx_*` 或命令层。M1-S4-D +3：`physics_nav.rs` 的 `materialRef` 反查夹具一处、nav 测试的两处地面 spawn 夹具两处，均属 `#[cfg(test)]` 夹具（故意绕过命令层直接造态）。原先 `src/api/material.rs` 的第四处写点（`scene.material.upsert` 直写材质表：推版本/置脏/计写次但不入撤销栈）已于 M1-S4-E 前置补债清除——该 RPC 两条路都改走命令层（无事务 `Document::apply`、有事务 `tx_apply`），于是这里 22 → 21 |
+| r3e-runtime | 11 | 运行时（物理回写 / 动画采样）。**结构性不可映射**：这些写点由每帧计算驱动，没有对应的用户意图，不上撤销栈是对的，登记在案即可 |
+| r3e-replay | 2 | 回放装载。走 `replace_scene` 之外的少量补写，M1-S2 语义查询若覆盖可再降 |
+
+合计 **233** 处（= 上表五列登记数之和，`doc-gate` 打印值一致；M1-S4-E 前登记 234 处，材质 `upsert` 改走命令层后 -1）。
+
+<!-- write-sites:end -->
+
+### 5.1 这张表在管什么
+
+`Document::write(|s| ...)` 是文档层留给上层的**借用收口**：它保证「写场景」这件事只有
+一个入口，但它**不保证写进撤销栈**。绕过命令层直接借 `&mut Scene` 改状态，能改成功、
+不报错，只是：
+
+- 不进 undo（用户 Ctrl+Z 撤不掉）；
+- 不进事务影子（M1-S1 之后，事务期间的这类写入会在 commit 时被判 `Conflict`）；
+- 不进 `StateHash` 的"可解释变更"序列（外部看不到谁改的）。
+
+所以它不是错误，是**债**。台账的作用是把债的规模钉住：谁再加一处，评审必须看见。
+
+### 5.2 规则 7 的判定口径
+
+`doc-gate` 规则 7 逐 crate 统计 `crates/<crate>/**/*.rs` 里 `.write(` 的字面出现次数
+（只数方法调用，不区分是否在 `#[cfg(test)]` 块内——测试也要收口）：
+
+| 情况 | 结果 |
+| --- | --- |
+| 实际 > 登记 | **失败**：新增写点必须先在 §5 表格里登记并说明理由 |
+| 实际 = 登记 | 通过 |
+| 实际 < 登记 | 通过 + 打印「可下调」提示（只许减，减了顺手把数字改小） |
+
+新增 crate 出现 `.write(` 但表里没有该行 → 失败（同"实际 > 登记"，登记数为 0）。
+锚点缺失或表格解析为空 → 同样**失败**（宁可红，也不让门禁静默退化成「没有台账」）。
 
 - 统计全仓 `.write(` 数量与逐文件分布
-- 与 `WRITE_SITES.md` 基线比对：**只允许减少，不允许新增未登记写点**
-- 新增写点必须在台账中显式登记并标注 tx 覆盖状态
+- 与本节表格比对：**只允许减少，不允许新增未登记写点**
+- 新增写点必须在表中显式登记并标注 tx 覆盖状态
 
 这条规则的价值：把"绕过协议写入"从"不可见"变成"审计可见"，成本极低、无行为风险。
+
+### 5.3 降债路线
+
+| 阶段 | 动作 | 预期 |
+| --- | --- | --- |
+| M1-S1 | 事务五条 RPC 上线，宿主写路径优先走 `tx_*` | 本表先钉住，不加 |
+| M1-S3 | 意图命令（`scene.spawn` 等）在 `r3e-script` 建立「意图 → `CommandKind`」映射 | `r3e-script` 明显下降 |
+| M1-S4 | 三层验证器上线，未入账写点可被探针发现 | 结构性写点（runtime）单列「豁免但可见」 |
+| M2+ | `r3e-runtime` 物理/动画回写走「隐式命令」通道 | 从台账转入正式通道 |
 
 ---
 
@@ -191,7 +235,7 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 |---|---|---|
 | `docs/AI_ROADMAP.md` | 每 Sprint 收口 | §3.2 交付物表勾选 + §8 验收表 + 状态行 |
 | `docs/ARCHITECTURE.md` | 协议面/真值层变更时 | 核心契约、协议方法表、探针字段、行数增量表 |
-| `docs/WRITE_SITES.md` | S1-C 起，每次写点变化 | 写点基线、逐条覆盖状态 |
+| `docs/M1_PLAN.md` §5 | S1-C 起，每次写点变化 | 写点台账（表格本体 + 登记数 + 逐条覆盖状态，M1-S4-E 起不再单列文件） |
 | `docs/capabilities.json` | 协议/命令变化时 | `cargo xtask gen-capabilities` 自动生成，不手写 |
 | `docs/M1S1_*.md` … `M1S5_*.md` | 每 Sprint 完成 | 新增，格式对齐 `M0S1`–`M0S5` 既有文档 |
 | `README.md` / `docs/ASSETS.md` | 能力面变化时 | CLI 用法、能力清单 |

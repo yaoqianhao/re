@@ -5,7 +5,7 @@
 //! | 源 | 提供 | 位置 |
 //! |---|---|---|
 //! | A | 引擎声明自己会报哪些 code（真源） | `r3e_doc::ISSUE_CODES` |
-//! | B | 有反例测试兜住的 code | `crates/r3e-doc/tests/*.rs` 的 `assert_error` / `assert_warn` 字面量 |
+//! | B | 有反例测试兜住的 code | `crates/r3e-doc/tests/*.rs` 与 `crates/r3e-editor-host/tests/*.rs` 的断言 helper 字面量 |
 //! | C | 对外清单声明的 code | `docs/capabilities.json` 的 `invariants[].code` |
 //!
 //! 判据是**三集合相等**，任一差集非空即非 0 退出，并分别打印：
@@ -19,8 +19,14 @@
 //! （后者由 `tests/validate.rs` 的场景测试负责）。因为只读源码不跑引擎，
 //! 一次几十毫秒，才有资格进 `verify` 每轮都跑。
 //!
-//! 扫字面量而不解析 Rust AST：`assert_error(&doc, "…")` 的首个字符串实参恒为 code，
+//! 扫字面量而不解析 Rust AST：断言 helper 调用的首个字符串实参恒为 code，
 //! 约定由测试文件头部文档固定；为几十行的门禁引 `syn` 得不偿失。
+//!
+//! **B 源为什么要跨两个 crate（M1-S4-E）**：静态层判出来的码（`support.*` / `overlap.*`）
+//! 反例在 `r3e-doc`，物理层 / 导航空层的码（`support.floating` / `overlap.penetration` /
+//! `nav.*`）只能在 `r3e-editor-host` 里构造——它们需要物理后端与烘焙好的 navmesh。
+//! 只扫 `r3e-doc/tests` 会让这 6 条码永远「登记了却没有反例测试」，门禁要么红、
+//! 要么被逼着去写没有真实断言的空测试。
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -28,8 +34,23 @@ use std::path::{Path, PathBuf};
 
 use r3e_doc::ISSUE_CODES;
 
-/// 反例测试的断言入口（测试文件里这两个 helper 固定「首个字符串实参 = code」）。
-const ASSERT_HELPERS: [&str; 2] = ["assert_error(", "assert_warn("];
+/// 反例测试的断言入口（测试文件里这些 helper 固定「首个字符串实参 = code」）。
+///
+/// - `assert_error` / `assert_warn`：`r3e-doc/tests` 的静态层断言；
+/// - `assert_geometry_warn`：`r3e-doc/tests` 的静态层几何初筛（`validate_geometry`）断言；
+/// - `has_code`：`r3e-editor-host/tests` 的三层验证报告断言（物理层 / 导航层结论）。
+const ASSERT_HELPERS: [&str; 4] = [
+    "assert_error(",
+    "assert_warn(",
+    "assert_geometry_warn(",
+    "has_code(",
+];
+
+/// B 源的扫描目录（相对仓库根）。
+///
+/// 分成「静态层」与「三层验证」两处，是因为后者依赖物理 / 导航后端，代码不可能写在
+/// `r3e-doc` 里；但它们的结论码与静态层同属 [`ISSUE_CODES`]，必须有反例兜住。
+const TEST_DIRS: [&str; 2] = ["crates/r3e-doc/tests", "crates/r3e-editor-host/tests"];
 
 /// 子命令入口。返回进程退出码（0 = 三源一致）。
 pub fn run(root: &Path) -> i32 {
@@ -80,7 +101,7 @@ pub fn run(root: &Path) -> i32 {
 
     if failed {
         eprintln!(
-            "[invariants] 三源不一致：补测试改 crates/r3e-doc/tests/、改清单跑 \
+            "[invariants] 三源不一致：补测试改 r3e-doc/tests/ 或 r3e-editor-host/tests/、改清单跑 \
              `cargo xtask gen-capabilities`、改登记表看 docs/M0S5_PROTOCOL.md 的 code 契约"
         );
         return 1;
@@ -92,11 +113,13 @@ pub fn run(root: &Path) -> i32 {
 
 /// B：收集测试里被断言过的 code。
 fn asserted_codes(root: &Path) -> Result<BTreeSet<String>, String> {
-    let dir = root.join("crates/r3e-doc/tests");
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_rs(&dir, &mut files)?;
+    for dir in TEST_DIRS {
+        let dir = root.join(dir);
+        collect_rs(&dir, &mut files)?;
+    }
     if files.is_empty() {
-        return Err(format!("{} 下没有测试文件，无法比对 B 源", dir.display()));
+        return Err(format!("{:?} 下没有测试文件，无法比对 B 源", TEST_DIRS));
     }
 
     let mut out = BTreeSet::new();

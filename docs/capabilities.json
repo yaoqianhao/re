@@ -8,7 +8,7 @@
     "rpc": 56,
     "script_only": 330,
     "domains": 17,
-    "invariants": 30
+    "invariants": 38
   },
   "domains": [
     "scene",
@@ -4854,6 +4854,26 @@
       "severity": "error"
     },
     {
+      "code": "nav.no_path",
+      "layer": "nav",
+      "severity": "error"
+    },
+    {
+      "code": "nav.region_split",
+      "layer": "nav",
+      "severity": "warn"
+    },
+    {
+      "code": "nav.spawn_offmesh",
+      "layer": "nav",
+      "severity": "error"
+    },
+    {
+      "code": "nav.target_offmesh",
+      "layer": "nav",
+      "severity": "error"
+    },
+    {
       "code": "node.color.non_finite",
       "layer": "bounds",
       "severity": "error"
@@ -4877,6 +4897,16 @@
       "code": "node.transform.non_finite",
       "layer": "bounds",
       "severity": "error"
+    },
+    {
+      "code": "overlap.penetration",
+      "layer": "physics",
+      "severity": "error"
+    },
+    {
+      "code": "overlap.suspect",
+      "layer": "overlap",
+      "severity": "warn"
     },
     {
       "code": "physics.gravity.non_finite",
@@ -4912,6 +4942,16 @@
       "code": "skin.name.empty",
       "layer": "refs",
       "severity": "error"
+    },
+    {
+      "code": "support.floating",
+      "layer": "physics",
+      "severity": "warn"
+    },
+    {
+      "code": "support.suspect",
+      "layer": "support",
+      "severity": "warn"
     },
     {
       "code": "text.key.duplicate",

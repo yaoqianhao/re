@@ -36,8 +36,9 @@ pub use tx::{
 };
 pub use undo::{Mark, UndoGroup, UndoStack};
 pub use validate::{
-    errors as validate_errors, issue_code_by_code, validate, validate_in_dir, Issue, IssueCode,
-    Severity, ISSUE_CODES,
+    dedup_superseded, errors as validate_errors, is_dynamic_node, issue_code_by_code, node_bounds,
+    nodes_related, terrain_height_at, validate, validate_geometry, validate_in_dir, Category,
+    Issue, IssueCode, Severity, ISSUE_CODES,
 };
 
 /// 文档层错误。

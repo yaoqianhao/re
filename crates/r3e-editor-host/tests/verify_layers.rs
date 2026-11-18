@@ -1,0 +1,337 @@
+//! 三层验证器的集成测试（M1-S4-E）。
+//!
+//! 这里只测「三层合起来的行为」，不重复测各层内部算法（那在 `r3e-doc` / `r3e-nav`
+//! 自己的单测里）。重点有三件事：
+//!
+//! 1. 近似结论会被精确结论**覆盖**，而不是并列出现（铁律②）；
+//! 2. 精确层判不了的对，静态层的近似条目会**留着**（不丢信息）；
+//! 3. 某一层缺能力时进 `unchecked`，绝不当成「通过」（铁律③）。
+
+use glam::Vec3;
+use r3e_core::{ObjectDesc, PhysicsDesc, Scene, SpawnDecl, TerrainPatch};
+use r3e_doc::Category;
+use r3e_editor_host::{Layer, VerifyReport};
+use r3e_nav::Nav;
+use r3e_physics::{BuiltinBackend, Physics};
+
+// ------------------------------------------------------------------ 夹具
+
+/// 一份「物理开着、后端申报 shape_cast / overlap」的世界。
+///
+/// 用内置后端而不是 rapier：内置后端的查询是解析法真实可查（`BackendCaps::BASIC`），
+/// 且零外部依赖，跑测试不用等 20 秒链接。
+fn physics_on() -> Physics {
+    Physics::with_backend(Box::new(BuiltinBackend::new(
+        Vec3::new(0.0, -9.81, 0.0),
+        0.0,
+    )))
+}
+
+fn phys(collider: &str, half: [f32; 3]) -> PhysicsDesc {
+    PhysicsDesc {
+        body: "static".to_string(),
+        mass: 1.0,
+        restitution: None,
+        friction: None,
+        collider: Some(collider.to_string()),
+        half_extents: Some(half),
+        ccd: None,
+    }
+}
+
+fn spawn(scene: &mut Scene, name: &str, pos: [f32; 3], scale: f32, physics: Option<PhysicsDesc>) {
+    scene
+        .spawn(ObjectDesc {
+            name: name.to_string(),
+            position: Some(pos),
+            scale: Some([scale, scale, scale]),
+            physics,
+            ..Default::default()
+        })
+        .expect("节点应能落进场景");
+}
+
+fn flat(name: &str, origin: [f32; 2], size: [f32; 2]) -> TerrainPatch {
+    TerrainPatch::flat(name, origin, size)
+}
+
+fn codes(report: &VerifyReport) -> Vec<&'static str> {
+    report.issues().iter().map(|i| i.code).collect()
+}
+
+/// 报告里有没有某个 code（首个字符串实参固定为 code，`xtask invariants` 按此约定
+/// 扫源码——B 源正因为能读到这一层，物理 / 导航层的码才算「有反例测试兜住」）。
+fn has_code(report: &VerifyReport, code: &str) -> bool {
+    report.issues().iter().any(|i| i.code == code)
+}
+
+fn find<'a>(report: &'a VerifyReport, code: &str) -> Option<&'a r3e_doc::Issue> {
+    report.issues().iter().find(|i| i.code == code)
+}
+
+/// 出生点是独立于节点的声明（`scene.spawns`），不是场景里的物件——
+/// 所以它不会给自己的脚下添一个碰撞体。
+fn spawn_at(scene: &mut Scene, name: &str, pos: [f32; 3]) {
+    scene.spawns.push(SpawnDecl::new(name, pos));
+}
+
+// ------------------------------------------------------------------ 物理层
+
+#[test]
+fn disabled_physics_is_unchecked_not_passed() {
+    let mut scene = Scene::new();
+    spawn(&mut scene, "island", [0.0, 8.0, 0.0], 2.0, None);
+    scene.update_world_transforms();
+
+    // 默认 `Physics::new()`：关闭 + null 后端。
+    let report = VerifyReport::collect(&scene, &Physics::new(), None);
+    assert!(
+        report
+            .unchecked()
+            .iter()
+            .any(|u| u.layer() == Layer::Physics),
+        "物理关闭必须留一条「没检查」的原因"
+    );
+    // 静态层的近似结论保留：物理层没给结论，就不能凭空消失。
+    let suspect = find(&report, "support.suspect").expect("静态层应报悬空候选");
+    assert!(suspect.approximate);
+}
+
+#[test]
+fn floating_body_is_confirmed_precisely() {
+    let mut scene = Scene::new();
+    // 底面 y = 4.0，下方 0.05 米内空空如也。
+    spawn(
+        &mut scene,
+        "crate",
+        [0.0, 5.0, 0.0],
+        2.0,
+        Some(phys("box", [1.0, 1.0, 1.0])),
+    );
+    scene.update_world_transforms();
+
+    let report = VerifyReport::collect(&scene, &physics_on(), None);
+    assert!(has_code(&report, "support.floating"), "物理层确认悬空");
+    let confirmed = find(&report, "support.floating").expect("物理层应确认悬空");
+    assert!(!confirmed.approximate, "物理层结论不是近似");
+    assert_eq!(confirmed.category, Category::Support);
+    assert_eq!(
+        codes(&report)
+            .iter()
+            .filter(|c| **c == "support.suspect" || **c == "support.floating")
+            .count(),
+        1,
+        "同一物件的近似候选必须被精确结论覆盖，不能两条并存"
+    );
+}
+
+#[test]
+fn sphere_penetration_is_confirmed_without_approximation() {
+    let mut scene = Scene::new();
+    // 两个半径 0.5 的球，中心距 0.6 → 真的插进去了。
+    spawn(
+        &mut scene,
+        "a",
+        [0.0, 0.5, 0.0],
+        1.0,
+        Some(phys("sphere", [0.5, 0.5, 0.5])),
+    );
+    spawn(
+        &mut scene,
+        "b",
+        [0.6, 0.5, 0.0],
+        1.0,
+        Some(phys("sphere", [0.5, 0.5, 0.5])),
+    );
+    scene.update_world_transforms();
+
+    let report = VerifyReport::collect(&scene, &physics_on(), None);
+    assert!(has_code(&report, "overlap.penetration"), "物理层确认穿透");
+    let hit = find(&report, "overlap.penetration").expect("物理层应确认穿透");
+    assert!(!hit.approximate);
+    assert_eq!(hit.category, Category::Overlap);
+    assert_eq!(hit.target.as_deref(), Some("a|b"));
+    let loc = hit.location.expect("穿透必须给坐标");
+    assert!((loc[0] - 0.3).abs() < 1e-2, "重叠中心应在两球之间：{loc:?}");
+    assert_eq!(
+        codes(&report)
+            .iter()
+            .filter(|c| **c == "overlap.suspect")
+            .count(),
+        0,
+        "精确结论落地后不该再留静态层的近似候选"
+    );
+}
+
+#[test]
+fn decor_overlap_stays_approximate() {
+    let mut scene = Scene::new();
+    // 只有 `a` 有碰撞体；`b` 是纯装饰物，物理层根本没有它的碰撞体。
+    spawn(
+        &mut scene,
+        "a",
+        [0.0, 1.0, 0.0],
+        2.0,
+        Some(phys("box", [1.0, 1.0, 1.0])),
+    );
+    spawn(&mut scene, "b", [0.6, 1.0, 0.0], 2.0, None);
+    scene.update_world_transforms();
+
+    let report = VerifyReport::collect(&scene, &physics_on(), None);
+    assert!(
+        find(&report, "overlap.penetration").is_none(),
+        "装饰物没有碰撞体：物理层不许替它下结论"
+    );
+    let suspect = find(&report, "overlap.suspect").expect("静态层近似结论应保留");
+    assert!(suspect.approximate);
+}
+
+// ------------------------------------------------------------------ 导航层
+
+#[test]
+fn unbaked_nav_is_unchecked_not_passed() {
+    let mut scene = Scene::new();
+    spawn(&mut scene, "crate", [0.0, 1.0, 0.0], 2.0, None);
+    scene.update_world_transforms();
+
+    let report = VerifyReport::collect(&scene, &value_physics(), None);
+    let nav = report
+        .unchecked()
+        .iter()
+        .find(|u| u.layer() == Layer::Nav)
+        .expect("没接导航槽位必须留一条原因");
+    assert!(nav.reason().contains("导航"), "原因应说清是导航缺失");
+    assert_eq!(
+        report.count_by_layer(Layer::Nav),
+        0,
+        "没检查就不该有导航结论"
+    );
+}
+
+/// 开着物理的桩：悬空判定的前置条件，导航测试只关心导航结论。
+fn value_physics() -> Physics {
+    Physics::with_backend(Box::new(BuiltinBackend::new(
+        Vec3::new(0.0, -9.81, 0.0),
+        0.0,
+    )))
+}
+
+#[test]
+fn spawn_off_mesh_is_reported_with_coordinate() {
+    let mut scene = Scene::new();
+    scene.terrain.push(flat("ground", [0.0, 0.0], [10.0, 10.0]));
+    spawn_at(&mut scene, "start", [2.5, 0.0, 2.5]);
+    // 地形之外：烘焙范围会扩张到这里，但这一格没有地面 → 不可走。
+    spawn_at(&mut scene, "stray", [50.0, 0.0, 50.0]);
+    scene.update_world_transforms();
+
+    let nav = Nav::bake_scene(&scene).expect("场景应可烘焙");
+    let report = VerifyReport::collect(&scene, &value_physics(), Some(&nav));
+
+    assert!(
+        has_code(&report, "nav.spawn_offmesh"),
+        "地形外的出生点不可走"
+    );
+    let off = find(&report, "nav.spawn_offmesh").expect("地形外的出生点应报不可走");
+    assert_eq!(off.category, Category::Reachability);
+    assert!(
+        off.target.as_deref() == Some("stray"),
+        "只该报那个错位的出生点：{:?}",
+        off.target
+    );
+    let loc = off.location.expect("必须给坐标");
+    assert!((loc[0] - 50.0).abs() < 1e-2 && (loc[2] - 50.0).abs() < 1e-2);
+    assert!(
+        !report
+            .issues()
+            .iter()
+            .any(|i| i.code == "nav.spawn_offmesh" && i.target.as_deref() == Some("start")),
+        "站在地形上的出生点不该被报"
+    );
+}
+
+#[test]
+fn unreachable_target_reports_the_cut_point() {
+    let mut scene = Scene::new();
+    // 两块互不相连的地形，中间 10 米虚空。
+    scene.terrain.push(flat("west", [0.0, 0.0], [10.0, 10.0]));
+    scene.terrain.push(flat("east", [20.0, 0.0], [10.0, 10.0]));
+    spawn_at(&mut scene, "start", [2.5, 0.0, 2.5]);
+    scene.update_world_transforms();
+
+    let nav = Nav::bake_scene(&scene).expect("场景应可烘焙");
+    let targets = vec![("boss".to_string(), Vec3::new(25.0, 0.0, 5.0))];
+    let report = VerifyReport::collect_with_targets(&scene, &value_physics(), Some(&nav), &targets);
+
+    assert!(has_code(&report, "nav.no_path"), "跨岛目标不可达");
+    let no_path = find(&report, "nav.no_path").expect("跨岛目标应报不可达");
+    assert_eq!(no_path.target.as_deref(), Some("start>boss"));
+    let cut = no_path.location.expect("不可达必须给断点坐标");
+    assert!(
+        cut[0] <= 10.0 + 1e-2,
+        "断点应在西侧岛边，而不是目标点：{cut:?}"
+    );
+    assert!(
+        find(&report, "nav.target_offmesh").is_none(),
+        "目标点本身站在地形上，不该报 off-mesh"
+    );
+}
+
+#[test]
+fn spawns_in_two_islands_warn_region_split() {
+    let mut scene = Scene::new();
+    scene.terrain.push(flat("west", [0.0, 0.0], [10.0, 10.0]));
+    scene.terrain.push(flat("east", [20.0, 0.0], [10.0, 10.0]));
+    spawn_at(&mut scene, "start", [2.5, 0.0, 2.5]);
+    spawn_at(&mut scene, "alt", [25.0, 0.0, 2.5]);
+    scene.update_world_transforms();
+
+    let nav = Nav::bake_scene(&scene).expect("场景应可烘焙");
+    let report = VerifyReport::collect(&scene, &value_physics(), Some(&nav));
+
+    assert!(
+        has_code(&report, "nav.region_split"),
+        "出生点分散在孤立区域"
+    );
+    let split = find(&report, "nav.region_split").expect("出生点分散在孤立区域应给汇总警告");
+    assert!(
+        split.msg.contains("2 个"),
+        "消息要点明连通块数量：{}",
+        split.msg
+    );
+    assert!(
+        !report
+            .issues()
+            .iter()
+            .any(|i| i.code == "nav.spawn_offmesh"),
+        "两个出生点都站在地形上：不该报 off-mesh"
+    );
+}
+
+#[test]
+fn target_off_mesh_is_reported_before_reachability() {
+    let mut scene = Scene::new();
+    scene.terrain.push(flat("ground", [0.0, 0.0], [10.0, 10.0]));
+    spawn_at(&mut scene, "start", [2.5, 0.0, 2.5]);
+    scene.update_world_transforms();
+
+    let nav = Nav::bake_scene(&scene).expect("场景应可烘焙");
+    // 目标点在虚空里：先报「站不住」，不该再沿它去算路径（那样只会得出一条
+    // 从岛边断掉的 no_path，掩盖真正的问题——目标点坐标本身写错了）。
+    let targets = vec![("boss".to_string(), Vec3::new(100.0, 0.0, 100.0))];
+    let report = VerifyReport::collect_with_targets(&scene, &value_physics(), Some(&nav), &targets);
+
+    assert!(
+        has_code(&report, "nav.target_offmesh"),
+        "虚空目标点应报不可走"
+    );
+    let off = find(&report, "nav.target_offmesh").expect("应有目标点不可走的结论");
+    assert_eq!(off.category, Category::Reachability);
+    assert_eq!(off.target.as_deref(), Some("boss"));
+    let loc = off.location.expect("必须给坐标");
+    assert!((loc[0] - 100.0).abs() < 1e-2 && (loc[2] - 100.0).abs() < 1e-2);
+    assert!(
+        !has_code(&report, "nav.no_path"),
+        "目标点自己就站不住时不该再报不可达：那是上一个结论的下游噪音"
+    );
+}

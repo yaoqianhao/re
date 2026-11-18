@@ -180,6 +180,50 @@ pub const ISSUE_CODES: &[IssueCode] = &[
         layer: "material",
         severity: Severity::Warn,
     },
+    // ------------------------------------------------------- overlap.rs（静态近似）
+    IssueCode {
+        code: "overlap.suspect",
+        layer: "overlap",
+        severity: Severity::Warn,
+    },
+    // ------------------------------------------------------- support.rs（静态近似）
+    IssueCode {
+        code: "support.suspect",
+        layer: "support",
+        severity: Severity::Warn,
+    },
+    // -------------------------------------------- physics（r3e-editor-host/verify）
+    IssueCode {
+        code: "overlap.penetration",
+        layer: "physics",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "support.floating",
+        layer: "physics",
+        severity: Severity::Warn,
+    },
+    // ------------------------------------------------ nav（r3e-editor-host/verify）
+    IssueCode {
+        code: "nav.spawn_offmesh",
+        layer: "nav",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "nav.target_offmesh",
+        layer: "nav",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "nav.no_path",
+        layer: "nav",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "nav.region_split",
+        layer: "nav",
+        severity: Severity::Warn,
+    },
 ];
 
 /// 按 `code` 查表。查不到返回 `None`（代表上报了一个没登记的字面量，属于缺陷）。
@@ -217,7 +261,10 @@ mod tests {
     fn 层名只有校验模块名() {
         for ic in ISSUE_CODES {
             assert!(
-                matches!(ic.layer, "bounds" | "refs" | "material"),
+                matches!(
+                    ic.layer,
+                    "bounds" | "refs" | "material" | "overlap" | "support" | "physics" | "nav"
+                ),
                 "未知校验层 {}（新增校验模块须同步本表）",
                 ic.layer
             );
@@ -237,7 +284,15 @@ mod tests {
         for ic in ISSUE_CODES {
             let expect_warn = matches!(
                 ic.code,
-                "skin.joint_matrices.unsolved" | "material.unreferenced"
+                "skin.joint_matrices.unsolved"
+                    | "material.unreferenced"
+                    // 静态层两条是 AABB 近似初筛，误报成本高于漏报成本，一律 Warn
+                    | "overlap.suspect"
+                    | "support.suspect"
+                    // 悬空可以是合法设计（浮空平台），物理层确认后仍只提示
+                    | "support.floating"
+                    // 连通块分裂本身不等于关卡走不通（多区域内传送是合法玩法）
+                    | "nav.region_split"
             );
             assert_eq!(
                 ic.severity == Severity::Warn,
