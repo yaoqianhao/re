@@ -13,7 +13,7 @@ AIGC:
 
 # M1-S4 方案 V3：能力全量前置（导航 + 材质全功能）
 
-> 状态：S4-A / S4-B / S4-C / S4-D 已落地；S4-E 起待执行（V3 取代 V2 的「部分外排」裁决）
+> 状态：S4-A / S4-B / S4-C / S4-D 已落地；S4-E 进行中（前置补债已收口，三层验证器待落）；S4-F 待执行（V3 取代 V2 的「部分外排」裁决）
 > 日期：2026-11-17
 > 归属：`docs/AI_ROADMAP.md` §3.2 M1「AI 写入闭环」第四 Sprint
 > 前置：S1（事务协议）、S2（WorldQuery）、S3（意图命令 + impact）已收口，单测基线 1,574，`cargo xtask verify` 十项全绿
@@ -241,6 +241,8 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 2. 补齐代价很小：`api/tx.rs` 白名单加一条 `scene.material.upsert` → `CommandKind::upsert_scene_material` + 宿主改走 `tx_apply`，随后删掉 `WRITE_SITES.md` 里这一处写点。**建议随 S4-E 一起做**（S4-E 要复用材质校验，改同一批文件，避免两次触碰测试基线）。
 
 > **裁决（2026-11-18，用户确认）**：该债**并入 S4-E 一起做**，不单独开卡。执行位置见 S4-E 段「前置补债」，完成后同步删除 `WRITE_SITES.md` 中 `r3e-editor-host/src/api/material.rs` 这一处写点登记。
+>
+> **上述两项已知债已在本卡收口后由 S4-E 前置补债清完**（2026-11-18）：`scene.material.upsert` 两条路都走命令层，写点登记 `r3e-editor-host` 22 → 21、合计 234 → 233。落点与验收见 S4-E 段「前置补债（已完成）」。
 
 其余口径已实测：`material.list` 只读、`material.upsert` 的整行声明语义与 `patch` 系 `*Patch` 明确区分（没给的贴图槽 = 这一行没有贴图，想保留就回传 `list` 的原值）。
 
@@ -248,7 +250,13 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 
 ### S4-E 分层验证器 + 坐标化 Issue
 
-**前置补债（并入本卡，S4-D 已知债）**：`scene.material.upsert` 从 `Document::write` 直写改走事务——`api/tx.rs` 白名单加 `scene.material.upsert` → `CommandKind::upsert_scene_material`，宿主实现改走 `tx_apply`，随后删 `WRITE_SITES.md` 中 `r3e-editor-host/src/api/material.rs` 那一处写点登记（22 → 21）。验收：该 RPC 提交后进撤销栈、`tx.begin` 期间提交不再污染主场景，既有材质六码测试全绿。
+**前置补债（已完成，2026-11-18；S4-D 那笔已知债）**：`scene.material.upsert` 从 `Document::write` 直写改走命令层。落点：
+
+1. `api/tx.rs`：`tx.apply` 白名单加 `scene.material.upsert` → `CommandKind::upsert_scene_material`；`IntentPlan` 同步新增 `MaterialUpsert` 变体并入 `INTENTS`，于是 `tx.intent` 也收这个 op。容量预检（`SCENE_MATERIAL_MAX`）只拦「新增」，与单条路径同一口径——否则事务与非事务两条路对「表满」的判定会分叉。参数解析复用 `material::upsert_from_args` + `decl_from_upsert`，收敛与空名拒绝只做一次。
+2. `api/material.rs`：删除 `Document::write` 直写。无事务走 `Document::apply`（**入撤销栈**），有事务走 `document.tx_apply`（进影子，回包 `{name,txId,op,staged,committed:false}`）。
+3. `api/support.rs`：`required_str` / `optional_array` 从 `tx.rs` 迁入，并补 `optional_f32` / `optional_str`——两条材质入口的键名口径（`metallicRoughness` / `emissiveMap` / `uvScale`）必须一套，否则同一份参数在两条路上会解析成两行不同材质。
+4. `docs/WRITE_SITES.md`：删 `src/api/material.rs` 写点登记，`r3e-editor-host` **22 → 21**，**合计 234 → 233**（`cargo xtask doc-gate` 打印 233，一致）；该行说明改写为「M1-S4-D +3，全是 `#[cfg(test)]` 夹具」。
+5. 测试：host 新增三条——单条 `upsert` **进撤销栈且一次 undo 撤回**、事务期进影子（哈希不动、`list` 看不到、提交后落地、整笔事务只占一格撤销）、`tx.intent` 白名单认 `scene.material.upsert` 且 `metallic` 被搬进表。host 单测 91 → **94**，全仓 **1,677 → 1,680**，`cargo xtask verify` 十项全绿。
 
 | 层 | crate | 判定对象 | 检查项 |
 |---|---|---|---|

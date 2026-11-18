@@ -348,6 +348,96 @@ fn material_upsert拒绝空名() {
     assert_eq!(scene.borrow().write_count(), before, "报错不该留下写操作");
 }
 
+// ---- scene.material.upsert 走事务/命令层（M1-S4-E 前置补债）----
+
+/// 单条 upsert 也进撤销栈：这正是补债要的效果（原来直写，写了撤不回）。
+#[test]
+fn material_upsert单条写进撤销栈() {
+    let (scene, physics, mut scripts) = fixture();
+    {
+        let mut api = api(&scene, &physics, &mut scripts);
+        api.material_upsert(material_decl("brass"))
+            .expect("upsert 应成功");
+    }
+    assert_eq!(scene.borrow().undo_depth(), 1, "单条 upsert 也应占一格撤销");
+
+    scene.borrow_mut().undo().expect("撤销不该失败");
+    assert!(
+        scene.borrow().scene_material("brass").is_none(),
+        "撤销后材质行应消失"
+    );
+    assert_eq!(scene.borrow().undo_depth(), 0);
+}
+
+/// `tx.apply` 白名单收了 `scene.material.upsert`：事务期进影子，提交才落地。
+#[test]
+fn material_upsert事务期进影子不碰主场景() {
+    let (scene, physics, mut scripts) = fixture();
+    let before = scene.borrow().state_hash();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = api.tx_begin().expect("开事务不该失败")["txId"]
+        .as_str()
+        .expect("回包应带 txId")
+        .to_string();
+
+    let staged = api
+        .material_upsert(material_decl("brass"))
+        .expect("事务期 upsert 应成功");
+    assert_eq!(staged["txId"], json!(tx));
+    assert_eq!(staged["op"], json!("scene.material.upsert"), "{staged}");
+    assert_eq!(staged["staged"], json!(1), "{staged}");
+    assert_eq!(staged["committed"], json!(false), "{staged}");
+
+    assert!(
+        scene.borrow().scene_material("brass").is_none(),
+        "暂存期不许碰主场景"
+    );
+    assert_eq!(scene.borrow().state_hash(), before, "暂存不该推场景哈希");
+
+    api.tx_commit(&tx).expect("提交不该失败");
+    assert!(
+        scene.borrow().scene_material("brass").is_some(),
+        "提交后应落到主场景"
+    );
+    assert_eq!(scene.borrow().undo_depth(), 1, "整笔事务只占一格撤销");
+}
+
+/// `tx.intent` 白名单同样认这个 op（与宿主的 `tx.apply` 单写路径对齐）。
+#[test]
+fn tx_intent白名单收scene_material_upsert() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+    let tx = api.tx_begin().expect("开事务不该失败")["txId"]
+        .as_str()
+        .expect("回包应带 txId")
+        .to_string();
+
+    let value = api
+        .tx_intent(
+            &tx,
+            "scene.material.upsert",
+            &json!({ "name": "brass", "metallic": 0.9 }),
+        )
+        .expect("材质意图应被接收");
+    assert_eq!(value["commands"], json!(1), "{value}");
+    assert_eq!(value["staged"], json!(1), "{value}");
+    assert!(
+        scene.borrow().scene_material("brass").is_none(),
+        "暂存期不许碰主场景"
+    );
+
+    api.tx_commit(&tx).expect("提交不该失败");
+    let row = scene
+        .borrow()
+        .scene_material("brass")
+        .cloned()
+        .expect("提交后材质应存在");
+    assert!(
+        (row.metallic - 0.9).abs() < 1e-6,
+        "金属度应被搬进来：{row:?}"
+    );
+}
+
 // ---- nav.* ----
 
 /// 宿主没接槽位（headless）= 「没有网格」，必须回 `NAV_NOT_BAKED`。

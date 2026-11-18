@@ -22,17 +22,26 @@
 //! | `scene.setvisible` | [`CommandKind::set_visible`] |
 //! | `light.remove` | [`CommandKind::remove_local_light`] |
 //! | `ui.remove` | [`CommandKind::remove_ui`] |
+//! | `scene.material.upsert` | [`CommandKind::upsert_scene_material`]（M1-S4-E 前置补债） |
 //!
 //! 其余写点（`scene.remove` / `scene.setmaterial` / `light.set` / `ui.set` / 环境类）
 //! 目前**没有**对应命令（`CommandKind` 尚未覆盖，或 patch → 对象的合并逻辑仍在
 //! RPC 实现里直写场景），调用即回 `TX_REJECTED`。这个表只许增加命令后同步扩白名单，
 //! 不允许为了「凑齐」在事务里绕过命令直接改场景。
+//!
+//! `scene.material.upsert` 这一行是为了还 S4-D 的债：该 RPC 原先直写
+//! `Document::write`，事务期会绕过影子直接改主场景。现在宿主实现（`material.rs`）
+//! 两条路都走命令层——无事务时 `Document::apply`（入撤销栈），有事务时改走本文件的
+//! `tx.apply`，于是「同一笔事务里一半写进影子、一半漏到主场景」不再可能。
 
 use super::support::*;
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use r3e_core::{TerrainPatch, DEFAULT_ROUGHNESS, MAX_LOCAL_LIGHTS, TERRAIN_MAX_PATCHES};
+use r3e_core::{
+    SceneMaterialDecl, TerrainPatch, DEFAULT_ROUGHNESS, MAX_LOCAL_LIGHTS, SCENE_MATERIAL_MAX,
+    TERRAIN_MAX_PATCHES,
+};
 use r3e_doc::{CommandKind, DocError, StateHash};
 use r3e_editor::{TX_APPLY_FAILED, TX_BUSY, TX_CONFLICT, TX_NOT_FOUND, TX_REJECTED};
 
@@ -55,7 +64,10 @@ fn hex(hash: StateHash) -> String {
 }
 
 /// [`DocError`] → RPC 失败，按变体给码。
-fn map_doc(err: DocError) -> RpcFailure {
+///
+/// `pub(super)`：`material.rs` 的单写路径（`Document::apply`）也走这套映射，
+/// 免得同一种失败在两条 RPC 上给出两个码。
+pub(super) fn map_doc(err: DocError) -> RpcFailure {
     let message = err.detail().to_string();
     let code = match &err {
         DocError::Busy(_) => TX_BUSY,
@@ -65,18 +77,6 @@ fn map_doc(err: DocError) -> RpcFailure {
         _ => TX_APPLY_FAILED,
     };
     RpcFailure::new(code, message)
-}
-
-fn required_str(args: &Value, key: &str) -> Result<String, RpcFailure> {
-    match args.get(key) {
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
-        Some(Value::String(_)) | None => {
-            Err(RpcFailure::invalid_params(format!("参数 `{key}` 不能为空")))
-        }
-        Some(_) => Err(RpcFailure::invalid_params(format!(
-            "参数 `{key}` 需要字符串"
-        ))),
-    }
 }
 
 /// 一条已解析、尚未落到场景上的写入意图。
@@ -96,6 +96,11 @@ enum Intent {
     },
     RemoveLight(String),
     RemoveUi(String),
+    /// 场景材质表的一行（S4-D 的 `scene.material.upsert` 还债时并入）。
+    ///
+    /// 存的是**已收敛的表行**而不是 RPC 的 `MaterialUpsert`：收敛（`sanitized`）
+    /// 与空名拒绝在 `material::decl_from_upsert` 里只做一次，两条入口共用。
+    MaterialUpsert(SceneMaterialDecl),
 }
 
 impl Intent {
@@ -149,11 +154,18 @@ impl Intent {
             }
             "light.remove" => Ok(Self::RemoveLight(required_str(args, "key")?)),
             "ui.remove" => Ok(Self::RemoveUi(required_str(args, "key")?)),
+            "scene.material.upsert" => {
+                let decl = super::material::upsert_from_args(args)?;
+                Ok(Self::MaterialUpsert(super::material::decl_from_upsert(
+                    decl,
+                )?))
+            }
             other => Err(RpcFailure::new(
                 TX_REJECTED,
                 format!(
                     "`{other}` 未纳入事务白名单（M1-S1 首版仅 scene.spawn / \
-                     scene.settransform / scene.setvisible / light.remove / ui.remove）"
+                     scene.settransform / scene.setvisible / light.remove / ui.remove，\
+                     M1-S4-E 并入 scene.material.upsert）"
                 ),
             )),
         }
@@ -191,6 +203,7 @@ impl Intent {
             }
             Self::RemoveLight(key) => CommandKind::remove_local_light(scene, &key),
             Self::RemoveUi(key) => CommandKind::remove_ui(scene, &key),
+            Self::MaterialUpsert(row) => Ok(CommandKind::upsert_scene_material(scene, row)),
         }
     }
 }
@@ -201,34 +214,6 @@ fn find_node_doc(scene: &Scene, key: &str) -> Result<r3e_core::NodeId, DocError>
     scene
         .find_id(key)
         .ok_or_else(|| DocError::NotFound(format!("物件 `{key}` 不存在")))
-}
-
-/// 取一个长度为 `N` 的数字数组（缺省 / `null` → `None`）。
-///
-/// 不用 `serde_json::from_value::<[f32; N]>`：serde 只为 0..=32 的**具体**长度实现
-/// 了 `Deserialize`，泛型 `N` 编不过。
-fn optional_array<const N: usize>(args: &Value, key: &str) -> Result<Option<[f32; N]>, RpcFailure> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(items)) => {
-            if items.len() != N {
-                return Err(RpcFailure::invalid_params(format!(
-                    "参数 `{key}` 需要长度 {N} 的数组"
-                )));
-            }
-            let mut out = [0.0_f32; N];
-            for (slot, item) in out.iter_mut().zip(items) {
-                let value = item.as_f64().ok_or_else(|| {
-                    RpcFailure::invalid_params(format!("参数 `{key}` 需要数字数组"))
-                })?;
-                *slot = value as f32;
-            }
-            Ok(Some(out))
-        }
-        Some(_) => Err(RpcFailure::invalid_params(format!(
-            "参数 `{key}` 需要长度 {N} 的数组"
-        ))),
-    }
 }
 
 pub(super) fn tx_begin(api: &mut LocalEngineApi<'_>) -> Result<Value, RpcFailure> {
@@ -292,13 +277,15 @@ pub(super) fn tx_rollback(api: &mut LocalEngineApi<'_>, tx_id: &str) -> Result<V
     }))
 }
 
-/// 意图白名单（M1-S3-A / S3-B / S3-C）。每加一个意图，必须同时给出「展开成哪些命令」。
+/// 意图白名单（M1-S3-A / S3-B / S3-C，M1-S4-E 并入材质行）。
+/// 每加一个意图，必须同时给出「展开成哪些命令」。
 ///
 /// 白名单只活在宿主，不进协议：意图名是业务能力，跟引擎版本跑得不一样快。
 const INTENTS: &[&str] = &[
     "scene.spawn_prefab",
     "scene.place_light",
     "scene.paint_terrain",
+    "scene.material.upsert",
 ];
 
 /// `scene.spawn_prefab` 单次最多实例化多少个节点。
@@ -382,6 +369,28 @@ impl MaterialTouch {
         }
     }
 
+    /// 材质表的一行（M1-S4-E）：目标名是材质名，参数按与缺省不同的项记。
+    ///
+    /// 整行声明会把贴图字段一并写进表，但那些字段这里不记——「这次调用改了哪个
+    /// 参数」问的是数值语义，贴图有无看 `scene.material.list` 更准。
+    fn table_row(row: &SceneMaterialDecl) -> Self {
+        let defaults = SceneMaterialDecl::default();
+        let mut params = Vec::new();
+        if row.metallic != defaults.metallic {
+            params.push("metallic");
+        }
+        if row.roughness != defaults.roughness {
+            params.push("roughness");
+        }
+        if row.emissive != defaults.emissive {
+            params.push("emissive");
+        }
+        Self {
+            target: row.name.clone(),
+            params,
+        }
+    }
+
     /// 地表材质（`albedo` + `roughness`）：地形的两项总是显式写入，故不做缺省比较。
     fn terrain(patch: &TerrainPatch) -> Self {
         Self {
@@ -402,6 +411,8 @@ enum IntentPlan {
     PlaceLight(Vec<LocalLight>),
     /// 一次性刷一组地形块（M1-S3-C）：一批地 = 一条意图 = 一格撤销。
     PaintTerrain(Vec<TerrainPatch>),
+    /// 材质表的一行（M1-S4-E）：与姓名无关的整行声明，展开成一条命令。
+    MaterialUpsert(SceneMaterialDecl),
 }
 
 impl IntentPlan {
@@ -507,6 +518,12 @@ impl IntentPlan {
                     patches.push(patch);
                 }
                 Ok(Self::PaintTerrain(patches))
+            }
+            "scene.material.upsert" => {
+                let decl = super::material::upsert_from_args(args)?;
+                Ok(Self::MaterialUpsert(super::material::decl_from_upsert(
+                    decl,
+                )?))
             }
             other => Err(RpcFailure::new(
                 TX_REJECTED,
@@ -632,6 +649,23 @@ impl IntentPlan {
                     .into_iter()
                     .map(|patch| CommandKind::upsert_terrain_patch(scene, patch))
                     .collect();
+                Ok((cmds, impact))
+            }
+            Self::MaterialUpsert(row) => {
+                // 容量只拦新增：同名整体覆盖不会让表变长，与 `material_upsert`
+                // 的单条路径同一口径（否则事务与非事务两条路对表满的判定会分叉）。
+                let created = !scene.materials.iter().any(|m| m.name == row.name);
+                if created && scene.materials.len() >= SCENE_MATERIAL_MAX {
+                    return Err(DocError::Rejected(format!(
+                        "材质表已满（上限 {SCENE_MATERIAL_MAX} 条）：`{}` 未写入",
+                        row.name
+                    )));
+                }
+                let impact = Impact {
+                    materials: vec![MaterialTouch::table_row(&row)],
+                    ..Impact::default()
+                };
+                let cmds = vec![CommandKind::upsert_scene_material(scene, row)];
                 Ok((cmds, impact))
             }
         }

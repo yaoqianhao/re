@@ -152,6 +152,77 @@ pub(super) fn plain_abs_path(path: &std::path::Path) -> String {
     }
 }
 
+/// 取一个必填的非空字符串参数。
+///
+/// `pub(super)`：`tx.rs`（`tx.apply` 白名单）与 `material.rs`（材质行解析）
+/// 都要在参数阶段把关，两份拷贝迟早一边 trim 一边不 trim。
+pub(super) fn required_str(args: &Value, key: &str) -> Result<String, RpcFailure> {
+    match args.get(key) {
+        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
+        Some(Value::String(_)) | None => {
+            Err(RpcFailure::invalid_params(format!("参数 `{key}` 不能为空")))
+        }
+        Some(_) => Err(RpcFailure::invalid_params(format!(
+            "参数 `{key}` 需要字符串"
+        ))),
+    }
+}
+
+/// 取一个长度为 `N` 的数字数组（缺省 / `null` → `None`）。
+///
+/// 不用 `serde_json::from_value::<[f32; N]>`：serde 只为 0..=32 的**具体**长度实现
+/// 了 `Deserialize`，泛型 `N` 编不过。
+pub(super) fn optional_array<const N: usize>(
+    args: &Value,
+    key: &str,
+) -> Result<Option<[f32; N]>, RpcFailure> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => {
+            if items.len() != N {
+                return Err(RpcFailure::invalid_params(format!(
+                    "参数 `{key}` 需要长度 {N} 的数组"
+                )));
+            }
+            let mut out = [0.0_f32; N];
+            for (slot, item) in out.iter_mut().zip(items) {
+                let value = item.as_f64().ok_or_else(|| {
+                    RpcFailure::invalid_params(format!("参数 `{key}` 需要数字数组"))
+                })?;
+                *slot = value as f32;
+            }
+            Ok(Some(out))
+        }
+        Some(_) => Err(RpcFailure::invalid_params(format!(
+            "参数 `{key}` 需要长度 {N} 的数组"
+        ))),
+    }
+}
+
+/// 取一个可选的数字参数（缺省 / `null` → `None`）。
+pub(super) fn optional_f32(args: &Value, key: &str) -> Result<Option<f32>, RpcFailure> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n
+            .as_f64()
+            .map(|v| Some(v as f32))
+            .ok_or_else(|| RpcFailure::invalid_params(format!("参数 `{key}` 需要数字"))),
+        Some(_) => Err(RpcFailure::invalid_params(format!("参数 `{key}` 需要数字"))),
+    }
+}
+
+/// 取一个可选的字符串参数（缺省 / `null` → `None`；空串视作「不声明」）。
+pub(super) fn optional_str(args: &Value, key: &str) -> Result<Option<String>, RpcFailure> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(RpcFailure::invalid_params(format!(
+            "参数 `{key}` 需要字符串"
+        ))),
+    }
+}
+
 /// 把一条场景命令塞进脚本宿主的命令槽（单槽：一帧一条）。
 ///
 /// 槽被占时如实回 `server busy`，而不是覆盖掉别人那条——脚本刚在 `on_start` 里
