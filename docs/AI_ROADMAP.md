@@ -351,11 +351,23 @@ cargo xtask invariants              # ✅ 24 = 24 = 24
 | M1-S2 ✅ 2026-11-17 | 语义查询 | ✅ `WorldQuery`：按 kind/tag/bbox/component 过滤，结果含 `{id,name,tags,pos,interact_radius}`；✅ `query.find/describe/stats` 三条只读 RPC（RPC 47 / 命令表 377） | ✅ AI 不读裸 JSON 就能回答"场景里有哪些可交互物"（`query.*` 三条只读方法 + 9 条宿主用例） | M1-3 |
 | M1-S3 ✅ 2026-11-17 | 意图命令 + 变更半径 | `spawn_prefab` / `paint_terrain` / `place_light`；一次意图 = N 条原子命令，undo 一次全退；输出含 `impact` | 一条意图命令的 `impact` 能列出受影响对象与材质；`paint_terrain` 不生成几何（M2） | ✅ `scene.spawn_prefab` / `scene.place_light` / `scene.paint_terrain` 三条意图走 `tx.intent`（意图名不进协议）；`impact` 四字段恒定回带；数据壳 32 块上限 + 高度样本逐点入哈希 |
 | M1-S4 ◐ 2026-11-18 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5；**V3 改为「先补引擎能力、后接验证器」**：S4-A 材质引用体系 / S4-B `r3e-nav` / S4-C 装配下沉 / S4-D 协议面八条（RPC 48→56、命令表 378→386、`capabilities.json` 重生成）/ S4-E 三层验证器 + 坐标化 Issue（静态 / 物理 / 导航三层落地，`ISSUE_CODES` 24→38，`capabilities.json` 重生成）已落地；S4-F `scene.verify` RPC（RPC 56→57、命令表 386→387）+ `impact.violations`（影子静态层求差）+ `assets/verify` 六夹具 + `cargo xtask scene-verify`（`verify` 第 11 步）已落地；S4-G 把 `impact.violations` 补到物理 / 导航两层（影子世界当场重建 + 影子导航网格，`notChecked` 不再留已跑的层）已落地；S4-H `physics.bind` RPC（RPC 57→58、命令表 387→388、`capabilities.json` 重生成）已落地——编辑态由调用方显式装配主世界、`wroteBackScene: false` 不写回场景，物理关回 `PHYSICS_DISABLED`、无网格来源回新码 `-32023 MESH_SOURCE_UNAVAILABLE`（绝不回空表），`scene.verify` 的新鲜度守卫由此有了消除路径、`passed` 恢复为可用门禁；`#[test]` 1,721→1,725，`verify` 全绿，Gate 1 前置校验就位 |
-| M1-S5 | CLI + 三范式 | `r3e-cli tx/query/verify/replay`；三个从零可复现的 AI 任务范式 | **Gate 1** | M1-6、M1-8 |
+| M1-S5 ✅ 2026-11-19 | CLI + 三范式 | ✅ `r3e-cli` 五组子命令：`tx`（begin / apply / intent / preview / commit / rollback / status）、`query`（find / describe / stats）、`verify`、`replay`、`rpc`；退出码语义 `0` 成功 /`1` 业务否定（`passed:false`）/`2` 用法错 /`3` 环境错 /`4` 缺 replay；缺省会话态 `.r3e-cli/session.json`（`txId` 自动接续，`--state-file ""` 可关）；`errmap` 把 `-320xx` 译成人话 + 退出码；`rpc` 双护栏 `TX_ONLY_METHODS` + `TX_ONLY_INTENTS`（协议方法名与意图名是两套命名空间，只拦前者会漏 `scene.spawn_prefab` 等改场景意图）；三范式 `docs/norms/norm1_build.md`（生成）/ `norm2_verify.md`（读失败）/ `norm3_rollback_retry.md`（失败→修正→成功）+ 夹具 `scene_norms.json`、`silent.rhai`（静默脚本，防 `baseHash` 逐帧漂移致 `TX_CONFLICT`）；`RPC` 58、命令表 388、`#[test]` 1,725→**1,817**（`r3e-protocol` 58→75、新增 `r3e-cli` 75），`cargo xtask verify` 全绿 | **Gate 1 ✅**（见下） | M1-6、M1-8 |
 
 **待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 按域拆）。行数已从 4,057 降到 **3,947**（M1-S2-C 拆 `scene_desc.rs`、M1-S3-C 拆 `scene_tables.rs`），私有化仍留 M2——冲击全仓读点，与 M1 并行风险过高（D2 裁决）。
 
 **Gate 1（M1 退出）**：一个不改引擎代码的 AI Agent，仅用 `r3e-cli` + 协议完成"生成可通行小场景 → 验证 → 失败回滚重试 → 成功提交"，全过程命令可复制粘贴。
+
+**Gate 1 演练记录（2026-11-19，`--physics on`、静默脚本、8787/dev，全部按 `docs/norms/*.md` 原样命令连跑）**：
+
+| 范式 | 命令数 | 退出码 | 状态哈希链 | 净耗时 | 判据落地 |
+|---|---|---|---|---|---|
+| 1 `norm1_build.md` | 8 | `0 0 0 0 0 0 0 0` | `0x2766…` → `0xc679c253efb56aed` | 0.3s | `verify.passed=true`、`unchecked=[]`、`counts.error=0`，`query stats` 回 3 节点 / 2 碰撞体 / 1 `goal` 标签 |
+| 2 `norm2_verify.md` | 4 | `0 0 0 0` | `0x2766…` → 回 `0x2766…` | 1.9s | `impact` 回 `overlap.penetration`（`approximate=false`、`path=nodes[0]`、`location=[2.0,0.425,2.0]`）；`rollback` `dropped=2` 且 `hash` 回 `baseHash`；`query stats.nodes=0` 证明未落盘 |
+| 3 `norm3_rollback_retry.md` | 12 | `0 0 0 0 0 **1** 0 0 0 0 0 **0**` | `0x2766…` → `0xe61628cd30cccd7f` → `0x43c5c864ff156aed` | 2.4s | `verify` 退出码 `1→0` 翻转；失败项 `step\|goal` 重叠中心 `[2.0,0.975,2.0]` 与几何账吻合；修正后 `physics.bind` 回 `created=0 / reused=2`，`passed=true` |
+
+自愈路径同样实测：引擎未起时 `tx begin` 回 **3** 并列出三条自查项（端口 / `--addr` / `--rpc-token`），无未决事务时 `tx intent` 回 **2**「没有可用的 txId」——AI 靠退出码就能分辨"环境没起"与"用错了"，不需要人翻译。
+
+三处口径钉死在范式里：① `verify` 看 `passed` 不看 `ok`（`ok` 只说跑完了，`passed` 还要求 `unchecked` 为空）；② `physics.bind` / `nav.bake` 不调则物理层与导航层恒 `unchecked`、退出码恒 1，那不是场景有病是没装配；③ 已提交的改动不能用 `tx rollback` 撤（它只清暂存区），改法是一笔新事务。
 
 **M1 顺序依据**：协议先于插件（否则插件无处可依）、查询先于意图（否则意图命令设计没有反馈源）、验证器在意图之后（先有内容才谈验证）、CLI 最后（它是前四者的壳）。
 

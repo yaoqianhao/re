@@ -11,9 +11,10 @@ AIGC:
 
 # M1-S5 执行方案 V1：`r3e-cli` + 三范式 + Gate 1
 
-> 状态：**待裁决**（D1–D5 见 §5；未开工）
-> 日期：2026-11-18
+> 状态：**✅ 已收口**（D1–D5 采推荐项，2026-11-19；S5-A / S5-B / S5-C 全部落地，Gate 1 已演练并回填 `AI_ROADMAP` §3.2）
+> 日期：2026-11-18 起草 / 2026-11-19 收口
 > 前置：M1-S4 全部收口（HEAD `6aff76e`）；RPC 58、命令表 388、`ISSUE_CODES` 38、`#[test]` 1,725、`verify` 十项全绿；本地领先 origin/main 13 提交未 push
+> 收口时状态：`#[test]` 1,817（`r3e-protocol` 58→75、新增 `r3e-cli` 75）、`cargo xtask verify` 十一项全绿
 > 归属：`docs/M1_PLAN.md` §S5（S5-A / S5-B / S5-C）；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S5
 
 ---
