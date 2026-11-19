@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_888c8ed6e16711f18c5752540024e231
-    ReservedCode1: sYigOJdWIRzUy54kgzCV9CTTUY/xp6NLNDbrvwDEnVPHUdtx0ja82FdXZdvjUzIWN09/6LOP/ojlbU+DNAN/5LvotArWMNd0lDLiOZfFlb1ySvs35HnbxIv1HjJIjT/5FZGpfP2cvpNddhVZ/UVDzeZaUzmrmowP7OY4KUrSYLq9EkNuZ6uWU00eax0=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_888c8ed6e16711f18c5752540024e231
-    ReservedCode2: sYigOJdWIRzUy54kgzCV9CTTUY/xp6NLNDbrvwDEnVPHUdtx0ja82FdXZdvjUzIWN09/6LOP/ojlbU+DNAN/5LvotArWMNd0lDLiOZfFlb1ySvs35HnbxIv1HjJIjT/5FZGpfP2cvpNddhVZ/UVDzeZaUzmrmowP7OY4KUrSYLq9EkNuZ6uWU00eax0=
----
-
 # M0-S5：协议剥离 + 能力清单 + 门禁转硬（方案）
 
 > 实测日期 2026-11-16 · 仓库 `D:\rust3d-engine` · 全部数字由 §1.5 命令现场产出，无一处沿用旧文档估值
@@ -458,7 +447,7 @@ cargo xtask verify
 | `docs/AI_ROADMAP.md` | 看板六项数字（最大文件 4 057 不变 / `>800` 23 / 测试 1 457 / 依赖违规 0 / verify 耗时实测 / 回放哈希）；§2.2 依赖规则表按 §5 改；§3.1.7 S5-04/05 验收重写 + Gate 0 判据修订；§八 kanban 把 M0 标收口；附录说明本次口径纠正 6 处 | ✅ §0.1/§0.2/§0.3 全部改为 S5 收口实测；§2.2 增严格四判定表；§3.1.7 改 ✅ + 七卡执行结果 + 遗留两项；§3.1.8 W8 收口；§八 看板追加 2026-11-16 行；§十 入口改 M1；附录 A/B 数字同频 |
 | `docs/ARCHITECTURE.md` | 新增「协议层」职责段：`r3e-protocol` 只认 JSON + `EngineApi`，`r3e-editor` 只做传输；dispatch 三分文件表；能力清单真源三源交叉图 | ✅ §2 结构树加 `r3e-protocol`；§3.1 依赖说明 + §3.1.1 补三投影两门；§3.2 表加 protocol 行、editor 缩为传输层；§3.3 九道门；**§8.11 编辑器桥重写**（原「8 个方法 / 纯协议层含 RpcServer」已过时 → 39 方法 + 两层分工）；附录模块对照表补 protocol/editor 两行 |
 | `docs/AI_WORKFLOW.md`（新建） | 三个可复制命令块：①日常循环（改码 → `cargo xtask verify`）②提交前（`dep-check --strict` + `gen-capabilities --check`）③门禁红了怎么查（lint-size / check-tests / dep-check / invariants 四个典型） | ✅ 新建，七节：三条铁律 / 命令块①基线 / 命令块②改码闭环 / 失败判定树（11 类红）/ 三本账与降级流程 / 文档同频检查表 / 停机条件；含 3 个可复制命令块（§一/§二/§五） |
-| `docs/M0S5_PROTOCOL.md` | §13 收尾实测回填（预算 vs 实际、门禁结果、提交记录、与方案的偏差） | ✅ §13.1–§13.9 全部回填（预算 vs 实际、门禁、提交记录、偏差、D3/D5/D6 演练、S5-04 降级决议、收尾判定、本文档同频） |
+| `docs/m0/M0S5_PROTOCOL.md` | §13 收尾实测回填（预算 vs 实际、门禁结果、提交记录、与方案的偏差） | ✅ §13.1–§13.9 全部回填（预算 vs 实际、门禁、提交记录、偏差、D3/D5/D6 演练、S5-04 降级决议、收尾判定、本文档同频） |
 
 ---
 
@@ -642,7 +631,7 @@ D7 只动文档，不动代码；所有数字均由命令当场输出后写入�
 | `docs/AI_ROADMAP.md` | 701 | §0.1 S5 改 ✅；§0.2 十行门禁表（含 `dep-check --strict` 0 违规、债务 4、清单无漂移、三源 24/24/24、verify 20.4s）；§0.3 crate 14 个；§2.2 严格四判定表；§3.1.7 七卡执行结果 + 收尾实测 + Gate 0 复核 + 遗留两项；§八 看板追加收口行；§十 入口指向 M1 |
 | `docs/ARCHITECTURE.md` | 6864 | §2 结构树 + §3.1 依赖说明 + §3.1.1 三投影两门 + §3.2 规模表（新增 protocol 2,326/759/34，editor 缩为 505/1,875/72）+ §3.3 九道门 + **§8.11 重写**（旧文「8 个方法 / 纯协议层」已失真，改为 protocol 39 方法 / editor 传输两层）+ 附录补 protocol、editor 两行 |
 | `docs/AI_WORKFLOW.md` | 新建 | 三条铁律 + 三个可复制命令块（开工基线 / 改码闭环 / 同频检查）+ 11 类红灯判定树 + 三本账与降级流程 + 停机条件 |
-| `docs/M0S5_PROTOCOL.md` | 本文件 | §11 补 D7 执行列；§13.9 本节 |
+| `docs/m0/M0S5_PROTOCOL.md` | 本文件 | §11 补 D7 执行列；§13.9 本节 |
 
 **本次纠正的历史失真口径**（文档里长期错的值 → 实测值）：
 
@@ -659,5 +648,3 @@ D7 只动文档，不动代码；所有数字均由命令当场输出后写入�
 2. 依赖债 4 条：`plan` 字段已写偿还落点（M1 端口契约 + plugin 去 core/physics），偿还前新增第 5 条会被判 3 打红。
 
 D7 完成即 M0-S5 全流程（D1–D7）收口。
-
-*（内容由AI生成，仅供参考）*

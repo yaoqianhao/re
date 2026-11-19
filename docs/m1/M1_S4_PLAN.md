@@ -1,16 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_ac3e6792e28b11f18c5752540024e231
-    ReservedCode1: QBJUfvnmjYun4GCv42SvuleiJtfFvUvPNeVlOK38xrJt78ZGkOxpFvIz/ZpMeCRahFYETma/u4xvNt63CbqPTxyTZgKIlxkhdLECvNFal+2/jI6HT1pUF2r+qC2FoiVLrYEbRzLZ552O2BcqXgRXenTj5pyGkHt6BS6Oy5PHy1i584A/vsyNWS8qLiQ=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_ac3e6792e28b11f18c5752540024e231
-    ReservedCode2: QBJUfvnmjYun4GCv42SvuleiJtfFvUvPNeVlOK38xrJt78ZGkOxpFvIz/ZpMeCRahFYETma/u4xvNt63CbqPTxyTZgKIlxkhdLECvNFal+2/jI6HT1pUF2r+qC2FoiVLrYEbRzLZ552O2BcqXgRXenTj5pyGkHt6BS6Oy5PHy1i584A/vsyNWS8qLiQ=
----
-
-
-
 # M1-S4 方案 V3：能力全量前置（导航 + 材质全功能）
 
 > 状态：S4-A / S4-B / S4-C / S4-D / S4-E / S4-F 已全部落地（S4-E 含前置补债 + 三层验证器 + 坐标化 Issue；S4-F 含 `scene.verify` RPC、`impact.violations`、六夹具与 `xtask scene-verify`，2026-11-18）
@@ -60,7 +47,7 @@ M1-S4 原计划两卡（验证器五类检查 + 接入 verify 链与 impact）�
 | C12 | 碰撞体描述 | `r3e-core/src/scene_desc.rs PhysicsDesc` + `r3e-physics/src/lib.rs:238/262/343` | `body`（dynamic/static/kinematic）、`collider`（box/sphere/cylinder/capsule）、`half_extents`；`ColliderShape::from_node_with` 在 physics，doc 不可用 |
 | C13 | 贴图解码能力 | `r3e-asset/src/gltf_import.rs:490` | `image::load_from_memory` 已在用 — 独立 png/jpg 导入通道**可复用同一解码栈，工作量可控** |
 | C14 | 地形高度图 | `r3e-core/src/terrain.rs:48/99` | `TerrainPatch.heights` + `height_at(x,y)` 已就绪 — nav 栅格化的地形输入不需要新造 |
-| C15 | 文档命令面 | `r3e-doc/src/command/mod.rs` | `CommandKind` 15 变体（含 `UpsertTerrainPatch`）；新增材质/导航命令须同步 undo 覆盖与写点台账（`docs/M1_PLAN.md` §5） |
+| C15 | 文档命令面 | `r3e-doc/src/command/mod.rs` | `CommandKind` 15 变体（含 `UpsertTerrainPatch`）；新增材质/导航命令须同步 undo 覆盖与写点台账（`docs/m1/M1_PLAN.md` §5） |
 
 ---
 
@@ -108,7 +95,7 @@ M1-S4 原计划两卡（验证器五类检查 + 接入 verify 链与 impact）�
 - 运行时新增纹理注册表（`r3e-runtime`）：`resolve_material(&SceneMaterialDecl) -> MaterialData`，把路径解析为 `(AssetId, u32)` 后交给既有 `MeshProvider::texture` —— **渲染层取图路径一行不改**；
 - 同一路径复用同一 `AssetId`（引用计数），避免重复解码。
 
-**doc 命令（`r3e-doc/src/command/mod.rs`，15 → 18 变体）**：`UpsertMaterial` / `RemoveMaterial` / `SetNodeMaterialRef`；三者必须进 undo 覆盖矩阵，并在 `docs/M1_PLAN.md §5` 登记（`doc_gate` 规则 7）。
+**doc 命令（`r3e-doc/src/command/mod.rs`，15 → 18 变体）**：`UpsertMaterial` / `RemoveMaterial` / `SetNodeMaterialRef`；三者必须进 undo 覆盖矩阵，并在 `docs/m1/M1_PLAN.md §5` 登记（`doc_gate` 规则 7）。
 
 **state_hash（`r3e-doc/src/state_hash.rs`）**：`scene_hash` 在 terrain 段之后插入 `materials` 表（条数 + 逐项 name/标量/5 路径/uvScale，顺序即插入序），节点段增混 `materialRef`。**哈希契约测试同步**（`tests/state_hash.rs`）。
 
@@ -233,7 +220,7 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 | 命令表 / RPC | 386 / 56（`gen-capabilities --check` 字节一致） |
 | 四处契约 | `r3e-protocol/tests/rpc_contract.rs` 30 条（含补两条 `SOURCES` 后 dispatch 臂全量对齐）、`r3e-editor-host/tests/cmd_spec_contract.rs` 3 条（方法数 48 → 56）、`r3e-editor/tests/cmd_spec_contract.rs` 4 条（补 `physics`/`nav` 两段扫描后「表在骗人」归零） |
 | 宿主层单测 | `physics_nav.rs` **13 条**全绿：物理关闭回 `PHYSICS_DISABLED`、`NullBackend` 不申报能力回 `BACKEND_UNSUPPORTED`（两者不许退化成空表）、成功回包自带 `capabilities` 连空表也带（「没打到」≠「不会打」）、四类非法入参、三条探测不动 `StateHash` 与写次数；材质 upsert 新建/覆盖与 **整行声明语义**（没给贴图＝这一行没有贴图）、`users` 按 `materialRef` 反查、空名拒绝且不留写操作；nav 无槽位与未烘焙同码、`bake` 只写槽位（哈希与写次数都不变）、烘焙失败保留上一次网格 |
-| 写点台账 | `r3e-editor-host` 18 → **22**（1 处真实写点 + 3 处测试夹具），合计 234 处，理由已登记 `docs/M1_PLAN.md §5` |
+| 写点台账 | `r3e-editor-host` 18 → **22**（1 处真实写点 + 3 处测试夹具），合计 234 处，理由已登记 `docs/m1/M1_PLAN.md §5` |
 | 单测基线 | 1650 → **1677**（host 81 → 94） |
 
 **已知债（登记在案，本卡不处理）**：
@@ -241,7 +228,7 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 1. `scene.material.upsert` 走 `Document::write` 直写——推版本 / 置脏 / 计写次，但**不入撤销栈**，且在 `tx.begin` 期间提交会改到主场景（宿主其余单条写 RPC 同构，非本卡新引入）。命令层 `CommandKind::UpsertMaterial` **早已就绪**（S4-A 落地），缺的只是本 RPC 还没进 `tx.apply` 白名单；
 2. 补齐代价很小：`api/tx.rs` 白名单加一条 `scene.material.upsert` → `CommandKind::upsert_scene_material` + 宿主改走 `tx_apply`，随后删掉写点台账里这一处登记。**建议随 S4-E 一起做**（S4-E 要复用材质校验，改同一批文件，避免两次触碰测试基线）。
 
-> **裁决（2026-11-18，用户确认）**：该债**并入 S4-E 一起做**，不单独开卡。执行位置见 S4-E 段「前置补债」，完成后同步删除写点台账（M1-S4-E 已并入 `docs/M1_PLAN.md` §5）中 `r3e-editor-host/src/api/material.rs` 这一处写点登记。
+> **裁决（2026-11-18，用户确认）**：该债**并入 S4-E 一起做**，不单独开卡。执行位置见 S4-E 段「前置补债」，完成后同步删除写点台账（M1-S4-E 已并入 `docs/m1/M1_PLAN.md` §5）中 `r3e-editor-host/src/api/material.rs` 这一处写点登记。
 >
 > **上述两项已知债已在本卡收口后由 S4-E 前置补债清完**（2026-11-18）：`scene.material.upsert` 两条路都走命令层，写点登记 `r3e-editor-host` 22 → 21、合计 234 → 233。落点与验收见 S4-E 段「前置补债（已完成）」。
 
@@ -256,7 +243,7 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 1. `api/tx.rs`：`tx.apply` 白名单加 `scene.material.upsert` → `CommandKind::upsert_scene_material`；`IntentPlan` 同步新增 `MaterialUpsert` 变体并入 `INTENTS`，于是 `tx.intent` 也收这个 op。容量预检（`SCENE_MATERIAL_MAX`）只拦「新增」，与单条路径同一口径——否则事务与非事务两条路对「表满」的判定会分叉。参数解析复用 `material::upsert_from_args` + `decl_from_upsert`，收敛与空名拒绝只做一次。
 2. `api/material.rs`：删除 `Document::write` 直写。无事务走 `Document::apply`（**入撤销栈**），有事务走 `document.tx_apply`（进影子，回包 `{name,txId,op,staged,committed:false}`）。
 3. `api/support.rs`：`required_str` / `optional_array` 从 `tx.rs` 迁入，并补 `optional_f32` / `optional_str`——两条材质入口的键名口径（`metallicRoughness` / `emissiveMap` / `uvScale`）必须一套，否则同一份参数在两条路上会解析成两行不同材质。
-4. `docs/M1_PLAN.md §5`：删 `src/api/material.rs` 写点登记，`r3e-editor-host` **22 → 21**，**合计 234 → 233**（`cargo xtask doc-gate` 打印 233，一致）；该行说明改写为「M1-S4-D +3，全是 `#[cfg(test)]` 夹具」。
+4. `docs/m1/M1_PLAN.md §5`：删 `src/api/material.rs` 写点登记，`r3e-editor-host` **22 → 21**，**合计 234 → 233**（`cargo xtask doc-gate` 打印 233，一致）；该行说明改写为「M1-S4-D +3，全是 `#[cfg(test)]` 夹具」。
 5. 测试：host 新增三条——单条 `upsert` **进撤销栈且一次 undo 撤回**、事务期进影子（哈希不动、`list` 看不到、提交后落地、整笔事务只占一格撤销）、`tx.intent` 白名单认 `scene.material.upsert` 且 `metallic` 被搬进表。host 单测 91 → **94**，全仓 **1,677 → 1,680**，`cargo xtask verify` 十项全绿。
 
 | 层 | crate | 判定对象 | 检查项 |
@@ -298,9 +285,9 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 1. RPC `scene.verify`（56 → 57），四层同改；
 2. `tx.intent` 的 `impact` 增 `violations`（提交后自动复验，只报新增）；
 3. `xtask scene-verify` + 三个反例夹具：`scene_overlap_bad.json`（穿模）、`scene_floating_bad.json`（悬空）、`scene_unreachable_bad.json`（**S4-B 落地后才能做的那个**）；
-4. 接入 `cargo xtask verify` 第 11 步；`docs/M1_PLAN.md §5` 台账同步。
+4. 接入 `cargo xtask verify` 第 11 步；`docs/m1/M1_PLAN.md §5` 台账同步。
 
-**落地实测（2026-11-18，方案见 `docs/M1_S4F_PLAN.md`）**：第 2 条按 D1=A 修正——父计划的「提交后自动复验」在编辑态不成立（宿主无物理装配入口、拿不到 `MeshProvider`，见该方案 E5/E6/E7），`violations` 改挂**事务影子场景的静态层**并与 `tx.begin` 基线求差，物理 / 导航层在 `impact.notChecked` 里如实记账。夹具实际命名 `assets/verify/{overlap,floating,unreachable}_{bad,ok}.json`（子目录避开 `assets/` 顶层 schema 扫描），必报码是 S4-E 实际落地的 `overlap.penetration` / `support.floating` / `nav.no_path`，不是提案里的 `*.exact`。RPC 56→57、命令表 386→387、`ISSUE_CODES` 38 不变、`#[test]` 1,705→1,718，`cargo xtask verify` **11 步全绿**。
+**落地实测（2026-11-18，方案见 `docs/m1/M1_S4F_PLAN.md`）**：第 2 条按 D1=A 修正——父计划的「提交后自动复验」在编辑态不成立（宿主无物理装配入口、拿不到 `MeshProvider`，见该方案 E5/E6/E7），`violations` 改挂**事务影子场景的静态层**并与 `tx.begin` 基线求差，物理 / 导航层在 `impact.notChecked` 里如实记账。夹具实际命名 `assets/verify/{overlap,floating,unreachable}_{bad,ok}.json`（子目录避开 `assets/` 顶层 schema 扫描），必报码是 S4-E 实际落地的 `overlap.penetration` / `support.floating` / `nav.no_path`，不是提案里的 `*.exact`。RPC 56→57、命令表 386→387、`ISSUE_CODES` 38 不变、`#[test]` 1,705→1,718，`cargo xtask verify` **11 步全绿**。
 
 **Gate 1 触发条件（V3 改写）**：S4-A…S4-F 全部收口，且 `scene.verify` 对三个反例夹具稳定报出**坐标**、`unchecked` 为空，方可进 S5 Gate 1 演练。
 
@@ -379,7 +366,6 @@ S4-A 材质引用（2–3 提交）
 ## 8. 与既有文档的关系
 
 - `docs/AI_ROADMAP.md` §3.2 M1-S4：按本方案改写为 6 卡，删除「S4.5 导航 Sprint」占位，Gate 1 触发条件改写为本文件 §4 S4-F 末段；
-- `docs/M1_PLAN.md`：S4 章节按本文件替换，保留原验收口径原文（不可达关卡报坐标）；
-- `docs/M1_PLAN.md §5`：S4-A 三条命令 + S4-F 写点须先登记（`doc_gate` 规则 7）；
-- `docs/M1_S1D_SUBSTITUTION.md`：`physics_simulate` 承接方细化为 `physics.*` 三方法 + `nav.*` 三方法 + `scene.verify`。
-*（内容由AI生成，仅供参考）*
+- `docs/m1/M1_PLAN.md`：S4 章节按本文件替换，保留原验收口径原文（不可达关卡报坐标）；
+- `docs/m1/M1_PLAN.md §5`：S4-A 三条命令 + S4-F 写点须先登记（`doc_gate` 规则 7）；
+- `docs/m1/M1_S1D_SUBSTITUTION.md`：`physics_simulate` 承接方细化为 `physics.*` 三方法 + `nav.*` 三方法 + `scene.verify`。

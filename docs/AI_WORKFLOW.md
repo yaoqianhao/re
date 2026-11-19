@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_3c5ef342e18111f19919525400638852
-    ReservedCode1: YFt7if9ocHoHbWQ0nLBD3WmIVmbjaeW2G98XcPtSrfMoYcw/LMjVGDpV7u7oee1fGIGJfUm1kUuL4Pwys2QE1bH+cB9WliuLL+7VIwbSjMg/DXu2k7uZimuMd7pIckyNar+vjOOzR+89yvSIPLzt1TxRHTwImkzks8wmsPLd0gwJ/l3AZ6HeRdVDzX0=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_3c5ef342e18111f19919525400638852
-    ReservedCode2: YFt7if9ocHoHbWQ0nLBD3WmIVmbjaeW2G98XcPtSrfMoYcw/LMjVGDpV7u7oee1fGIGJfUm1kUuL4Pwys2QE1bH+cB9WliuLL+7VIwbSjMg/DXu2k7uZimuMd7pIckyNar+vjOOzR+89yvSIPLzt1TxRHTwImkzks8wmsPLd0gwJ/l3AZ6HeRdVDzX0=
----
-
 # AI_WORKFLOW：M0 之后的标准工作流
 
 > 落地于 M0-S5（S5-07，2026-11-16）。适用于 M1 及之后所有冲刺。
@@ -122,6 +111,7 @@ cargo xtask verify                        # 期望：exit=0；热态 14.6–20.4
 | `capabilities.json` 结构或数量 | `ARCHITECTURE.md` 能力清单节、`AI_ROADMAP.md` §0.2 |
 | 账本条目（债务还清 / 新增） | `AI_ROADMAP.md` §0.2 / §0.3、方案文档偏差表 |
 | Sprint 收口 | 对应 Sprint 卡（加 ✅ 日期 + 收尾实测）、§0.1 状态表、§八 看板追加一行 |
+| 新增 / 移动文档 | 落点按 `docs/README.md` §二：阶段私有文档进 `docs/m<N>/`（范式与夹具进 `norms/`），活文档留 `docs/` 根；同批更新该索引与仓库 `README.md` §1 目录树，引用写全路径 |
 
 **文档数值禁止沿用预估**：写之前先跑命令，把输出贴进去；数字带日期（如"2026-11-16 实测"）。
 
@@ -141,4 +131,3 @@ cargo xtask verify                        # 期望：exit=0；热态 14.6–20.4
 - 起点状态：M0 全绿（1,476 测试 / 九道门 / 20.4s 热缓存），债 4 条、`>800` 行 23 项已记账；
 - 第一优先级：`M1-DOC-FIELDS`（`r3e-core/src/scene.rs` 4,057 行拆分）+ 端口契约还债；
 - 每个 Sprint 收口必须留下"可演示证据"（一条命令 + 一段输出），否则视为未完成。
-*（内容由AI生成，仅供参考）*

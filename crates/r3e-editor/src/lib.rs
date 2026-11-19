@@ -10,7 +10,7 @@
 //! 剥离采用「纯搬迁 + 整体再导出」：`r3e-editor-host` 与本 crate 的 9 个集成测试
 //! 都还写着 `use r3e_editor::{EngineApi, TransformPatch, dispatch, …}`，再导出让它们
 //! 一行不改就继续编译（M0-S5 的验收要求）。M1 会把这些引用迁到 `r3e_protocol::`，
-//! 然后删掉这层壳（见 `docs/M0S5_PROTOCOL.md` §12）。
+//! 然后删掉这层壳（见 `docs/m0/M0S5_PROTOCOL.md` §12）。
 //!
 //! 依赖方向上：`r3e-editor -> r3e-protocol`，协议 crate 不认识任何引擎类型，
 //! 所以既不依赖 `r3e-core`，也不会出现 `core -> editor` 的反向耦合。

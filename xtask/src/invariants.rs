@@ -102,7 +102,7 @@ pub fn run(root: &Path) -> i32 {
     if failed {
         eprintln!(
             "[invariants] 三源不一致：补测试改 r3e-doc/tests/ 或 r3e-editor-host/tests/、改清单跑 \
-             `cargo xtask gen-capabilities`、改登记表看 docs/M0S5_PROTOCOL.md 的 code 契约"
+             `cargo xtask gen-capabilities`、改登记表看 docs/m0/M0S5_PROTOCOL.md 的 code 契约"
         );
         return 1;
     }

@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_2f839802e3be11f19919525400638852
-    ReservedCode1: d41R0XMxlAmTOz6dvxGRBEPbO/bcY0SkRlE1jyYfAvXXL3xFmkR+Th9MoiNL9BIyeJbEs+NaFcYrPAVzWWI+qxG4rHm7r0QBOGPbEX2lUCSSlg3umtIbQOS4aZ7JYBYmsBEua7vCZObj0HTX3Y+UWqBqktItq/ZWIgiqW2u67QsTcsP6IaQKJc67iVM=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_2f839802e3be11f19919525400638852
-    ReservedCode2: d41R0XMxlAmTOz6dvxGRBEPbO/bcY0SkRlE1jyYfAvXXL3xFmkR+Th9MoiNL9BIyeJbEs+NaFcYrPAVzWWI+qxG4rHm7r0QBOGPbEX2lUCSSlg3umtIbQOS4aZ7JYBYmsBEua7vCZObj0HTX3Y+UWqBqktItq/ZWIgiqW2u67QsTcsP6IaQKJc67iVM=
----
-
 # 范式 1：从零生成可通行小场景
 
 > **验证目标**：一次意图 = N 条命令 = 一格撤销；提交前就能读到坐标化 issue。
@@ -22,8 +11,8 @@ AIGC:
 | 仓库根 | `D:\rust3d-engine` |
 | 引擎 | `target\x86_64-pc-windows-gnu\debug\r3e.exe` |
 | CLI | `target\x86_64-pc-windows-gnu\debug\r3e-cli.exe` |
-| 场景 | `docs\norms\scene_norms.json`（`objects` 为空，`spawns` 自带 `start=(0.35,0,0.35)`） |
-| 脚本 | `docs\norms\silent.rhai`（静默：不逐帧写 `scene.time` / `scene.frame`，`stateHash` 不漂移） |
+| 场景 | `docs/m1/norms/scene_norms.json`（`objects` 为空，`spawns` 自带 `start=(0.35,0,0.35)`） |
+| 脚本 | `docs/m1/norms/silent.rhai`（静默：不逐帧写 `scene.time` / `scene.frame`，`stateHash` 不漂移） |
 | RPC | `127.0.0.1:8787`，令牌 `dev` |
 
 三条硬约束（踩过才写）：
@@ -36,7 +25,7 @@ AIGC:
 
 ```bat
 cd /d D:\rust3d-engine
-target\x86_64-pc-windows-gnu\debug\r3e.exe --scene docs\norms\scene_norms.json --script docs\norms\silent.rhai --rpc-port 8787 --rpc-token dev --physics on --run-seconds 900
+target\x86_64-pc-windows-gnu\debug\r3e.exe --scene docs/m1/norms/scene_norms.json --script docs/m1/norms/silent.rhai --rpc-port 8787 --rpc-token dev --physics on --run-seconds 900
 ```
 
 - 该终端被引擎占住，出现渲染窗口即就绪；`--run-seconds 900` 让引擎 15 分钟后自退。
@@ -185,8 +174,7 @@ target\x86_64-pc-windows-gnu\debug\r3e-cli.exe --token dev query stats --json
 | 现象 | 原因 | 处置 |
 |---|---|---|
 | `tx begin` 退出码 3，`连不上引擎` | 引擎没起 / 没给 `--rpc-port` / 端口不一致 | 回步骤 1；`--addr` 与 `--rpc-port` 必须指向同一地址 |
-| `tx commit` 回 `-32013 TX_CONFLICT` | 用了会逐帧写 `scene.time` 的脚本，`baseHash` 已过期 | 换 `docs\norms\silent.rhai` |
+| `tx commit` 回 `-32013 TX_CONFLICT` | 用了会逐帧写 `scene.time` 的脚本，`baseHash` 已过期 | 换 `docs/m1/norms/silent.rhai` |
 | `verify` 恒为 1 且 `unchecked` 里有 `physics` 或 `nav` | 漏了步骤 6 | 先 `rpc physics.bind` / `rpc nav.bake` 再体检 |
 | `tx intent` 回 `-32012`「物件 `xxx` 已存在」 | 上一次的场景还在同一个引擎进程里；`spawn_prefab` 只新建不覆盖 | 重启引擎，或换节点名 |
 | `verify` 回 `-32020 PHYSICS_DISABLED` | 引擎用 `--physics off` 起的 | 用 `--physics on` 重起 |
-*（内容由AI生成，仅供参考）*

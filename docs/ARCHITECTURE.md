@@ -1,18 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_814f577cd4fb11f19fe5525400638852
-    ReservedCode1: rBV+Ga3vu/7Y+yhFql6P63uQ9l6MO/kol95gdS+n0wjXv0JB6Swd5kwKPGALud+ODb5hryogajr2NkCatFiCj/X4sMk+Rf7tXu10XBo+wL59XjcL8gpind8Tw6QvlDYsh1aNmtfzbnq20bnAoHkply67VA+LH/InHX+IgCC7i0e0bp3RyzW2SlLiHF4=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_814f577cd4fb11f19fe5525400638852
-    ReservedCode2: rBV+Ga3vu/7Y+yhFql6P63uQ9l6MO/kol95gdS+n0wjXv0JB6Swd5kwKPGALud+ODb5hryogajr2NkCatFiCj/X4sMk+Rf7tXu10XBo+wL59XjcL8gpind8Tw6QvlDYsh1aNmtfzbnq20bnAoHkply67VA+LH/InHX+IgCC7i0e0bp3RyzW2SlLiHF4=
----
-
-
-
-
-
 # r3e 引擎架构文档
 
 > 版本：0.1.0
@@ -274,7 +259,7 @@ M1 的第一块地基：把 `r3e-doc` 里早已实现的 `Transaction`（一次�
 
 行数口径（本节表在 2026-11-15 M0-S1 收口后整体重算，并在 2026-11-16 M0-S5 收口时按同一口径再全量重算一次（新增 `r3e-protocol` 行、`r3e-editor` 缩为传输层、单测总数随 D6 补 10 条反例测试 1,466 → 1,476）：`crates/*/src/**/*.rs` 与 `crates/*/tests/**/*.rs` 递归全量统计，`xtask/` 不计入引擎规模）：
 `src` / `tests` 均为**含空行与注释的物理行数**；单测数按 `#[test]` 标注计（`cargo xtask check-tests` 以 `xtask/tests_baseline.json` 为准，
-该快照是硬门禁，只许涨不许跌）。M1 各卡（S1 → S3-A）只把**增量**记进快照与 `docs/M1_PLAN.md`，本节 crate 级数字仍是 M0-S5 全量重算口径、未逐卡回填，
+该快照是硬门禁，只许涨不许跌）。M1 各卡（S1 → S3-A）只把**增量**记进快照与 `docs/m1/M1_PLAN.md`，本节 crate 级数字仍是 M0-S5 全量重算口径、未逐卡回填，
 因此以单测数看当前真值应直接读 `xtask/tests_baseline.json`（M1-S3-A 后合计 **1,564**），行数看 `cargo xtask lint-size`。2026-11-14 M0-S0 那次统计存在 glob 漏计（`r3e-render` 记 10,520，同一口径递归实测 13,074），
 本版按递归全量对全部 crate 重算修正，因此合计与旧版不可逐字对比，只与 `src`/`tests` 实测值对比。
 下表历史段落记录各扩展的**增量**，用于回溯当时的边际成本，不与本节合计行相加；其中出现的 `renderer.rs` 一律指
@@ -6997,6 +6982,3 @@ Scene（地形高度图 + 节点几何 + physics.half_extents + spawns）
 | `crates/r3e-app/src/main.rs` | 参数解析、项目根三级兜底、事件循环启动 |
 | `docs/PHYSICS.md` | 物理子系统完整说明：三层开关、场景字段、脚本 API、内置规则、实测与限制 |
 | `docs/ASSETS.md` | 资产管线完整说明：FBX / glTF 导入、AIR 统一格式与不变量、动画/蒙皮、分阶段验收与已知限制 |
-*（内容由AI生成，仅供参考）*
-*（内容由AI生成，仅供参考）*
-*（内容由AI生成，仅供参考）*

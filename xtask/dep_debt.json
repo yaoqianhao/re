@@ -5,7 +5,7 @@
     {
       "crate": "r3e-script",
       "dep": "r3e-physics",
-      "why": "脚本 API 直连 physics 门面。实测全仓 CapabilityHost 命名 0 命中，53 个绑定方法 / 704 行直接连具体实现，端口化属架构重排（与 M0「零行为变化」冲突，D4 熔断，见 M0S5_PROTOCOL.md §13.6）",
+      "why": "脚本 API 直连 physics 门面。实测全仓 CapabilityHost 命名 0 命中，53 个绑定方法 / 704 行直接连具体实现，端口化属架构重排（与 M0「零行为变化」冲突，D4 熔断，见 docs/m0/M0S5_PROTOCOL.md §13.6）",
       "plan": "M1：按 §13.6 的 53 条端口契约草案补 CapabilityHost 的物理入口，绑定改走端口后删条"
     },
     {

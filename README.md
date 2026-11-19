@@ -1,15 +1,4 @@
-﻿---
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_809d28cbd4fb11f19fe5525400638852
-    ReservedCode1: U+pj9KT2xscmIHCzAuSN9AmjPyy/B7/Bu1oAJj+qxnIsjkWrhuTu5hRLupQsdazDkP7TA8yHWUyveuVb0t22NZXZU9FWVXnnNlVfudtWdsicm056lgmaBP0zKP36AaHZbS7IPn9bzaJvc6i//q/yhFh2FMvumOpPo6vPdfTcWIjH9bcvX6l1BW3SXqc=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_809d28cbd4fb11f19fe5525400638852
-    ReservedCode2: U+pj9KT2xscmIHCzAuSN9AmjPyy/B7/Bu1oAJj+qxnIsjkWrhuTu5hRLupQsdazDkP7TA8yHWUyveuVb0t22NZXZU9FWVXnnNlVfudtWdsicm056lgmaBP0zKP36AaHZbS7IPn9bzaJvc6i//q/yhFh2FMvumOpPo6vPdfTcWIjH9bcvX6l1BW3SXqc=
----
-
-# r3e —— Rust 3D 游戏引擎（文本可编程）
+﻿# r3e —— Rust 3D 游戏引擎（文本可编程）
 
 一个用 Rust 写的最小可用 3D 引擎内核：场景与行为全部由**文本**描述，
 保存文件即**热重载**生效，画面里的物件可以实时移动、变形、生成、消失。
@@ -79,9 +68,15 @@ D:\rust3d-engine
 │   └─ r3e-app/               # 薄壳入口：日志 + argv 交运行时 + 按需挂编辑器桥（30 行）
 ├─ xtask/                     # 工程门禁：verify / lint-size / check-tests / dep-check + 三个数据文件
 └─ docs/
+    ├─ README.md              # 文档目录规范与索引（新增文档先看这里）
     ├─ ARCHITECTURE.md        # 架构总览：crate 边界、数据流、扩展路线
     ├─ PHYSICS.md             # 物理子系统：三层开关、场景字段、脚本 API、内置规则
-    └─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
+    ├─ ASSETS.md              # FBX 资产加载（P0–P4 已落地，含骨骼蒙皮）
+    ├─ AI_ROADMAP.md / AI_WORKFLOW.md / CI_GPU_RUNNER.md / plugin-packaging.md
+    ├─ capabilities.json      # 机读能力清单（cargo xtask gen-capabilities 生成，路径锁定）
+    ├─ m0/                    # M0 阶段私有文档（M0S1–M0S5）
+    ├─ m1/                    # M1 阶段私有文档（M1_PLAN 等），norms/ 下为三范式与夹具
+    └─ m2/                    # M2 阶段私有文档
 ```
 
 workspace 共 **14 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：
@@ -3738,5 +3733,3 @@ frame 0600 world=59d48dedf2b0677e state=cba5196255a3ddf2 nodes=60 depth=60
 - **`preview` 用真快照**：`Scene: Clone` 深拷贝只在事务边界发生；若将来 preview 被高频调用，要改成「每笔事务一次快照 + 复用」。
 
 ---
-
-*（内容由AI生成，仅供参考）*

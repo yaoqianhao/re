@@ -1,6 +1,6 @@
 //! 仅有 RPC、没有脚本函数的命令（引擎信息 / 截图 / 脚本执行 / 只读装配 / 事务协议）。
 //!
-//! 生成方式见 `docs/M0S2_API_SPLIT.md` §4：脚本名与签名由 `temp/gen_cmd_spec.py` 扫
+//! 生成方式见 `docs/m0/M0S2_API_SPLIT.md` §4：脚本名与签名由 `temp/gen_cmd_spec.py` 扫
 //! `register_fn` 得到，`rpc` 一列是人工对照 `dispatch` 分支裁决的结果；
 //! `reversible` / `cost` 两列按文档记录的规则统一裁决，逐条复核留到 S5-02。
 //!

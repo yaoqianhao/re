@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_21981446e0f411f18c5752540024e231
-    ReservedCode1: wHH2rGRW9ZA+mmc9xdJMNAAks3p6ibykNGy30y4/FWedQFxfu5wOgEiVah/bgxFzmqrIcmaLYAPddDKl5IWjGRLu73VfgJuMY+M+XQBNks39m6yLIPj50X9av934IAmTjx4TEMKNgGEXO6T6SafreJ9NRfs8+somCzqZbq0K8SD3X4eyi9zWEbji2uY=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_21981446e0f411f18c5752540024e231
-    ReservedCode2: wHH2rGRW9ZA+mmc9xdJMNAAks3p6ibykNGy30y4/FWedQFxfu5wOgEiVah/bgxFzmqrIcmaLYAPddDKl5IWjGRLu73VfgJuMY+M+XQBNks39m6yLIPj50X9av934IAmTjx4TEMKNgGEXO6T6SafreJ9NRfs8+somCzqZbq0K8SD3X4eyi9zWEbji2uY=
----
-
 # M0-S4：Transaction / Undo / StateHash + headless 600 帧确定性（方案）
 
 > 状态：**方案期，未落地**。基线 `727872e`（M0-S3 全包已闭），工作区干净。
@@ -267,7 +256,7 @@ xtask/src/main.rs         450 → ~520  （+ replay() 捕获式执行 + verify �
 xtask/dep_rules.json               ★改：+ r3e-replay 登记
 xtask/tests_baseline.json          ★改：+ 新测数
 Cargo.toml                         ★改：members + workspace.dependencies
-docs/M0S4_TRANSACTION.md           ★本文
+docs/m0/M0S4_TRANSACTION.md           ★本文
 ```
 
 全部 ≤ 800，`lint-size` 不需要新增债务登记。
@@ -369,7 +358,7 @@ docs/M0S4_TRANSACTION.md           ★本文
 2. ✅ `docs/ARCHITECTURE.md`：文档层补 `state_hash` / `transaction` / `undo` 三模块职责；规模表 `r3e-doc` 改 2,454 / 1,488 / 82、新增 `r3e-replay` 546 / — / 11、合计 79,525 / 17,216 / 1,457，另记一条 M0-S4 增量段；运行与验证加 `cargo xtask replay` 并在实机验证表加一行。
 3. ✅ `README.md`：§7 边界首条补「文档层负责事务 / 撤销 / 哈希，回放不依赖渲染 / 音频 / 物理」；新增 §38「确定性回放（M0-S4）」（分工表 + 怎么跑 + 输出怎么读 + 4 条已知边界）。
 4. ✅ `xtask/tests_baseline.json` / `size_debt.json`：`r3e-replay` 记 11、total 刷到 1457；`lint-size` 无新增债务（全部文件 ≤ 800）。
-5. ✅ `docs/M0S3_DOC_LAYER.md` §14：改为「S4 已落地」，三处预留点逐条对照实落结果，另记两条预判之外的发现。
+5. ✅ `docs/m0/M0S3_DOC_LAYER.md` §14：改为「S4 已落地」，三处预留点逐条对照实落结果，另记两条预判之外的发现。
 
 ---
 
@@ -428,5 +417,3 @@ docs/M0S4_TRANSACTION.md           ★本文
 3. `preview` 返回 `StateHash` 而非报告对象：刻意留窄口子，M1-S1 换 `PreviewReport { hash, diff }` 时不破坏调用方。
 
 ---
-
-*（内容由AI生成，仅供参考）*

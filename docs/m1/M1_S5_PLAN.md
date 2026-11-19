@@ -1,21 +1,10 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_b457423be35711f18c5752540024e231
-    ReservedCode1: gw9250OCqDz5Sod/8oJWpgDMCnhzcmg0t/5Bw5o4flR/K4LZq5psB1XqnEc3arBIB3dxYAWEVTYfBwSYR2Ece6WNK6MtWjfqsTopnJOoZpTYlqe0dQP3Bz4WdIbfo7JRnsZ+uQT/9a62q9/RPn/9/9gvJ+2qudMS49SXoGjLFDpKS5igLLZjYa2ihFU=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_b457423be35711f18c5752540024e231
-    ReservedCode2: gw9250OCqDz5Sod/8oJWpgDMCnhzcmg0t/5Bw5o4flR/K4LZq5psB1XqnEc3arBIB3dxYAWEVTYfBwSYR2Ece6WNK6MtWjfqsTopnJOoZpTYlqe0dQP3Bz4WdIbfo7JRnsZ+uQT/9a62q9/RPn/9/9gvJ+2qudMS49SXoGjLFDpKS5igLLZjYa2ihFU=
----
-
 # M1-S5 执行方案 V1：`r3e-cli` + 三范式 + Gate 1
 
 > 状态：**✅ 已收口**（D1–D5 采推荐项，2026-11-19；S5-A / S5-B / S5-C 全部落地，Gate 1 已演练并回填 `AI_ROADMAP` §3.2）
 > 日期：2026-11-18 起草 / 2026-11-19 收口
 > 前置：M1-S4 全部收口（HEAD `6aff76e`）；RPC 58、命令表 388、`ISSUE_CODES` 38、`#[test]` 1,725、`verify` 十项全绿；本地领先 origin/main 13 提交未 push
 > 收口时状态：`#[test]` 1,817（`r3e-protocol` 58→75、新增 `r3e-cli` 75）、`cargo xtask verify` 十一项全绿
-> 归属：`docs/M1_PLAN.md` §S5（S5-A / S5-B / S5-C）；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S5
+> 归属：`docs/m1/M1_PLAN.md` §S5（S5-A / S5-B / S5-C）；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S5
 
 ---
 
@@ -50,7 +39,7 @@ S5 的难点不在「写个命令行」，而在三处**口径冲突**，不先�
 | E13 | `tests_baseline.json` 逐 crate 计数 + `total`，只许增不许减；新增 crate 不登记则该 crate 测试数无从比对 | `xtask/tests_baseline.json` |
 | E14 | `lint-size` 有 800 行/文件硬上限（S4-F 曾因此把测试拆到 `tests/`） | `xtask/src/main.rs`（lint-size 门） |
 | E15 | 引擎侧启动只有 `r3e-app`（要窗口）；`--rpc-port` / `--rpc-token` / `--rpc-max-per-frame` 由 `r3e-runtime/src/cli.rs` 解析；`--rpc-port 0` 的真实端口不回报给调用方 | `crates/r3e-runtime/src/cli.rs`、`crates/r3e-app` |
-| E16 | 债务表里已为 CLI 埋了伏笔：`r3e-plugin` 的 `physics_simulate` 本地步进「需由引擎侧物理 RPC 或 `r3e-cli --features rapier` 承接」 | `xtask/dep_debt.json`、`docs/M0S5_PROTOCOL.md` §13.5 |
+| E16 | 债务表里已为 CLI 埋了伏笔：`r3e-plugin` 的 `physics_simulate` 本地步进「需由引擎侧物理 RPC 或 `r3e-cli --features rapier` 承接」 | `xtask/dep_debt.json`、`docs/m0/M0S5_PROTOCOL.md` §13.5 |
 | E17 | `verify` 现为十项串行（fmt / dep-check / clippy / test / doc-gate / lint-size / replay / gen-capabilities / invariants / scene-verify） | `xtask/src/main.rs` |
 
 **由 E8 + E9 + E10 推出的硬结论**：CLI 需要的两块"重"能力（TCP 客户端、确定性回放）在仓库里都已存在，但一块在违规位置上（plugin 有客户端却欠着 →core 的债），一块在依赖方向外（replay 依赖 core+doc）。S5 的正解不是重写，而是**把客户端下沉到 protocol 一份**、**把回放当外部进程调用**。
@@ -64,8 +53,8 @@ S5 的难点不在「写个命令行」，而在三处**口径冲突**，不先�
 | **S5-A-1** | `r3e-protocol` 增 `client` 模块：`Endpoint`（env/显式）+ `RpcClient`（长连接、`call(method, params) -> Result<Value, ClientError>`），只 `std::net` + `serde_json`（**零新第三方依赖**，protocol 仍不依赖任何引擎 crate）；同时 `canonical` 公开为 `pub fn canonical_method` | `crates/r3e-protocol/src/client.rs`（新增）、`src/lib.rs`（`pub use`）、`src/dispatch/mod.rs:35` | 1 提交 |
 | **S5-A-2** | 新 crate `crates/r3e-cli`：`main.rs`（参数解析 + 退出码）+ `args.rs` + `output.rs`（human / `--json`）+ 四个子命令模块 `cmd/{tx,query,verify,replay}.rs` + `errmap.rs`（错误码 → 指路） | `crates/r3e-cli/**` | 1 提交 |
 | **S5-A-3** | 门禁与台账联动：workspace `members` + `[workspace.dependencies]`、`xtask/dep_rules.json` 登记 `r3e-cli`（`allow: ["r3e-protocol"]`）、`xtask/tests_baseline.json` 加 `r3e-cli` 条目并上调 `total` | `Cargo.toml`、`xtask/*.json` | 并入 A-2 提交 |
-| **S5-B** | 三范式脚本（**可复制粘贴、无 jq、无 shell 变量**）：`docs/norms/norm1_build.md` / `norm2_verify.md` / `norm3_rollback_retry.md`，每份是可整段粘进终端的命令序列 + 期望输出片段 | `docs/norms/*.md` | 1 提交 |
-| **S5-C** | Gate 1 演练：按三范式实跑一遍，记录时间戳 / 命令 / 输出 / 结论，写进 `AI_ROADMAP` §八 验收表新增 Gate 1 行 + 本文件 §8 | `docs/AI_ROADMAP.md`、`docs/M1_S5_PLAN.md` | 1 提交 |
+| **S5-B** | 三范式脚本（**可复制粘贴、无 jq、无 shell 变量**）：`docs/m1/norms/norm1_build.md` / `norm2_verify.md` / `norm3_rollback_retry.md`，每份是可整段粘进终端的命令序列 + 期望输出片段 | `docs/m1/norms/*.md` | 1 提交 |
+| **S5-C** | Gate 1 演练：按三范式实跑一遍，记录时间戳 / 命令 / 输出 / 结论，写进 `AI_ROADMAP` §八 验收表新增 Gate 1 行 + 本文件 §8 | `docs/AI_ROADMAP.md`、`docs/m1/M1_S5_PLAN.md` | 1 提交 |
 | **S5-A-4**（演练补入） | `r3e-cli rpc <method> [--args '<json>']`：工具通道，直调任意协议方法但**一律拒绝改场景的那批**（`TX_ONLY_METHODS`）与 `tx.*`。缺口来自 §10 的 E20：`physics.bind` / `nav.bake` 没有任何 CLI 入口，`verify` 的物理/导航层恒落 `unchecked`、退出码恒为 1 | `crates/r3e-cli/src/cmd/rpc.rs`（新增）、`args.rs`、`xtask/tests_baseline.json` | 1 提交 |
 
 合计预估 **5 提交**（A-1 / A-2+A-3 / A-4 / B / C），全程不 push。
@@ -125,7 +114,7 @@ S5 的难点不在「写个命令行」，而在三处**口径冲突**，不先�
 
 ## 4. 三个范式（S5-B，Gate 1 素材）
 
-写进 `docs/norms/` 的三份文档，共同约束：**整段可粘、无 `jq`、无 shell 变量、每步都有期望输出片段**。
+写进 `docs/m1/norms/` 的三份文档，共同约束：**整段可粘、无 `jq`、无 shell 变量、每步都有期望输出片段**。
 
 | 范式 | 剧本 | 演示的能力位 |
 |---|---|---|
@@ -216,5 +205,3 @@ r3e-cli verify --token dev
 | **E19** | 场景脚本随便给一个空脚本即可 | 非静默脚本每帧写 `scene.time` / `scene.frame`，`stateHash` 每帧漂移 → `tx.begin` 拿到的 `baseHash` 一提交就过期，`tx.commit` 回 `TX_CONFLICT`（-32013） | CLI **无法**用"基哈希校验"兜住这个（那是引擎运行态语义）；文档必须写明「跑事务/体检时给静默脚本」，并把这条归到 §7 风险表 |
 | **E20** | `verify` 直接读已提交场景即可给出 `passed` | `passed` 的定义含「`unchecked` 为空」，而物理层在 `physics.bind` 前、导航层在 `nav.bake` 前都是 `unchecked` → **不调这两步，退出码恒为 1，且不是场景有问题**。原 §3.2 的四个子命令里没有任何入口能喊动这两步 | 新增 `rpc` 工具通道（S5-A-4） |
 | **E21** | 出生点可由 CLI 写入 | 宿主没有写 `spawns` 的协议方法（命令表 388 条里没有），出生点只能写在**场景文件**的 `spawns` 字段里；不给出生点则导航层记 `unchecked`，给错位置则 `nav.spawn_offmesh` | 三范式文档的场景前置必须**自带 `spawns`**；「CLI 无法新增出生点」登记为 M2 缺口，不在 S5 扩协议 |
-
-*（内容由AI生成，仅供参考）*

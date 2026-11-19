@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_67f09822e09111f19919525400638852
-    ReservedCode1: S/sfNAwiXLYkXabT8nMPuaG55rhFxl5JWtUdSrFkFt5kntCIfmecQ/r89QoUyR26aTV1hq1tsKAIWEHaLGJYPDVg7j0FuoUn1OaDUXaSLuIWlrnWYo4G0QxdY+6jYxRYntS+Zg2am3cTb2XTZ0EM2q7ZLwnBz8w/2OKMR9ApiKw5SxspzEfKCl6OnMk=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_67f09822e09111f19919525400638852
-    ReservedCode2: S/sfNAwiXLYkXabT8nMPuaG55rhFxl5JWtUdSrFkFt5kntCIfmecQ/r89QoUyR26aTV1hq1tsKAIWEHaLGJYPDVg7j0FuoUn1OaDUXaSLuIWlrnWYo4G0QxdY+6jYxRYntS+Zg2am3cTb2XTZ0EM2q7ZLwnBz8w/2OKMR9ApiKw5SxspzEfKCl6OnMk=
----
-
 # M0-S2：`api.rs` 双份收口 + 拆分方案（4,070 / 3,552 → 每文件 ≤800）
 
 > 目标：把"两份命令实现"变成"**一份命令表 + 两个薄适配**"，同时把两个单体文件拆到 `lint-size` 门槛内。
@@ -349,7 +338,3 @@ S2 执行期间文档与实际必然短暂不符，故**不在每批顺手改数
 3. **`editor` 声明面方案放弃**：原想在 `r3e-editor/src/lib.rs` 加 `known_methods` 数组，会把 `lib.rs` 从 2,597 行推到 2,649 行、触发 `lint-size` 债务上涨，改为契约测试直接 `include_str!` 扫 `dispatch` 的 `match` 分支键，文件零改动。
 4. **`README.md` 目录结构无需改**：其代码树只到 crate 层，未列 `api.rs`（§10.1 第 5 项按此关闭）。
 5. **1408 / 1343 口径并轨**：实测两口径同为 **1,364**，看板该列直接填 1,364 并注明口径。
-
-
-
-*（内容由AI生成，仅供参考）*

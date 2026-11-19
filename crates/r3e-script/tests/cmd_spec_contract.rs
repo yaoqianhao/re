@@ -95,7 +95,7 @@ fn 统计与测绘口径一致() {
     let counts = source_registrations();
     let total: usize = counts.values().sum();
     // 测绘结论：16 个域文件共 364 次注册、353 个唯一名字（11 处重载）。
-    // 数字变了说明有人加了命令却没更新 `docs/M0S2_API_SPLIT.md` 的口径表。
+    // 数字变了说明有人加了命令却没更新 `docs/m0/M0S2_API_SPLIT.md` 的口径表。
     assert_eq!(counts.len(), 353, "唯一命令数应为 353（M0 测绘口径）");
     assert_eq!(total, 364, "注册次数应为 364（含 11 处重载）");
     assert_eq!(

@@ -1,6 +1,6 @@
 //! 场景与节点：输出 / 生命周期 / 变换 / 材质 / 查询 / 拾取 / 场景流。
 //!
-//! 生成方式见 `docs/M0S2_API_SPLIT.md` §4：脚本名与签名由 `temp/gen_cmd_spec.py` 扫
+//! 生成方式见 `docs/m0/M0S2_API_SPLIT.md` §4：脚本名与签名由 `temp/gen_cmd_spec.py` 扫
 //! `register_fn` 得到，`rpc` 一列是人工对照 `dispatch` 分支裁决的结果；
 //! `reversible` / `cost` 两列按文档记录的规则统一裁决，逐条复核留到 S5-02。
 

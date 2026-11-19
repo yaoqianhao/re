@@ -29,7 +29,7 @@ use r3e_protocol::{PROTOCOL_VERSION, RPC_METHODS};
 /// 命令表应有条数（392 = 62 仅 RPC + 330 脚本独有）。
 ///
 /// 故意硬编码：加命令是**有意识**的动作，改完必须同时更新本常量与
-/// `docs/M0S5_PROTOCOL.md` §3 的 counts，避免「悄悄多一条没人知道」。
+/// `docs/m0/M0S5_PROTOCOL.md` §3 的 counts，避免「悄悄多一条没人知道」。
 /// M1-S1：369 → 374（`tx.*` 五条纯 RPC）。M1-S2-B：374 → 377（`query.*` 三条纯 RPC）。
 /// M1-S3-A：377 → 378（`tx.intent` 一条纯 RPC，意图名走宿主白名单、不进命令表）。
 /// M1-S4-D：378 → 386（`physics.*` 三条 + `nav.*` 三条 + `scene.material.*` 两条纯 RPC）。
@@ -176,7 +176,7 @@ fn build() -> Result<Capabilities, Vec<String>> {
     // ---- 硬断言：三源必须互相对得上 ----
     if caps.counts.commands != EXPECTED_COMMANDS {
         problems.push(format!(
-            "命令表 {} 条，期望 {EXPECTED_COMMANDS} 条（改命令表须同步本常量与 docs/M0S5_PROTOCOL.md §3）",
+            "命令表 {} 条，期望 {EXPECTED_COMMANDS} 条（改命令表须同步本常量与 docs/m0/M0S5_PROTOCOL.md §3）",
             caps.counts.commands
         ));
     }

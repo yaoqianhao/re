@@ -1,16 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_648bb9a1e03311f18c5752540024e231
-    ReservedCode1: elvE1S7qgdtjlThbPQglF5X0/bDrGE069gC+q3c3ReW3q4G1ZpmR6G3ZnZm9k5DBB4SYOTR+f4tFJDefYAK4ey5mKkr+2BhZYvnG4+M4lCG/AeJUir6Sk5BQ5A33a35EBjc3IYd//dZuyW8K/jk6l3Kb7xSurYLmiNPUCBqYree+AG2BViuwsxqSKaQ=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_648bb9a1e03311f18c5752540024e231
-    ReservedCode2: elvE1S7qgdtjlThbPQglF5X0/bDrGE069gC+q3c3ReW3q4G1ZpmR6G3ZnZm9k5DBB4SYOTR+f4tFJDefYAK4ey5mKkr+2BhZYvnG4+M4lCG/AeJUir6Sk5BQ5A33a35EBjc3IYd//dZuyW8K/jk6l3Kb7xSurYLmiNPUCBqYree+AG2BViuwsxqSKaQ=
----
-
-
-
 # rust3d-engine：以 AI 为核心的解耦开发路线图（路线 + 执行，合一）
 
 - 制定日期：2026-11-14（判断 / 架构 / M0–M4 路线）
@@ -34,7 +21,7 @@ AIGC:
 | M0-S3 | `r3e-doc` 立唯一真值 | ✅ 2026-11-15 | `Document` 只读 `Deref`、拒绝 `DerefMut`；写点收口 **129 处**；`doc-gate` 六规则；Validator 17 条负向用例 |
 | M0-S4 | 事务 / Undo / 确定性 | ✅ 2026-11-15 | `Transaction` 198 行 / `StateHash` 604 行（FNV-1a64）/ `UndoStack` 168 行；新建 `r3e-replay` 546 行 11 测，600 帧两次同哈希 |
 | M0-S5 | 协议剥离 + 能力清单 + 门禁转硬 | ✅ 2026-11-16 | `r3e-protocol` 8 文件 2,326 行仅 serde / `r3e-editor` 缩至 505 行传输层；`capabilities.json` 4,744 行 369 命令；`dep-check --strict` 硬门 0 违规 + 4 条债记账；`invariants` 三源 24/24/24；`verify` 20.4s 九道门；`AI_WORKFLOW.md` 落地 |
-| M1-S1 | 事务协议上链（4 卡） | ✅ 2026-11-16（S1-D 2026-11-19 补齐） | `tx.*` 五方法上线：RPC 39 → **44**、命令表 369 → **374**、`capabilities.json` 重生成；事务态挂 `Document` 影子场景（跨 RPC 存活，主场景 commit 前零字节变动）；`doc_gate` 第 7 条写点台账（5 crate / 226 处，新增未登记即红）；单测 1,476 → **1,504**；`verify` 十项全绿。**S1-D 2026-11-19 还债**（方案 A）：`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条只读 RPC 上协议面，计算搬 `r3e-editor-host/src/inspect/`，`r3e-plugin` 依赖清零（仅 serde / serde_json）、`rapier` feature 随依赖删除；RPC 58 → **62**、命令表 388 → **392**、债务 4 → **2** 条。详见 `docs/M1_S1D_SUBSTITUTION.md` |
+| M1-S1 | 事务协议上链（4 卡） | ✅ 2026-11-16（S1-D 2026-11-19 补齐） | `tx.*` 五方法上线：RPC 39 → **44**、命令表 369 → **374**、`capabilities.json` 重生成；事务态挂 `Document` 影子场景（跨 RPC 存活，主场景 commit 前零字节变动）；`doc_gate` 第 7 条写点台账（5 crate / 226 处，新增未登记即红）；单测 1,476 → **1,504**；`verify` 十项全绿。**S1-D 2026-11-19 还债**（方案 A）：`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条只读 RPC 上协议面，计算搬 `r3e-editor-host/src/inspect/`，`r3e-plugin` 依赖清零（仅 serde / serde_json）、`rapier` feature 随依赖删除；RPC 58 → **62**、命令表 388 → **392**、债务 4 → **2** 条。详见 `docs/m1/M1_S1D_SUBSTITUTION.md` |
 | M1-S2 | 语义查询（3 卡） | ✅ 2026-11-17（C→A→B） | `tags` / `interact_radius` 落 `Node` 与 `to_scene_file`（roundtrip 不增生字段）、`StateHash` 覆盖；`r3e-core/src/query.rs` 443 行 `WorldQuery`（八类判据 + 标签 AND/OR + 区域含边界 + 九位组件位，`describe` 与 `query` 共用 `Facts`）；`query.find/describe/stats` 三条只读 RPC：RPC 44 → **47**、命令表 374 → **377**；单测 1,504 → **1,546**；`verify` 十项全绿 |
 | M1-S3 | 意图命令（3 卡） | ✅ 2026-11-17（A→B→C） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；意图白名单三条：`scene.spawn_prefab`（256 上限、重名 / 父引用预检）、`scene.place_light`（上限 = 光源表容量 16、`key` 必填、同批重 key / 场景已有 key / 空位不够三重预检）、`scene.paint_terrain`（数据壳 32 块上限、**同名重刷放行**、`sanitized` 幂等收敛、高度样本逐点入 `StateHash`）——**意图名不进协议**，加意图只改宿主常量、协议零改动（RPC 仍 **48**、命令表仍 **378**）；`impact { objects, lights, terrain, materials }` 四字段恒定回带（不进哈希、不入撤销栈）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；单测 1,546 → **1,574**；`verify` 十项全绿。**M1-S3-C 只做数据壳**：地形网格生成与 LOD 按 D3 裁决留 M2 |
 
@@ -46,7 +33,7 @@ AIGC:
 | `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 20 个源文件最大 622 行） |
 | `#[test]` 总数 | 1817（M1-S1-D 后；M1-S4-G 时为 1721） | 只增不减 | `cargo xtask check-tests` 快照比对 |
 | 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
-| 依赖债务条数 | 2（`script→physics` / `script→audio`，`limit=2` 只减不增；`plugin→core` / `plugin→physics` 已于 M1-S1-D 偿还，见 `docs/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
+| 依赖债务条数 | 2（`script→physics` / `script→audio`，`limit=2` 只减不增；`plugin→core` / `plugin→physics` 已于 M1-S1-D 偿还，见 `docs/m1/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
 | 能力清单漂移 | 0（`capabilities.json` 392 命令 / 62 RPC / 38 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
 | 不变量三源 | 38 = 38 = 38 | 三源一致 | `cargo xtask invariants` |
 | `verify` 时长（热态） | 14.6–20.4s（九道门全硬）；冷缓存 25.4s；含 crate 重编译最长实测 138.5s（编译成本，不计入门禁判据） | <120s（热态口径） | 实测 |
@@ -194,7 +181,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | M0-6 | 能力清单自动生成 | 清单与实现不一致 → CI 失败 | S5-02~03 | ✅ |
 | M0-7 | Headless 确定性回放框架 | 同输入两次运行，帧状态哈希完全相同 | S4-05~06 | ✅ |
 | M0-8 | CPU 不变量校验器 v0 | 故意注入非法场景 → 必须报错，有负向测试守护 | S3-04 | ✅ |
-| M0-9 | `dep-check` 依赖门禁进 CI | 故意加一条违规依赖 → CI 红 | S0-08~09、S5-04~05 | ✅ S5-04~05 已转硬门禁（严格四判定 + 故障注入演练，见 `M0S5_PROTOCOL.md` §13.7） |
+| M0-9 | `dep-check` 依赖门禁进 CI | 故意加一条违规依赖 → CI 红 | S0-08~09、S5-04~05 | ✅ S5-04~05 已转硬门禁（严格四判定 + 故障注入演练，见 `docs/m0/M0S5_PROTOCOL.md` §13.7） |
 
 **M0 退出条件（Gate 0）**：AI 改完代码后只跑 `cargo xtask verify` 就能判断是否改对，全程不起 GPU。**这一条不达成，不进 M1。**
 
@@ -304,7 +291,7 @@ S0 收口+立尺 ──► S1 renderer 拆分 ───────────�
 | S5-01 ✅ | `r3e-protocol` 从 `r3e-editor` 剥离（仅 `serde`） | `cargo tree -p r3e-protocol` 只含 serde | 8 文件 / 2,326 行 / 34 测；依赖只有 `serde` + `serde_json`；`r3e-editor` 留 505 行传输层 + `pub use` 再导出，外部调用方零改动 |
 | S5-02 ✅ | `cargo xtask gen-capabilities` 产出 `capabilities.json` | 由代码导出，格式稳定可 `git diff` 审 | 4,744 行，`commands=369` / `rpc=39` / `script_only=330` / `domains=17` / `invariants=24`；真源为 ISSUE_CODES 常量表 + RPC_METHODS + `core::cmd_spec` 交叉 |
 | S5-03 ✅ | 清单与实现不一致 → CI 红 | 删掉一个命令实现但留表项 → 红 | `gen-capabilities --check` 逐字节比对进 `verify`；四项注入演练（改 cmd_spec / 改 rpc 字段 / 改 dispatch 臂名 / 手改清单）全红后还原 |
-| S5-04 ⚠️ 降级 | 修 3 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛 | `dep-check` 后 0 违规 | `editor-host` 已收敛为叶子适配器（0 违规）；`script`→`physics`/`audio` 实测 **53 方法 / 704 行 / 14 测试**直连，端口化突破「零行为变化」纪律 → **降级记账**入 `dep_debt.json` 并留 M1 契约清单（详见 `M0S5_PROTOCOL.md` §13.5 偏差表） |
+| S5-04 ⚠️ 降级 | 修 3 条依赖违规：`script`→trait 端口、`plugin`→只 protocol、`editor-host`→收敛 | `dep-check` 后 0 违规 | `editor-host` 已收敛为叶子适配器（0 违规）；`script`→`physics`/`audio` 实测 **53 方法 / 704 行 / 14 测试**直连，端口化突破「零行为变化」纪律 → **降级记账**入 `dep_debt.json` 并留 M1 契约清单（详见 `docs/m0/M0S5_PROTOCOL.md` §13.5 偏差表） |
 | S5-05 ✅ | `dep-check` 转硬门禁（CI fail）+ 故意加违规依赖验证 | PR 加一条违规依赖 → CI 红 | 默认即严格四判定（白名单外 / 债务残留 / 超限 / 未登记），`--report` 降级为显式开关；`ci.yml` 撤 `continue-on-error`；四项故障注入演练全红 |
 | S5-06 ✅ | `verify` 收敛（fmt + dep-check + clippy + test + doc-gate + lint-size + replay + 新两门） | 单条命令 <120 秒 | 九道门全硬，实测 **20.4s**（热态；含 crate 重编译最长 138.5s）；新增 `invariants` 三源比对门（24 = 24 = 24）与 `gen-capabilities --check` |
 | S5-07 ✅ | `docs/AI_WORKFLOW.md`：M0 之后的标准工作流（改码 → verify → 判定） | 3 个可复制命令块 | 落地，含九道门清单 / 改码闭环 / 债务与基线记账规则 / 提交纪律 |
@@ -347,17 +334,17 @@ cargo xtask invariants              # ✅ 38 = 38 = 38
 
 | Sprint | 主题 | 关键卡 | 退出演示 | 对应交付物 |
 |---|---|---|---|---|
-| M1-S1 ✅ 2026-11-16 | 事务协议上链路 | ✅ `tx.begin/apply/preview/commit/rollback` 已走 `r3e-protocol`（44 RPC）；✅ `doc_gate` 第 7 条写点台账；✅ `r3e-plugin` 只依赖 protocol（2026-11-19 补齐：四条只读 RPC 承接原离线能力，计算搬宿主，见 `docs/M1_S1D_SUBSTITUTION.md`）；能力名裁决（2026-11-19）：`scene.write` / `doc.transaction` **从 r3e 侧撤销**——ai_ide v1.0 能力表 7 项均绑定真实 `host/*` 方法（`plugin_host.rs:122`），无 scene / doc 槽位，声明即被 `manifest.rs:549` 拒载；写侧改由 `risk=write` + `path_field` 承载（裁决全文 `docs/M1_S1D_SUBSTITUTION.md` §8，扩展提案 `docs/M2_PROPOSAL_CAPABILITY_SLOTS.md`） | ✅ 外部进程 dry-run 返回结构化 diff（`tx.preview` 三哈希），`commit` 前场景哈希不变 | M1-1 完成 / M1-2 部分 |
+| M1-S1 ✅ 2026-11-16 | 事务协议上链路 | ✅ `tx.begin/apply/preview/commit/rollback` 已走 `r3e-protocol`（44 RPC）；✅ `doc_gate` 第 7 条写点台账；✅ `r3e-plugin` 只依赖 protocol（2026-11-19 补齐：四条只读 RPC 承接原离线能力，计算搬宿主，见 `docs/m1/M1_S1D_SUBSTITUTION.md`）；能力名裁决（2026-11-19）：`scene.write` / `doc.transaction` **从 r3e 侧撤销**——ai_ide v1.0 能力表 7 项均绑定真实 `host/*` 方法（`plugin_host.rs:122`），无 scene / doc 槽位，声明即被 `manifest.rs:549` 拒载；写侧改由 `risk=write` + `path_field` 承载（裁决全文 `docs/m1/M1_S1D_SUBSTITUTION.md` §8，扩展提案 `docs/m2/M2_PROPOSAL_CAPABILITY_SLOTS.md`） | ✅ 外部进程 dry-run 返回结构化 diff（`tx.preview` 三哈希），`commit` 前场景哈希不变 | M1-1 完成 / M1-2 部分 |
 | M1-S2 ✅ 2026-11-17 | 语义查询 | ✅ `WorldQuery`：按 kind/tag/bbox/component 过滤，结果含 `{id,name,tags,pos,interact_radius}`；✅ `query.find/describe/stats` 三条只读 RPC（RPC 47 / 命令表 377） | ✅ AI 不读裸 JSON 就能回答"场景里有哪些可交互物"（`query.*` 三条只读方法 + 9 条宿主用例） | M1-3 |
 | M1-S3 ✅ 2026-11-17 | 意图命令 + 变更半径 | `spawn_prefab` / `paint_terrain` / `place_light`；一次意图 = N 条原子命令，undo 一次全退；输出含 `impact` | 一条意图命令的 `impact` 能列出受影响对象与材质；`paint_terrain` 不生成几何（M2） | ✅ `scene.spawn_prefab` / `scene.place_light` / `scene.paint_terrain` 三条意图走 `tx.intent`（意图名不进协议）；`impact` 四字段恒定回带；数据壳 32 块上限 + 高度样本逐点入哈希 |
 | M1-S4 ◐ 2026-11-18 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5；**V3 改为「先补引擎能力、后接验证器」**：S4-A 材质引用体系 / S4-B `r3e-nav` / S4-C 装配下沉 / S4-D 协议面八条（RPC 48→56、命令表 378→386、`capabilities.json` 重生成）/ S4-E 三层验证器 + 坐标化 Issue（静态 / 物理 / 导航三层落地，`ISSUE_CODES` 24→38，`capabilities.json` 重生成）已落地；S4-F `scene.verify` RPC（RPC 56→57、命令表 386→387）+ `impact.violations`（影子静态层求差）+ `assets/verify` 六夹具 + `cargo xtask scene-verify`（`verify` 第 11 步）已落地；S4-G 把 `impact.violations` 补到物理 / 导航两层（影子世界当场重建 + 影子导航网格，`notChecked` 不再留已跑的层）已落地；S4-H `physics.bind` RPC（RPC 57→58、命令表 387→388、`capabilities.json` 重生成）已落地——编辑态由调用方显式装配主世界、`wroteBackScene: false` 不写回场景，物理关回 `PHYSICS_DISABLED`、无网格来源回新码 `-32023 MESH_SOURCE_UNAVAILABLE`（绝不回空表），`scene.verify` 的新鲜度守卫由此有了消除路径、`passed` 恢复为可用门禁；`#[test]` 1,721→1,725，`verify` 全绿，Gate 1 前置校验就位 |
-| M1-S5 ✅ 2026-11-19 | CLI + 三范式 | ✅ `r3e-cli` 五组子命令：`tx`（begin / apply / intent / preview / commit / rollback / status）、`query`（find / describe / stats）、`verify`、`replay`、`rpc`；退出码语义 `0` 成功 /`1` 业务否定（`passed:false`）/`2` 用法错 /`3` 环境错 /`4` 缺 replay；缺省会话态 `.r3e-cli/session.json`（`txId` 自动接续，`--state-file ""` 可关）；`errmap` 把 `-320xx` 译成人话 + 退出码；`rpc` 双护栏 `TX_ONLY_METHODS` + `TX_ONLY_INTENTS`（协议方法名与意图名是两套命名空间，只拦前者会漏 `scene.spawn_prefab` 等改场景意图）；三范式 `docs/norms/norm1_build.md`（生成）/ `norm2_verify.md`（读失败）/ `norm3_rollback_retry.md`（失败→修正→成功）+ 夹具 `scene_norms.json`、`silent.rhai`（静默脚本，防 `baseHash` 逐帧漂移致 `TX_CONFLICT`）；`RPC` 58、命令表 388、`#[test]` 1,725→**1,817**（`r3e-protocol` 58→75、新增 `r3e-cli` 75），`cargo xtask verify` 全绿 | **Gate 1 ✅**（见下） | M1-6、M1-8 |
+| M1-S5 ✅ 2026-11-19 | CLI + 三范式 | ✅ `r3e-cli` 五组子命令：`tx`（begin / apply / intent / preview / commit / rollback / status）、`query`（find / describe / stats）、`verify`、`replay`、`rpc`；退出码语义 `0` 成功 /`1` 业务否定（`passed:false`）/`2` 用法错 /`3` 环境错 /`4` 缺 replay；缺省会话态 `.r3e-cli/session.json`（`txId` 自动接续，`--state-file ""` 可关）；`errmap` 把 `-320xx` 译成人话 + 退出码；`rpc` 双护栏 `TX_ONLY_METHODS` + `TX_ONLY_INTENTS`（协议方法名与意图名是两套命名空间，只拦前者会漏 `scene.spawn_prefab` 等改场景意图）；三范式 `docs/m1/norms/norm1_build.md`（生成）/ `norm2_verify.md`（读失败）/ `norm3_rollback_retry.md`（失败→修正→成功）+ 夹具 `scene_norms.json`、`silent.rhai`（静默脚本，防 `baseHash` 逐帧漂移致 `TX_CONFLICT`）；`RPC` 58、命令表 388、`#[test]` 1,725→**1,817**（`r3e-protocol` 58→75、新增 `r3e-cli` 75），`cargo xtask verify` 全绿 | **Gate 1 ✅**（见下） | M1-6、M1-8 |
 
 **待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 按域拆）。行数已从 4,057 降到 **3,947**（M1-S2-C 拆 `scene_desc.rs`、M1-S3-C 拆 `scene_tables.rs`），私有化仍留 M2——冲击全仓读点，与 M1 并行风险过高（D2 裁决）。
 
 **Gate 1（M1 退出）**：一个不改引擎代码的 AI Agent，仅用 `r3e-cli` + 协议完成"生成可通行小场景 → 验证 → 失败回滚重试 → 成功提交"，全过程命令可复制粘贴。
 
-**Gate 1 演练记录（2026-11-19，`--physics on`、静默脚本、8787/dev，全部按 `docs/norms/*.md` 原样命令连跑）**：
+**Gate 1 演练记录（2026-11-19，`--physics on`、静默脚本、8787/dev，全部按 `docs/m1/norms/*.md` 原样命令连跑）**：
 
 | 范式 | 命令数 | 退出码 | 状态哈希链 | 净耗时 | 判据落地 |
 |---|---|---|---|---|---|
@@ -727,12 +714,9 @@ cargo xtask replay --seed 42 --frames 600   # 确定性回放，输出状态哈�
 
 ### E.4 外部引用待同频
 
-以下文件在原 `AI_ROADMAP_EXECUTION.md` 被删除后，若仍在引用旧文件名，需指向本文档对应章节（历史方案文档 `M0S1_RENDERER_SPLIT.md` / `M0S2_API_SPLIT.md` / `M0S3_DOC_LAYER.md` / `M0S4_TRANSACTION.md` 属已完成的一次性方案记录，保留原文不改写历史）：
+以下文件在原 `AI_ROADMAP_EXECUTION.md` 被删除后，若仍在引用旧文件名，需指向本文档对应章节（历史方案文档 `docs/m0/M0S1_RENDERER_SPLIT.md` / `docs/m0/M0S2_API_SPLIT.md` / `docs/m0/M0S3_DOC_LAYER.md` / `docs/m0/M0S4_TRANSACTION.md` 属已完成的一次性方案记录，保留原文不改写历史）：
 
 | 文件 | 旧引用 | 新指向 |
 |---|---|---|
 | `.github/workflows/ci.yml` | `docs/AI_ROADMAP_EXECUTION.md §3.1` | `docs/AI_ROADMAP.md §3.1` |
 | `xtask/dep_rules.json` | `docs/AI_ROADMAP.md §2.2` | 不变（§2.2 编号保留） |
-
-*（本文档由 AI 辅助生成，判断与架构来自 2026-11-14 原始路线图，Sprint 执行记录与验收判据均来自仓库实测）*
-*（内容由AI生成，仅供参考）*

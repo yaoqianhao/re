@@ -20,7 +20,7 @@
 //!
 //! 未纳入（M1）：`DespawnNode` / `RenameNode` / `SetAnim*` / `SetMorph*`。前者需要 core
 //! 侧补「删除前像 → 重新插入」的 API（`Node` 无法由公开接口再造），后三者要等命令面
-//! 覆盖动画与形变域，见 `docs/M0S3_DOC_LAYER.md` §7 偏离登记。
+//! 覆盖动画与形变域，见 `docs/m0/M0S3_DOC_LAYER.md` §7 偏离登记。
 
 mod env;
 mod material;

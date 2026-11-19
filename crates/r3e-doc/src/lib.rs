@@ -12,7 +12,7 @@
 //! 编译器成为唯一裁判，漏改即编译失败，不存在灰区。
 //!
 //! 本轮（S3）只锁「可变借用的来源」：`Scene` 的公开字段保持不动，字段私有化推到
-//! M1-DOC-FIELDS。原因见 `docs/M0S3_DOC_LAYER.md` §2 决定 2。
+//! M1-DOC-FIELDS。原因见 `docs/m0/M0S3_DOC_LAYER.md` §2 决定 2。
 
 mod command;
 mod state_hash;

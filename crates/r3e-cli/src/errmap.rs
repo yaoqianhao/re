@@ -9,7 +9,7 @@
 //!
 //! # 退出码的裁决也在这里
 //!
-//! 三类失败必须分得开（`docs/M1_S5_PLAN.md` §3.3）：脚本要能按码分支，
+//! 三类失败必须分得开（`docs/m1/M1_S5_PLAN.md` §3.3）：脚本要能按码分支，
 //! 而不是 grep 输出文本。判定顺序是「先环境（3）→ 再用法（2）→ 其余业务否定（1）」。
 
 use r3e_protocol::client::{nearest_methods, ClientError};

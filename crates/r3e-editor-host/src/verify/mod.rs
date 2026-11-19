@@ -1,6 +1,6 @@
 //! 三层验证器（M1-S4-E）：静态近似 → 物理精确 → 导航可达，合并成一份体检报告。
 //!
-//! 三条铁律（`docs/M1_S4_PLAN.md` §4 S4-E）在这里落地：
+//! 三条铁律（`docs/m1/M1_S4_PLAN.md` §4 S4-E）在这里落地：
 //!
 //! ① **近似只做候选**：`r3e-doc` 的 `support/overlap.suspect` 全部带
 //!    `approximate = true`——它手里只有包围盒，拿不到碰撞体形状；

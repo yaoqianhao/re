@@ -1,6 +1,6 @@
 //! `cargo xtask doc-gate`：文档层收口的六条静态门禁。
 //!
-//! 规则来自 `docs/M0S3_DOC_LAYER.md` §5。收口做完不算完——只要后续有人再写一个
+//! 规则来自 `docs/m0/M0S3_DOC_LAYER.md` §5。收口做完不算完——只要后续有人再写一个
 //! `Rc<RefCell<Scene>>` 或直接 `Scene::from_json_str`，P4 那 129 个写点就白迁了。
 //! 这里把六条约定变成 `verify` 会跑的检查。
 //!
@@ -12,7 +12,7 @@
 //! | 4 | 上层不得出现 `Scene::from_json_str`，只走 `r3e_doc::parse_scene` / `Document::from_json_str` | 无 |
 //! | 5 | 未登记 `xtask/dep_rules.json` 的 crate 一律失败 | 无 |
 //! | 6 | `write(|s| ...)` 闭包体内不得再借用场景载体（RefCell 重入） | 无 |
-//! | 7 | `.write(` 写点数不得超过 `docs/M1_PLAN.md` §5 台账登记（M1-S1 起，M1-S4-E 并入） | 无，台账即登记 |
+//! | 7 | `.write(` 写点数不得超过 `docs/m1/M1_PLAN.md` §5 台账登记（M1-S1 起，M1-S4-E 并入） | 无，台账即登记 |
 //!
 //! 白名单和 `lint-size` 一样**只许减**：条目对不上就报「可删」，多出来的直接失败。
 //! 规则 7 同理——台账数字比实际大就提示「可下调」，比实际小就红。
@@ -86,7 +86,7 @@ pub fn run(root: &Path) -> i32 {
         let lines: Vec<&str> = text.lines().collect();
 
         // ---- 规则 7 计数：按 crate 累计 `.write(` 字面次数（注释与字符串也算，
-        // 口径与 docs/M1_PLAN.md §5 写点台账的人工统计保持一致，避免"看起来降了其实是注释")
+        // 口径与 docs/m1/M1_PLAN.md §5 写点台账的人工统计保持一致，避免"看起来降了其实是注释")
         if let Some(crate_name) = path
             .strip_prefix("crates/")
             .and_then(|p| p.split('/').next())
@@ -252,11 +252,11 @@ pub fn run(root: &Path) -> i32 {
         }
     }
 
-    // ---- 规则 7：写点台账只许减（docs/M1_PLAN.md §5，机读列：crate / 登记数）
+    // ---- 规则 7：写点台账只许减（docs/m1/M1_PLAN.md §5，机读列：crate / 登记数）
     // 台账原本是独立的 docs/WRITE_SITES.md，M1-S4-E 起并入主计划文档的锚点区段：
     // 少一个文件就少一个「代码改了、台账没跟」的漂移点。锚点不在 = 失败，
     // 绝不能让门禁在解析不到台账时静默退化成「没有台账」。
-    const LEDGER_DOC: &str = "docs/M1_PLAN.md";
+    const LEDGER_DOC: &str = "docs/m1/M1_PLAN.md";
     const LEDGER_BEGIN: &str = "<!-- write-sites:begin -->";
     const LEDGER_END: &str = "<!-- write-sites:end -->";
     let ledger_text = fs::read_to_string(root.join(LEDGER_DOC)).unwrap_or_default();
@@ -271,7 +271,7 @@ pub fn run(root: &Path) -> i32 {
         Some(block) => {
             if !block.contains("登记写点数") {
                 bad.push(
-                    "规则7 docs/M1_PLAN.md §5 台账表头缺失（应为 `| crate | 登记写点数 | 说明 |`）"
+                    "规则7 docs/m1/M1_PLAN.md §5 台账表头缺失（应为 `| crate | 登记写点数 | 说明 |`）"
                         .into(),
                 );
             }
@@ -292,14 +292,14 @@ pub fn run(root: &Path) -> i32 {
     }
     if block.is_some() && ledger.is_empty() {
         bad.push(
-            "规则7 docs/M1_PLAN.md §5 台账解析为空（锚点内应有 `| r3e-xxx | N | 说明 |` 行）"
+            "规则7 docs/m1/M1_PLAN.md §5 台账解析为空（锚点内应有 `| r3e-xxx | N | 说明 |` 行）"
                 .into(),
         );
     }
     for (name, actual) in &write_sites {
         match ledger.get(name) {
             Some(&reg) if *actual > reg => bad.push(format!(
-                "规则7 `{name}` 有 {actual} 处 .write(，台账只登记 {reg} 处：新增写点必须先在 docs/M1_PLAN.md §5 登记并写明理由"
+                "规则7 `{name}` 有 {actual} 处 .write(，台账只登记 {reg} 处：新增写点必须先在 docs/m1/M1_PLAN.md §5 登记并写明理由"
             )),
             Some(&reg) if *actual < reg => {
                 println!("  可下调: 写点 {name} 登记 {reg} 处，实际 {actual} 处")

@@ -9,7 +9,7 @@
 //! 3. 世界盒 = 局部盒八个角点过 `Node::world` 后重新求包围（旋转会把盒子撑大，属预期）。
 //!
 //! 凡是吃了这份近似的结论，都必须标 `Issue::approximate = true`，由物理层出结论后覆盖——
-//! 铁律见 `docs/M1_S4_PLAN.md` §4 S4-E「铁律①」。
+//! 铁律见 `docs/m1/M1_S4_PLAN.md` §4 S4-E「铁律①」。
 
 use r3e_core::{Aabb, Node, Scene, Vec3};
 

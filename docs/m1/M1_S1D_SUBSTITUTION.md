@@ -1,19 +1,8 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_cf3f6feae3d011f1b35052540024e231
-    ReservedCode1: stJ6ArYElUA5ekoSndbQ7926HzQWPE0/720t/VWWybOM4KKjOaeOTDW5E4wqERlbBHsZ+1JMAMyRK7Q+WUoaitIzzy4V1qDt/30e3OfLoqhuKMX3uQN2VKutL3L1BxyMfiaCUN1iZr8Vo8GUw0lVgWSTSRRkQUgYvkicz1f/Bvas7aMI20XAHajbzmU=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_cf3f6feae3d011f1b35052540024e231
-    ReservedCode2: stJ6ArYElUA5ekoSndbQ7926HzQWPE0/720t/VWWybOM4KKjOaeOTDW5E4wqERlbBHsZ+1JMAMyRK7Q+WUoaitIzzy4V1qDt/30e3OfLoqhuKMX3uQN2VKutL3L1BxyMfiaCUN1iZr8Vo8GUw0lVgWSTSRRkQUgYvkicz1f/Bvas7aMI20XAHajbzmU=
----
-
 # M1-S1-D 替代清单与结清记录（插件去 core/physics 依赖）
 
 - 立项：2026-11-16（M1-S1 收尾，当时判定「本轮不还」）
 - 结清：2026-11-19（采用**方案 A**：插件改薄壳 + 4 条只读 RPC 上协议面）
-- 对应卡：`M1_PLAN.md` §3 M1-S1-D
+- 对应卡：`docs/m1/M1_PLAN.md` §3 M1-S1-D
 - 结论一句话：**`plugin → core` / `plugin → physics` 两条债已偿还**，`xtask/dep_debt.json` 由 4 条降为 **2 条**（`limit` 4 → 2）。原判「4 项离线能力无协议承接方」不再成立——不是找到了替代清单，而是**把承接方造了出来**：四条只读 RPC 进协议面，计算落到 `r3e-editor-host`。
 
 ## 1. 原判为什么当时是对的，现在为什么不成立
@@ -69,7 +58,7 @@ AIGC:
 
 | crate | dep | 归口 |
 |---|---|---|
-| `r3e-script` | `r3e-physics` | `M0S5_PROTOCOL.md` §13.6 端口化（53 条绑定直连具体实现） |
+| `r3e-script` | `r3e-physics` | `docs/m0/M0S5_PROTOCOL.md` §13.6 端口化（53 条绑定直连具体实现） |
 | `r3e-script` | `r3e-audio` | 同上，与物理同批偿还 |
 
 这两条与本卡无关：它们是脚本 API 直连门面，端口化要动 704 行绑定。
@@ -99,6 +88,4 @@ AIGC:
 
 **迁移口**：若 ai_ide 后续提供通用批量事务原语（提案中的 `host/tx.run` + 能力 `tx.run`），本仓只需把写侧能力声明换成 `tx.run`，插件代码不动——引擎侧的 `tx.*` 本就是协议面方法，与宿主能力无关。
 
-**提案留档**：`docs/M2_PROPOSAL_CAPABILITY_SLOTS.md`（三种形态 + 契约草案 + 验收判据 + 触发条件）。
-
-*（内容由AI生成，仅供参考）*
+**提案留档**：`docs/m2/M2_PROPOSAL_CAPABILITY_SLOTS.md`（三种形态 + 契约草案 + 验收判据 + 触发条件）。

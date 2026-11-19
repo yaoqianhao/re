@@ -1,21 +1,10 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_8f4c2259e33d11f18c5752540024e231
-    ReservedCode1: aqyqS0ntEzkbAUeTNhtaVGi5dfoFVU3iylvVEKtFvcQD3HlDL4GgIA9kkMPvhxq5ELae0+ejnDE8cEmS50Whuds1Rey9wXaT/K3bpu0r425m3yh2gjvQtyqL/s9Ber4NQ0kaXTYxoOFXsMEtCr3cjflakMEfEWFABzFKVZwQXU7piYnu8bpOznpe7OQ=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_8f4c2259e33d11f18c5752540024e231
-    ReservedCode2: aqyqS0ntEzkbAUeTNhtaVGi5dfoFVU3iylvVEKtFvcQD3HlDL4GgIA9kkMPvhxq5ELae0+ejnDE8cEmS50Whuds1Rey9wXaT/K3bpu0r425m3yh2gjvQtyqL/s9Ber4NQ0kaXTYxoOFXsMEtCr3cjflakMEfEWFABzFKVZwQXU7piYnu8bpOznpe7OQ=
----
-
 # M1-S4-F 执行方案 V1：`scene.verify` + `impact.violations` + 三夹具 + Gate 1 前置
 
 > 状态：**已落地**（D1=A / D2=P1 / D3=子目录夹具；两提交，本地未 push）
 > 补充：D1 的 B/C（物理 / 导航层 `violations`）已于 M1-S4-G 补齐，见 §5.1 末两行与 §8
 > 日期：2026-11-18
 > 前置：S4-E 已收口（commit `7b2a929`）；RPC 57、命令表 387、`ISSUE_CODES` 38、`#[test]` 1,718
-> 归属：`docs/M1_S4_PLAN.md` §4 S4-F；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S4
+> 归属：`docs/m1/M1_S4_PLAN.md` §4 S4-F；父计划 `docs/AI_ROADMAP.md` §3.2 M1-S4
 
 ---
 
@@ -55,7 +44,7 @@ AIGC:
 | F-3 | `impact.violations`（口径按 D1 裁决） | `crates/r3e-editor-host/src/api/tx.rs` |
 | F-4 | 三个反例夹具 + 正向对照 | `assets/verify/*.json`（按 D3） |
 | F-5 | `xtask scene-verify` + 接入 `verify` 第 11 步 | `xtask/src/scene_verify.rs`、`xtask/src/main.rs:141` |
-| F-6 | 台账同步：`capabilities.json`、`AI_ROADMAP` §3.2、`M1_PLAN.md §5` 写点登记 | `docs/*`、`dist/capabilities.json` |
+| F-6 | 台账同步：`capabilities.json`、`AI_ROADMAP` §3.2、`docs/m1/M1_PLAN.md §5` 写点登记 | `docs/*`、`dist/capabilities.json` |
 
 预估 2 提交：F-1+F-2（RPC 落地）→ F-3+F-4+F-5+F-6（impact + 夹具 + 门禁）。
 
@@ -181,7 +170,6 @@ AIGC:
 - ~~不做 `physics.bind` / `scene.rebind` 类新 RPC（D2 的 P3）~~ → M1-S4-H 已补，见 §8；
 - ~~不做 `violations` 的物理 / 导航层（D1 的 B/C）~~ → M1-S4-G 已补，见 §8；
 - 不做 Gate 1 演练本身（S5 范围），本卡只交付「Gate 1 可以开始了」的前置校验。
-*（内容由AI生成，仅供参考）*
 
 ---
 

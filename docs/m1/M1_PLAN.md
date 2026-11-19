@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_758fa652e1a111f19919525400638852
-    ReservedCode1: Wo3z8VGMt7uLUeXoPjDk/PX08NpVOAV3tTZdMyDSN5zsc0iLe+6mxCTqMuB/vqf2EDeeXJ4vyB6ahFdAjASUWiA7D6HwJpnJn20wbZ5cDLXZnLqtl7eRBWaMgTeEvlr8WI60QvZnfI8cCfWAmAAyja68HZaOxWq/bu9Y7O06bhzWJ3UPWgLeNXZVvNY=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_758fa652e1a111f19919525400638852
-    ReservedCode2: Wo3z8VGMt7uLUeXoPjDk/PX08NpVOAV3tTZdMyDSN5zsc0iLe+6mxCTqMuB/vqf2EDeeXJ4vyB6ahFdAjASUWiA7D6HwJpnJn20wbZ5cDLXZnLqtl7eRBWaMgTeEvlr8WI60QvZnfI8cCfWAmAAyja68HZaOxWq/bu9Y7O06bhzWJ3UPWgLeNXZVvNY=
----
-
 # M1 执行方案（AI 写入闭环）
 
 - 基线：M0 收口（S0–S5 全绿，Gate 0 已过），2026-11-16
@@ -80,13 +69,13 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 |---|---|---|---|
 | **S1-A** | 协议面新增 `tx.begin / tx.apply / tx.preview / tx.commit / tx.rollback` | `r3e-protocol/src/lib.rs:53`（`RPC_METHODS` 39 条 → 44 条）+ dispatch 三层 match 补臂 + `cmd_spec` + `gen_capabilities` 重生成 | 五个方法可被分发；`cargo xtask gen-capabilities` 后 `capabilities.json` 增量且 `EXPECTED_COMMANDS`（`gen_capabilities.rs:33`，369）不变 |
 | **S1-B** | 宿主事务态 `TxRegistry`：`tx_id → {base_state_hash, staged: Vec<Command>, created_at}`；`tx.apply` 只入队并返回结构化 diff；`tx.commit` 在单个 `&mut Document` 作用域内构造 `doc::Transaction`、逐条 apply、`commit` | `r3e-editor-host`（新增 `tx` 模块 + 宿主 API）+ 复用 `doc` 六入口（`begin/apply/stage/preview/commit/rollback` 均已实现，无需改） | dry-run 返回结构化 diff；`commit` 前 `StateHash` 不变（与基线逐字节相等） |
-| **S1-C** | 命令化边界：定义 **AI 可写域白名单**（scene/light/env/postfx/text/ui/anim 参数），协议层对白名单外域不暴露 `tx.apply`；新增 `.write(` 写点台账与门禁（见 §5） | `docs/M1_PLAN.md` §5（写点台账本体 + 白名单标注 tx 覆盖状态）+ `xtask/src/doc_gate.rs`（新增第 7 条规则：写点只增于白名单或显式登记） | 台账生成可复现；`doc_gate` 第 7 条对新增未登记写点报错 |
+| **S1-C** | 命令化边界：定义 **AI 可写域白名单**（scene/light/env/postfx/text/ui/anim 参数），协议层对白名单外域不暴露 `tx.apply`；新增 `.write(` 写点台账与门禁（见 §5） | `docs/m1/M1_PLAN.md` §5（写点台账本体 + 白名单标注 tx 覆盖状态）+ `xtask/src/doc_gate.rs`（新增第 7 条规则：写点只增于白名单或显式登记） | 台账生成可复现；`doc_gate` 第 7 条对新增未登记写点报错 |
 | **S1-D** | `r3e-plugin` 重写为只依赖 `protocol`；四条只读 RPC 上协议面承接原离线能力 | `crates/r3e-plugin/Cargo.toml` + `src/**`；`r3e-protocol/src/{inspect.rs,dispatch/inspect.rs}`；`r3e-editor-host/src/{inspect/,api/inspect.rs}`；`dep_debt.json` 偿还 `plugin → core` / `plugin → physics` 两条 | `dep-check --strict` 违规从 4 条降至 2 条 ✅ **已达成（2026-11-19，方案 A）** |
 
-**S1 执行结果（2026-11-16 收口）**：S1-A ✅ 协议面五方法已上线（RPC 39 → 44、命令表 369 → 374、`dispatch/tx.rs` 102 行）；S1-B ✅ 事务态挂在 `Document` 上（`r3e-doc/src/tx.rs` 277 + `r3e-editor-host/src/api/tx.rs` 269），跨 RPC 存活、`tx.preview` 三哈希、commit 前主场景零字节变动；S1-C ✅ `docs/M1_PLAN.md` §5 写点台账 + `doc_gate` 第 7 条（5 crate / 226 处）；**S1-D ⏸ 顺延**——R2 前置（替代清单）已按决策补齐为 `docs/M1_S1D_SUBSTITUTION.md`，但四项离线能力的协议承接方（`query.*` / 计算类 RPC）尚未就位，本轮不动 `Cargo.toml` 与 `CAPABILITIES`，`dep-check` 仍 4 条债（`limit=4`）。单测 1,476 → 1,504，`cargo xtask verify` 十项全绿。
+**S1 执行结果（2026-11-16 收口）**：S1-A ✅ 协议面五方法已上线（RPC 39 → 44、命令表 369 → 374、`dispatch/tx.rs` 102 行）；S1-B ✅ 事务态挂在 `Document` 上（`r3e-doc/src/tx.rs` 277 + `r3e-editor-host/src/api/tx.rs` 269），跨 RPC 存活、`tx.preview` 三哈希、commit 前主场景零字节变动；S1-C ✅ `docs/m1/M1_PLAN.md` §5 写点台账 + `doc_gate` 第 7 条（5 crate / 226 处）；**S1-D ⏸ 顺延**——R2 前置（替代清单）已按决策补齐为 `docs/m1/M1_S1D_SUBSTITUTION.md`，但四项离线能力的协议承接方（`query.*` / 计算类 RPC）尚未就位，本轮不动 `Cargo.toml` 与 `CAPABILITIES`，`dep-check` 仍 4 条债（`limit=4`）。单测 1,476 → 1,504，`cargo xtask verify` 十项全绿。
 
-**S1-D 结清（2026-11-19，方案 A）**：`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条只读 RPC 四层同改上线（协议 58 → 62、命令表 388 → 392、不变量 30 → 38）；计算落 `r3e-editor-host/src/inspect/`（`locate.rs` 179 行由插件整体迁入）；`r3e-plugin` 的 `Cargo.toml` 只剩 `serde` / `serde_json`，`rapier` feature 随依赖删除；四项工具改薄壳，**代价是引擎必须在线**（连不上回 -32011）。`dep_debt.json` 4 → 2 条（`limit` 4 → 2），`cargo xtask verify` 十项全绿，单测 1,817（`r3e-plugin` 47 持平：删掉本地计算用例后补 6 个薄壳用例）。详见 `docs/M1_S1D_SUBSTITUTION.md`。
-**能力名裁决（2026-11-19，同日闭合 S1-D 最后一项）**：`scene.write` / `doc.transaction` 从 r3e 侧撤销——ai_ide v1.0 能力表 7 项均绑定真实 `host/*` 方法，无 scene / doc 槽位，硬加只会得到勾了不管用的死能力名；写侧改由 `risk=write` + `path_field` 承载。裁决与实证见 `docs/M1_S1D_SUBSTITUTION.md` §8，给 ai_ide 的扩展提案见 `docs/M2_PROPOSAL_CAPABILITY_SLOTS.md`。
+**S1-D 结清（2026-11-19，方案 A）**：`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条只读 RPC 四层同改上线（协议 58 → 62、命令表 388 → 392、不变量 30 → 38）；计算落 `r3e-editor-host/src/inspect/`（`locate.rs` 179 行由插件整体迁入）；`r3e-plugin` 的 `Cargo.toml` 只剩 `serde` / `serde_json`，`rapier` feature 随依赖删除；四项工具改薄壳，**代价是引擎必须在线**（连不上回 -32011）。`dep_debt.json` 4 → 2 条（`limit` 4 → 2），`cargo xtask verify` 十项全绿，单测 1,817（`r3e-plugin` 47 持平：删掉本地计算用例后补 6 个薄壳用例）。详见 `docs/m1/M1_S1D_SUBSTITUTION.md`。
+**能力名裁决（2026-11-19，同日闭合 S1-D 最后一项）**：`scene.write` / `doc.transaction` 从 r3e 侧撤销——ai_ide v1.0 能力表 7 项均绑定真实 `host/*` 方法，无 scene / doc 槽位，硬加只会得到勾了不管用的死能力名；写侧改由 `risk=write` + `path_field` 承载。裁决与实证见 `docs/m1/M1_S1D_SUBSTITUTION.md` §8，给 ai_ide 的扩展提案见 `docs/m2/M2_PROPOSAL_CAPABILITY_SLOTS.md`。
 
 **S1 附带（同一 Sprint 内，独立 commit）**：`M1-DOC-FIELDS` 的**文件拆分**部分——`scene.rs` 4,057 行按域拆到 `scene/` 子模块，行为零变化、无 API 变化。字段私有化见 §4 决策 D2。
 
@@ -225,7 +214,7 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 | 编号 | 风险 | 影响 | 处置 |
 |---|---|---|---|
 | **R1** | `doc.write` 是**借用收口**而非**命令收口**：走 `write` 闭包可绕过命令层，不报错但不可 undo | AI 误用后场景不可撤销 | S1-C 白名单 + `doc_gate` 第 7 条台账；`tx.*` 协议面不暴露裸 `write` |
-| **R2** | S1-D 插件只依赖 `protocol` 会砍掉 4 项离线能力（`scene_inspect` / `validate` / `mesh_stats` / `physics_simulate`） | 插件侧功能回退 | ✅ **已消解（2026-11-19）**：方案 A 自建承接方——四条只读 RPC 落协议面、计算搬 `r3e-editor-host`，四项工具改薄壳后行为等价；离线能力改为「引擎在线即可用」，见 `docs/M1_S1D_SUBSTITUTION.md` |
+| **R2** | S1-D 插件只依赖 `protocol` 会砍掉 4 项离线能力（`scene_inspect` / `validate` / `mesh_stats` / `physics_simulate`） | 插件侧功能回退 | ✅ **已消解（2026-11-19）**：方案 A 自建承接方——四条只读 RPC 落协议面、计算搬 `r3e-editor-host`，四项工具改薄壳后行为等价；离线能力改为「引擎在线即可用」，见 `docs/m1/M1_S1D_SUBSTITUTION.md` |
 | **R3** | `tags` / `interact_radius` 新增若漏改 `node_desc` | 字段静默丢失，查询结果对不上 | S2-C 四处同改 + 单测断言 `node_desc` 输出 |
 | **R4** | 事务态复制到宿主侧后，与 `doc` 内 `StateHash` 出现双源 | `commit` 前哈希不变校验失真 | S1-B 的 `base_state_hash` 只在 `begin` 时取一次，`commit` 后强制重取并比对，不一致即报错 |
 | **R5** | `scene.rs` 拆文件期间，其他卡的改动打进同一文件 | 冲突与返工 | S1 附带卡**独立 commit 且优先执行**，拆完再动 S2 |
@@ -238,7 +227,7 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 |---|---|---|
 | `docs/AI_ROADMAP.md` | 每 Sprint 收口 | §3.2 交付物表勾选 + §8 验收表 + 状态行 |
 | `docs/ARCHITECTURE.md` | 协议面/真值层变更时 | 核心契约、协议方法表、探针字段、行数增量表 |
-| `docs/M1_PLAN.md` §5 | S1-C 起，每次写点变化 | 写点台账（表格本体 + 登记数 + 逐条覆盖状态，M1-S4-E 起不再单列文件） |
+| `docs/m1/M1_PLAN.md` §5 | S1-C 起，每次写点变化 | 写点台账（表格本体 + 登记数 + 逐条覆盖状态，M1-S4-E 起不再单列文件） |
 | `docs/capabilities.json` | 协议/命令变化时 | `cargo xtask gen-capabilities` 自动生成，不手写 |
 | `docs/M1S1_*.md` … `M1S5_*.md` | 每 Sprint 完成 | 新增，格式对齐 `M0S1`–`M0S5` 既有文档 |
 | `README.md` / `docs/ASSETS.md` | 能力面变化时 | CLI 用法、能力清单 |
@@ -256,4 +245,3 @@ S2-A/B/C 查询面 ──> S3-A/B/C 意图命令 ──> S4-A/B 验证器 ──
 ```
 
 第一个动作：**S1-A**（协议面五个方法），它是全部后续卡的前置，且不触碰任何已有写点，风险最低。
-*（内容由AI生成，仅供参考）*

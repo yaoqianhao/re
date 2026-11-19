@@ -99,5 +99,5 @@
 ## 5. 本仓的先行结项（不依赖本提案是否被采纳）
 
 - `r3e-plugin/src/spec.rs::CAPABILITIES` 维持 `["fs.read"]`，**不再预留** `scene.write` / `doc.transaction`；
-- 裁决依据与迁移口见 `docs/M1_S1D_SUBSTITUTION.md` §8；
+- 裁决依据与迁移口见 `docs/m1/M1_S1D_SUBSTITUTION.md` §8；
 - 若形态 2 落地，本仓只需把写侧能力声明从 `fs.write` 换成 `tx.run`，插件侧代码不动（引擎侧的 `tx.*` 本来就是协议面方法，与宿主能力无关）。

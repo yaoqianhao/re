@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_bbbaed85ced411f1acb8525400638852
-    ReservedCode1: pdkvi+EGIrTSJHMbkgwrPnfButCvCNJ5KdcVlGzNoM3AjUmgkoaHOiVqVUqmXfFjBF9KeScdJcQcPqCDEfc29q9oCY7LI+kS5Q915f6PZB/bp3SSm0AEvSPWLE6EO/TDJ1vSUrSvhC7PVw4+vSvp+OGcOdqXEmJwXNb8aJ8+wrCHRMpADJf+R5ywhYM=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_bbbaed85ced411f1acb8525400638852
-    ReservedCode2: pdkvi+EGIrTSJHMbkgwrPnfButCvCNJ5KdcVlGzNoM3AjUmgkoaHOiVqVUqmXfFjBF9KeScdJcQcPqCDEfc29q9oCY7LI+kS5Q915f6PZB/bp3SSm0AEvSPWLE6EO/TDJ1vSUrSvhC7PVw4+vSvp+OGcOdqXEmJwXNb8aJ8+wrCHRMpADJf+R5ywhYM=
----
-
 # r3e 资产层规划：FBX 外部资产加载
 
 > 状态：**P0–P4 已落地**（静态网格、材质贴图、场景 `assets` 段、节点动画、骨骼蒙皮）
@@ -464,7 +453,6 @@ struct CachedAsset {
 5. 改 `.fbx` 文件或改 `scene.json` 后 ≤0.4s 自动生效，无需重启；
 6. 没有 FBX 的默认场景行为与现在逐像素一致（回归不破）；
 7. `cargo build --release` 零 warning，`cargo test` 全绿。
-*（内容由AI生成，仅供参考）*
 
 ---
 

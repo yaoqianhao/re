@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_ede661d2e08111f18c5752540024e231
-    ReservedCode1: g0s3mI+m07EiVAY96VbsKeDwDkq+5coKNIiIcbhYFFhCH/2VelXbBh7RqNjkPFrVC8dKHN+uvr9XKovQrYZ5siRw1qOBLE3ku2+4mJspuxBheOSvr3StcI70ZPw2Hzp7g959poeVMiH6l0skOy8oR380udaJP2udoZTqPofkcRljjSSEtRJZRf11xIc=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_ede661d2e08111f18c5752540024e231
-    ReservedCode2: g0s3mI+m07EiVAY96VbsKeDwDkq+5coKNIiIcbhYFFhCH/2VelXbBh7RqNjkPFrVC8dKHN+uvr9XKovQrYZ5siRw1qOBLE3ku2+4mJspuxBheOSvr3StcI70ZPw2Hzp7g959poeVMiH6l0skOy8oR380udaJP2udoZTqPofkcRljjSSEtRJZRf11xIc=
----
-
 # M0-S1：`renderer.rs` 拆分方案（5582 行 → 每文件 ≤800）
 
 > 目标：把 `crates/r3e-render/src/renderer.rs` 从单文件 5582 行拆成 `renderer/` 目录下的多文件模块，
@@ -194,5 +183,3 @@ crates/r3e-render/src/renderer/
 10. 机械核查：`renderer/` 下最大 716 行 ≤800；原 5,582 行按第 2 节行段表全覆盖，无遗漏无重复
 
 **遗留**：`prepare_instances`（643 行函数）、`render_to_view`（332 行）等长函数本次不做函数级拆分（见第 7 节）；`postfx.rs`(817) / `text.rs`(869) / `ui.rs`(1112) / `api.rs`(4,070) 仍是后续 Sprint 的账。
-
-*（内容由AI生成，仅供参考）*

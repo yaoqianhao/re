@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_acd78303e0bb11f18c5752540024e231
-    ReservedCode1: VLIY4M/Gzs1ShtWQx1DtYoXOiEXWdQL/aYXmQ+0rkh655FAXxphIneGtKfn+WaLL2aR+GohDs731UaAGlTXIz4nGveMOK+fKHOygTjUVXZSba0VNVOeuPAELYN6iwOkT9Oc1m6Cj3amsfYFgHMKBcSh8uoCEgavOLDQUERh+IHllg9uchSl9WKKjMxs=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_acd78303e0bb11f18c5752540024e231
-    ReservedCode2: VLIY4M/Gzs1ShtWQx1DtYoXOiEXWdQL/aYXmQ+0rkh655FAXxphIneGtKfn+WaLL2aR+GohDs731UaAGlTXIz4nGveMOK+fKHOygTjUVXZSba0VNVOeuPAELYN6iwOkT9Oc1m6Cj3amsfYFgHMKBcSh8uoCEgavOLDQUERh+IHllg9uchSl9WKKjMxs=
----
-
 # M0-S3：`r3e-doc` 立项 —— Document 接管场景唯一真值（方案）
 
 > 状态：方案待确认（未落代码）
@@ -420,7 +409,7 @@ cargo run -p r3e-app -- --run-seconds 20   # 帧行为不变：帧数 / 节点�
 ## 14. S3 之后（S4 已落地，预留点逐条兑现）
 
 本节原写于 S3 收尾，记的是"留给 S4 的三处接口"。S4 已完成，下面是当时的预判与实落结果的对照——
-方案与实测细节见 [`docs/M0S4_TRANSACTION.md`](M0S4_TRANSACTION.md)。
+方案与实测细节见 [`docs/m0/M0S4_TRANSACTION.md`](M0S4_TRANSACTION.md)。
 
 | S3 预留点 | S4 实落 | 是否如预判 |
 | --- | --- | --- |
@@ -434,4 +423,3 @@ cargo run -p r3e-app -- --run-seconds 20   # 帧行为不变：帧数 / 节点�
   所以给 `Scene` 加了 `Clone`（方案期先做探针验证可行再还原，S4 正式引入）——这条成本当初没算进 S3 的预留里；
 - `undo` 的粒度是**事务**不是**命令**：`Document::undo()` 在 v0 是单步栈（一格一条命令），
   S4 换成 `UndoStack` + `UndoGroup`（一笔事务一格），所以 `undo_depth` 的语义从"命令数"变成"事务数"。
-*（内容由AI生成，仅供参考）*

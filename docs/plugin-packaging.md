@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_126804f8d06c11f19f8752540064ee0f
-    ReservedCode1: pHl3HQd8Z2aaEtesKC57PzcR5BK42Irc+nb0WVyVQ2sBT+p7BGqF8aiJea7p+SNJZfb9aaICeWvBx/iaq/EqI5TxvLKmsvmYSC5GWkizToLuEwJrdwTBzrR7le2RkjCU5SdFziSknz9h+U+E/8Vn1jowDJnEtwJUo2vqjA8DOsQppZ4HUEwBE9D9UeM=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_126804f8d06c11f19f8752540064ee0f
-    ReservedCode2: pHl3HQd8Z2aaEtesKC57PzcR5BK42Irc+nb0WVyVQ2sBT+p7BGqF8aiJea7p+SNJZfb9aaICeWvBx/iaq/EqI5TxvLKmsvmYSC5GWkizToLuEwJrdwTBzrR7le2RkjCU5SdFziSknz9h+U+E/8Vn1jowDJnEtwJUo2vqjA8DOsQppZ4HUEwBE9D9UeM=
----
-
 # rust3d-engine 插件：打包、安装与挂载
 
 本插件把 rust3d-engine 的**纯逻辑层**（场景解析、网格统计、AIR 校验、物理步进）挂给
@@ -67,7 +56,7 @@ Get-FileHash .\rust3d-engine-plugin-0.1.0.zip -Algorithm SHA256
 | `name` / `version` | `rust3d-engine` / `0.1.0` | 版本取自 `workspace.package.version` |
 | `pluginApi` | `"1.0"` | 宿主 `HOST_PLUGIN_API_MAJOR=1`，主版本不符直接拒装 |
 | `main` | `bin/r3e-plugin.exe` | 相对包根；非 `.js/.mjs/.cjs` 即直接 spawn，不经 Node |
-| `capabilities` | `["fs.read"]` | 只读。宿主能力表**封闭 7 项**（`fs.read` / `fs.write` / `search` / `workspace.info` / `progress` / `net.fetch` / `llm.chat`），表外的名字——`shell.exec` 或业务语义名如 `scene.write`——写了都会被拒装。裁决见 `docs/M1_S1D_SUBSTITUTION.md` §8 |
+| `capabilities` | `["fs.read"]` | 只读。宿主能力表**封闭 7 项**（`fs.read` / `fs.write` / `search` / `workspace.info` / `progress` / `net.fetch` / `llm.chat`），表外的名字——`shell.exec` 或业务语义名如 `scene.write`——写了都会被拒装。裁决见 `docs/m1/M1_S1D_SUBSTITUTION.md` §8 |
 | `tools` | 5 个，全部 `risk=read` | `engine_info` / `scene_inspect` / `mesh_stats` / `scene_validate` / `physics_simulate` |
 | `commands` | 1 个 | `engine_diagnostics`（命令面板入口，不进模型工具表） |
 | `subscriptions` | `[]` | 不订阅宿主事件，减少无谓唤醒 |
@@ -146,4 +135,3 @@ Get-FileHash .\rust3d-engine-plugin-0.1.0.zip -Algorithm SHA256
    - 显式 `backend="rapier"` → `-32602`，信息里列出现有后端并提示 `--features rapier`；
    - 场景文件自己写了 `backend="rapier"` → `-32010`（数据问题，与「参数写错」区分开）。
    宿主/模型因此能拿到可读错误，而不是一次崩溃重启。
-*（内容由AI生成，仅供参考）*

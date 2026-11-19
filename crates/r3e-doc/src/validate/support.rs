@@ -3,7 +3,7 @@
 //! **这一层只做剔除**：拿 AABB 近似找「下方什么都没有」的物件，给物理层一个候选清单。
 //! 真正的结论必须由物理层（`r3e-editor-host/src/verify/*`，向下 `shape_cast` 精确找支撑面）
 //! 给出，并按 `(category, target, code)` 覆盖本层的近似条目——铁律见
-//! `docs/M1_S4_PLAN.md` §4 S4-E。
+//! `docs/m1/M1_S4_PLAN.md` §4 S4-E。
 //!
 //! 三条刻意的克制：
 //!

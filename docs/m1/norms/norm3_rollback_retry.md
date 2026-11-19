@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_30f1d23de3be11f18c5752540024e231
-    ReservedCode1: cXx/tmCJoPSs6wVLSlrh3lh6rbcsgKPM2zipK5akbPQ+2GmIUwb07nZlHX0d8Jh17vwrxiFFvQ+l3vc4wt3OOAd+N1jCueCoSxtbRmaowtoval3vuKx6pKXukW81I8HBKXZhiMi/aBIv+Du7nGPfxeTK76zNeULgOOTSWn+OvlDSRsGC3TYH4I8aEoE=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_30f1d23de3be11f18c5752540024e231
-    ReservedCode2: cXx/tmCJoPSs6wVLSlrh3lh6rbcsgKPM2zipK5akbPQ+2GmIUwb07nZlHX0d8Jh17vwrxiFFvQ+l3vc4wt3OOAd+N1jCueCoSxtbRmaowtoval3vuKx6pKXukW81I8HBKXZhiMi/aBIv+Du7nGPfxeTK76zNeULgOOTSWn+OvlDSRsGC3TYH4I8aEoE=
----
-
 # 范式 3：失败回滚重试到成功（Gate 1 主剧本）
 
 > **验证目标**：AI **不改引擎代码、只靠协议闭环**完成「生成 → 失败 → 读懂 → 修正 → 成功」。
@@ -16,13 +5,13 @@ AIGC:
 
 ## 0. 前置
 
-仓库根 `D:\rust3d-engine`、场景 `docs\norms\scene_norms.json`、静默脚本 `docs\norms\silent.rhai`、端口 8787、令牌 `dev`。必须**从干净引擎**开始，否则节点名会撞（`spawn_prefab` 只新建不覆盖）。
+仓库根 `D:\rust3d-engine`、场景 `docs/m1/norms/scene_norms.json`、静默脚本 `docs/m1/norms/silent.rhai`、端口 8787、令牌 `dev`。必须**从干净引擎**开始，否则节点名会撞（`spawn_prefab` 只新建不覆盖）。
 
 ```bat
 cd /d D:\rust3d-engine
 taskkill /f /im r3e.exe
 timeout /t 1 >nul
-target\x86_64-pc-windows-gnu\debug\r3e.exe --scene docs\norms\scene_norms.json --script docs\norms\silent.rhai --rpc-port 8787 --rpc-token dev --physics on --run-seconds 900
+target\x86_64-pc-windows-gnu\debug\r3e.exe --scene docs/m1/norms/scene_norms.json --script docs/m1/norms/silent.rhai --rpc-port 8787 --rpc-token dev --physics on --run-seconds 900
 ```
 
 ## 阶段一：提交一个「差 5 厘米」的场景
@@ -163,4 +152,3 @@ EXIT=0
 | `tx begin` 报 `TX_CONFLICT` | 引擎里跑了非静默脚本，`baseHash` 漂移 | 换 `silent.rhai` 重起 |
 | `tx apply scene.settransform` 回 `-32012` | `node` 名字写错（要写成场景里的 `name`，不是数字 id） | 先 `query describe <name>` 确认存在 |
 | 用 `tx rollback` 想撤已提交的改动 | `rollback` 只清暂存区 | 开新事务改回去，或交给撤销栈（一次 `undo` 退一格意图） |
-*（内容由AI生成，仅供参考）*
