@@ -67,7 +67,7 @@ Get-FileHash .\rust3d-engine-plugin-0.1.0.zip -Algorithm SHA256
 | `name` / `version` | `rust3d-engine` / `0.1.0` | 版本取自 `workspace.package.version` |
 | `pluginApi` | `"1.0"` | 宿主 `HOST_PLUGIN_API_MAJOR=1`，主版本不符直接拒装 |
 | `main` | `bin/r3e-plugin.exe` | 相对包根；非 `.js/.mjs/.cjs` 即直接 spawn，不经 Node |
-| `capabilities` | `["fs.read"]` | 只读。`shell.exec` 是宿主不提供的能力，写了会被拒装 |
+| `capabilities` | `["fs.read"]` | 只读。宿主能力表**封闭 7 项**（`fs.read` / `fs.write` / `search` / `workspace.info` / `progress` / `net.fetch` / `llm.chat`），表外的名字——`shell.exec` 或业务语义名如 `scene.write`——写了都会被拒装。裁决见 `docs/M1_S1D_SUBSTITUTION.md` §8 |
 | `tools` | 5 个，全部 `risk=read` | `engine_info` / `scene_inspect` / `mesh_stats` / `scene_validate` / `physics_simulate` |
 | `commands` | 1 个 | `engine_diagnostics`（命令面板入口，不进模型工具表） |
 | `subscriptions` | `[]` | 不订阅宿主事件，减少无谓唤醒 |

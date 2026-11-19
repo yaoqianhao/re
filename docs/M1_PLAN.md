@@ -86,6 +86,7 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 **S1 执行结果（2026-11-16 收口）**：S1-A ✅ 协议面五方法已上线（RPC 39 → 44、命令表 369 → 374、`dispatch/tx.rs` 102 行）；S1-B ✅ 事务态挂在 `Document` 上（`r3e-doc/src/tx.rs` 277 + `r3e-editor-host/src/api/tx.rs` 269），跨 RPC 存活、`tx.preview` 三哈希、commit 前主场景零字节变动；S1-C ✅ `docs/M1_PLAN.md` §5 写点台账 + `doc_gate` 第 7 条（5 crate / 226 处）；**S1-D ⏸ 顺延**——R2 前置（替代清单）已按决策补齐为 `docs/M1_S1D_SUBSTITUTION.md`，但四项离线能力的协议承接方（`query.*` / 计算类 RPC）尚未就位，本轮不动 `Cargo.toml` 与 `CAPABILITIES`，`dep-check` 仍 4 条债（`limit=4`）。单测 1,476 → 1,504，`cargo xtask verify` 十项全绿。
 
 **S1-D 结清（2026-11-19，方案 A）**：`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条只读 RPC 四层同改上线（协议 58 → 62、命令表 388 → 392、不变量 30 → 38）；计算落 `r3e-editor-host/src/inspect/`（`locate.rs` 179 行由插件整体迁入）；`r3e-plugin` 的 `Cargo.toml` 只剩 `serde` / `serde_json`，`rapier` feature 随依赖删除；四项工具改薄壳，**代价是引擎必须在线**（连不上回 -32011）。`dep_debt.json` 4 → 2 条（`limit` 4 → 2），`cargo xtask verify` 十项全绿，单测 1,817（`r3e-plugin` 47 持平：删掉本地计算用例后补 6 个薄壳用例）。详见 `docs/M1_S1D_SUBSTITUTION.md`。
+**能力名裁决（2026-11-19，同日闭合 S1-D 最后一项）**：`scene.write` / `doc.transaction` 从 r3e 侧撤销——ai_ide v1.0 能力表 7 项均绑定真实 `host/*` 方法，无 scene / doc 槽位，硬加只会得到勾了不管用的死能力名；写侧改由 `risk=write` + `path_field` 承载。裁决与实证见 `docs/M1_S1D_SUBSTITUTION.md` §8，给 ai_ide 的扩展提案见 `docs/M2_PROPOSAL_CAPABILITY_SLOTS.md`。
 
 **S1 附带（同一 Sprint 内，独立 commit）**：`M1-DOC-FIELDS` 的**文件拆分**部分——`scene.rs` 4,057 行按域拆到 `scene/` 子模块，行为零变化、无 API 变化。字段私有化见 §4 决策 D2。
 

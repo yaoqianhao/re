@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_cf3f6feae3d011f1b35052540024e231
+    ReservedCode1: stJ6ArYElUA5ekoSndbQ7926HzQWPE0/720t/VWWybOM4KKjOaeOTDW5E4wqERlbBHsZ+1JMAMyRK7Q+WUoaitIzzy4V1qDt/30e3OfLoqhuKMX3uQN2VKutL3L1BxyMfiaCUN1iZr8Vo8GUw0lVgWSTSRRkQUgYvkicz1f/Bvas7aMI20XAHajbzmU=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_cf3f6feae3d011f1b35052540024e231
+    ReservedCode2: stJ6ArYElUA5ekoSndbQ7926HzQWPE0/720t/VWWybOM4KKjOaeOTDW5E4wqERlbBHsZ+1JMAMyRK7Q+WUoaitIzzy4V1qDt/30e3OfLoqhuKMX3uQN2VKutL3L1BxyMfiaCUN1iZr8Vo8GUw0lVgWSTSRRkQUgYvkicz1f/Bvas7aMI20XAHajbzmU=
+---
+
 # M1-S1-D 替代清单与结清记录（插件去 core/physics 依赖）
 
 - 立项：2026-11-16（M1-S1 收尾，当时判定「本轮不还」）
@@ -66,3 +77,28 @@
 ## 7. 判据留档
 
 删掉 `Cargo.toml` 里 `r3e-core` / `r3e-physics` 两行后 `cargo build -p r3e-plugin` 与 `cargo test -p r3e-plugin` 全绿，`cargo xtask dep-check --strict` 违规 0、债务 2——「能力没丢」由 四条 RPC 的宿主用例（`r3e-editor-host/src/inspect/` 内 AIR / 快照 / 模拟用例）与插件 6 个薄壳用例共同兜住。
+
+## 8. 能力名裁决（2026-11-19，闭合 S1-D 最后一项）
+
+**裁决对象**：`scene.write` / `doc.transaction` 两个能力名与 ai_ide 宿主的对齐。
+
+**结论**：两个名字从 r3e 侧**撤销**。不是"对方还没认领"，而是 ai_ide v1.0 的能力模型里没有这两个槽位。
+
+实证（2026-11-19 直接读 `D:\ai_ide` 源码）：
+
+| 事实 | 证据 |
+|---|---|
+| 能力表封闭 7 项：`fs.read` / `fs.write` / `search` / `workspace.info` / `progress` / `net.fetch` / `llm.chat` | `crates/plugin/src/manifest.rs:63-71` `ALLOWED_CAPABILITIES` |
+| 表外能力**直接拒载** | `manifest.rs:549`「未知能力 {cap}；host 只提供 {}」 |
+| 能力名是闸门键，运行期由 `capability_of(method)` 唯一映射，无方法即无落点 | `crates/core/src/plugin_host.rs:122`；`host_api.rs` 无任何 scene / doc 方法 |
+| 立表意图：未知能力无法被闸门覆盖，比拒载更危险 | `manifest.rs:105` 注释 |
+
+推论：即便把两个名字硬加进白名单，也没有对应方法可挂闸门——授权页会多出两个勾了不管用的死能力名，正好违背立表初衷。
+
+**替代承载**：写侧授权按 ai_ide 既有口径走 `risk: "write"` + `path_field`（逐文件审批，`scope_key` = 规范化路径）+ 能力 `fs.write`。`r3e-plugin` 当前 5 个工具全 `risk=read`、能力 `["fs.read"]`，写侧工具属 M2，届时只加 `fs.write`，不加业务语义名。
+
+**迁移口**：若 ai_ide 后续提供通用批量事务原语（提案中的 `host/tx.run` + 能力 `tx.run`），本仓只需把写侧能力声明换成 `tx.run`，插件代码不动——引擎侧的 `tx.*` 本就是协议面方法，与宿主能力无关。
+
+**提案留档**：`docs/M2_PROPOSAL_CAPABILITY_SLOTS.md`（三种形态 + 契约草案 + 验收判据 + 触发条件）。
+
+*（内容由AI生成，仅供参考）*
