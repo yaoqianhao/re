@@ -228,19 +228,40 @@ pub enum Cmd {
 ///
 /// `rpc` 一律拒绝它们：绕过事务直接改场景，改动既不进撤销栈也不进版本记账，
 /// 编辑器里看到的是一个「撤销不回去」的世界。要改场景就走 `tx intent`。
+///
+/// 表里混着两类名字，来源各不相同，都在引擎侧有据可查：
+///
+/// - **`tx apply` 的 op**：`r3e-editor-host/src/api/tx.rs` 的 `Intent::parse`
+///   （`scene.spawn` / `scene.settransform` / `scene.setvisible` /
+///   `light.remove` / `ui.remove` / `scene.material.upsert`）；
+/// - **`tx intent` 的高层意图**：同文件的 `IntentPlan::parse` 与 `INTENTS`
+///   （`scene.spawn_prefab` / `scene.place_light` / `scene.paint_terrain`）。
+///   这三个名字**不在** `RPC_METHODS` 里——它们只被 `tx intent` 接受，
+///   所以「不在方法表」不是写错名字，别拿方法表统一校验（`tx_only_methods_exist`
+///   单测因此把两类来源分开核对）。
+///
+/// 另有一条只有 `tx apply` 认、但本身也是协议方法的：`scene.remove`
+/// （协议里可 rpc 直调，事务侧没有对应 op，`rpc` 放行等于给一条
+/// 「删了就撤不回来」的旁路，比改属性更狠）。
 const TX_ONLY_METHODS: &[&str] = &[
     "scene.spawn",
     "scene.settransform",
     "scene.setvisible",
-    "scene.spawn_prefab",
-    "scene.place_light",
-    "scene.paint_terrain",
     "scene.material.upsert",
-    // 删除节点同样改场景，而且事务白名单里根本没有它——`rpc` 放行等于给人一条
-    // 「删了就撤不回来」的旁路，比改属性更狠。
     "scene.remove",
     "light.remove",
     "ui.remove",
+];
+
+/// 只被 `tx intent` 接受的高层意图名（不在 [`RPC_METHODS`] 里）。
+///
+/// `rpc scene.spawn_prefab` 若不拦，会先撞「未知方法 -32601」——那个提示会把人
+/// 引去查拼写，而正确答案是「这批名字只能走 `tx intent`」。所以单独一张表配
+/// 单独的提示语。
+const TX_ONLY_INTENTS: &[&str] = &[
+    "scene.spawn_prefab",
+    "scene.place_light",
+    "scene.paint_terrain",
 ];
 
 /// 解析结果。
@@ -624,9 +645,14 @@ fn parse_rpc(
             "`{method}` 属于事务通道，请用 `tx begin` / `tx apply` / `tx commit`（`rpc` 不记事务状态）"
         )));
     }
+    if TX_ONLY_INTENTS.contains(&method.as_str()) {
+        return Err(ParseError::new(format!(
+            "`{method}` 是高层意图（一批命令 = 一格撤销），只被 `tx intent` 接受：`tx intent {method} --args ...`；`rpc` 直调连方法表都过不去（引擎回 -32601）"
+        )));
+    }
     if TX_ONLY_METHODS.contains(&method.as_str()) {
         return Err(ParseError::new(format!(
-            "`{method}` 会改场景，只允许走事务：`tx intent {method} --args ...` 才能进撤销栈；用 `rpc` 直调会留下撤销不回去的改动"
+            "`{method}` 会改场景，只允许走事务：`tx apply {method} --args ...`（或 `tx intent` 包一层）才能进撤销栈；用 `rpc` 直调会留下撤销不回去的改动"
         )));
     }
 

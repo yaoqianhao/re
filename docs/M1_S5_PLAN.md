@@ -65,8 +65,9 @@ S5 的难点不在「写个命令行」，而在三处**口径冲突**，不先�
 | **S5-A-3** | 门禁与台账联动：workspace `members` + `[workspace.dependencies]`、`xtask/dep_rules.json` 登记 `r3e-cli`（`allow: ["r3e-protocol"]`）、`xtask/tests_baseline.json` 加 `r3e-cli` 条目并上调 `total` | `Cargo.toml`、`xtask/*.json` | 并入 A-2 提交 |
 | **S5-B** | 三范式脚本（**可复制粘贴、无 jq、无 shell 变量**）：`docs/norms/norm1_build.md` / `norm2_verify.md` / `norm3_rollback_retry.md`，每份是可整段粘进终端的命令序列 + 期望输出片段 | `docs/norms/*.md` | 1 提交 |
 | **S5-C** | Gate 1 演练：按三范式实跑一遍，记录时间戳 / 命令 / 输出 / 结论，写进 `AI_ROADMAP` §八 验收表新增 Gate 1 行 + 本文件 §8 | `docs/AI_ROADMAP.md`、`docs/M1_S5_PLAN.md` | 1 提交 |
+| **S5-A-4**（演练补入） | `r3e-cli rpc <method> [--args '<json>']`：工具通道，直调任意协议方法但**一律拒绝改场景的那批**（`TX_ONLY_METHODS`）与 `tx.*`。缺口来自 §10 的 E20：`physics.bind` / `nav.bake` 没有任何 CLI 入口，`verify` 的物理/导航层恒落 `unchecked`、退出码恒为 1 | `crates/r3e-cli/src/cmd/rpc.rs`（新增）、`args.rs`、`xtask/tests_baseline.json` | 1 提交 |
 
-合计预估 **4 提交**（A-1 / A-2+A-3 / B / C），全程不 push。
+合计预估 **5 提交**（A-1 / A-2+A-3 / A-4 / B / C），全程不 push。
 
 ---
 
@@ -201,4 +202,18 @@ r3e-cli verify --token dev
 - **S1-D 还债**：本 Sprint 之后 `r3e-cli` 与 `r3e-plugin` 共用 protocol 的 `client` 模块，plugin 的 `rpc.rs` 可整体删除 → plugin 的 `→ core` 债务里「自己造客户端」这条自然消解；plugin 的 `physics_simulate` 是否转 `r3e-cli --features rapier` 仍按 D5 留到那时再裁。
 - **M1-DOC-FIELDS**（顺延 M2）：CLI 的 `--json` 输出字段即 AI 的稳定接口面，M2 做字段文档时以 CLI 子命令为单位生成。
 - **M1-ASSET-0**（未决）：与本 Sprint 无耦合。
+
+---
+
+## 10. 实测修正（开工后由 §1 的假设 vs 真机行为得出）
+
+§1 的 E1–E17 是**读源码**得出的；以下四条是**起真引擎跑出来**才暴露的差异。每条都改变了 CLI 交付物或文档写法，故回填进计划（对应 §2 的 S5-A-4）。
+
+| # | 原假设 | 实测 | 影响 |
+|---|---|---|---|
+| **E18** | 起点命令是 `r3e-app --rpc-port 8787 --rpc-token dev --enable-physics`（§4 原写法） | 二进制名是 **`r3e.exe`**（`r3e-app` 只是 crate 名），物理开关是 **`--physics on`**，另有第三个位置参数是场景脚本 | §4 的起法两行 + 三范式文档全部按真名真参改写 |
+| **E19** | 场景脚本随便给一个空脚本即可 | 非静默脚本每帧写 `scene.time` / `scene.frame`，`stateHash` 每帧漂移 → `tx.begin` 拿到的 `baseHash` 一提交就过期，`tx.commit` 回 `TX_CONFLICT`（-32013） | CLI **无法**用"基哈希校验"兜住这个（那是引擎运行态语义）；文档必须写明「跑事务/体检时给静默脚本」，并把这条归到 §7 风险表 |
+| **E20** | `verify` 直接读已提交场景即可给出 `passed` | `passed` 的定义含「`unchecked` 为空」，而物理层在 `physics.bind` 前、导航层在 `nav.bake` 前都是 `unchecked` → **不调这两步，退出码恒为 1，且不是场景有问题**。原 §3.2 的四个子命令里没有任何入口能喊动这两步 | 新增 `rpc` 工具通道（S5-A-4） |
+| **E21** | 出生点可由 CLI 写入 | 宿主没有写 `spawns` 的协议方法（命令表 388 条里没有），出生点只能写在**场景文件**的 `spawns` 字段里；不给出生点则导航层记 `unchecked`，给错位置则 `nav.spawn_offmesh` | 三范式文档的场景前置必须**自带 `spawns`**；「CLI 无法新增出生点」登记为 M2 缺口，不在 S5 扩协议 |
+
 *（内容由AI生成，仅供参考）*

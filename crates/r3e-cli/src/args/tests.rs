@@ -351,13 +351,60 @@ fn rpc_rejects_scene_writes() {
     // 绕过事务改场景 = 撤销栈里没有这一格，这是 M1-S1 要消灭的形态。
     for method in [
         "scene.spawn",
-        "scene.spawn_prefab",
+        "scene.settransform",
+        "scene.setvisible",
         "scene.material.upsert",
         "scene.remove",
+        "light.remove",
+        "ui.remove",
     ] {
         let msg = expect_err(&format!("rpc {method}"));
         assert!(msg.contains("只允许走事务"), "{method}: {msg}");
         assert!(msg.contains("tx intent"), "要指回事务通道：{msg}");
+    }
+}
+
+#[test]
+fn rpc_rejects_intent_names() {
+    // 这三个名字只在 `tx intent` 的表里，`rpc` 撞上去本该得 -32601「未知方法」，
+    // 那句提示会把人引去查拼写。CLI 提前拦住，直接说清它们是高层意图。
+    for intent in TX_ONLY_INTENTS {
+        let msg = expect_err(&format!("rpc {intent}"));
+        assert!(msg.contains("只被 `tx intent` 接受"), "{intent}: {msg}");
+    }
+}
+
+#[test]
+fn tx_only_tables_are_consistent() {
+    // 两张表的口径不同，混起来就会给出误导提示：
+    // - `TX_ONLY_METHODS` 是 `rpc` 拦下的名字，其中 `scene.setvisible` 只被
+    //   `tx apply` 的 `Intent::parse` 认，协议方法表里没有它；
+    // - `TX_ONLY_INTENTS` 是只被 `tx intent` 接受的高层意图名，**不该**出现在
+    //   方法表里（一旦升格成真方法，提示语得跟着改）。
+    // 另外：拼错一个字母（`scene.settransfrom`）不会让任何测试变红，
+    // 只会让护栏静默漏风，所以名字要对着方法表核。
+    use r3e_protocol::client::is_known_method;
+    for name in TX_ONLY_INTENTS {
+        assert!(
+            !is_known_method(name),
+            "`{name}` 已是协议方法，别再按「只被 tx intent 接受」解释"
+        );
+    }
+    for name in TX_ONLY_METHODS {
+        if *name == "scene.setvisible" {
+            // 事务专属 op：`tx apply scene.setvisible` 认，`rpc` 只能拒。
+            continue;
+        }
+        assert!(
+            is_known_method(name),
+            "`{name}` 不在协议方法表内：护栏列了一个不存在的口子，等于漏风"
+        );
+    }
+    for name in TX_ONLY_METHODS {
+        assert!(
+            !TX_ONLY_INTENTS.contains(name),
+            "`{name}` 同时在方法表和意图表里，提示语会二义"
+        );
     }
 }
 
