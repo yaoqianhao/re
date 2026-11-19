@@ -13,9 +13,10 @@ use serde_json::{json, Value};
 
 use crate::protocol;
 
-/// `host/fs.read`。
-pub const FS_READ_METHOD: &str = "host/fs.read";
 /// `host/workspace.info`（归 `fs.read` 能力）。
+///
+/// M1-S1-D 起插件不再反调 `host/fs.read`：场景文件由引擎读（`scene.*` 的 `path` 参数）。
+/// 这条能力声明保留，是因为 `host/workspace.info` 也挂在它下面。
 pub const WORKSPACE_INFO_METHOD: &str = "host/workspace.info";
 
 /// 宿主允许的单次工具调用内宿主调用次数（docs/14 §8.4）。
@@ -46,14 +47,6 @@ impl std::fmt::Display for HostError {
             Self::Transport(message) => write!(f, "宿主通道不可用：{message}"),
             Self::Quota => write!(f, "本次工具调用内的宿主调用次数已达上限 {QUOTA_PER_CALL}"),
         }
-    }
-}
-
-impl HostError {
-    /// 供工具层区分「宿主没授权 / 越界」与「管道炸了」：前者可以降级返回提示，
-    /// 后者应当让整次工具调用失败（继续算也没有意义）。
-    pub fn is_remote(&self) -> bool {
-        matches!(self, Self::Remote { .. })
     }
 }
 
@@ -146,37 +139,6 @@ impl HostClient {
         }
     }
 
-    /// 读一个工作区相对路径的文本文件。
-    ///
-    /// 宿主 `fs.read` 默认只给 64 KB，`truncated` 为真时**必须**报错：
-    /// 截断的 JSON 交给 `serde_json` 只会得到一句莫名其妙的「EOF while parsing」。
-    pub fn fs_read<T: Transport>(
-        &mut self,
-        transport: &mut T,
-        path: &str,
-        max_bytes: Option<u64>,
-    ) -> Result<String, HostError> {
-        let mut params = json!({ "path": path });
-        if let Some(max_bytes) = max_bytes {
-            params["maxBytes"] = json!(max_bytes);
-        }
-        let reply = self.call(transport, FS_READ_METHOD, params)?;
-        if reply.get("truncated").and_then(Value::as_bool) == Some(true) {
-            let bytes = reply.get("bytes").and_then(Value::as_u64).unwrap_or(0);
-            return Err(HostError::Remote {
-                code: 6107,
-                message: format!(
-                    "场景文件被截断（仅读到 {bytes} 字节，宿主默认上限 64 KB）。请改用 scene 参数直接传内容，或拆分场景"
-                ),
-            });
-        }
-        reply
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| HostError::Transport("host/fs.read 回包缺少 content 字段".to_string()))
-    }
-
     /// 取当前工作区信息（未打开工作区时宿主回 `null`）。
     pub fn workspace_info<T: Transport>(&mut self, transport: &mut T) -> Result<Value, HostError> {
         self.call(transport, WORKSPACE_INFO_METHOD, json!({}))
@@ -212,36 +174,6 @@ mod tests {
         fn recv(&mut self) -> Result<Option<Value>, String> {
             Ok(self.script.pop_front())
         }
-    }
-
-    #[test]
-    fn fs_read_returns_content() {
-        let mut host = FakeHost::new(vec![json!({
-            "jsonrpc": "2.0",
-            "id": "r3e-1",
-            "result": { "path": "a.json", "content": "{}", "bytes": 2, "truncated": false }
-        })]);
-        let mut client = HostClient::new();
-        client.begin_call();
-        let text = client.fs_read(&mut host, "a.json", None).expect("读到内容");
-        assert_eq!(text, "{}");
-        assert_eq!(host.sent[0]["method"], json!(FS_READ_METHOD));
-        assert_eq!(host.sent[0]["params"]["path"], json!("a.json"));
-    }
-
-    #[test]
-    fn truncated_read_is_an_error() {
-        let mut host = FakeHost::new(vec![json!({
-            "jsonrpc": "2.0",
-            "id": "r3e-1",
-            "result": { "path": "a.json", "content": "{", "bytes": 65536, "truncated": true }
-        })]);
-        let mut client = HostClient::new();
-        client.begin_call();
-        let error = client
-            .fs_read(&mut host, "a.json", None)
-            .expect_err("必须报错");
-        assert!(matches!(error, HostError::Remote { .. }));
     }
 
     #[test]

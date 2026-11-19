@@ -2388,8 +2388,6 @@ dependencies = [
 name = "r3e-plugin"
 version = "0.1.0"
 dependencies = [
- "r3e-core",
- "r3e-physics",
  "serde",
  "serde_json",
 ]

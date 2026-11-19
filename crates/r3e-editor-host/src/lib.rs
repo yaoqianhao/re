@@ -10,6 +10,7 @@
 
 pub mod api;
 pub mod host;
+pub mod inspect;
 pub mod verify;
 
 pub use api::LocalEngineApi;

@@ -7,15 +7,19 @@
 //! 自检覆盖：
 //!
 //! 1. 握手：`pluginApi.major == 1`，且工具集与清单完全一致（宿主 `verify()` 的硬条件）；
-//! 2. 只读工具各跑一次，检查返回结构的关键字段；
-//! 3. 校验定位（P0-2）：资产节点那条「未校验」的账必须带 `location`；
-//! 4. 写侧工具（P0-3）：无引擎时必须给出 -32602 / -32011 与补救提示；
-//! 5. 命令面板入口跑一次；
-//! 6. `plugin/shutdown` 后子进程必须以 0 退出（非 0 会被宿主记成崩溃）。
+//! 2. 自述：`engine_info` 的后端表齐全，且 `compute == "engine-rpc"`；
+//! 3. 薄壳（M1-S1-D）：四个只读计算工具在**没有引擎**时必须报 -32011，
+//!    而不是在插件进程里算出一份结果——插件已经不链 `r3e-core` / `r3e-physics`；
+//! 4. 参数前置：未知图元 / 未知物理后端要在**连引擎之前**就报 -32602；
+//! 5. 写侧工具（P0-3）：无引擎时必须给出 -32602 / -32011 与补救提示；
+//! 6. 命令面板入口跑一次；
+//! 7. `plugin/shutdown` 后子进程必须以 0 退出（非 0 会被宿主记成崩溃）。
 //!
-//! 自检进程同时扮演**最小宿主**：插件反向发来的 `host/workspace.info`、
-//! `host/fs.read` 由 [`Harness`] 就地应答。不这样做的话，`engine_diagnostics`
-//! 会在等 `host/workspace.info` 回包时永久卡住——这正是第一版自检真实的翻车方式。
+//! 自检进程同时扮演**最小宿主**：插件反向发来的 `host/workspace.info` 由
+//! [`Harness`] 就地应答。不这样做的话，`engine_diagnostics` 会在等
+//! `host/workspace.info` 回包时永久卡住——这正是第一版自检真实的翻车方式。
+//! 插件已不再反调 `host/fs.read`（读盘交给引擎），自检顺手断言这一点：
+//! 一次自检跑完，宿主侧不该收到任何 `host/fs.read` 请求。
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -40,22 +44,6 @@ const SMOKE_SCENE: &str = r#"{
         { "name": "floor", "mesh": "builtin:plane", "scale": [8, 1, 8], "physics": { "body": "static" } },
         { "name": "crate", "mesh": "builtin:cube", "position": [0, 3, 0], "physics": { "body": "dynamic", "mass": 1 } },
         { "name": "ball", "mesh": "builtin:sphere", "position": [0.8, 4, 0], "physics": { "body": "dynamic", "mass": 0.5 } }
-    ]
-}"#;
-
-/// 校验定位用的场景：一个外部资产节点（插件无资产管线，走 skipped 分支）
-/// 和一个内置节点（正常校验）。资产路径必须与 `assets[0].path` 完全一致，
-/// 否则定位层反查不出 `assetIndex`。
-const LOCATED_SCENE: &str = r#"{
-    "name": "locate-smoke",
-    "assets": [{ "path": "assets/robot.fbx" }],
-    "objects": [
-        {
-            "name": "hero",
-            "mesh": "asset:assets/robot.fbx#0",
-            "material": { "metallic": 0.2, "roughness": 0.6 }
-        },
-        { "name": "crate", "mesh": "builtin:cube" }
     ]
 }"#;
 
@@ -123,11 +111,11 @@ fn drive() -> Check {
         frames,
         child,
         next_id: 0,
+        host_methods: Vec::new(),
     };
 
     check_handshake(&mut harness)?;
     check_tools(&mut harness)?;
-    check_located_validation(&mut harness)?;
     check_write_tools(&mut harness)?;
     check_command(&mut harness)?;
 
@@ -209,8 +197,6 @@ fn check_handshake(harness: &mut Harness) -> Check {
 }
 
 fn check_tools(harness: &mut Harness) -> Check {
-    let scene = json!({ "scene": SMOKE_SCENE });
-
     let info = harness.invoke("engine_info", json!({}))?;
     if info["engine"]["name"] != json!("rust3d-engine") {
         return Err("engine_info 缺 engine.name".to_string());
@@ -218,129 +204,95 @@ fn check_tools(harness: &mut Harness) -> Check {
     if info["physics"]["backends"].as_array().map(Vec::len) != Some(3) {
         return Err("engine_info 应当列出 null / builtin / rapier 三个后端".to_string());
     }
-    eprintln!("[smoke] engine_info 通过");
-
-    let inspect = harness.invoke("scene_inspect", scene.clone())?;
-    if inspect["nodeCount"] != json!(3) {
+    // 插件不链物理 crate，后端**可用性**只有引擎知道：自述里不许出现断言。
+    for backend in info["physics"]["backends"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        if backend
+            .get("available")
+            .map(|value| !value.is_null())
+            .unwrap_or(false)
+        {
+            return Err(format!("插件不该断言后端可用性：{backend}"));
+        }
+    }
+    if info["plugin"]["compute"] != json!("engine-rpc") {
         return Err(format!(
-            "scene_inspect 应看到 3 个节点，实际 {}",
-            inspect["nodeCount"]
+            "只读计算必须全部在引擎侧做，自述却是 {}",
+            info["plugin"]["compute"]
         ));
     }
-    eprintln!("[smoke] scene_inspect 通过（3 个节点）");
+    eprintln!(
+        "[smoke] engine_info 通过（3 个后端名，compute={}）",
+        info["plugin"]["compute"]
+    );
 
-    let mesh = harness.invoke(
+    // 四个只读工具是**薄壳**：引擎不在时必须报 -32011。若哪天它们又能离线算出结果，
+    // 说明 core / physics 的依赖偷偷回来了，这条断言就是那道闸。
+    for tool in [
+        "scene_inspect",
         "mesh_stats",
-        json!({ "shape": "sphere", "segments": 12, "rings": 6 }),
+        "scene_validate",
+        "physics_simulate",
+    ] {
+        let offline = harness.invoke_err(
+            tool,
+            json!({ "scene": SMOKE_SCENE, "endpoint": { "port": 1 } }),
+        )?;
+        if offline["code"] != json!(-32011) {
+            return Err(format!(
+                "{tool} 在没有引擎时应当是 -32011（引擎侧计算），实际 {offline}"
+            ));
+        }
+        let message = offline["message"].as_str().unwrap_or_default();
+        if !message.contains("--rpc-port") {
+            return Err(format!("{tool} 连不上引擎时没告诉用户怎么修：{message}"));
+        }
+    }
+    eprintln!("[smoke] 四个只读工具都是引擎薄壳（无引擎即 -32011）");
+
+    // `path` 原样下发，插件自己不读盘：给 path 却连不上引擎时，同样只能报 -32011。
+    let by_path = harness.invoke_err(
+        "scene_inspect",
+        json!({ "path": "assets/smoke.r3e.json", "endpoint": { "port": 1 } }),
     )?;
-    if mesh["vertices"].as_u64().unwrap_or(0) == 0 {
-        return Err("mesh_stats 生成了空网格".to_string());
+    if by_path["code"] != json!(-32011) {
+        return Err(format!("path 应当原样交给引擎解析，实际 {by_path}"));
     }
-    if mesh["air"]["ok"] != json!(true) {
-        return Err(format!("内置球体不该有 AIR 问题：{}", mesh["air"]));
+    if harness
+        .host_methods
+        .iter()
+        .any(|method| method == "host/fs.read")
+    {
+        return Err(format!(
+            "插件已不持有读盘逻辑，却仍在反调 host/fs.read：{:?}",
+            harness.host_methods
+        ));
     }
-    eprintln!(
-        "[smoke] mesh_stats 通过（{} 顶点 / {} 三角）",
-        mesh["vertices"], mesh["triangles"]
-    );
+    eprintln!("[smoke] path 直通引擎，宿主未收到 host/fs.read");
 
-    let validation = harness.invoke("scene_validate", scene.clone())?;
-    if validation["ok"] != json!(true) {
-        return Err(format!("示例场景应当校验通过：{validation}"));
-    }
-    eprintln!("[smoke] scene_validate 通过");
-
-    // 走 path 分支：验证「插件 → host/fs.read → 宿主给内容」这条反向调用链
-    let from_file = harness.invoke("scene_inspect", json!({ "path": "assets/smoke.r3e.json" }))?;
-    if from_file["nodeCount"] != json!(3) {
+    // 参数前置仍然在插件侧：形状名 / 后端名写错时不必连引擎就能报错。
+    let bad_shape = harness.invoke_err(
+        "mesh_stats",
+        json!({ "shape": "teapot", "endpoint": { "port": 1 } }),
+    )?;
+    if bad_shape["code"] != json!(-32602) {
         return Err(format!(
-            "经 host/fs.read 读到的场景应有 3 个节点，实际 {}",
-            from_file["nodeCount"]
+            "未知图元必须报 -32602 参数错（连接之前拦下），实际 {bad_shape}"
         ));
     }
-    eprintln!("[smoke] host/fs.read 通路通过");
-
-    let simulation = harness.invoke("physics_simulate", scene)?;
-    if simulation["ok"] != json!(true) {
-        return Err("physics_simulate 未返回 ok".to_string());
-    }
-    if simulation["bodyCount"] != json!(3) {
+    let bad_backend = harness.invoke_err(
+        "physics_simulate",
+        json!({ "scene": SMOKE_SCENE, "backend": "bullet", "endpoint": { "port": 1 } }),
+    )?;
+    if bad_backend["code"] != json!(-32602) {
         return Err(format!(
-            "physics_simulate 应当登记 3 个刚体，实际 {}",
-            simulation["bodyCount"]
+            "未知物理后端必须报 -32602（连接之前拦下），实际 {bad_backend}"
         ));
     }
-    let dropped = simulation["maxDisplacement"].as_f64().unwrap_or(0.0) > 0.0;
-    if !dropped {
-        return Err("动态刚体没有位移，重力/步进可能没生效".to_string());
-    }
-    eprintln!(
-        "[smoke] physics_simulate 通过（后端 {}，最大位移 {}）",
-        simulation["backend"], simulation["maxDisplacement"]
-    );
-    Ok(())
-}
-
-/// P0-2：校验结果必须是**可定位**的，不能只有一句人话。
-///
-/// 用「一个外部资产节点 + 一个内置节点」的场景来验：资产节点走 skipped 分支，
-/// 那条账必须带上 `location`（节点 id/名字/objects 下标、字段路径、资产路径、
-/// 材质上下文），模型才能照着 `$.objects[0].mesh` 去改文件。
-fn check_located_validation(harness: &mut Harness) -> Check {
-    let reply = harness.invoke("scene_validate", json!({ "scene": LOCATED_SCENE }))?;
-
-    if reply["unvalidatedCount"] != json!(1) {
-        return Err(format!(
-            "资产节点应当留 1 条「未校验」的账，实际 {}",
-            reply["unvalidatedCount"]
-        ));
-    }
-    let entry = &reply["unvalidated"][0];
-    let location = &entry["location"];
-
-    let path = location["path"].as_str().unwrap_or_default();
-    if path != "$.objects[0].mesh" {
-        return Err(format!(
-            "定位路径应当是 `$.objects[0].mesh`，实际 `{path}`（模型按它改文件）"
-        ));
-    }
-    if location["node"]["name"] != json!("hero") {
-        return Err(format!("定位里节点名不对：{}", location["node"]));
-    }
-    if location["node"]["objectIndex"] != json!(0) {
-        return Err(format!(
-            "objectIndex 必须与 objects 下标对齐：{}",
-            location["node"]
-        ));
-    }
-    if location["node"]["id"].is_null() {
-        return Err("定位里缺 node.id：写工具按 id 回查时无从下手".to_string());
-    }
-    if location["field"] != json!("mesh") {
-        return Err(format!("field 应当是 mesh，实际 {}", location["field"]));
-    }
-    if location["resource"]["assetPath"] != json!("assets/robot.fbx") {
-        return Err(format!(
-            "资源定位应当回填场景里写的资产路径，实际 {}",
-            location["resource"]
-        ));
-    }
-    if location["resource"]["meshIndex"] != json!(0) {
-        return Err(format!("资产内网格序号丢了：{}", location["resource"]));
-    }
-    if location["material"]["metallic"] != json!(0.2) {
-        return Err(format!(
-            "材质上下文没带出来（改材质时要用）：{}",
-            location["material"]
-        ));
-    }
-    if !location["anchors"]["vertex"].is_null() {
-        return Err(format!(
-            "未校验条目没有网格数据，不该编造顶点锚点：{}",
-            location["anchors"]
-        ));
-    }
-    eprintln!("[smoke] scene_validate 定位通过（path={path}，assetPath=assets/robot.fbx）");
+    eprintln!("[smoke] 参数前置通过（未知图元 / 未知后端 → -32602）");
     Ok(())
 }
 
@@ -419,6 +371,8 @@ struct Harness {
     frames: Receiver<Value>,
     child: Child,
     next_id: u64,
+    /// 插件反向调过来的宿主方法名，用来断言「插件不再读盘」。
+    host_methods: Vec<String>,
 }
 
 impl Harness {
@@ -477,23 +431,17 @@ impl Harness {
         }
     }
 
-    /// 最小宿主能力面：只实现本插件真正会用的两个方法。
+    /// 最小宿主能力面：只实现本插件真正会用的那个方法。
     fn answer_host(&mut self, method: &str, frame: &Value) -> Result<(), String> {
+        self.host_methods.push(method.to_string());
         let Some(id) = protocol::id_of(frame) else {
             return Ok(()); // 通知无需回包
         };
         let reply = match method {
             // 真实宿主在没打开工作区时回 null，这里照抄这个口径
             "host/workspace.info" => protocol::result_frame(id, Value::Null),
-            // fs.read 直接吐自检场景，用来验证「path 走宿主读文件」这条支路
-            "host/fs.read" => protocol::result_frame(
-                id,
-                json!({
-                    "content": SMOKE_SCENE,
-                    "bytes": SMOKE_SCENE.len(),
-                    "truncated": false,
-                }),
-            ),
+            // 读盘已交给引擎：`host/fs.read` 不该再出现，真来了就按「不提供」回，
+            // 让自检里那条 host_methods 断言有机会抓到它。
             other => protocol::error_frame(id, -32601, format!("自检宿主不提供 {other}")),
         };
         protocol::write_frame(&mut self.writer, &reply)

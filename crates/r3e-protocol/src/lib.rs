@@ -21,21 +21,24 @@
 //! | `msg.rs` | `Request` / `Response` / `RpcError` / `RpcFailure` / 元信息 DTO |
 //! | `client.rs` | 引擎 RPC 客户端（M1-S5：TCP + NDJSON 长连接、令牌注入、方法名校验） |
 //! | `patch.rs` | 14 个 `*Patch`（只给要改的字段，其余保持原值） |
-//! | `api.rs` | `trait EngineApi`（52 方法，全部在主线程调用） |
+//! | `api.rs` | `trait EngineApi`（62 方法，全部在主线程调用） |
 //! | `dispatch/mod.rs` | 派发骨架 + 参数解码 + 元命令（`ping` / `engine.*` / `script.*` / `capture.*`） |
 //! | `dispatch/tx.rs` | `tx.*` 事务臂（M1-S1：begin / apply / preview / commit / rollback） |
 //! | `dispatch/scene.rs` | `scene.*` / `anim.*` 臂 |
 //! | `dispatch/physics.rs` | `physics.*` 查询臂（M1-S4-D：raycast / overlap / cast） |
 //! | `dispatch/nav.rs` | `nav.*` 臂（M1-S4-D：bake / path / reachability） |
-//! | `dispatch/media.rs` | `ui.*` / `light.*` / `audio.*` 臂 + 未知方法 |
+//! | `dispatch/inspect.rs` | 只读检视臂 + 未知方法（M1-S1-D：snapshot / mesh.stats / validate / simulate） |
+//! | `dispatch/media.rs` | `ui.*` / `light.*` / `audio.*` 臂 |
 //! | `probe.rs` | `physics.*` 参数 DTO（形状收敛，不含引擎类型） |
 //! | `nav.rs` | `nav.*` 参数 DTO（`NavConfig` 字段平铺成 `Option`） |
+//! | `inspect.rs` | 只读检视参数 DTO（M1-S1-D：场景来源 / 网格形状 / 模拟参数） |
 //! | `material.rs` | `scene.material.upsert` 参数 DTO（整行声明，不是补丁） |
 
 pub mod api;
 pub mod caps;
 pub mod client;
 pub mod dispatch;
+pub mod inspect;
 pub mod material;
 pub mod msg;
 pub mod nav;
@@ -47,6 +50,7 @@ pub mod verify;
 pub use self::client::*;
 pub use self::dispatch::{canonical_method, dispatch};
 pub use api::EngineApi;
+pub use inspect::*;
 pub use material::*;
 pub use msg::*;
 pub use nav::*;
@@ -59,12 +63,12 @@ pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// 对外 RPC 能力方法表（57 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+/// 对外 RPC 能力方法表（62 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
 ///
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「57 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「62 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
@@ -102,6 +106,14 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 幂等靠后端句柄表（连调两次第二次全是 `reused`）。
 /// 同样不新增脚本函数，登记在 `cmd_spec` 的 `Meta` 域。
 ///
+/// M1-S1-D 增 4 条（58 → 62）：把插件的四项**离线只读工具**搬到引擎侧，
+/// 好让 `r3e-plugin` 摘掉 core / physics 依赖（还 `dep_debt` 前两条）：
+/// `scene.snapshot`（结构快照）、`mesh.stats`（程序化网格计数 + AIR）、
+/// `scene.validate`（逐节点网格体检，带结构化定位）、
+/// `physics.simulate`（临时世界跑一段，回报位移与事件）。
+/// 四条全部**只读场景**——`physics.simulate` 在宿主侧另建世界跑，算完只回位移，
+/// `Node` 一个字段都不改；所以同样不新增脚本函数，落在 `cmd_spec` 的 `Meta` 域。
+///
 /// 命名铁律：本表里的名字必须是 `dispatch::canonical_method()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
@@ -122,6 +134,7 @@ pub const RPC_METHODS: &[&str] = &[
     "light.remove",
     "light.set",
     "light.setenabled",
+    "mesh.stats",
     "nav.bake",
     "nav.path",
     "nav.reachability",
@@ -129,6 +142,7 @@ pub const RPC_METHODS: &[&str] = &[
     "physics.cast",
     "physics.overlap",
     "physics.raycast",
+    "physics.simulate",
     "query.describe",
     "query.find",
     "query.stats",
@@ -150,9 +164,11 @@ pub const RPC_METHODS: &[&str] = &[
     "scene.setssao",
     "scene.settransform",
     "scene.shadow",
+    "scene.snapshot",
     "scene.spawn",
     "scene.stack",
     "scene.switch",
+    "scene.validate",
     "scene.verify",
     "script.eval",
     "script.reload",

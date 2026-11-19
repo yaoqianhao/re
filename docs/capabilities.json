@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 388,
-    "rpc": 58,
+    "commands": 392,
+    "rpc": 62,
     "script_only": 330,
     "domains": 17,
     "invariants": 38
@@ -1872,6 +1872,16 @@
       "since": "M0-backfill"
     },
     {
+      "name": "mesh.stats",
+      "domain": "meta",
+      "rpc": "mesh.stats",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S1-D"
+    },
+    {
       "name": "morph_active",
       "domain": "anim",
       "rpc": null,
@@ -2326,6 +2336,16 @@
       "reversible": true,
       "cost": "linear",
       "since": "M1-S4-D"
+    },
+    {
+      "name": "physics.simulate",
+      "domain": "meta",
+      "rpc": "physics.simulate",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M1-S1-D"
     },
     {
       "name": "physics_backend",
@@ -2822,6 +2842,16 @@
       "since": "M0-backfill"
     },
     {
+      "name": "scene.snapshot",
+      "domain": "meta",
+      "rpc": "scene.snapshot",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M1-S1-D"
+    },
+    {
       "name": "scene.stack",
       "domain": "meta",
       "rpc": "scene.stack",
@@ -2830,6 +2860,16 @@
       "reversible": true,
       "cost": "cheap",
       "since": "M0-backfill"
+    },
+    {
+      "name": "scene.validate",
+      "domain": "meta",
+      "rpc": "scene.validate",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M1-S1-D"
     },
     {
       "name": "scene.verify",

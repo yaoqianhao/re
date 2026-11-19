@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_30f1d23de3be11f18c5752540024e231
+    ReservedCode1: cXx/tmCJoPSs6wVLSlrh3lh6rbcsgKPM2zipK5akbPQ+2GmIUwb07nZlHX0d8Jh17vwrxiFFvQ+l3vc4wt3OOAd+N1jCueCoSxtbRmaowtoval3vuKx6pKXukW81I8HBKXZhiMi/aBIv+Du7nGPfxeTK76zNeULgOOTSWn+OvlDSRsGC3TYH4I8aEoE=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_30f1d23de3be11f18c5752540024e231
+    ReservedCode2: cXx/tmCJoPSs6wVLSlrh3lh6rbcsgKPM2zipK5akbPQ+2GmIUwb07nZlHX0d8Jh17vwrxiFFvQ+l3vc4wt3OOAd+N1jCueCoSxtbRmaowtoval3vuKx6pKXukW81I8HBKXZhiMi/aBIv+Du7nGPfxeTK76zNeULgOOTSWn+OvlDSRsGC3TYH4I8aEoE=
+---
+
 # 范式 3：失败回滚重试到成功（Gate 1 主剧本）
 
 > **验证目标**：AI **不改引擎代码、只靠协议闭环**完成「生成 → 失败 → 读懂 → 修正 → 成功」。
@@ -152,3 +163,4 @@ EXIT=0
 | `tx begin` 报 `TX_CONFLICT` | 引擎里跑了非静默脚本，`baseHash` 漂移 | 换 `silent.rhai` 重起 |
 | `tx apply scene.settransform` 回 `-32012` | `node` 名字写错（要写成场景里的 `name`，不是数字 id） | 先 `query describe <name>` 确认存在 |
 | 用 `tx rollback` 想撤已提交的改动 | `rollback` 只清暂存区 | 开新事务改回去，或交给撤销栈（一次 `undo` 退一格意图） |
+*（内容由AI生成，仅供参考）*

@@ -25,6 +25,9 @@ const QUERY_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/query.rs")
 const PHYSICS_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/physics.rs");
 /// 导航三条（M1-S4-D）：`physics.rs` 命中不到时转过来的第二段。
 const NAV_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/nav.rs");
+/// 检视四条（M1-S1-D）：`scene.snapshot` / `mesh.stats` / `scene.validate` /
+/// `physics.simulate`，兜底链的最后一环。
+const INSPECT_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/inspect.rs");
 
 /// 扫某个 `dispatch*` 函数里 `match` 的分支键（只认恰好 8 空格缩进的分支头，
 /// 嵌套 `match` 里的分支缩进更深，不会被误收）。
@@ -68,6 +71,7 @@ fn dispatch_keys() -> Vec<&'static str> {
     out.extend(scan_branches(QUERY_SRC, "fn dispatch_query("));
     out.extend(scan_branches(PHYSICS_SRC, "fn dispatch_physics("));
     out.extend(scan_branches(NAV_SRC, "fn dispatch_nav("));
+    out.extend(scan_branches(INSPECT_SRC, "fn dispatch_inspect("));
     out
 }
 
@@ -92,8 +96,9 @@ fn quoted_parts(s: &str) -> Vec<&str> {
 fn dispatch的每个点分方法都在命令表里() {
     let keys = dispatch_keys();
     assert!(
-        keys.len() >= 58,
-        "只扫到 {} 个分支，扫描逻辑可能失效（期望 58 个即：39 基础 + 5 事务 + 3 查询 + 1 意图 + 8 物理导航材质 + 1 体检 + 1 装配）",
+        keys.len() >= 62,
+        "只扫到 {} 个分支，扫描逻辑可能失效（期望 62 个即：39 基础 + 5 事务 + 3 查询 + 1 意图 \
+         + 8 物理导航材质 + 1 体检 + 1 装配 + 4 检视）",
         keys.len()
     );
 

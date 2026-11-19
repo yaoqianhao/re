@@ -26,7 +26,7 @@ use r3e_doc::ISSUE_CODES;
 use r3e_protocol::caps::{Capabilities, CommandCap, InvariantCap, Unsupported};
 use r3e_protocol::{PROTOCOL_VERSION, RPC_METHODS};
 
-/// 命令表应有条数（388 = 58 仅 RPC + 330 脚本独有）。
+/// 命令表应有条数（392 = 62 仅 RPC + 330 脚本独有）。
 ///
 /// 故意硬编码：加命令是**有意识**的动作，改完必须同时更新本常量与
 /// `docs/M0S5_PROTOCOL.md` §3 的 counts，避免「悄悄多一条没人知道」。
@@ -35,7 +35,9 @@ use r3e_protocol::{PROTOCOL_VERSION, RPC_METHODS};
 /// M1-S4-D：378 → 386（`physics.*` 三条 + `nav.*` 三条 + `scene.material.*` 两条纯 RPC）。
 /// M1-S4-F：386 → 387（`scene.verify` 一条纯 RPC）。
 /// M1-S4-H：387 → 388（`physics.bind` 一条纯 RPC）。
-const EXPECTED_COMMANDS: usize = 388;
+/// M1-S1-D：388 → 392（`scene.snapshot` / `mesh.stats` / `scene.validate` /
+/// `physics.simulate` 四条纯 RPC，插件离线工具搬上引擎）。
+const EXPECTED_COMMANDS: usize = 392;
 
 /// 能力域声明序（与 [`Domain`] 枚举序一致，也是清单 `domains` 数组的顺序）。
 const DOMAIN_ORDER: &[&str] = &[

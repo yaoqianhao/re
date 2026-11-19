@@ -42,9 +42,9 @@ cargo xtask verify          # 期望：exit=0，末尾出现回放哈希行
 # 2) 记录本次工作的起点数值（写进 Sprint 卡或提交信息）
 cargo xtask lint-size       # 期望：白名单外 0 文件
 cargo xtask check-tests     # 期望：#\[test\] 总数 == 基线快照
-cargo xtask dep-check       # 期望：0 违规 / 债务 4 条（limit=4）
+cargo xtask dep-check       # 期望：0 违规 / 债务 2 条（limit=2）
 cargo xtask gen-capabilities --check   # 期望：清单与代码一致
-cargo xtask invariants      # 期望：24 = 24 = 24
+cargo xtask invariants      # 期望：38 = 38 = 38
 ```
 
 `verify` 已包含上述全部子命令（九道门），**单独跑它们只为拿到可引用的数字**，判定仍以 `verify` 为准。

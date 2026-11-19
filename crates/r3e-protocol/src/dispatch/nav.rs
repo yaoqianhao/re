@@ -1,7 +1,7 @@
 //! `nav.*` 臂（M1-S4-D）：`bake` / `path` / `reachability`。
 //!
-//! 本组是兜底链的最后一环（`query` → `tx` → `scene` → `media` → `physics` → 本组），
-//! 命中不到就直接回 `METHOD_NOT_FOUND`。
+//! 本组在兜底链里排在 `physics` 之后、`inspect` 之前（`query` → `tx` → `scene`
+//! → `media` → `physics` → 本组 → `inspect`），命中不到就交给下一组。
 //!
 //! 参数只做形状校验：`NAV_*` 的缺省值（格边长、坡度、忽略标签表）全在 `r3e-nav`
 //! 的 `NavConfig::default()`，协议层不抄一份——理由见 [`crate::nav`]。
@@ -62,11 +62,7 @@ pub(super) fn dispatch_nav(
                 Err(f) => Response::fail(id, f),
             }
         }
-        other => Response::fail(
-            id,
-            RpcFailure::new(METHOD_NOT_FOUND, format!("未知方法 `{}`", raw))
-                .with_data(json!({ "normalized": other })),
-        ),
+        other => inspect::dispatch_inspect(api, id, params, other, raw),
     }
 }
 

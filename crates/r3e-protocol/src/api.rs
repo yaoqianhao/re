@@ -1,10 +1,11 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 57 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 62 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
 
 use serde_json::Value;
 
+use crate::inspect::{MeshStatsQuery, SimulateQuery, SnapshotQuery, ValidateQuery};
 use crate::material::MaterialUpsert;
 use crate::msg::{EngineInfo, NodeBrief, RpcFailure};
 use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
@@ -541,5 +542,81 @@ pub trait EngineApi {
     /// 能力缺失时**不回空表、也不报 `Error`**：那是「没检查」，落在 `unchecked` 里。
     fn scene_verify(&mut self, _query: VerifyQuery) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("scene.verify"))
+    }
+
+    /// 场景结构快照（M1-S1-D）：一份「这场景现在长什么样」的只读总览。
+    ///
+    /// 这条是插件 `scene_inspect` 的引擎侧承接方：插件原先在进程内遍历 `Scene`
+    /// 自己拼 12 个字段，于是必须依赖 `r3e-core`。搬到宿主后插件只剩转发。
+    ///
+    /// 回包契约：`{ "source": "path"|"scene", "path": String|null,
+    /// "nodeCount": usize, "listed": usize, "truncated": bool,
+    /// "nodes": [{ "id", "name", "objectIndex", "mesh", "visible", "position",
+    /// "rotation", "scale", "material", "body", "tags", "interactRadius" }...],
+    /// "environment": {...}, "postFx": {...}, "physics": {...},
+    /// "stateHash": String }`。
+    ///
+    /// `nodeCount` 是**真实节点总数**，`listed` 是截断后实际给出的条数——
+    /// 两者不等时 `truncated` 必须为真。用 `listed` 冒充总数会让 AI 以为
+    /// 「场景只有 100 个节点」（`maxNodes` 缺省就是 100）。
+    ///
+    /// `scene` / `path` 双源语义见 [`SnapshotQuery`]；两条都没给回参数错误。
+    fn scene_snapshot(&mut self, _query: SnapshotQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.snapshot"))
+    }
+
+    /// 程序化网格统计 + AIR 校验（M1-S1-D）。
+    ///
+    /// 承接插件 `mesh_stats`：那是插件里唯一既依赖 `r3e_core::procedural`
+    /// 又依赖 `r3e_core::air` 的工具。
+    ///
+    /// 回包契约：`{ "shape": String, "params": { ...生效后的形状参数... },
+    /// "vertices": usize, "triangles": usize, "indices": usize,
+    /// "aabb": { "min": [f32;3], "max": [f32;3] },
+    /// "ok": bool, "issues": [{ "kind": String, "detail": String,
+    /// "anchor": { "vertex": usize|null, "index": usize|null, "part": usize|null } }...],
+    /// "issueCount": usize }`。
+    ///
+    /// `params` 回的是**夹取之后**的参数：缺省值补了什么、`segments` 从 0 被夹到几，
+    /// 调用方要能看见，否则「我明明给了 0」会变成一份和预期不同的网格却查不出原因。
+    fn mesh_stats(&mut self, _query: MeshStatsQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("mesh.stats"))
+    }
+
+    /// 逐节点网格体检（M1-S1-D）：AIR 结论 + 结构化定位。
+    ///
+    /// 承接插件 `scene_validate` + `locate`。与 `scene.verify`（M1-S4-F，三层体检）
+    /// 的分工：这条只做**网格本身**的结构校验，回答「这份网格能不能用」；
+    /// `scene.verify` 回答「这个场景跑起来会不会出问题」。别拿一条顶另一条。
+    ///
+    /// 回包契约：`{ "source": String, "path": String|null, "nodeCount": usize,
+    /// "checked": usize, "ok": bool, "counts": { "error": usize, "warn": usize },
+    /// "issues": [{ "kind", "detail", "location": { "node": { "id", "name",
+    /// "objectIndex", "visible" }, "field", "path", "resource", "anchors",
+    /// "mesh", "material", "hint" } }...], "truncated": bool }`。
+    ///
+    /// 外部资产网格没有 AIR 结论（本进程没有资产管线）：它们是 `mesh-not-validated`
+    /// 而不是通过——`ok` 只统计真的验过的那些，别让「跳过」看起来像「合规」。
+    fn scene_validate(&mut self, _query: ValidateQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("scene.validate"))
+    }
+
+    /// 跑一段物理模拟（M1-S1-D）：在**临时世界**里步进，回报位移与事件。
+    ///
+    /// 承接插件 `physics_simulate`。这是四条里唯一会建物理世界的，但**仍然只读场景**：
+    /// 世界是宿主临时建的，步进完只回位移，`Node` / `Scene` 一个字段都不写回。
+    ///
+    /// 回包契约：`{ "backend": String, "steps": u32, "dt": f32,
+    /// "gravity": [f32;3], "ground": f32|null, "bodyCount": usize,
+    /// "listed": usize, "truncated": bool,
+    /// "bodies": [{ "node", "start": [f32;3], "end": [f32;3],
+    /// "delta": [f32;3], "moved": bool }...], "events": usize,
+    /// "summary": String }`。
+    ///
+    /// `backend` 回的是**真的用了哪个**：`rapier` 是可选 feature，没编进来就必须报
+    /// 参数错误（`unchecked` 不冒充通过同理），绝不能静默退回内置后端——
+    /// 「我要用 rapier 复现」变成「你其实用的是内置后端」，结论全错且无人察觉。
+    fn physics_simulate(&mut self, _query: SimulateQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("physics.simulate"))
     }
 }

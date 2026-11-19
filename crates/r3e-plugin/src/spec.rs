@@ -26,6 +26,9 @@ pub const TIMEOUT_MS: u64 = 60_000;
 /// 「插件能改磁盘」和「插件能让引擎改场景」是两件不同的事，不能混为一谈。
 pub const CAPABILITIES: &[&str] = &["fs.read"];
 
+// 注：`fs.read` 现在只被 `host/workspace.info` 用（命令面板要读工作区）。
+// 场景文件与网格计算一律走引擎 RPC，插件自己不再读磁盘。
+
 /// 一个工具的声明。
 pub struct ToolSpec {
     pub name: &'static str,
@@ -58,7 +61,7 @@ fn scene_schema() -> Value {
             },
             "path": {
                 "type": "string",
-                "description": "工作区相对路径（如 assets/demo.r3e.json）。经 host/fs.read 读取，需 fs.read 授权；单文件上限 64 KB，超过请用 scene 直接传"
+                "description": "场景文件路径（如 assets/demo.r3e.json）。原样下发给引擎，由引擎按「绝对路径 / 工作目录 / 场景目录」解析；插件自己不读盘"
             }
         },
         "additionalProperties": false
@@ -107,7 +110,7 @@ fn simulate_schema() -> Value {
             },
             "path": {
                 "type": "string",
-                "description": "工作区相对的场景文件路径（经 host/fs.read，需 fs.read 授权）"
+                "description": "场景文件路径；原样下发给引擎解析（插件不读盘）。scene 与 path 都不给时用引擎当前场景"
             },
             "steps": {
                 "type": "integer",
@@ -148,10 +151,11 @@ fn simulate_schema() -> Value {
     })
 }
 
-/// 写侧工具共用的引擎连接描述（P0-3）。
+/// 引擎连接描述（P0-3）。
 ///
-/// 写工具不碰宿主磁盘，只把调用转给**运行中的引擎**（JSON-RPC over TCP），
-/// 所以连接信息走工具参数而不是插件能力声明：插件的 `fs.read` 只用于读场景文件。
+/// 所有工具（只读与写）都不碰宿主磁盘、也不在本进程里算东西，只把调用转给
+/// **运行中的引擎**（JSON-RPC over TCP），所以连接信息走工具参数而不是插件能力声明：
+/// `endpoint` 缺省时读 `R3E_RPC_ADDR`，再缺省 `127.0.0.1:8787`。
 fn endpoint_schema() -> Value {
     json!({
         "type": "object",

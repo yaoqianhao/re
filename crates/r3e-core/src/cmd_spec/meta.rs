@@ -423,4 +423,62 @@ pub(super) static ALL: &[CommandSpec] = &[
         cost: Cost::Heavy,
         since: "M1-S4-F",
     },
+    // ---- M1-S1-D 协议面四条：把插件的离线只读工具搬到引擎侧 ----
+    //
+    // 这四条原先住在 `r3e-plugin` 里，直连 `r3e-core` / `r3e-physics` 在**插件进程内**
+    // 算完再回给模型。代价是插件二进制把 core 与整个物理后端（含 `rapier` feature）
+    // 一起编了进去，`dep_rules.json` 的 plugin→core / plugin→physics 两条债永远还不掉。
+    //
+    // 搬到宿主之后，插件只剩「发 RPC + 转结果」，债才消得掉。四条都**只读场景**：
+    // 不建事务、不产生写点、不动 `StateHash`，所以一律 `reversible` 且落 `Meta` 域
+    // （脚本侧直接拿 `&Scene` / `&Physics`，不需要这层转发）。
+    //
+    // 与 `scene.verify` 的分工必须守住：`scene.validate` 只查**网格本身**（AIR 结构校验），
+    // `scene.verify` 查**场景跑起来会不会出问题**（静态/物理/导航三层）。别互相顶替。
+    CommandSpec {
+        name: "scene.snapshot",
+        rpc: Some("scene.snapshot"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只读：纯遍历，不改任何节点。
+        reversible: true,
+        // 全场景节点扫一遍（`maxNodes` 默认 100，但 `nodeCount` 要数全）。
+        cost: Cost::Linear,
+        since: "M1-S1-D",
+    },
+    CommandSpec {
+        name: "mesh.stats",
+        rpc: Some("mesh.stats"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        // 现生一个程序化网格再做 AIR：顶点数随分段平方涨，但都有硬上限。
+        cost: Cost::Linear,
+        since: "M1-S1-D",
+    },
+    CommandSpec {
+        name: "scene.validate",
+        rpc: Some("scene.validate"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        reversible: true,
+        // 逐节点取网格 + 逐顶点验法线/权重：随「节点数 × 顶点数」涨。
+        cost: Cost::Heavy,
+        since: "M1-S1-D",
+    },
+    CommandSpec {
+        name: "physics.simulate",
+        rpc: Some("physics.simulate"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 建的是**宿主侧的临时世界**，步进完只回位移，场景一个字段都不写。
+        reversible: true,
+        // 步数 × 刚体数；后者随场景规模涨，是这四条里最重的一条。
+        cost: Cost::Heavy,
+        since: "M1-S1-D",
+    },
 ];

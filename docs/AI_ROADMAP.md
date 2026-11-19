@@ -34,7 +34,7 @@ AIGC:
 | M0-S3 | `r3e-doc` 立唯一真值 | ✅ 2026-11-15 | `Document` 只读 `Deref`、拒绝 `DerefMut`；写点收口 **129 处**；`doc-gate` 六规则；Validator 17 条负向用例 |
 | M0-S4 | 事务 / Undo / 确定性 | ✅ 2026-11-15 | `Transaction` 198 行 / `StateHash` 604 行（FNV-1a64）/ `UndoStack` 168 行；新建 `r3e-replay` 546 行 11 测，600 帧两次同哈希 |
 | M0-S5 | 协议剥离 + 能力清单 + 门禁转硬 | ✅ 2026-11-16 | `r3e-protocol` 8 文件 2,326 行仅 serde / `r3e-editor` 缩至 505 行传输层；`capabilities.json` 4,744 行 369 命令；`dep-check --strict` 硬门 0 违规 + 4 条债记账；`invariants` 三源 24/24/24；`verify` 20.4s 九道门；`AI_WORKFLOW.md` 落地 |
-| M1-S1 | 事务协议上链（4 卡） | ✅ 2026-11-16（S1-D 降级） | `tx.*` 五方法上线：RPC 39 → **44**、命令表 369 → **374**、`capabilities.json` 重生成；事务态挂 `Document` 影子场景（跨 RPC 存活，主场景 commit 前零字节变动）；`doc_gate` 第 7 条写点台账（5 crate / 226 处，新增未登记即红）；单测 1,476 → **1,504**；`verify` 十项全绿。**S1-D 未还债**：R2「替代清单先行」前置未满足，4 项离线能力无协议承接方，改出 `docs/M1_S1D_SUBSTITUTION.md` |
+| M1-S1 | 事务协议上链（4 卡） | ✅ 2026-11-16（S1-D 2026-11-19 补齐） | `tx.*` 五方法上线：RPC 39 → **44**、命令表 369 → **374**、`capabilities.json` 重生成；事务态挂 `Document` 影子场景（跨 RPC 存活，主场景 commit 前零字节变动）；`doc_gate` 第 7 条写点台账（5 crate / 226 处，新增未登记即红）；单测 1,476 → **1,504**；`verify` 十项全绿。**S1-D 2026-11-19 还债**（方案 A）：`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条只读 RPC 上协议面，计算搬 `r3e-editor-host/src/inspect/`，`r3e-plugin` 依赖清零（仅 serde / serde_json）、`rapier` feature 随依赖删除；RPC 58 → **62**、命令表 388 → **392**、债务 4 → **2** 条。详见 `docs/M1_S1D_SUBSTITUTION.md` |
 | M1-S2 | 语义查询（3 卡） | ✅ 2026-11-17（C→A→B） | `tags` / `interact_radius` 落 `Node` 与 `to_scene_file`（roundtrip 不增生字段）、`StateHash` 覆盖；`r3e-core/src/query.rs` 443 行 `WorldQuery`（八类判据 + 标签 AND/OR + 区域含边界 + 九位组件位，`describe` 与 `query` 共用 `Facts`）；`query.find/describe/stats` 三条只读 RPC：RPC 44 → **47**、命令表 374 → **377**；单测 1,504 → **1,546**；`verify` 十项全绿 |
 | M1-S3 | 意图命令（3 卡） | ✅ 2026-11-17（A→B→C） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；意图白名单三条：`scene.spawn_prefab`（256 上限、重名 / 父引用预检）、`scene.place_light`（上限 = 光源表容量 16、`key` 必填、同批重 key / 场景已有 key / 空位不够三重预检）、`scene.paint_terrain`（数据壳 32 块上限、**同名重刷放行**、`sanitized` 幂等收敛、高度样本逐点入 `StateHash`）——**意图名不进协议**，加意图只改宿主常量、协议零改动（RPC 仍 **48**、命令表仍 **378**）；`impact { objects, lights, terrain, materials }` 四字段恒定回带（不进哈希、不入撤销栈）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；单测 1,546 → **1,574**；`verify` 十项全绿。**M1-S3-C 只做数据壳**：地形网格生成与 LOD 按 D3 裁决留 M2 |
 
@@ -42,13 +42,13 @@ AIGC:
 
 | 指标 | 现值（M0-S5 收口） | M0 目标 | 采集 |
 |---|---|---|---|
-| 最大文件行数 | 4057（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
-| `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 8 文件最大 486 行） |
-| `#[test]` 总数 | 1721（M1-S4-G 后；M1-S4-F 时为 1718） | 只增不减 | `cargo xtask check-tests` 快照比对 |
+| 最大文件行数 | 3935（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
+| `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 20 个源文件最大 622 行） |
+| `#[test]` 总数 | 1817（M1-S1-D 后；M1-S4-G 时为 1721） | 只增不减 | `cargo xtask check-tests` 快照比对 |
 | 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
-| 依赖债务条数 | 4（`plugin→core` / `plugin→physics` / `script→physics` / `script→audio`，`limit=4` 只减不增；前两条原定 M1-S1 偿还，因 R2 替代清单前置未满足顺延，见 `docs/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
-| 能力清单漂移 | 0（`capabilities.json` 386 命令 / 56 RPC / 30 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
-| 不变量三源 | 24 = 24 = 24 | 三源一致 | `cargo xtask invariants` |
+| 依赖债务条数 | 2（`script→physics` / `script→audio`，`limit=2` 只减不增；`plugin→core` / `plugin→physics` 已于 M1-S1-D 偿还，见 `docs/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
+| 能力清单漂移 | 0（`capabilities.json` 392 命令 / 62 RPC / 38 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
+| 不变量三源 | 38 = 38 = 38 | 三源一致 | `cargo xtask invariants` |
 | `verify` 时长（热态） | 14.6–20.4s（九道门全硬）；冷缓存 25.4s；含 crate 重编译最长实测 138.5s（编译成本，不计入门禁判据） | <120s（热态口径） | 实测 |
 | 回放确定性 | **已达成** `final=15b5652e98b3346c` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 | `doc-gate` | 299 个 `.rs` / 15 个 crate / **7 条规则**（M1-S1 加写点台账）/ 白名单 10 项 / 写点 5 crate 234 处 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
@@ -57,7 +57,7 @@ AIGC:
 
 - crate 目录 **14 个**：`core / render / physics / audio / asset / script / doc / replay / runtime / editor-host / editor / protocol / plugin / app`，另有 `xtask`（`doc-gate` 计 14 个，不含 xtask）。
 - `r3e-protocol` 已落地（8 文件 / 2,326 行 / 34 测，依赖仅 serde + serde_json），`r3e-editor` 只剩传输层（505 行 / 72 测），旧 `use r3e_editor::` 调用方零改动。
-- 依赖违规 **0 条**；债务 4 条登记在 `xtask/dep_debt.json`（`plugin → core` / `plugin → physics` / `script → physics` / `script → audio`），M1 偿还（见 §3.1.7 收尾实测）。
+- 依赖违规 **0 条**；债务 **2 条**登记在 `xtask/dep_debt.json`（`script → physics` / `script → audio`，`limit=2`）。`plugin → core` / `plugin → physics` 已于 M1-S1-D 偿还（见 §3.1.7 收尾实测）。
 
 ---
 
@@ -314,10 +314,10 @@ S0 收口+立尺 ──► S1 renderer 拆分 ───────────�
 **Gate 0 判据（复核结果）**：
 ```bash
 cargo xtask verify                  # ✅ 绿，20.4s，含回放哈希
-cargo xtask dep-check --strict      # ✅ 0 违规（4 条债务已登记，limit=4）
+cargo xtask dep-check --strict      # ✅ 0 违规（2 条债务已登记，limit=2）
 cargo xtask lint-size               # ✅ 白名单外 0 文件
 cargo xtask gen-capabilities --check # ✅ 无漂移
-cargo xtask invariants              # ✅ 24 = 24 = 24
+cargo xtask invariants              # ✅ 38 = 38 = 38
 ```
 
 **遗留项（Gate 0 允许带账过，M1 处理）**：
@@ -347,7 +347,7 @@ cargo xtask invariants              # ✅ 24 = 24 = 24
 
 | Sprint | 主题 | 关键卡 | 退出演示 | 对应交付物 |
 |---|---|---|---|---|
-| M1-S1 ✅ 2026-11-16 | 事务协议上链路 | ✅ `tx.begin/apply/preview/commit/rollback` 已走 `r3e-protocol`（44 RPC）；✅ `doc_gate` 第 7 条写点台账；⏸ `r3e-plugin` 只依赖 protocol / 能力声明 `scene.write` `doc.transaction` → **顺延**（能力承接方未就位，见 `docs/M1_S1D_SUBSTITUTION.md`） | ✅ 外部进程 dry-run 返回结构化 diff（`tx.preview` 三哈希），`commit` 前场景哈希不变 | M1-1 完成 / M1-2 部分 |
+| M1-S1 ✅ 2026-11-16 | 事务协议上链路 | ✅ `tx.begin/apply/preview/commit/rollback` 已走 `r3e-protocol`（44 RPC）；✅ `doc_gate` 第 7 条写点台账；✅ `r3e-plugin` 只依赖 protocol（2026-11-19 补齐：四条只读 RPC 承接原离线能力，计算搬宿主，见 `docs/M1_S1D_SUBSTITUTION.md`）；能力声明 `scene.write` / `doc.transaction` 仍待 ai_ide 宿主认领 | ✅ 外部进程 dry-run 返回结构化 diff（`tx.preview` 三哈希），`commit` 前场景哈希不变 | M1-1 完成 / M1-2 部分 |
 | M1-S2 ✅ 2026-11-17 | 语义查询 | ✅ `WorldQuery`：按 kind/tag/bbox/component 过滤，结果含 `{id,name,tags,pos,interact_radius}`；✅ `query.find/describe/stats` 三条只读 RPC（RPC 47 / 命令表 377） | ✅ AI 不读裸 JSON 就能回答"场景里有哪些可交互物"（`query.*` 三条只读方法 + 9 条宿主用例） | M1-3 |
 | M1-S3 ✅ 2026-11-17 | 意图命令 + 变更半径 | `spawn_prefab` / `paint_terrain` / `place_light`；一次意图 = N 条原子命令，undo 一次全退；输出含 `impact` | 一条意图命令的 `impact` 能列出受影响对象与材质；`paint_terrain` 不生成几何（M2） | ✅ `scene.spawn_prefab` / `scene.place_light` / `scene.paint_terrain` 三条意图走 `tx.intent`（意图名不进协议）；`impact` 四字段恒定回带；数据壳 32 块上限 + 高度样本逐点入哈希 |
 | M1-S4 ◐ 2026-11-18 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5；**V3 改为「先补引擎能力、后接验证器」**：S4-A 材质引用体系 / S4-B `r3e-nav` / S4-C 装配下沉 / S4-D 协议面八条（RPC 48→56、命令表 378→386、`capabilities.json` 重生成）/ S4-E 三层验证器 + 坐标化 Issue（静态 / 物理 / 导航三层落地，`ISSUE_CODES` 24→38，`capabilities.json` 重生成）已落地；S4-F `scene.verify` RPC（RPC 56→57、命令表 386→387）+ `impact.violations`（影子静态层求差）+ `assets/verify` 六夹具 + `cargo xtask scene-verify`（`verify` 第 11 步）已落地；S4-G 把 `impact.violations` 补到物理 / 导航两层（影子世界当场重建 + 影子导航网格，`notChecked` 不再留已跑的层）已落地；S4-H `physics.bind` RPC（RPC 57→58、命令表 387→388、`capabilities.json` 重生成）已落地——编辑态由调用方显式装配主世界、`wroteBackScene: false` 不写回场景，物理关回 `PHYSICS_DISABLED`、无网格来源回新码 `-32023 MESH_SOURCE_UNAVAILABLE`（绝不回空表），`scene.verify` 的新鲜度守卫由此有了消除路径、`passed` 恢复为可用门禁；`#[test]` 1,721→1,725，`verify` 全绿，Gate 1 前置校验就位 |
@@ -575,7 +575,7 @@ chore(ci): 门禁与脚本
 | 1 | 最大文件行数 | 4057 | ≤800 | `cargo xtask lint-size` |
 | 2 | `>800` 行文件数 | 23 | ≤12 | 同上 |
 | 3 | `#[test]` 总数 | 1476 | 只增不减 | `cargo xtask check-tests` |
-| 4 | 依赖违规数 | 0（债务 4 条已登记） | 0 | `cargo xtask dep-check --strict` |
+| 4 | 依赖违规数 | 0（债务 2 条已登记） | 0 | `cargo xtask dep-check --strict` |
 | 5 | `verify` 时长（热态） | 14.6–20.4s；含重编译最长 138.5s | <120s（热态） | 实测 |
 | 6 | 回放确定性 | 已达成（`final=59d48dedf2b0677e`） | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
 
@@ -646,7 +646,7 @@ cargo xtask lint-size         # 单文件 ≤800 + 债务白名单（size_debt.j
 cargo xtask check-tests       # #[test] 数与基线快照（tests_baseline.json）比对
 cargo xtask doc-gate          # 写入口 / 唯一真值六条结构规则
 cargo xtask gen-capabilities  # 导出 docs/capabilities.json；--check 逐字节比对（不进 verify 的产物会被判红）
-cargo xtask invariants        # 不变量三源比对（ISSUE_CODES / RPC_METHODS / cmd_spec），当前 24 = 24 = 24
+cargo xtask invariants        # 不变量三源比对（ISSUE_CODES / RPC_METHODS / cmd_spec），当前 38 = 38 = 38
 cargo xtask replay --seed 42 --frames 600   # 确定性回放，输出状态哈希（逐行比对两次运行）
 ```
 

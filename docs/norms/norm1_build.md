@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_2f839802e3be11f19919525400638852
+    ReservedCode1: d41R0XMxlAmTOz6dvxGRBEPbO/bcY0SkRlE1jyYfAvXXL3xFmkR+Th9MoiNL9BIyeJbEs+NaFcYrPAVzWWI+qxG4rHm7r0QBOGPbEX2lUCSSlg3umtIbQOS4aZ7JYBYmsBEua7vCZObj0HTX3Y+UWqBqktItq/ZWIgiqW2u67QsTcsP6IaQKJc67iVM=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_2f839802e3be11f19919525400638852
+    ReservedCode2: d41R0XMxlAmTOz6dvxGRBEPbO/bcY0SkRlE1jyYfAvXXL3xFmkR+Th9MoiNL9BIyeJbEs+NaFcYrPAVzWWI+qxG4rHm7r0QBOGPbEX2lUCSSlg3umtIbQOS4aZ7JYBYmsBEua7vCZObj0HTX3Y+UWqBqktItq/ZWIgiqW2u67QsTcsP6IaQKJc67iVM=
+---
+
 # 范式 1：从零生成可通行小场景
 
 > **验证目标**：一次意图 = N 条命令 = 一格撤销；提交前就能读到坐标化 issue。
@@ -178,3 +189,4 @@ target\x86_64-pc-windows-gnu\debug\r3e-cli.exe --token dev query stats --json
 | `verify` 恒为 1 且 `unchecked` 里有 `physics` 或 `nav` | 漏了步骤 6 | 先 `rpc physics.bind` / `rpc nav.bake` 再体检 |
 | `tx intent` 回 `-32012`「物件 `xxx` 已存在」 | 上一次的场景还在同一个引擎进程里；`spawn_prefab` 只新建不覆盖 | 重启引擎，或换节点名 |
 | `verify` 回 `-32020 PHYSICS_DISABLED` | 引擎用 `--physics off` 起的 | 用 `--physics on` 重起 |
+*（内容由AI生成，仅供参考）*

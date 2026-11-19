@@ -24,7 +24,6 @@
 //! 所有诊断信息一律走 stderr：stdout 被协议独占，混一行日志宿主就判协议违规。
 
 mod host;
-mod locate;
 mod protocol;
 mod rpc;
 mod smoke;
@@ -125,10 +124,6 @@ struct Bridge<'a, R: BufRead, W: Write> {
 }
 
 impl<R: BufRead, W: Write> HostBridge for Bridge<'_, R, W> {
-    fn fs_read(&mut self, path: &str) -> Result<String, HostError> {
-        self.client.fs_read(&mut self.pipes, path, None)
-    }
-
     fn workspace_info(&mut self) -> Result<Value, HostError> {
         self.client.workspace_info(&mut self.pipes)
     }
@@ -209,14 +204,8 @@ impl<R: BufRead, W: Write> Server<R, W> {
 
         // 宿主配额按「一次工具调用」计，每次调用前归零
         self.client.begin_call();
-        let mut bridge = Bridge {
-            pipes: Pipes {
-                reader: &mut self.reader,
-                writer: &mut self.writer,
-            },
-            client: &mut self.client,
-        };
-        tools::invoke(&name, &args, &mut bridge)
+        // M1-S1-D：工具层不再消费宿主能力（读盘交给引擎），这里不构造 Bridge。
+        tools::invoke(&name, &args)
     }
 
     fn command_invoke(&mut self, params: &Value) -> Result<Value, ToolError> {

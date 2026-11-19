@@ -12,11 +12,10 @@ path = "src/main.rs"
 
 [features]
 default = []
-# 把 Rapier 物理后端编进插件二进制：`cargo build -p r3e-plugin --features rapier`
-rapier = ["r3e-physics/rapier"]
+# M1-S1-D：插件不再链接 `r3e-core` / `r3e-physics`，原来的 `rapier` feature
+# 只是 `r3e-physics/rapier` 的转发开关，随依赖一起删除。物理后端由**引擎进程**
+# 决定（`r3e.exe --physics-backend rapier`），插件只经 `physics.simulate` 请求它。
 
 [dependencies]
-r3e-core.workspace = true
-r3e-physics.workspace = true
 serde.workspace = true
 serde_json.workspace = true

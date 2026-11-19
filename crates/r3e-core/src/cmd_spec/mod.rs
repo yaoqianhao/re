@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(
             rpc,
             rpc_only + 23,
-            "44 个 RPC 方法里 23 个能对到脚本命令，其余 21 个只有 RPC（M1-S1 加 5 条 tx.*）"
+            "62 个 RPC 方法里 23 个能对到脚本命令，其余 39 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* / material / verify / M1-S1-D 四条）"
         );
     }
 

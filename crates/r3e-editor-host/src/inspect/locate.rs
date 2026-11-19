@@ -1,4 +1,7 @@
-//! 场景问题的定位层（P0-2）。
+//! 场景问题的定位层（M1-S1-D：从 `r3e-plugin/src/locate.rs` 原样搬到宿主侧）。
+//!
+//! 原来这段住在插件进程里，插件为了它把 `r3e-core` 整个编进来。搬过来之后
+//! 插件只发 `scene.validate` 再把回包转给模型，`plugin→core` 那条依赖才算断掉。
 //!
 //! 校验结果原来的形态是 `{kind, detail}`：`detail` 是写给人看的句子
 //! （"顶点 #7 |normal| = 0.5"），模型要照着它去改文件，得先自己解析文本、
@@ -11,7 +14,7 @@
 //!   外部资产额外给出 `assetPath` 与资产声明下标 `assetIndex`；
 //! - `anchors`：网格内部下标（`vertex` / `index` / `part`），三个都可能为空；
 //! - `mesh` / `material`：出问题处附近的上下文（网格形状与计数、节点材质），
-//!   让模型不必再发一次 `scene_inspect` 就能决定改成什么值。
+//!   让模型不必再发一次 `scene.snapshot` 就能决定改成什么值。
 //!
 //! 这里只做「按已知事实填表」，不猜：拿不到的上下文宁可写 `null`。
 
@@ -46,11 +49,11 @@ pub fn issue_json(
             "material": material_json(node),
         },
     });
-    // 外部资产网格没有 AIR 结论（插件不带资产管线），别让它看起来像"通过了"。
+    // 外部资产网格没有 AIR 结论（引擎侧的校验也不带资产管线），别让它看起来像"通过了"。
     if node.mesh.is_asset() {
         entry["location"]["resource"]["external"] = json!(true);
         entry["location"]["hint"] =
-            json!("外部资产网格需资产管线（r3e-asset）才能校验，本插件跳过");
+            json!("外部资产网格需资产管线（r3e-asset）才能校验，本命令跳过");
     }
     entry
 }
@@ -60,7 +63,7 @@ pub fn issue_json(
 pub fn skipped_issue_json(scene: &Scene, node: &Node, object_index: usize) -> Value {
     json!({
         "kind": "mesh-not-validated",
-        "detail": "外部资产网格，插件无资产管线，未做 AIR 校验",
+        "detail": "外部资产网格，无资产管线接入，未做 AIR 校验",
         "location": {
             "node": node_json(node, object_index),
             "field": "mesh",
@@ -69,7 +72,7 @@ pub fn skipped_issue_json(scene: &Scene, node: &Node, object_index: usize) -> Va
             "anchors": { "vertex": Value::Null, "index": Value::Null, "part": Value::Null },
             "mesh": mesh_json(&node.mesh, None),
             "material": material_json(node),
-            "hint": "改用场景校验之外的资产检查（--dump-asset）确认网格是否合规",
+            "hint": "改用资产检查（`--dump-asset`）确认网格是否合规",
         },
     })
 }
@@ -170,7 +173,7 @@ fn material_json(node: &Node) -> Value {
     }
 }
 
-/// 与 `tools.rs` 同一套取整口径（3 位小数），避免同一份数据两处格式不一致。
+/// 与插件原来的取整口径一致（3 位小数），避免同一份数据两处格式不一致。
 fn round(value: f32) -> f64 {
     (f64::from(value) * 1000.0).round() / 1000.0
 }

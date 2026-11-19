@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_3054e8ade3be11f18c5752540024e231
+    ReservedCode1: udz1C4tC6zz/1VCg0JbHrCsiM71pkQ7EKK2LHDqQk1+Dbx8j3SUr4wcFxefCEp3UMiOydzDqCVhcPlVVY+3DnfZtgh0QU5+ZGHRmMro2JzxBpSqFh55a4A3DBcerSpZlP4NQTzf5rIzUcRXOOVb9hW+Pq+++m+fZEjRcn9vNWoNyP3g25dRyaesL63Y=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_3054e8ade3be11f18c5752540024e231
+    ReservedCode2: udz1C4tC6zz/1VCg0JbHrCsiM71pkQ7EKK2LHDqQk1+Dbx8j3SUr4wcFxefCEp3UMiOydzDqCVhcPlVVY+3DnfZtgh0QU5+ZGHRmMro2JzxBpSqFh55a4A3DBcerSpZlP4NQTzf5rIzUcRXOOVb9hW+Pq+++m+fZEjRcn9vNWoNyP3g25dRyaesL63Y=
+---
+
 # 范式 2：验证并读懂失败
 
 > **验证目标**：失败必须「可读、可定位、可放弃」——issue 带 `code` / `path` / `location` / `hint`，坐标指到厘米级；不提交就回滚，场景不留痕。
@@ -92,3 +103,4 @@ target\x86_64-pc-windows-gnu\debug\r3e-cli.exe --token dev query stats --json
 | `violations.count` 为 0 | 物件没落进彼此的形状里（只是包围盒贴着） | 精确判定看 `approximate`：`false` 且 `count=0` 才是真干净 |
 | `verify` 回 `-32601` / `-32012` | 方法名或参数写错（`rpc` 只认协议方法名，`tx apply` 只认可写方法名） | 回 `r3e-cli --help` 对方法名 |
 | 同一份 `--args` 在 PowerShell 里报 JSON 非法 | PS 5.1 传原生程序时会吃掉内层双引号 | 用 cmd 粘贴；PS 需自行加 `--%` 或改转义 |
+*（内容由AI生成，仅供参考）*

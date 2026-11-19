@@ -1,24 +1,31 @@
-//! 工具实现：全部是纯计算 + 只读宿主能力，没有一条代码会写盘或执行外部命令。注：`scene_inspect` / `mesh_stats` / `scene_validate` / `physics_simulate` 四项仍直连 `r3e-core` / `r3e-physics`，去依赖前置见 `docs/M1_S1D_SUBSTITUTION.md`（M1-S1-D 替代清单）。
+//! 工具实现：只读工具是**引擎侧计算的薄壳**，写工具复用引擎既有写 RPC；
+//! 全文件没有一条代码写盘、执行外部命令，也没有一条自己算场景 / 网格 / 物理
+//! （M1-S1-D 起插件不再链接 `r3e-core` / `r3e-physics`：四项离线计算搬成
+//! `scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate`）。
 //!
 //! 设计约定：
 //!
 //! * 入参一律走 `opt_*` 取，类型不对就报 `-32602`，绝不静默用默认值糊过去——
 //!   模型传错参数时拿到明确错误，比拿到一份「看起来正常」的错结果好得多；
-//! * 场景可以内联（`scene`）或走 `host/fs.read`（`path`），后者受宿主 64 KB 限制；
-//! * 回包控制在 64 KB 以内（宿主单次工具结果上限），所以节点/刚体/问题清单都截断
-//!   并显式给出 `truncated` 标记，不假装全量。
+//! * 场景三条来源：内联对象（这里序列化成文本）、内联文本、`path`（宿主解析）；
+//!   一条都不给就取引擎的**当前场景**，不逼调用方回传一份可能已经过期的副本；
+//! * 只读工具同样需要引擎在线（`endpoint` / `R3E_RPC_ADDR`），连不上报 `-32011`
+//!   并给出一条能照着修的提示；
+//! * 回包体积与截断由引擎侧负责（`truncated` 字段），插件不再二次截断。
 
-use r3e_core::procedural::builtin_mesh;
-use r3e_core::{air, scene::SceneFile, BuiltinMesh, MeshData, NodeId, Scene, Vec3};
-use r3e_physics::{BodyDesc, Physics, PhysicsConfig, PhysicsKind};
 use serde_json::{json, Value};
 
 use crate::host::HostError;
 use crate::rpc::{self, Endpoint, RpcClient};
 
-/// 单个工具调用内最多回多少字节的明细（宿主上限 64 KB，留出结构开销的余量）。
-const MAX_LISTED_NODES: usize = 100;
-const MAX_LISTED_ISSUES: usize = 20;
+/// 内置网格名（与 `r3e-core::procedural` 的图元一一对应）。
+///
+/// 这份表只做**参数前置**：形状名写错时不必连引擎就能报错，省一次往返。
+const BUILTIN_MESHES: [&str; 4] = ["cube", "sphere", "plane", "cylinder"];
+
+/// 物理后端名。**可用性一律由引擎侧裁决**：插件不链 `r3e-physics`，
+/// 也就无从知道宿主编进了哪些后端，猜一个 `available` 等于编。
+const PHYSICS_BACKENDS: [&str; 3] = ["null", "builtin", "rapier"];
 
 /// 工具层错误：直接映射成 JSON-RPC 错误帧。
 #[derive(Debug)]
@@ -36,24 +43,9 @@ impl ToolError {
         }
     }
 
-    /// 入参合法但内容解析不了（场景 JSON 坏了、物理配置不被后端接受）。
-    ///
-    /// 用 -32010 而不是 -32602：这不是「调用姿势错」，是「数据本身有问题」，
-    /// 便于宿主/模型区分「改参数」还是「改场景」。
-    pub fn invalid_input(message: impl Into<String>) -> Self {
-        Self {
-            code: -32010,
-            message: message.into(),
-        }
-    }
-
-    /// 插件内部异常。
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            code: -32603,
-            message: message.into(),
-        }
-    }
+    // 注：没有 `internal`（-32603）。插件已经不在本地解析场景、不在本地跑物理，
+    // 「数据本身有问题」这类错全部由引擎裁决并用它自己的错误码回来（`rpc_error` 原样透传）；
+    // 插件自己再造一个 -32010 反而会与引擎的 TX_NOT_FOUND 撞码。
 }
 
 impl std::fmt::Display for ToolError {
@@ -62,23 +54,26 @@ impl std::fmt::Display for ToolError {
     }
 }
 
-/// 工具需要的宿主能力（只读两个）。
+/// 工具需要的宿主能力（只剩工作区信息，读盘已交给引擎解析 `path`）。
 pub trait HostBridge {
-    fn fs_read(&mut self, path: &str) -> Result<String, HostError>;
     fn workspace_info(&mut self) -> Result<Value, HostError>;
 }
 
 /// 工具分发。
-pub fn invoke(name: &str, args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, ToolError> {
+///
+/// 不再收 `HostBridge`：工具层两条路都不消费宿主能力——只读/写工具把入参翻译成
+/// 引擎 RPC，`path` 由引擎按「绝对路径 / 工作目录 / 场景目录」自己解析。
+/// 保留 `HostBridge` 是为了命令面板（`engine_diagnostics` 要问工作区）。
+pub fn invoke(name: &str, args: &Value) -> Result<Value, ToolError> {
     if !args.is_null() && !args.is_object() {
         return Err(ToolError::invalid_params("arguments 必须是 JSON 对象"));
     }
     match name {
         "engine_info" => engine_info(),
-        "scene_inspect" => scene_inspect(args, bridge),
+        "scene_inspect" => scene_inspect(args),
         "mesh_stats" => mesh_stats(args),
-        "scene_validate" => scene_validate(args, bridge),
-        "physics_simulate" => physics_simulate(args, bridge),
+        "scene_validate" => scene_validate(args),
+        "physics_simulate" => physics_simulate(args),
         // —— 写侧（risk = write）：全部经引擎既有写 RPC ——
         "scene_patch" => scene_patch(args),
         "node_spawn" => node_spawn(args),
@@ -125,24 +120,24 @@ pub fn invoke_command(name: &str, bridge: &mut dyn HostBridge) -> Result<Value, 
 // ---------------------------------------------------------------- 工具实现
 
 fn engine_info() -> Result<Value, ToolError> {
-    let backends: Vec<Value> = PhysicsKind::ALL
+    let backends: Vec<Value> = PHYSICS_BACKENDS
         .iter()
-        .map(|kind| json!({ "name": kind.name(), "available": kind.is_available() }))
+        .map(|name| json!({ "name": name }))
         .collect();
-    let meshes: Vec<Value> = BuiltinMesh::ALL
+    let meshes: Vec<Value> = BUILTIN_MESHES
         .iter()
-        .map(|kind| json!({ "name": kind.as_str() }))
+        .map(|name| json!({ "name": name }))
         .collect();
     Ok(json!({
         "engine": {
             "name": "rust3d-engine",
             "version": env!("CARGO_PKG_VERSION"),
             "crates": [
-                { "name": "r3e-core", "role": "场景图 / 网格 / 动画 / AIR 校验，无图形依赖" },
+                { "name": "r3e-core", "role": "场景图 / 网格 / 动画 / AIR 校验，无图形依赖（插件不链接：计算走引擎侧 RPC）" },
                 { "name": "r3e-render", "role": "渲染后端（插件不链接，headless 用不上）" },
-                { "name": "r3e-physics", "role": "物理门面：null / builtin / rapier 三种后端" },
+                { "name": "r3e-physics", "role": "物理门面：null / builtin / rapier 三种后端（插件不链接）" },
                 { "name": "r3e-asset", "role": "资产导入（FBX/glTF 等，插件不链接）" },
-                { "name": "r3e-script", "role": "脚本运行时" },
+                { "name": "r3e-script", "role": "脚本运行时（插件不链接）" },
                 { "name": "r3e-app", "role": "引擎主程序 r3e.exe" },
                 { "name": "r3e-editor", "role": "编辑器 RPC 接口" }
             ]
@@ -156,335 +151,107 @@ fn engine_info() -> Result<Value, ToolError> {
             "hostCallQuotaPerTool": crate::host::QUOTA_PER_CALL,
             "capabilities": crate::spec::CAPABILITIES,
             "tools": crate::spec::tool_names(),
+            // M1-S1-D：只读计算一律在引擎侧做，插件本体只有传输与参数前置。
+            "compute": "engine-rpc",
         },
         "physics": {
             "backends": backends,
-            "features": { "rapier": cfg!(feature = "rapier") },
+            // 可用性只有引擎自己知道：写死一个 available 就是编一个假事实。
+            "availability": "由引擎侧决定；点未编入的后端时 `physics.simulate` 回参数错误并点名",
         },
         "meshes": meshes,
     }))
 }
 
-fn scene_inspect(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, ToolError> {
-    let scene = load_scene(args, bridge)?;
-    let limit = opt_u32(args, "maxNodes")?.unwrap_or(50).clamp(1, 500) as usize;
-
-    let mut nodes = Vec::new();
-    let mut asset_meshes = 0usize;
-    for node in scene.iter() {
-        if node.mesh.builtin().is_none() {
-            asset_meshes += 1;
-        }
-        if nodes.len() >= limit {
-            continue;
-        }
-        nodes.push(json!({
-            "id": node.id,
-            "name": node.name,
-            "mesh": node.mesh.as_string(),
-            "meshKind": if node.mesh.builtin().is_some() { "builtin" } else { "asset" },
-            "visible": node.visible,
-            "parent": node.parent,
-            "localPosition": vec3_json(node.transform.position),
-            "worldPosition": vec3_json(node.world_position()),
-            "scale": vec3_json(node.transform.scale),
-            "physics": node.physics.as_ref().map(|desc| json!({
-                "body": desc.body,
-                "mass": desc.mass,
-                "collider": desc.collider,
-            })),
-        }));
+/// 把工具参数里的「一份场景」归一成引擎 RPC 的两条口子。
+///
+/// * `path` —— 原样给，宿主按「绝对路径 / 工作目录 / 场景目录」解析；
+/// * `scene` 文本 —— 原样给；
+/// * `scene` 对象 —— 先序列化成文本：引擎侧只认一种形态，否则那边要同时实现
+///   「值」与「文本」两条解析路径，两条迟早给出不同的错误文案；
+/// * 都没有 —— 不给，引擎取当前编辑场景。
+fn scene_source(args: &Value) -> Result<Value, ToolError> {
+    let mut params = Value::Object(serde_json::Map::new());
+    if let Some(path) = opt_str(args, "path")? {
+        params["path"] = json!(path);
     }
+    match args.get("scene") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(text)) => params["scene"] = json!(text),
+        Some(value @ Value::Object(_)) => params["scene"] = json!(value.to_string()),
+        Some(other) => {
+            return Err(ToolError::invalid_params(format!(
+                "scene 必须是场景对象或场景 JSON 文本，实际是 {}",
+                type_name(other)
+            )))
+        }
+    }
+    Ok(params)
+}
 
-    Ok(json!({
-        "name": scene.name,
-        "nodeCount": scene.len(),
-        "listedCount": nodes.len(),
-        "truncated": scene.len() > nodes.len(),
-        "assetMeshCount": asset_meshes,
-        "camera": camera_json(&scene.camera),
-        "light": light_json(&scene.light),
-        // 后处理整段（扩展十三起）。这里只摘要字段，不复刻 core 的收敛规则：
-        // 插件报的是场景文件里写了什么，实际生效值由引擎的 sanitized 决定。
-        "postfx": scene.postfx.map(|fx| json!({
-            "exposure": round(fx.exposure),
-            "tonemap": fx.tonemap.name(),
-            "fxaa": fx.fxaa,
-            "bloom": fx.bloom.enabled,
-            // 扩展十七：遮蔽配置。模型要判断「墙角发黑」是遮蔽还是曝光/泛光所致，
-            // 得先看得到这一段；`samples` 是写的原值，引擎会夹进 [4, 16]。
-            "ssao": {
-                "enabled": fx.ssao.enabled,
-                "radius": round(fx.ssao.radius),
-                "bias": round(fx.ssao.bias),
-                "intensity": round(fx.ssao.intensity),
-                "samples": fx.ssao.samples,
-            },
-        })),
-        "physics": physics_desc_json(&scene.physics),
-        "nodes": nodes,
-    }))
+fn scene_inspect(args: &Value) -> Result<Value, ToolError> {
+    let mut params = scene_source(args)?;
+    if let Some(limit) = opt_u32(args, "maxNodes")? {
+        params["maxNodes"] = json!(limit);
+    }
+    let mut client = connect_engine(args)?;
+    call_engine(&mut client, "scene.snapshot", params, |report| report)
 }
 
 fn mesh_stats(args: &Value) -> Result<Value, ToolError> {
-    let shape = opt_str(args, "shape")?.unwrap_or("cube");
-    let kind = BuiltinMesh::parse(shape).ok_or_else(|| {
-        ToolError::invalid_params(format!(
-            "shape `{shape}` 不认识；可选：cube / sphere / plane / cylinder"
-        ))
-    })?;
-    let segments = opt_u32(args, "segments")?.unwrap_or(32).clamp(3, 256);
-    let rings = opt_u32(args, "rings")?.unwrap_or(16).clamp(2, 256);
-    let divisions = opt_u32(args, "divisions")?.unwrap_or(1).clamp(1, 128);
-
-    let mesh = match kind {
-        BuiltinMesh::Cube => r3e_core::procedural::cube(),
-        BuiltinMesh::Sphere => r3e_core::procedural::sphere(segments, rings),
-        BuiltinMesh::Plane => r3e_core::procedural::plane(divisions),
-        BuiltinMesh::Cylinder => r3e_core::procedural::cylinder(segments),
-    };
-    let (min, max) = mesh.aabb();
-    let issues = air::validate(&mesh);
-
-    Ok(json!({
-        "shape": kind.as_str(),
-        "tessellation": {
-            "segments": if matches!(kind, BuiltinMesh::Sphere | BuiltinMesh::Cylinder) { Some(segments) } else { None },
-            "rings": if matches!(kind, BuiltinMesh::Sphere) { Some(rings) } else { None },
-            "divisions": if matches!(kind, BuiltinMesh::Plane) { Some(divisions) } else { None },
-        },
-        "vertices": mesh.vertex_count(),
-        "triangles": mesh.triangle_count(),
-        "indices": mesh.indices.len(),
-        "aabb": {
-            "min": vec3_json(min),
-            "max": vec3_json(max),
-            "size": vec3_json(max - min),
-        },
-        "fingerprint": fingerprint(&mesh),
-        "air": {
-            "ok": issues.is_empty(),
-            "issueCount": issues.len(),
-            "issues": issue_list(&issues),
-        },
-    }))
-}
-
-fn scene_validate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, ToolError> {
-    let scene = load_scene(args, bridge)?;
-
-    let mut reports = Vec::new();
-    let mut unvalidated = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut total_issues = 0usize;
-
-    // P0-2：每条问题都带 `location`（节点 id/名字、场景文件 `objects` 下标、
-    // 字段路径、资源来源、网格锚点、材质上下文），模型拿到就能直接定位要改哪一处，
-    // 不用再解析 `detail` 里那句人话。`objects` 顺序与 `scene.iter()` 一致，
-    // 因为 `to_scene_file` 就是按同一个 `order` 表导出的。
-    for (object_index, node) in scene.iter().enumerate() {
-        let entry = match node.mesh.builtin() {
-            Some(kind) => {
-                let mesh = builtin_mesh(kind);
-                let issues = air::validate(&mesh);
-                total_issues += issues.len();
-                json!({
-                    "name": node.name,
-                    "mesh": node.mesh.as_string(),
-                    "air": {
-                        "ok": issues.is_empty(),
-                        "issueCount": issues.len(),
-                        "issues": issues
-                            .iter()
-                            .take(MAX_LISTED_ISSUES)
-                            .map(|issue| crate::locate::issue_json(&scene, node, object_index, issue, Some(&mesh)))
-                            .collect::<Vec<Value>>(),
-                    },
-                })
-            }
-            None => {
-                // 资产网格要走 r3e-asset 导入，本插件不带资产管线——如实标注 skipped，
-                // 而不是给一个「0 问题」的假绿灯；同时在 `unvalidated` 里留一条带定位
-                // 的账（不并进 `issueCount`，否则「有资产 = 必失败」会让 ok 失去意义）。
-                unvalidated.push(crate::locate::skipped_issue_json(
-                    &scene,
-                    node,
-                    object_index,
-                ));
-                json!({
-                    "name": node.name,
-                    "mesh": node.mesh.as_string(),
-                    "air": {
-                        "ok": Value::Null,
-                        "skipped": true,
-                        "reason": "external-asset",
-                    },
-                })
-            }
-        };
-        if reports.len() < MAX_LISTED_NODES {
-            reports.push(entry);
-        }
-    }
-
-    // 重名无需在这里检测：`Scene::from_file` 构建阶段就会因重名直接报错
-    // （实测「物件 `x` 已存在」），走不到这一步。这里只补场景级的一般性提醒。
-    if scene.is_empty() {
-        warnings.push("场景没有任何节点".to_string());
-    }
-    if reports
-        .iter()
-        .any(|report| report["air"]["skipped"] == json!(true))
-    {
-        warnings.push(
-            "部分节点使用外部资产网格，AIR 校验需要资产管线（r3e-asset），本插件跳过".to_string(),
-        );
-    }
-
-    Ok(json!({
-        "ok": total_issues == 0,
-        "name": scene.name,
-        "nodeCount": scene.len(),
-        "listedCount": reports.len(),
-        "truncated": scene.len() > reports.len(),
-        "issueCount": total_issues,
-        // 没校验成的节点也给出定位：模型应当知道「这里没结论」，而不是以为通过。
-        "unvalidatedCount": unvalidated.len(),
-        "unvalidated": unvalidated,
-        "warnings": warnings,
-        "nodes": reports,
-    }))
-}
-
-fn physics_simulate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, ToolError> {
-    let mut scene = load_scene(args, bridge)?;
-    let steps = opt_u32(args, "steps")?.unwrap_or(120).clamp(1, 2000);
-    let dt = opt_f32(args, "dt")?.unwrap_or(1.0 / 60.0);
-    if !(0.001..=0.1).contains(&dt) {
-        return Err(ToolError::invalid_params(format!(
-            "dt={dt} 超出范围 0.001..=0.1"
-        )));
-    }
-    let max_bodies = opt_u32(args, "maxBodies")?.unwrap_or(20).clamp(1, 64) as usize;
-
-    // 模拟场景就是要算：显式把物理打开（场景写 enabled:false 时也照跑），
-    // 但后端选择尊重调用方 > 场景 > 引擎默认的优先级。
-    let mut config = PhysicsConfig::from_scene(&scene.physics).with_enabled(true);
-    if let Some(name) = opt_str(args, "backend")? {
-        let kind = PhysicsKind::parse(name).ok_or_else(|| {
-            ToolError::invalid_params(format!(
-                "backend `{name}` 不认识；可选：null / builtin / rapier"
-            ))
-        })?;
-        if !kind.is_available() {
-            let available: Vec<&str> = PhysicsKind::ALL
-                .iter()
-                .filter(|kind| kind.is_available())
-                .map(|kind| kind.name())
-                .collect();
+    let mut params = Value::Object(serde_json::Map::new());
+    if let Some(shape) = opt_str(args, "shape")? {
+        if !BUILTIN_MESHES.contains(&shape) {
             return Err(ToolError::invalid_params(format!(
-                "物理后端 `{name}` 未编进本插件二进制（当前可用：{}）；需要 Rapier 请用 `--features rapier` 重新打包",
-                available.join(" / ")
+                "shape `{shape}` 不认识；可选：{}",
+                BUILTIN_MESHES.join(" / ")
             )));
         }
-        config = config.with_kind(kind);
+        params["shape"] = json!(shape);
     }
-    if let Some(gravity) = opt_vec3(args, "gravity")? {
-        config.gravity = Some(gravity);
-    }
-    if let Some(ground) = opt_f32(args, "ground")? {
-        config.ground = Some(ground);
-    }
-
-    let mut physics = Physics::new();
-    physics
-        .apply_config(config)
-        .map_err(|err| ToolError::invalid_input(format!("物理配置被后端拒绝：{err}")))?;
-    // 后端名以后端自报为准：调用方没指定时也能如实说明「实际用的是哪个」
-    let backend_name = physics.backend_name();
-
-    // 逐节点建刚体：只有声明了 physics 的节点才进物理世界。
-    let mut bound: Vec<(NodeId, String, Vec3)> = Vec::new();
-    for node in scene.iter() {
-        if node.physics.is_none() {
-            continue;
-        }
-        let mesh = node.mesh.builtin().map(builtin_mesh);
-        let Some(desc) = BodyDesc::from_node_with(node, mesh.as_ref()) else {
-            continue;
-        };
-        let id = node.id;
-        let name = node.name.clone();
-        let start = node.world_position();
-        if physics.try_create_body(id, desc).is_some() {
-            bound.push((id, name, start));
+    for key in ["segments", "rings", "divisions"] {
+        if let Some(value) = opt_u32(args, key)? {
+            params[key] = json!(value);
         }
     }
+    let mut client = connect_engine(args)?;
+    call_engine(&mut client, "mesh.stats", params, |report| report)
+}
 
-    let mut event_total = 0usize;
-    let mut event_sample: Vec<String> = Vec::new();
-    scene.update_world_transforms();
-    for _ in 0..steps {
-        physics.step(dt, &mut scene);
-        scene.update_world_transforms();
-        let events = physics.drain_events();
-        event_total += events.len();
-        for event in events {
-            if event_sample.len() < 10 {
-                event_sample.push(event.to_text());
-            }
-        }
+fn scene_validate(args: &Value) -> Result<Value, ToolError> {
+    let params = scene_source(args)?;
+    let mut client = connect_engine(args)?;
+    call_engine(&mut client, "scene.validate", params, |report| report)
+}
+
+fn physics_simulate(args: &Value) -> Result<Value, ToolError> {
+    let mut params = scene_source(args)?;
+    if let Some(steps) = opt_u32(args, "steps")? {
+        params["steps"] = json!(steps);
     }
-
-    let mut bodies = Vec::new();
-    let mut max_displacement = 0.0f32;
-    for (id, name, start) in &bound {
-        let end = scene
-            .get(*id)
-            .map(|node| node.world_position())
-            .unwrap_or(*start);
-        let displacement = (end - *start).length();
-        max_displacement = max_displacement.max(displacement);
-        if bodies.len() < max_bodies {
-            bodies.push(json!({
-                "node": name,
-                "nodeId": id,
-                "start": vec3_json(*start),
-                "end": vec3_json(end),
-                "displacement": round(displacement),
-            }));
-        }
+    if let Some(dt) = opt_f64(args, "dt")? {
+        params["dt"] = json!(dt);
     }
-
-    let caps = physics.capabilities();
-    Ok(json!({
-        "ok": true,
-        "backend": backend_name,
-        "steps": steps,
-        "dt": round(dt),
-        "simulatedSeconds": round(steps as f32 * dt),
-        "bodyCount": bound.len(),
-        "listedCount": bodies.len(),
-        "truncated": bound.len() > bodies.len(),
-        "maxDisplacement": round(max_displacement),
-        "events": {
-            "total": event_total,
-            "sample": event_sample,
-            "sampledOut": event_total > event_sample.len(),
-        },
-        "bodies": bodies,
-        "capabilities": {
-            "bodyBodyContacts": caps.body_body_contacts,
-            "rotationalDynamics": caps.rotational_dynamics,
-            "joints": caps.joints,
-            "ccd": caps.ccd,
-            "collisionEvents": caps.collision_events,
-            "raycast": caps.raycast,
-            "overlap": caps.overlap,
-            "shapeCast": caps.shape_cast,
-        },
-        "scene": { "name": scene.name, "nodeCount": scene.len() },
-    }))
+    if let Some(max_bodies) = opt_u32(args, "maxBodies")? {
+        params["maxBodies"] = json!(max_bodies);
+    }
+    if let Some(backend) = opt_str(args, "backend")? {
+        if !PHYSICS_BACKENDS.contains(&backend) {
+            return Err(ToolError::invalid_params(format!(
+                "backend `{backend}` 不认识；可选：{}",
+                PHYSICS_BACKENDS.join(" / ")
+            )));
+        }
+        params["backend"] = json!(backend);
+    }
+    if let Some(gravity) = opt_f64_list::<3>(args, "gravity")? {
+        params["gravity"] = json!(gravity);
+    }
+    if let Some(ground) = opt_f64(args, "ground")? {
+        params["ground"] = json!(ground);
+    }
+    let mut client = connect_engine(args)?;
+    call_engine(&mut client, "physics.simulate", params, |report| report)
 }
 
 // ---------------------------------------------------------------- 写侧工具（P0-3）
@@ -493,18 +260,18 @@ fn physics_simulate(args: &Value, bridge: &mut dyn HostBridge) -> Result<Value, 
 // 参数校验在插件侧只做「够不够/类型对不对」，值域与语义仍由引擎裁决，
 // 这样插件永远与终端的 Ctrl+S / 脚本 API 走同一条路，不会出现两套真相。
 //
-// 与只读工具的差别只有三点：
+// 与只读工具的差别只有两点：
 // 1) `risk = write`，宿主会走授权流程；
-// 2) 需要知道引擎地址（`endpoint` / `R3E_RPC_ADDR`），读工具则完全离线；
-// 3) 改完都回读一次（`snapshot` / `result`），让模型确认「改成了什么样」。
+// 2) 改完都回读一次（`snapshot` / `result`），让模型确认「改成了什么样」。
+// 连引擎这件事两边一样：只读计算自 M1-S1-D 起也在引擎侧做。
 
 /// 连引擎；连不上时给一条能照着修的提示，而不是光说失败。
 fn connect_engine(args: &Value) -> Result<RpcClient, ToolError> {
     let endpoint = Endpoint::from_args(args);
     let addr = endpoint.addr.clone();
     RpcClient::connect(&endpoint).map_err(|err| ToolError {
-        // -32011 提供方自定义段：区别于「参数错」（-32602）与「数据坏」（-32010）——
-        // 这种失败的正确反应是「去启动引擎」，改参数没用。
+        // -32011 提供方自定义段：区别于「参数错」（-32602）与引擎给的业务错
+        // （如 -32010 TX_NOT_FOUND）——这种失败的正确反应是「去启动引擎」，改参数没用。
         code: -32011,
         message: format!("引擎未连接（{addr}）：{}", err.advice()),
     })
@@ -780,43 +547,6 @@ fn capture_frame(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// 场景来源：内联对象 / 内联 JSON 文本 / 工作区文件（走 `host/fs.read`）。
-fn load_scene(args: &Value, bridge: &mut dyn HostBridge) -> Result<Scene, ToolError> {
-    if let Some(path) = opt_str(args, "path")? {
-        let text = match bridge.fs_read(path) {
-            Ok(text) => text,
-            // 宿主明确拒绝（未授权 / 越界 / 文件不存在）：属于「输入有问题」，让调用方换路径
-            Err(err) if err.is_remote() => {
-                return Err(ToolError::invalid_input(format!(
-                    "读取场景 `{path}` 失败：{err}"
-                )))
-            }
-            // 管道断了：重试也没用，按内部错误上报
-            Err(err) => {
-                return Err(ToolError::internal(format!(
-                    "与宿主通信失败，读不到场景 `{path}`：{err}"
-                )))
-            }
-        };
-        return Scene::from_json_str(&text)
-            .map_err(|err| ToolError::invalid_input(format!("场景 `{path}` 解析失败：{err}")));
-    }
-    match args.get("scene") {
-        Some(Value::String(text)) => Scene::from_json_str(text)
-            .map_err(|err| ToolError::invalid_input(format!("scene 文本解析失败：{err}"))),
-        Some(value @ Value::Object(_)) => {
-            let file: SceneFile = serde_json::from_value(value.clone())
-                .map_err(|err| ToolError::invalid_input(format!("scene 对象结构不对：{err}")))?;
-            Scene::from_file(file)
-                .map_err(|err| ToolError::invalid_input(format!("scene 构造场景失败：{err}")))
-        }
-        Some(_) => Err(ToolError::invalid_params("scene 必须是对象或 JSON 文本")),
-        None => Err(ToolError::invalid_params(
-            "必须提供 scene（场景对象 / JSON 文本）或 path（工作区相对路径）",
-        )),
-    }
-}
-
 fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -926,12 +656,14 @@ fn opt_u32(args: &Value, key: &str) -> Result<Option<u32>, ToolError> {
     }
 }
 
-fn opt_f32(args: &Value, key: &str) -> Result<Option<f32>, ToolError> {
+/// 读一个可选的 f64：只读工具把数值**原样**转给引擎，不经 f32 折损
+/// （`-9.81` 转一趟 f32 会变成 `-9.8100004196167`，引擎和测试都会对不上）。
+fn opt_f64(args: &Value, key: &str) -> Result<Option<f64>, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Number(number)) => number
             .as_f64()
-            .map(|value| Some(value as f32))
+            .map(Some)
             .ok_or_else(|| ToolError::invalid_params(format!("{key} 不是有效数值"))),
         Some(other) => Err(ToolError::invalid_params(format!(
             "{key} 必须是数值，实际是 {}",
@@ -940,21 +672,30 @@ fn opt_f32(args: &Value, key: &str) -> Result<Option<f32>, ToolError> {
     }
 }
 
-fn opt_vec3(args: &Value, key: &str) -> Result<Option<Vec3>, ToolError> {
+fn opt_f64_list<const N: usize>(args: &Value, key: &str) -> Result<Option<[f64; N]>, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(items)) if items.len() == 3 => {
-            let mut values = [0f32; 3];
-            for (index, item) in items.iter().enumerate() {
-                let number = item.as_f64().ok_or_else(|| {
-                    ToolError::invalid_params(format!("{key}[{index}] 必须是数值"))
-                })?;
-                values[index] = number as f32;
+        Some(Value::Array(items)) => {
+            if items.len() != N {
+                return Err(ToolError::invalid_params(format!(
+                    "{key} 必须是 {N} 个数值，实际 {} 个",
+                    items.len()
+                )));
             }
-            Ok(Some(Vec3::from(values)))
+            let mut out = [0.0f64; N];
+            for (slot, item) in out.iter_mut().zip(items) {
+                *slot = item.as_f64().ok_or_else(|| {
+                    ToolError::invalid_params(format!(
+                        "{key} 里必须全是数值，实际是 {}",
+                        type_name(item)
+                    ))
+                })?;
+            }
+            Ok(Some(out))
         }
-        Some(_) => Err(ToolError::invalid_params(format!(
-            "{key} 必须是长度为 3 的数值数组"
+        Some(other) => Err(ToolError::invalid_params(format!(
+            "{key} 必须是 {N} 个数值的数组，实际是 {}",
+            type_name(other)
         ))),
     }
 }
@@ -970,377 +711,279 @@ fn type_name(value: &Value) -> &'static str {
     }
 }
 
-fn issue_list(issues: &[air::AirIssue]) -> Vec<Value> {
-    issues
-        .iter()
-        .take(MAX_LISTED_ISSUES)
-        .map(|issue| {
-            // P0-2：`mesh_stats` 没有场景节点可挂，但锚点仍然要给——
-            // 顶点号/索引号/分区号是「去网格里第几个元素看」的唯一线索。
-            json!({
-                "kind": issue.kind.as_str(),
-                "detail": issue.detail,
-                "anchors": {
-                    "vertex": issue.anchor.vertex,
-                    "index": issue.anchor.index,
-                    "part": issue.anchor.part,
-                },
-            })
-        })
-        .collect()
-}
-
-fn vec3_json(value: Vec3) -> Value {
-    json!([round(value.x), round(value.y), round(value.z)])
-}
-
-/// `Camera` / `Light` / `PhysicsSceneDesc` 都是「只 Deserialize」的运行时结构
-/// （引擎不需要把它们写回场景文件），所以这里手写摘要，而不是硬要上游加 Serialize
-/// ——插件不该为了自己的输出格式去改核心 crate 的公开契约。
-fn camera_json(camera: &r3e_core::Camera) -> Value {
-    json!({
-        "position": vec3_json(camera.position),
-        "target": vec3_json(camera.target),
-        "up": vec3_json(camera.up),
-        "fovDeg": round(camera.fov_deg),
-        "znear": round(camera.znear),
-        "zfar": round(camera.zfar),
-        "aspect": round(camera.aspect),
-    })
-}
-
-fn light_json(light: &r3e_core::Light) -> Value {
-    json!({
-        "direction": vec3_json(light.direction),
-        "color": vec3_json(light.color),
-        "intensity": round(light.intensity),
-        "ambient": vec3_json(light.ambient),
-        "shadow": {
-            "enabled": light.shadow.enabled,
-            "size": light.shadow.size,
-            "orthoSize": round(light.shadow.ortho_size),
-            "strength": round(light.shadow.strength),
-            // 扩展十六：级联配置。模型据此判断「阴影糊」是分辨率不够还是级数太少。
-            "cascades": light.shadow.cascade.count,
-            "blend": round(light.shadow.cascade.blend),
-            "distance": round(light.shadow.cascade.max_distance),
-        },
-    })
-}
-
-fn physics_desc_json(desc: &r3e_core::scene::PhysicsSceneDesc) -> Value {
-    json!({
-        "enabled": desc.enabled,
-        "backend": desc.backend,
-        "gravity": desc.gravity.map(|value| json!([
-            round(value[0]),
-            round(value[1]),
-            round(value[2])
-        ])),
-        "ground": desc.ground.map(round),
-        "ccd": desc.ccd,
-    })
-}
-
-/// 保留 4 位小数：工具回包给模型看，尾数过长的浮点纯属噪声。
-fn round(value: f32) -> f64 {
-    if !value.is_finite() {
-        return 0.0;
-    }
-    (f64::from(value) * 10_000.0).round() / 10_000.0
-}
-
-/// FNV-1a 64：给网格一个稳定指纹，用于「同一图元两次生成是否一致」的比对。
-fn fingerprint(mesh: &MeshData) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut mix = |bytes: &[u8]| {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    };
-    mix(&(mesh.vertices.len() as u64).to_le_bytes());
-    mix(&(mesh.indices.len() as u64).to_le_bytes());
-    for vertex in &mesh.vertices {
-        let position = vertex.position();
-        for axis in [position.x, position.y, position.z] {
-            mix(&axis.to_bits().to_le_bytes());
-        }
-    }
-    for index in &mesh.indices {
-        mix(&index.to_le_bytes());
-    }
-    format!("fnv1a64:{hash:016x}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
 
     struct NoHost;
 
     impl HostBridge for NoHost {
-        fn fs_read(&mut self, _path: &str) -> Result<String, HostError> {
-            Err(HostError::Remote {
-                code: 6103,
-                message: "能力尚未授权：fs.read".to_string(),
-            })
-        }
-
         fn workspace_info(&mut self) -> Result<Value, HostError> {
             Ok(Value::Null)
         }
     }
 
-    const DEMO: &str = r#"{
-        "name": "demo",
-        "camera": { "position": [0, 2, 6], "target": [0, 1, 0], "fov": 60 },
-        "light": { "direction": [-0.4, -1, -0.3], "intensity": 1.2 },
-        "physics": { "enabled": true, "backend": "builtin", "gravity": [0, -9.81, 0], "ground": 0 },
-        "objects": [
-            { "name": "floor", "mesh": "builtin:plane", "scale": [8, 1, 8], "physics": { "body": "static" } },
-            { "name": "crate", "mesh": "builtin:cube", "position": [0, 3, 0], "physics": { "body": "dynamic" } }
-        ]
-    }"#;
+    /// 假引擎：监听回环端口，按顺序回 `replies`，返回 (端口, 收到的请求帧)。
+    ///
+    /// 只读工具现在全是薄壳，「方法名 + 参数形状」就是插件与引擎之间唯一的契约；
+    /// 光看返回值验不出来——返回值可以来自本地，也可以来自引擎。
+    fn fake_engine(replies: Vec<Value>) -> (u16, std::thread::JoinHandle<Vec<Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定回环端口");
+        let port = listener.local_addr().expect("本地地址").port();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            if let Ok((stream, _)) = listener.accept() {
+                let mut writer = stream.try_clone().expect("复制连接");
+                let mut reader = BufReader::new(stream);
+                for reply in replies {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).expect("读请求") == 0 {
+                        break;
+                    }
+                    let request: Value =
+                        serde_json::from_str(line.trim_end()).expect("请求是合法 JSON");
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    seen.push(request);
+                    let frame = json!({ "jsonrpc": "2.0", "id": id, "result": reply }).to_string();
+                    writer.write_all(frame.as_bytes()).expect("写响应");
+                    writer.write_all(b"\n").expect("换行");
+                    writer.flush().expect("刷新");
+                }
+            }
+            seen
+        });
+        (port, handle)
+    }
 
-    fn demo_args() -> Value {
-        json!({ "scene": DEMO })
+    /// 假引擎：只回一帧错误，用来验「引擎错误码原样透传」。
+    fn fake_engine_error(code: i64, message: &str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定回环端口");
+        let port = listener.local_addr().expect("本地地址").port();
+        let message = message.to_string();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut writer = stream.try_clone().expect("复制连接");
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).expect("读请求") > 0 {
+                    let request: Value =
+                        serde_json::from_str(line.trim_end()).expect("请求是合法 JSON");
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    let frame = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": code, "message": message },
+                    })
+                    .to_string();
+                    writer.write_all(frame.as_bytes()).expect("写响应");
+                    writer.write_all(b"\n").expect("换行");
+                    writer.flush().expect("刷新");
+                }
+            }
+        });
+        port
+    }
+
+    fn with_engine(port: u16, mut args: Value) -> Value {
+        args["endpoint"] = json!({ "addr": format!("127.0.0.1:{port}") });
+        args
     }
 
     #[test]
-    fn engine_info_lists_backends_and_tools() {
-        let info = invoke("engine_info", &json!({}), &mut NoHost).expect("engine_info");
+    fn engine_info_lists_backends_and_tools_without_faking_availability() {
+        let info = invoke("engine_info", &json!({})).expect("engine_info");
         assert_eq!(info["engine"]["name"], json!("rust3d-engine"));
         assert_eq!(info["plugin"]["id"], json!(crate::spec::PLUGIN_ID));
+        assert_eq!(info["plugin"]["compute"], json!("engine-rpc"));
         let backends = info["physics"]["backends"].as_array().expect("backends");
         assert!(backends.iter().any(|item| item["name"] == json!("builtin")));
-        assert!(backends.iter().any(|item| item["name"] == json!("rapier")
-            && item["available"] == json!(cfg!(feature = "rapier"))));
-    }
-
-    #[test]
-    fn scene_inspect_reports_nodes() {
-        let report = invoke("scene_inspect", &demo_args(), &mut NoHost).expect("scene_inspect");
-        assert_eq!(report["nodeCount"], json!(2));
-        assert_eq!(report["listedCount"], json!(2));
-        assert_eq!(report["truncated"], json!(false));
-        assert_eq!(report["nodes"][0]["name"], json!("floor"));
-        assert_eq!(report["nodes"][0]["meshKind"], json!("builtin"));
-        assert_eq!(report["nodes"][1]["physics"]["body"], json!("dynamic"));
-    }
-
-    #[test]
-    fn scene_inspect_reports_postfx_summary() {
-        // 没有 postfx 段：整段给 null，模型据此判断「这个场景是直通画面」。
-        let report = invoke("scene_inspect", &demo_args(), &mut NoHost).expect("scene_inspect");
-        assert!(report["postfx"].is_null(), "无 postfx 段时应为 null");
-
-        let mut args = demo_args();
-        args["scene"] = json!(
-            r#"{
-            "objects": [{ "name": "floor", "mesh": "plane" }],
-            "postfx": {
-                "exposure": 0.2,
-                "tonemap": "aces",
-                "bloom": { "enabled": true },
-                "ssao": { "enabled": true, "radius": 1.1, "intensity": 1.4, "samples": 12 }
-            }
-        }"#
-        );
-        let report = invoke("scene_inspect", &args, &mut NoHost).expect("scene_inspect");
-        let postfx = &report["postfx"];
-        assert_eq!(postfx["tonemap"], json!("aces"));
-        assert_eq!(postfx["bloom"], json!(true));
-        // 遮蔽段逐字段回显：半径 / 强度带两位小数，样本数原样。
-        assert_eq!(postfx["ssao"]["enabled"], json!(true));
-        assert_eq!(postfx["ssao"]["radius"], json!(1.1));
-        assert_eq!(postfx["ssao"]["intensity"], json!(1.4));
-        assert_eq!(postfx["ssao"]["samples"], json!(12));
-    }
-
-    #[test]
-    fn scene_inspect_respects_max_nodes() {
-        let mut args = demo_args();
-        args["maxNodes"] = json!(1);
-        let report = invoke("scene_inspect", &args, &mut NoHost).expect("scene_inspect");
-        assert_eq!(report["listedCount"], json!(1));
-        assert_eq!(report["truncated"], json!(true));
-    }
-
-    #[test]
-    fn mesh_stats_matches_known_primitive_counts() {
-        let cube = invoke("mesh_stats", &json!({}), &mut NoHost).expect("cube");
-        assert_eq!(cube["shape"], json!("cube"));
-        assert_eq!(cube["vertices"], json!(24));
-        assert_eq!(cube["triangles"], json!(12));
-        assert_eq!(cube["air"]["ok"], json!(true));
-
-        let sphere = invoke(
-            "mesh_stats",
-            &json!({ "shape": "sphere", "segments": 8, "rings": 4 }),
-            &mut NoHost,
-        )
-        .expect("sphere");
-        assert_eq!(sphere["shape"], json!("sphere"));
-        assert!(sphere["vertices"].as_u64().expect("vertices") > 0);
-        // 同参数两次生成必须同指纹
-        let again = invoke(
-            "mesh_stats",
-            &json!({ "shape": "sphere", "segments": 8, "rings": 4 }),
-            &mut NoHost,
-        )
-        .expect("sphere again");
-        assert_eq!(sphere["fingerprint"], again["fingerprint"]);
-    }
-
-    #[test]
-    fn mesh_stats_rejects_unknown_shape() {
-        let error = invoke("mesh_stats", &json!({ "shape": "teapot" }), &mut NoHost)
-            .expect_err("未知图元必须报错");
-        assert_eq!(error.code, -32602);
-    }
-
-    #[test]
-    fn scene_validate_rejects_duplicate_node_names() {
-        // 引擎自己在建场景时就拒绝重名，插件只需如实转达这层约束
-        let scene = json!({
-            "name": "dup",
-            "objects": [
-                { "name": "same", "mesh": "builtin:cube" },
-                { "name": "same", "mesh": "builtin:sphere" }
-            ]
-        });
-        let error = invoke("scene_validate", &json!({ "scene": scene }), &mut NoHost)
-            .expect_err("重名场景应当在构建阶段就被拒");
-        assert_eq!(error.code, -32010);
-        assert!(error.message.contains("same"));
-    }
-
-    #[test]
-    fn scene_validate_marks_asset_meshes_as_skipped() {
-        let scene = json!({
-            "name": "asset",
-            "objects": [ { "name": "hero", "mesh": "asset:models/hero.fbx#0" } ]
-        });
-        let report =
-            invoke("scene_validate", &json!({ "scene": scene }), &mut NoHost).expect("validate");
-        assert_eq!(report["nodes"][0]["air"]["skipped"], json!(true));
-        assert_eq!(report["nodes"][0]["air"]["reason"], json!("external-asset"));
-        assert_eq!(report["nodes"][0]["air"]["ok"], Value::Null);
-    }
-
-    #[test]
-    fn physics_simulate_moves_dynamic_body() {
-        let report = invoke("physics_simulate", &demo_args(), &mut NoHost).expect("simulate");
-        assert_eq!(report["ok"], json!(true));
-        assert_eq!(report["backend"], json!("builtin"));
-        assert_eq!(report["bodyCount"], json!(2));
-        // 两个刚体都登记了，动态的那个必须真的掉下来（重力生效）
-        let max = report["maxDisplacement"].as_f64().expect("maxDisplacement");
-        assert!(max > 0.0, "动态刚体应当发生位移，实际 {max}");
-    }
-
-    #[test]
-    fn physics_simulate_rejects_unavailable_backend() {
-        let mut args = demo_args();
-        args["backend"] = json!("rapier");
-        if cfg!(feature = "rapier") {
-            invoke("physics_simulate", &args, &mut NoHost).expect("rapier 已编入");
-        } else {
-            let error = invoke("physics_simulate", &args, &mut NoHost).expect_err("未编入必须报错");
-            assert_eq!(error.code, -32602);
-            assert!(error.message.contains("rapier"));
-        }
-    }
-
-    /// 场景文件自己写了 `physics.backend = "rapier"`、而本二进制没编 rapier 时，
-    /// 必须走「结构化错误」而不是 panic（宿主看到的是一个正常错误帧，不是崩溃重启）。
-    #[test]
-    fn scene_declared_unavailable_backend_is_structured_error() {
-        let scene = json!({
-            "name": "rapier-scene",
-            "physics": { "enabled": true, "backend": "rapier" },
-            "objects": [
-                { "name": "crate", "mesh": "builtin:cube", "position": [0, 3, 0], "physics": { "body": "dynamic" } }
-            ]
-        });
-        let outcome = std::panic::catch_unwind(|| {
-            invoke("physics_simulate", &json!({ "scene": scene }), &mut NoHost)
-        });
-        let result = outcome.expect("未编入的后端绝不允许 panic");
-        if cfg!(feature = "rapier") {
-            result.expect("rapier 已编入，应当跑通");
-        } else {
-            let error = result.expect_err("未编入必须返回错误");
-            assert_eq!(error.code, -32010, "场景数据问题走 -32010");
+        assert!(backends.iter().any(|item| item["name"] == json!("rapier")));
+        // 后端可用性只有引擎知道：插件自述里不允许出现凭空断言的 available。
+        for backend in backends {
+            let available = backend.get("available");
             assert!(
-                error.message.contains("rapier"),
-                "错误信息要点明后端名：{}",
+                available.is_none() || available.map(Value::is_null).unwrap_or(false),
+                "插件不再链物理 crate，不得凭空断言可用性：{backend}"
+            );
+        }
+        assert_eq!(info["meshes"].as_array().expect("meshes").len(), 4);
+    }
+
+    #[test]
+    fn scene_inspect_is_a_shell_over_scene_snapshot() {
+        let (port, handle) = fake_engine(vec![json!({ "nodeCount": 2, "listedCount": 2 })]);
+        let args = with_engine(
+            port,
+            json!({
+                "scene": { "name": "demo", "objects": [ { "name": "floor", "mesh": "builtin:plane" } ] },
+                "maxNodes": 1
+            }),
+        );
+        let report = invoke("scene_inspect", &args).expect("scene_inspect");
+        let seen = handle.join().expect("假引擎线程");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["method"], json!("scene.snapshot"));
+        assert_eq!(seen[0]["params"]["maxNodes"], json!(1));
+        // 内联对象必须序列化成**文本**再下行：引擎侧只实现一条解析路径。
+        let scene = seen[0]["params"]["scene"]
+            .as_str()
+            .expect("scene 应以文本形态下行");
+        let parsed: Value = serde_json::from_str(scene).expect("序列化后仍是合法 JSON");
+        assert_eq!(parsed["name"], json!("demo"));
+        // 引擎回什么就回什么，插件不再二次加工。
+        assert_eq!(report["nodeCount"], json!(2));
+    }
+
+    #[test]
+    fn scene_source_defaults_to_current_scene() {
+        let (port, handle) = fake_engine(vec![json!({})]);
+        let args = with_engine(port, json!({}));
+        invoke("scene_validate", &args).expect("scene_validate");
+        let seen = handle.join().expect("假引擎线程");
+        assert_eq!(seen[0]["method"], json!("scene.validate"));
+        // 一条来源都不给时不要凭空塞 `scene: null`：宿主会把它当成「给了空文本」。
+        let params = seen[0]["params"].as_object().expect("params 是对象");
+        assert!(!params.contains_key("scene"));
+        assert!(!params.contains_key("path"));
+    }
+
+    #[test]
+    fn path_is_forwarded_as_is() {
+        let (port, handle) = fake_engine(vec![json!({ "ok": true })]);
+        let args = with_engine(port, json!({ "path": "scenes/demo.json" }));
+        invoke("scene_validate", &args).expect("scene_validate");
+        let seen = handle.join().expect("假引擎线程");
+        assert_eq!(seen[0]["params"]["path"], json!("scenes/demo.json"));
+    }
+
+    #[test]
+    fn mesh_stats_forwards_tessellation_to_engine() {
+        let (port, handle) = fake_engine(vec![json!({ "shape": "sphere", "vertices": 42 })]);
+        let args = with_engine(
+            port,
+            json!({ "shape": "sphere", "segments": 8, "rings": 4 }),
+        );
+        let report = invoke("mesh_stats", &args).expect("mesh_stats");
+        let seen = handle.join().expect("假引擎线程");
+        assert_eq!(seen[0]["method"], json!("mesh.stats"));
+        assert_eq!(seen[0]["params"]["shape"], json!("sphere"));
+        assert_eq!(seen[0]["params"]["segments"], json!(8));
+        assert_eq!(seen[0]["params"]["rings"], json!(4));
+        assert_eq!(report["vertices"], json!(42));
+    }
+
+    #[test]
+    fn mesh_stats_rejects_unknown_shape_before_connecting() {
+        // 端口 1 上不会有引擎：能拿到参数错就证明拒绝发生在连接之前。
+        let error = invoke(
+            "mesh_stats",
+            &json!({ "shape": "teapot", "endpoint": { "port": 1 } }),
+        )
+        .expect_err("未知图元必须报错");
+        assert_eq!(error.code, -32602);
+        assert!(
+            error.message.contains("cube"),
+            "报错要列出可选形状：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn physics_simulate_forwards_simulation_params() {
+        let (port, handle) = fake_engine(vec![json!({ "ok": true, "bodyCount": 2 })]);
+        let args = with_engine(
+            port,
+            json!({
+                "scene": { "name": "demo", "objects": [] },
+                "steps": 12,
+                "dt": 0.02,
+                "maxBodies": 3,
+                "backend": "builtin",
+                "gravity": [0.0, -9.81, 0.0],
+                "ground": -0.5
+            }),
+        );
+        let report = invoke("physics_simulate", &args).expect("physics_simulate");
+        let seen = handle.join().expect("假引擎线程");
+        assert_eq!(seen[0]["method"], json!("physics.simulate"));
+        let params = &seen[0]["params"];
+        assert_eq!(params["steps"], json!(12));
+        assert_eq!(params["maxBodies"], json!(3));
+        assert_eq!(params["backend"], json!("builtin"));
+        assert_eq!(params["gravity"], json!([0.0, -9.81, 0.0]));
+        let dt = params["dt"].as_f64().expect("dt");
+        assert!((dt - 0.02).abs() < 1e-6, "dt 应为 0.02，实际 {dt}");
+        let ground = params["ground"].as_f64().expect("ground");
+        assert!(
+            (ground + 0.5).abs() < 1e-6,
+            "ground 应为 -0.5，实际 {ground}"
+        );
+        assert!(params["scene"].is_string());
+        assert_eq!(report["bodyCount"], json!(2));
+    }
+
+    #[test]
+    fn physics_simulate_rejects_unknown_backend_before_connecting() {
+        let error = invoke(
+            "physics_simulate",
+            &json!({ "scene": "{}", "backend": "bullet", "endpoint": { "port": 1 } }),
+        )
+        .expect_err("未知后端必须报错");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("builtin"), "{}", error.message);
+    }
+
+    #[test]
+    fn read_only_tools_report_missing_engine_as_actionable_error() {
+        for tool in [
+            "scene_inspect",
+            "mesh_stats",
+            "scene_validate",
+            "physics_simulate",
+        ] {
+            let error = invoke(tool, &json!({ "endpoint": { "port": 1 } }))
+                .expect_err("端口 1 上不该有引擎");
+            assert_eq!(error.code, -32011, "{tool}");
+            assert!(
+                error.message.contains("引擎"),
+                "{tool} 的报错要点明引擎：{}",
                 error.message
             );
         }
     }
 
-    /// `backend` 显式传 rapier（未编入）时，错误信息必须给出「怎么办」，方便模型自我纠正。
     #[test]
-    fn unavailable_backend_error_is_actionable() {
-        if cfg!(feature = "rapier") {
-            return;
-        }
-        let mut args = demo_args();
-        args["backend"] = json!("rapier");
-        let error = invoke("physics_simulate", &args, &mut NoHost).expect_err("未编入必须报错");
-        assert_eq!(error.code, -32602);
+    fn engine_rejection_keeps_its_code_and_names_the_method() {
+        let port = fake_engine_error(-32004, "场景里没有节点 `hero`");
+        let args = with_engine(port, json!({ "scene": "{}" }));
+        let error = invoke("scene_inspect", &args).expect_err("引擎拒绝");
+        assert_eq!(error.code, -32004, "引擎错误码必须原样透传");
         assert!(
-            error.message.contains("--features rapier"),
-            "{}",
+            error.message.contains("scene.snapshot"),
+            "报错要点明是哪条方法：{}",
             error.message
         );
-        assert!(
-            error.message.contains("builtin"),
-            "错误里要列出可用后端：{}",
-            error.message
-        );
-    }
-
-    #[test]
-    fn physics_simulate_rejects_out_of_range_dt() {
-        let mut args = demo_args();
-        args["dt"] = json!(1.5);
-        let error = invoke("physics_simulate", &args, &mut NoHost).expect_err("dt 超范围");
-        assert_eq!(error.code, -32602);
-    }
-
-    #[test]
-    fn path_without_permission_surfaces_host_error() {
-        let error = invoke(
-            "scene_inspect",
-            &json!({ "path": "assets/demo.json" }),
-            &mut NoHost,
-        )
-        .expect_err("无授权必须报错");
-        assert_eq!(error.code, -32010);
-        assert!(error.message.contains("6103"));
-    }
-
-    #[test]
-    fn broken_scene_text_is_invalid_input() {
-        let error = invoke("scene_inspect", &json!({ "scene": "{oops" }), &mut NoHost)
-            .expect_err("坏 JSON");
-        assert_eq!(error.code, -32010);
     }
 
     #[test]
     fn wrong_argument_type_is_rejected() {
-        let mut args = demo_args();
-        args["maxNodes"] = json!("many");
-        let error = invoke("scene_inspect", &args, &mut NoHost).expect_err("类型错");
+        let error = invoke("scene_inspect", &json!({ "scene": {}, "maxNodes": "many" }))
+            .expect_err("类型错");
         assert_eq!(error.code, -32602);
     }
 
     #[test]
+    fn scene_must_be_object_or_text() {
+        let error = invoke("scene_validate", &json!({ "scene": 42 })).expect_err("scene 类型不对");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("scene"), "{}", error.message);
+    }
+
+    #[test]
     fn unknown_tool_is_rejected() {
-        let error = invoke("nope", &json!({}), &mut NoHost).expect_err("未知工具");
+        let error = invoke("nope", &json!({})).expect_err("未知工具");
         assert_eq!(error.code, -32602);
     }
 
@@ -1358,8 +1001,8 @@ mod tests {
         // 引擎写的是 PNG 字节；后缀给 .jpg 只会产出一个名不副实的文件，
         // 这种错要在插件侧直接报参数错，而不是等用户打开图片才发现。
         for bad in ["a.jpg", "b.png.jpg", "c.jpeg", "d"] {
-            let error = invoke("capture_frame", &json!({ "path": bad }), &mut NoHost)
-                .expect_err("非 PNG 后缀应被拒绝");
+            let error =
+                invoke("capture_frame", &json!({ "path": bad })).expect_err("非 PNG 后缀应被拒绝");
             assert_eq!(error.code, -32602, "path={bad}");
             assert!(
                 error.message.contains(".png"),
@@ -1372,7 +1015,7 @@ mod tests {
     #[test]
     fn capture_frame_rejects_blank_and_directory_paths() {
         for bad in ["", "   ", "captures/", "captures\\"] {
-            let error = invoke("capture_frame", &json!({ "path": bad }), &mut NoHost)
+            let error = invoke("capture_frame", &json!({ "path": bad }))
                 .expect_err("空白或目录路径应被拒绝");
             assert_eq!(error.code, -32602, "path={bad:?}");
         }
@@ -1381,7 +1024,6 @@ mod tests {
         let error = invoke(
             "capture_frame",
             &json!({ "path": "D:/tmp/shot.PNG", "endpoint": { "port": 1 } }),
-            &mut NoHost,
         )
         .expect_err("端口 1 上不该有引擎");
         assert_ne!(error.code, -32602, "合法路径不应报参数错：{error:?}");
@@ -1389,16 +1031,94 @@ mod tests {
 
     #[test]
     fn engine_stats_reports_missing_engine_as_actionable_error() {
-        let error = invoke(
-            "engine_stats",
-            &json!({ "endpoint": { "port": 1 } }),
-            &mut NoHost,
-        )
-        .expect_err("端口 1 上不该有引擎");
+        let error = invoke("engine_stats", &json!({ "endpoint": { "port": 1 } }))
+            .expect_err("端口 1 上不该有引擎");
         // 错误必须告诉调用方「去找引擎」，而不是含糊的 IO 失败
         assert!(
             error.message.contains("引擎") || error.message.contains("RPC"),
             "报错应指出引擎连接问题，实际：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn scene_validate_forwards_inline_text_without_rewriting_it() {
+        // 已是文本就原样下行：插件不再 `parse` 一遍，否则「文本」与「对象」两条路
+        // 会在引擎侧给出两套不同的错误文案。
+        let text = r#"{"name":"lv1","objects":[]}"#;
+        let (port, handle) = fake_engine(vec![json!({ "ok": true })]);
+        let args = with_engine(port, json!({ "scene": text }));
+        invoke("scene_validate", &args).expect("scene_validate");
+        let seen = handle.join().expect("假引擎线程");
+        assert_eq!(seen[0]["method"], json!("scene.validate"));
+        assert_eq!(seen[0]["params"]["scene"], json!(text));
+    }
+
+    #[test]
+    fn scene_source_rejects_non_text_and_non_object_scene() {
+        // 端口 1 上不会有引擎：拿到参数错就证明拒绝发生在连接之前。
+        for bad in [json!(3), json!([1, 2]), json!(true)] {
+            let error = invoke(
+                "scene_inspect",
+                &json!({ "scene": bad, "endpoint": { "port": 1 } }),
+            )
+            .expect_err("scene 只认场景对象或场景 JSON 文本");
+            assert_eq!(error.code, -32602, "scene={bad}");
+            assert!(
+                error.message.contains("scene"),
+                "报错要点名 scene，实际：{}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn scene_inspect_omits_max_nodes_when_absent() {
+        // 没给就是没给：插件不替引擎补默认值，否则两边的缺省值迟早会分叉。
+        let (port, handle) = fake_engine(vec![json!({})]);
+        let args = with_engine(port, json!({ "scene": "{}" }));
+        invoke("scene_inspect", &args).expect("scene_inspect");
+        let seen = handle.join().expect("假引擎线程");
+        let params = seen[0]["params"].as_object().expect("params 是对象");
+        assert!(!params.contains_key("maxNodes"), "{params:?}");
+    }
+
+    #[test]
+    fn mesh_stats_omits_absent_tessellation_params() {
+        let (port, handle) = fake_engine(vec![json!({})]);
+        let args = with_engine(port, json!({ "shape": "sphere" }));
+        invoke("mesh_stats", &args).expect("mesh_stats");
+        let seen = handle.join().expect("假引擎线程");
+        let params = seen[0]["params"].as_object().expect("params 是对象");
+        for key in ["segments", "rings", "divisions"] {
+            assert!(!params.contains_key(key), "不该补 `{key}`：{params:?}");
+        }
+    }
+
+    #[test]
+    fn physics_simulate_keeps_engine_error_code_and_names_method() {
+        let port = fake_engine_error(-32004, "场景里没有节点 `hero`");
+        let args = with_engine(port, json!({ "scene": "{}" }));
+        let error = invoke("physics_simulate", &args).expect_err("引擎拒绝");
+        assert_eq!(error.code, -32004, "引擎错误码必须原样透传");
+        assert!(
+            error.message.contains("physics.simulate"),
+            "报错要点名方法，实际：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn gravity_must_be_exactly_three_numbers() {
+        let error = invoke(
+            "physics_simulate",
+            &json!({ "scene": "{}", "gravity": [0.0, -9.81], "endpoint": { "port": 1 } }),
+        )
+        .expect_err("gravity 少一个分量必须报错");
+        assert_eq!(error.code, -32602);
+        assert!(
+            error.message.contains("gravity") && error.message.contains('3'),
+            "报错要点明需要 3 个分量，实际：{}",
             error.message
         );
     }

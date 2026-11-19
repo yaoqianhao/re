@@ -8,7 +8,9 @@
 //!                  └─ media::dispatch_media ui.* / light.* / audio.*
 //!                       └─ physics::dispatch_physics physics.*（M1-S4-D，只读）
 //!                            └─ nav::dispatch_nav nav.*（M1-S4-D）
-//!                                 └─ 未知方法 → METHOD_NOT_FOUND
+//!                                 └─ inspect::dispatch_inspect scene.snapshot / mesh.stats
+//!                                      / scene.validate / physics.simulate（M1-S1-D）
+//!                                      └─ 未知方法 → METHOD_NOT_FOUND
 //! ```
 //!
 //! 参数解码辅助（`param` / `opt_f32*` / `with_node` …）也在这里，子模块通过
@@ -24,6 +26,7 @@ use crate::patch::*;
 use crate::probe::{CastQuery, CastShapeSpec, OverlapQuery, RayQuery};
 use crate::{INTERNAL_ERROR, METHOD_NOT_FOUND, PROTOCOL_VERSION};
 
+mod inspect;
 mod media;
 mod nav;
 mod physics;

@@ -31,10 +31,10 @@ use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_doc::Document;
 use r3e_editor::{
     AnimLayerPatch, AudioSpatialPatch, CastQuery, EngineApi, EngineInfo, EnvironmentMapPatch,
-    EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, NavBakeOptions,
-    NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch, QuerySpec,
-    RayQuery, RpcFailure, ShadowPatch, SsaoPatch, TransformPatch, UiPatch, VerifyQuery,
-    PROTOCOL_VERSION, SERVER_BUSY,
+    EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, MeshStatsQuery,
+    NavBakeOptions, NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch,
+    QuerySpec, RayQuery, RpcFailure, ShadowPatch, SimulateQuery, SnapshotQuery, SsaoPatch,
+    TransformPatch, UiPatch, ValidateQuery, VerifyQuery, PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_nav::Nav;
 use r3e_physics::Physics;
@@ -93,6 +93,7 @@ mod anim;
 mod audio;
 mod env;
 mod info;
+mod inspect;
 mod light;
 mod material;
 mod nav;
@@ -309,6 +310,22 @@ impl EngineApi for LocalEngineApi<'_> {
     // ---- M1-S4-F：三层体检（协议面 56 → 57 条） ----
     fn scene_verify(&mut self, query: VerifyQuery) -> Result<Value, RpcFailure> {
         verify::scene_verify(self, query)
+    }
+
+    fn scene_snapshot(&mut self, query: SnapshotQuery) -> Result<Value, RpcFailure> {
+        inspect::scene_snapshot(self, query)
+    }
+
+    fn mesh_stats(&mut self, query: MeshStatsQuery) -> Result<Value, RpcFailure> {
+        inspect::mesh_stats(self, query)
+    }
+
+    fn scene_validate(&mut self, query: ValidateQuery) -> Result<Value, RpcFailure> {
+        inspect::scene_validate(self, query)
+    }
+
+    fn physics_simulate(&mut self, query: SimulateQuery) -> Result<Value, RpcFailure> {
+        inspect::physics_simulate(self, query)
     }
 }
 
