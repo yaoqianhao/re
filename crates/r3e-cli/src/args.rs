@@ -215,9 +215,33 @@ pub enum Cmd {
         targets: Value,
         limit: Option<u64>,
     },
+    /// 直调任意协议方法（工具通道，不进事务、不进撤销栈）。
+    Rpc {
+        method: String,
+        args: Value,
+    },
     Replay(ReplayArgs),
     Help,
 }
+
+/// 只该走事务的方法（`tx` 侧的写场景白名单）。
+///
+/// `rpc` 一律拒绝它们：绕过事务直接改场景，改动既不进撤销栈也不进版本记账，
+/// 编辑器里看到的是一个「撤销不回去」的世界。要改场景就走 `tx intent`。
+const TX_ONLY_METHODS: &[&str] = &[
+    "scene.spawn",
+    "scene.settransform",
+    "scene.setvisible",
+    "scene.spawn_prefab",
+    "scene.place_light",
+    "scene.paint_terrain",
+    "scene.material.upsert",
+    // 删除节点同样改场景，而且事务白名单里根本没有它——`rpc` 放行等于给人一条
+    // 「删了就撤不回来」的旁路，比改属性更狠。
+    "scene.remove",
+    "light.remove",
+    "ui.remove",
+];
 
 /// 解析结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -239,18 +263,21 @@ pub fn parse(argv: Vec<String>) -> Result<Invocation, ParseError> {
     }
 
     let head = positionals.first().map(String::as_str).ok_or_else(|| {
-        ParseError::new("缺少子命令：`r3e-cli --help` 看全部用法（tx / query / verify / replay）")
+        ParseError::new(
+            "缺少子命令：`r3e-cli --help` 看全部用法（tx / query / verify / rpc / replay）",
+        )
     })?;
 
     let cmd = match head {
         "tx" => parse_tx(&positionals, &flags)?,
         "query" => parse_query(&positionals, &flags)?,
         "verify" => parse_verify(&positionals, &flags)?,
+        "rpc" => parse_rpc(&positionals, &flags)?,
         "replay" => parse_replay(&positionals, &flags)?,
         "help" => Cmd::Help,
         other => {
             return Err(ParseError::new(format!(
-            "未知子命令 `{other}`；可用：tx / query / verify / replay（`r3e-cli --help` 看用法）"
+            "未知子命令 `{other}`；可用：tx / query / verify / rpc / replay（`r3e-cli --help` 看用法）"
         )))
         }
     };
@@ -567,6 +594,48 @@ fn parse_verify(
     Ok(Cmd::Verify { targets, limit })
 }
 
+/// 解析 `rpc <method> [--args '<json>']`。
+///
+/// 只做两件校验：方法名得像协议方法（含 `.`），且不能是「只该走事务」的那批。
+/// 参数形状一律交给引擎判——CLI 抄一份校验就多一处会跟引擎漂移的假真相。
+fn parse_rpc(
+    positionals: &[String],
+    flags: &BTreeMap<String, Option<String>>,
+) -> Result<Cmd, ParseError> {
+    reject_unrelated(flags, &["args"])?;
+
+    let method = positionals
+        .get(1)
+        .ok_or_else(|| {
+            ParseError::new(
+                "`rpc` 缺少 <method>；方法名取自协议方法表，如 `physics.bind` / `nav.bake`",
+            )
+        })?
+        .clone();
+    ensure_len(positionals, 2, "rpc <method> [--args '<json>']")?;
+
+    if !method.contains('.') {
+        return Err(ParseError::new(format!(
+            "`rpc` 的 <method> 需要带命名空间，如 `nav.bake`，收到 `{method}`"
+        )));
+    }
+    if method.starts_with("tx.") {
+        return Err(ParseError::new(format!(
+            "`{method}` 属于事务通道，请用 `tx begin` / `tx apply` / `tx commit`（`rpc` 不记事务状态）"
+        )));
+    }
+    if TX_ONLY_METHODS.contains(&method.as_str()) {
+        return Err(ParseError::new(format!(
+            "`{method}` 会改场景，只允许走事务：`tx intent {method} --args ...` 才能进撤销栈；用 `rpc` 直调会留下撤销不回去的改动"
+        )));
+    }
+
+    Ok(Cmd::Rpc {
+        method,
+        args: json_args(flags)?,
+    })
+}
+
 fn parse_replay(
     positionals: &[String],
     flags: &BTreeMap<String, Option<String>>,
@@ -645,6 +714,10 @@ r3e-cli — r3e 引擎的远程调用入口（JSON-RPC 2.0 over TCP / NDJSON）
 体检:
   verify [--targets '<json>'] [--limit N]
                                       三层体检；退出码由 passed 决定（不是 ok）
+
+工具通道（不进事务、不进撤销栈）:
+  rpc <method> [--args '<json>']      直调任意协议方法，如 `rpc nav.bake` /
+                                      `rpc physics.bind`；改场景的那批方法一律拒绝
 
 确定性回放（子进程，不连引擎）:
   replay [--seed N] [--frames N] [--hash-every N] [--expect <hex>] [--replay-bin <path>]

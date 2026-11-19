@@ -19,10 +19,10 @@ fn expect_err(line: &str) -> String {
 }
 
 #[test]
-fn missing_subcommand_names_all_four() {
+fn missing_subcommand_names_all_five() {
     let msg = expect_err("");
     assert!(msg.contains("缺少子命令"), "{msg}");
-    for name in ["tx", "query", "verify", "replay"] {
+    for name in ["tx", "query", "verify", "rpc", "replay"] {
         assert!(msg.contains(name), "帮助里应点到 `{name}`：{msg}");
     }
 }
@@ -312,4 +312,57 @@ fn addr_source_reports_where_the_address_came_from() {
     };
     assert_eq!(global.addr_source(), "--addr");
     assert_eq!(global.resolved_addr(), "127.0.0.1:9abc");
+}
+
+#[test]
+fn rpc_takes_method_and_object_args() {
+    let inv = parse_str("rpc nav.bake").expect("应解析成功");
+    assert_eq!(
+        inv.cmd,
+        Cmd::Rpc {
+            method: "nav.bake".to_string(),
+            args: json!({})
+        }
+    );
+}
+
+#[test]
+fn rpc_requires_method_name() {
+    let msg = expect_err("rpc");
+    assert!(msg.contains("缺少 <method>"), "{msg}");
+    assert!(msg.contains("nav.bake"), "要给出可用示例：{msg}");
+}
+
+#[test]
+fn rpc_rejects_method_without_namespace() {
+    let msg = expect_err("rpc bake");
+    assert!(msg.contains("命名空间"), "{msg}");
+}
+
+#[test]
+fn rpc_rejects_tx_methods() {
+    // 事务状态在 state-file 里，`rpc` 不记账——放过去等于让事务静默半截。
+    let msg = expect_err("rpc tx.commit");
+    assert!(msg.contains("事务通道"), "{msg}");
+}
+
+#[test]
+fn rpc_rejects_scene_writes() {
+    // 绕过事务改场景 = 撤销栈里没有这一格，这是 M1-S1 要消灭的形态。
+    for method in [
+        "scene.spawn",
+        "scene.spawn_prefab",
+        "scene.material.upsert",
+        "scene.remove",
+    ] {
+        let msg = expect_err(&format!("rpc {method}"));
+        assert!(msg.contains("只允许走事务"), "{method}: {msg}");
+        assert!(msg.contains("tx intent"), "要指回事务通道：{msg}");
+    }
+}
+
+#[test]
+fn rpc_rejects_foreign_flags() {
+    let msg = expect_err("rpc nav.bake --targets []");
+    assert!(msg.contains("不属于当前子命令"), "{msg}");
 }

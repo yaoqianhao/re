@@ -1,6 +1,6 @@
 //! 子命令实现与连接/调用的公共通道。
 //!
-//! 四个子命令的骨架完全一致：**建连 → 调一次 → 翻译结果/错误 → 退出码**。
+//! 各子命令的骨架完全一致：**建连 → 调一次 → 翻译结果/错误 → 退出码**。
 //! 所以「建连」与「调用」的错误处理只在这里写一遍：任何一处漏翻译，
 //! 就会出现「同一种失败在不同子命令下退出码不同」的怪事。
 
@@ -15,6 +15,7 @@ use crate::output::Out;
 
 pub mod query;
 pub mod replay;
+pub mod rpc;
 pub mod tx;
 pub mod verify;
 
@@ -24,6 +25,7 @@ pub fn run(global: &Global, cmd: Cmd) -> i32 {
         Cmd::Tx { action, tx, args } => tx::run(global, action, tx, args),
         Cmd::Query { method, params } => query::run(global, method, params),
         Cmd::Verify { targets, limit } => verify::run(global, targets, limit),
+        Cmd::Rpc { method, args } => rpc::run(global, &method, args),
         Cmd::Replay(replay_args) => replay::run(global, replay_args),
         Cmd::Help => {
             print!("{}", crate::args::help_text());
