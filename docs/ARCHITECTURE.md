@@ -124,7 +124,9 @@ rust3d-engine/
   空间化（§15.8）没有破坏这条：三维数学（距离衰减、径向速度、多普勒比值）以 `[f32; 3]` 与纯函数形式写在
   `r3e-audio::spatial` 里，**不引用 `Vec3` / `Transform` / `NodeId`**；"声源挂哪个节点"由宿主每帧把世界坐标
   灌进运行时注册表，音频层始终不认识场景图。
-- 唯一的跨子系统依赖是 `r3e-script → r3e-physics` 与 `r3e-script → r3e-audio`：脚本 API 要直接持有 `Physics` / `Audio` 门面做绑定，这是刻意的（不是环，两个被依赖层都不反向认识脚本）。
+- `r3e-script` **不认识任何实现 crate**（M2-A03b）：物理 / 音频经 `r3e_core::host` 的 `PhysicsHost` / `AudioHost` 能力面 trait
+  注入，装配层（`r3e-runtime`）用 `PhysicsFacade` / `AudioFacade` 把真门面适配成 host。因此 `dep_debt` 里那两条
+  `r3e-script → r3e-physics` / `r3e-script → r3e-audio` 已删除、`limit = 0`；`r3e-script` 只剩 `dev-dependencies` 的两个门禁外引用（单测要真物理/真混音器做行为断言）。
 - `r3e-runtime` 是**唯一的帧循环所有者**：窗口、事件循环、时间步、headless 路径都在这里，因此渲染、物理、脚本、音频、资产
   都只被它直接驱动。它**不认识编辑器协议**——编辑能力经 `port::EditorService` 端口注入（依赖倒置），
   所以同一份主循环既能跑窗口也能跑 `--run-seconds` 无头验证。

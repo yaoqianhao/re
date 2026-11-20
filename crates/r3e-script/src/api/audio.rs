@@ -1,6 +1,7 @@
 //! 音频（非空间化 / 3D 空间化）。
 //!
-//! 由 M0-S2 从单体 `api.rs` 原样搬入，闭包体未做任何改写。
+//! M2-A03b：全部音频调用经 [`crate::host::AudioHost`] 走能力面，
+//! 本文件只做「脚本参数 ↔ 脚本友好 DTO」的搬运，不认任何音频实现类型。
 
 use super::*;
 
@@ -18,122 +19,106 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
 
     let c = ctx.clone();
     engine.register_fn("audio_play", move |key: &str, path: &str| -> bool {
-        c.audio.borrow_mut().play_default(key, path).is_ok()
+        c.audio.play_default(key, path)
     });
 
     let c = ctx.clone();
     engine.register_fn(
         "audio_play_ex",
         move |key: &str, path: &str, volume: f64, looping: bool| -> bool {
-            c.audio
-                .borrow_mut()
-                .play(key, path, f32_of(volume), looping)
-                .is_ok()
+            c.audio.play(key, path, volume, looping)
         },
     );
 
     let c = ctx.clone();
-    engine.register_fn("audio_stop", move |key: &str| -> bool {
-        c.audio.borrow_mut().stop(key)
-    });
+    engine.register_fn("audio_stop", move |key: &str| -> bool { c.audio.stop(key) });
 
     let c = ctx.clone();
     engine.register_fn("audio_stop_all", move || {
-        c.audio.borrow_mut().stop_all();
+        c.audio.stop_all();
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_pause", move |key: &str| -> bool {
-        c.audio.borrow_mut().pause(key)
+        c.audio.pause(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_resume", move |key: &str| -> bool {
-        c.audio.borrow_mut().resume(key)
+        c.audio.resume(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_set_volume", move |key: &str, volume: f64| -> bool {
-        c.audio.borrow_mut().set_volume(key, f32_of(volume))
+        c.audio.set_volume(key, volume)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_set_loop", move |key: &str, looping: bool| -> bool {
-        c.audio.borrow_mut().set_loop(key, looping)
+        c.audio.set_loop(key, looping)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_is_playing", move |key: &str| -> bool {
-        c.audio.borrow_mut().is_playing(key)
+        c.audio.is_playing(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_is_paused", move |key: &str| -> bool {
-        c.audio.borrow().is_paused(key)
+        c.audio.is_paused(key)
     });
 
     let c = ctx.clone();
-    engine.register_fn("audio_count", move || -> i64 {
-        c.audio.borrow().active_count() as i64
-    });
+    engine.register_fn("audio_count", move || -> i64 { c.audio.active_count() });
 
     let c = ctx.clone();
     engine.register_fn("audio_keys", move || -> Array {
-        c.audio
-            .borrow()
-            .keys()
-            .into_iter()
-            .map(Dynamic::from)
-            .collect()
+        c.audio.keys().into_iter().map(Dynamic::from).collect()
     });
 
     // 总音量：与单条音量相乘后下发给混音器，0 也合法（等于静音）。
     let c = ctx.clone();
     engine.register_fn("audio_set_master_volume", move |volume: f64| {
-        c.audio.borrow_mut().set_master_volume(f32_of(volume));
+        c.audio.set_master_volume(volume);
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_master_volume", move || -> f64 {
-        c.audio.borrow().master_volume() as f64
+        c.audio.master_volume()
     });
 
     // 总开关：关掉后新建的播放请求直接拒绝（返回 false），已有声音全部停掉。
     let c = ctx.clone();
     engine.register_fn("audio_set_enabled", move |on: bool| {
-        c.audio.borrow_mut().set_enabled(on);
+        c.audio.set_enabled(on);
     });
 
     let c = ctx.clone();
-    engine.register_fn("audio_enabled", move || -> bool {
-        c.audio.borrow().enabled()
-    });
+    engine.register_fn("audio_enabled", move || -> bool { c.audio.enabled() });
 
     // 探针：有真实设备 = true；静默降级 = false。脚本可据此不显示音量控件。
     let c = ctx.clone();
     engine.register_fn("audio_available", move || -> bool {
-        c.audio.borrow().device_available()
+        c.audio.device_available()
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_backend", move || -> String {
-        c.audio.borrow().backend_name().to_string()
+        c.audio.backend_name()
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_last_error", move || -> String {
-        c.audio.borrow().last_error().unwrap_or("").to_string()
+        c.audio.last_error()
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_error_count", move || -> i64 {
-        c.audio.borrow().error_count() as i64
+        c.audio.error_count()
     });
 
     let c = ctx.clone();
-    engine.register_fn("audio_status", move || -> String {
-        c.audio.borrow_mut().status_line()
-    });
+    engine.register_fn("audio_status", move || -> String { c.audio.status_line() });
 
     // ------------------------------------------------------------------
     // 音频（3D 空间化，§12 第十项）
@@ -155,10 +140,7 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "audio_spatial_attach",
         move |key: &str, min_distance: f64, max_distance: f64| -> bool {
-            c.audio.borrow_mut().attach_spatial(
-                key,
-                SpatialSettings::new(f32_of(min_distance), f32_of(max_distance)),
-            )
+            c.audio.spatial_attach(key, min_distance, max_distance)
         },
     );
 
@@ -173,10 +155,8 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
               model: &str,
               doppler_factor: f64|
               -> bool {
-            let mut settings = SpatialSettings::new(f32_of(min_distance), f32_of(max_distance));
-            settings.model = DistanceModel::parse(model).unwrap_or_default();
-            settings.doppler_factor = f32_of(doppler_factor);
-            c.audio.borrow_mut().attach_spatial(key, settings)
+            c.audio
+                .spatial_attach_ex(key, min_distance, max_distance, model, doppler_factor)
         },
     );
 
@@ -185,33 +165,29 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "audio_spatial_attach_node",
         move |key: &str, node: &str, min_distance: f64, max_distance: f64| -> bool {
-            c.audio.borrow_mut().attach_spatial_node(
-                key,
-                node,
-                SpatialSettings::new(f32_of(min_distance), f32_of(max_distance)),
-            )
+            c.audio
+                .spatial_attach_node(key, node, min_distance, max_distance)
         },
     );
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_detach", move |key: &str| -> bool {
-        c.audio.borrow_mut().detach_spatial(key)
+        c.audio.spatial_detach(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_clear", move || {
-        c.audio.borrow_mut().clear_spatial();
+        c.audio.spatial_clear();
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_count", move || -> i64 {
-        c.audio.borrow().spatial_count() as i64
+        c.audio.spatial_count()
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_keys", move || -> Array {
         c.audio
-            .borrow()
             .spatial_keys()
             .into_iter()
             .map(Dynamic::from)
@@ -222,17 +198,15 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "audio_spatial_set_position",
         move |key: &str, x: f64, y: f64, z: f64| -> bool {
-            c.audio
-                .borrow_mut()
-                .set_source_position(key, [f32_of(x), f32_of(y), f32_of(z)])
+            c.audio.spatial_set_position(key, [x, y, z])
         },
     );
 
     // 声源世界坐标 [x, y, z]；未注册返回空数组（脚本可据此判存在）。
     let c = ctx.clone();
     engine.register_fn("audio_spatial_position", move |key: &str| -> Array {
-        match c.audio.borrow().source_position(key) {
-            Some(p) => p.iter().map(|v| Dynamic::from(*v as f64)).collect(),
+        match c.audio.spatial_position(key) {
+            Some(p) => p.iter().map(|v| Dynamic::from(*v)).collect(),
             None => Array::new(),
         }
     });
@@ -240,75 +214,44 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     let c = ctx.clone();
     engine.register_fn(
         "audio_spatial_set_model",
-        move |key: &str, model: &str| -> bool {
-            let Some(model) = DistanceModel::parse(model) else {
-                return false;
-            };
-            let audio = c.audio.borrow();
-            let Some(mut settings) = audio.spatial_settings(key) else {
-                return false;
-            };
-            drop(audio);
-            settings.model = model;
-            c.audio.borrow_mut().set_spatial_settings(key, settings)
-        },
+        move |key: &str, model: &str| -> bool { c.audio.spatial_set_model(key, model) },
     );
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_model", move |key: &str| -> String {
-        c.audio
-            .borrow()
-            .spatial_settings(key)
-            .map(|s| s.model.name().to_string())
-            .unwrap_or_default()
+        c.audio.spatial_model(key)
     });
 
     let c = ctx.clone();
     engine.register_fn(
         "audio_spatial_set_doppler",
-        move |key: &str, factor: f64| -> bool {
-            let audio = c.audio.borrow();
-            let Some(mut settings) = audio.spatial_settings(key) else {
-                return false;
-            };
-            drop(audio);
-            settings.doppler_factor = f32_of(factor);
-            c.audio.borrow_mut().set_spatial_settings(key, settings)
-        },
+        move |key: &str, factor: f64| -> bool { c.audio.spatial_set_doppler(key, factor) },
     );
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_doppler", move |key: &str| -> f64 {
-        c.audio
-            .borrow()
-            .spatial_settings(key)
-            .map(|s| s.doppler_factor as f64)
-            .unwrap_or(1.0)
+        c.audio.spatial_doppler(key)
     });
 
     // 探针三件套：当前增益 / 倍速 / 距离（未注册时增益倍速为 1.0、距离为 -1）。
     let c = ctx.clone();
     engine.register_fn("audio_spatial_gain", move |key: &str| -> f64 {
-        c.audio.borrow().spatial_gain(key) as f64
+        c.audio.spatial_gain(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_rate", move |key: &str| -> f64 {
-        c.audio.borrow().spatial_rate(key) as f64
+        c.audio.spatial_rate(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_distance", move |key: &str| -> f64 {
-        c.audio.borrow().spatial_distance(key).unwrap_or(-1.0) as f64
+        c.audio.spatial_distance(key)
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_node", move |key: &str| -> String {
-        c.audio
-            .borrow()
-            .spatial_node(key)
-            .map(str::to_string)
-            .unwrap_or_default()
+        c.audio.spatial_node(key)
     });
 
     // 手动喂听者位姿：position(3) + forward(3)。forward 传零向量会被退化成正朝 -Z。
@@ -316,50 +259,45 @@ pub(super) fn register(engine: &mut Engine, ctx: &ScriptContext) {
     engine.register_fn(
         "audio_spatial_set_listener",
         move |x: f64, y: f64, z: f64, fx: f64, fy: f64, fz: f64| {
-            let pose = r3e_audio::ListenerPose::new(
-                [f32_of(x), f32_of(y), f32_of(z)],
-                [f32_of(fx), f32_of(fy), f32_of(fz)],
-            );
-            c.audio.borrow_mut().set_listener(pose);
+            c.audio.spatial_set_listener([x, y, z], [fx, fy, fz]);
         },
     );
 
     // 听者位姿 [px, py, pz, fx, fy, fz]。
     let c = ctx.clone();
     engine.register_fn("audio_spatial_listener", move || -> Array {
-        let pose = c.audio.borrow().listener();
-        pose.position
+        c.audio
+            .spatial_listener()
             .iter()
-            .chain(pose.forward.iter())
-            .map(|v| Dynamic::from(*v as f64))
+            .map(|v| Dynamic::from(*v))
             .collect()
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_set_enabled", move |on: bool| {
-        c.audio.borrow_mut().set_spatial_enabled(on);
+        c.audio.spatial_set_enabled(on);
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_enabled", move || -> bool {
-        c.audio.borrow().spatial_enabled()
+        c.audio.spatial_enabled()
     });
 
     // 手动推进一帧空间化（返回推进的声源数）。app 每帧自动调，脚本一般不需要；
     // 留着是为了无窗口测试与"脚本自己控制时间流速"的玩法。
     let c = ctx.clone();
     engine.register_fn("audio_spatial_tick", move |dt: f64| -> i64 {
-        c.audio.borrow_mut().tick_spatial(f32_of(dt)) as i64
+        c.audio.spatial_tick(dt)
     });
 
     // 探针：后端能否实时变速（多普勒落地前提）。静默降级时 false。
     let c = ctx.clone();
     engine.register_fn("audio_supports_speed", move || -> bool {
-        c.audio.borrow().supports_speed()
+        c.audio.supports_speed()
     });
 
     let c = ctx.clone();
     engine.register_fn("audio_spatial_status", move || -> String {
-        c.audio.borrow().spatial_status_line()
+        c.audio.spatial_status_line()
     });
 }

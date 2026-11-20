@@ -55,6 +55,10 @@ use r3e_runtime::time::FrameTimeStats;
 pub struct LocalEngineApi<'a> {
     pub scene: &'a Rc<RefCell<Document>>,
     pub physics: &'a Rc<RefCell<Physics>>,
+    /// 混音器真句柄（M2-A03b）：`ScriptHost` 只向脚本暴露能力面，
+    /// 音频面板要的细节查询（`spatial_settings` / `listener` / `attach_spatial`）
+    /// 走这条直通借用，仍是 app 那一个 `Audio`。
+    pub audio: &'a Rc<RefCell<Audio>>,
     /// 导航网格槽位：`nav.bake` 往里写，`nav.path` / `nav.reachability` 往前读。
     ///
     /// 为什么由宿主槽位持有而不是挂进场景：导航网格是**烘焙产物**，不是场景数据。

@@ -8,6 +8,8 @@ rust-version = "1.87"
 license.workspace = true
 
 [dependencies]
+# 能力面契约（A03b）：脚本侧的 AudioHost trait 住在 core，本 crate 只实现它。
+r3e-core.workspace = true
 # 音频后端：cpal 设备 + symphonia 解码，全 safe API（见 docs/ARCHITECTURE.md §15）
 rodio = { workspace = true }
 log.workspace = true

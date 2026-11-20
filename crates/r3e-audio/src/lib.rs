@@ -3,21 +3,21 @@
 //! 设计要点：
 //! * **非空间化基线不变**：不注册空间化时，[`Audio`] 的行为与历史版本逐位一致
 //!   （有效音量 = 单条 × 总音量，倍速恒 1.0）。21 个 `audio_*` API 语义未改。
-//! * **空间化是叠加层**（`§12` 第十项）：`spatial` 模块提供纯数学（距离衰减 / 多普勒 /
-//!   听者位姿 / 声源推进），[`Audio`] 用「声源 key → [`SpatialSource`]」的旁挂表把它
-//!   叠到同一条实例上；声源挂场景节点只是记个名字，解析坐标由 `app` 每帧做。
+//! * **空间化是叠加层**（`§12` 第十项）：`spatial` 模块提供纯数学，[`Audio`] 用
+//!   「声源 key → [`SpatialSource`]」旁挂表叠到同一实例上；挂节点只是记名字，坐标由 `app` 解析。
 //! * **听者由活动相机推导**：`app` 每帧用 camera 位置 + 朝向喂 [`Audio::set_listener`]，
 //!   本 crate 不依赖 `r3e-core`。
 //! * **后端可替换**：真设备走 `rodio`（cpal + symphonia），无声卡走 `SilentBackend`；
 //!   门面 [`Audio`] 对上层暴露同一套 API，引擎永远不会因为音频问题 panic。
-//! * **单条音量 × 总音量**：门面存单条用户音量，每次下发给后端的是有效音量，
-//!   改总音量时逐条重算，不依赖后端支持 master。
-//! * **同名 key 重播**：再次 `play` 同一个 key 会停掉旧实例并从头播（不是拒绝、也不是叠加），
-//!   这条语义写进 README / ARCHITECTURE，脚本可以直接拿它当「按键连打只响一份」。
+//! * **单条音量 × 总音量**：门面存单条用户音量，下发有效音量，改总音量逐条重算，不依赖后端 master。
+//! * **同名 key 重播**：再次 `play` 同一个 key 会停旧实例从头播（README / ARCHITECTURE 有载）。
 //!
 //! 范围外：HRTF / 双耳定位、混响、多声道、音频流式加载（整文件解码进内存，够演示用）。
 
 pub mod backend;
+mod host_adapter;
+/// 能力面门面（M2-A03b）：把真门面适配成 `r3e_core::host` 契约。
+pub use host_adapter::AudioFacade;
 pub mod spatial;
 
 use std::collections::HashMap;

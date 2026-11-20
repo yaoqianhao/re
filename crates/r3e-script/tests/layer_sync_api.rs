@@ -8,6 +8,7 @@
 //! ④ 回显与探针（`anim_layer_sync` / `anim_layer_phase` / `anim_layer_sync_probe`）；
 //! ⑤ 实例或层不存在时返回中性值，不 panic。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

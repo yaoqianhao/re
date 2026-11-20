@@ -7,6 +7,7 @@
 //! ③ `clear_ssao` 只掐遮蔽支线，不连累曝光 / 泛光；
 //! ④ 只读函数在未开启时给缺省值，`has_ssao` 认「强度 0 = 没在算」。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -28,7 +29,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

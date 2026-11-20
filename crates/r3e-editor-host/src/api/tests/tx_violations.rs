@@ -12,7 +12,7 @@ fn tx_intent_impact_violations_物理开着时报物理层并交代跳过项() {
     let physics = Rc::new(RefCell::new(physics_on()));
     let mut scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     let mut api = api(&scene, &physics, &mut scripts);
@@ -66,7 +66,7 @@ fn tx_intent_impact_violations_导航已烘焙时报导航层() {
     let physics = Rc::new(RefCell::new(physics_on()));
     let mut scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     let slot: RefCell<Option<Nav>> = RefCell::new(None);
@@ -116,7 +116,7 @@ fn tx_intent_impact_violations_有网格来源时物理层出精确悬空结论(
     let physics = Rc::new(RefCell::new(physics_on()));
     let mut scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     let mut api = api_with_meshes(

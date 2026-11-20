@@ -7,6 +7,7 @@
 //!    本帧真正入选的盏数（超过预算时只报预算）；
 //! ④ 关掉局部光源后 `local_shadow_caster_count` 归零。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -24,7 +25,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

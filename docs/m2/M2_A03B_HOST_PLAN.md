@@ -299,5 +299,44 @@ impl PhysicsHost for RhaiPhysicsHost {
 4. 不为省 30 处 import 改动而把 `RhaiPhysicsHost` 留在 `r3e-script`（那会保住依赖边，与 D13=B 冲突）。
 5. 不在本卡做 `app.rs` 拆分（3040 行属 G02），只新增 `script_bind.rs` 一个文件（≈180 行 < 800，不触发 `size_debt`）。
 
-*（本稿为设计草案，实施前需老板确认 §4.2 的「30 处调用点改 import」这一取舍。）*
+## 9. 实施记录（2026-11-20 收口，实况与设计稿的偏离）
+
+### 9.1 五处偏离（均已落地并 verify 全绿）
+
+| # | 设计稿写的 | 实际做的 | 为什么 |
+|---|---|---|---|
+| 1 | trait 落 `r3e-script/src/host.rs` | 落 **`r3e-core/src/host/`**（`mod.rs` 158 行 + `physics.rs` 335 + `audio.rs` 510） | `r3e-physics` / `r3e-audio` 必须 `impl` 这两个 trait。trait 若落 script，则 `physics → script`、`audio → script` 成环，且直接违反 `dep_rules`。`r3e-core` 是三方的唯一共同下界，契约住这里才成立 |
+| 2 | 适配器落 `r3e-runtime/src/script_bind.rs`（新建 ≈180 行） | 落 **`r3e-physics/src/host_adapter.rs`**（`PhysicsFacade`）与 **`r3e-audio/src/host_adapter.rs`**（`AudioFacade`） | 谁持有真门面谁做适配。调用方有三类（`app` / `editor-host` / `script` 单测），放在各域 crate 内三类都能直接用；经 runtime 绕一层反而把适配器变成 runtime 私有物 |
+| 3 | 保留 `ScriptHost::new(doc, Rc<RefCell<Physics>>, input)` 旧签名（"调用点零改动"） | 签名改为 `Rc<dyn PhysicsHost>`，`new_with_audio` 改 `Rc<dyn AudioHost>`；调用点写 `PhysicsFacade::wrap(rc)` | 保留旧签名意味着 `new` 内部要知道 `Physics` 具体类型 —— 那 `r3e-script` 的 lib 依赖边删不掉，D13=B 就是空话。**改用 §4.2 的取舍方案**：30 处调用点改一行 wrapping，`ScriptHost::new` 名字与参数个数不变 |
+| 4 | 新建 `script_bind.rs` 装 `RhaiPhysicsHost::execute` 的 24 处 match | match 直接写在 `host_adapter.rs` 的 `impl PhysicsHost for PhysicsFacade` 里 | 与偏离 2 同源：适配器在实现方，match 跟着走 |
+| 5 | 测试预算 `+56`（按 69 个绑定重分配） | 实测 **+8**（`r3e-core` 625 → 633：host 契约 8 条） | 端口化按「零行为变化」处理，**不重写既有绑定测试**：69 个绑定的行为断言原样保留（它们现在跑过 Facade，等于顺带覆盖了适配器）。新增的 8 条只测「契约本身」——空后端全拒语义、闭包即适配器、`Node` 快照能跨 trait 边界、静默音频的状态行 |
+
+### 9.2 实测数字
+
+| 项 | 计划 | 实测 |
+|---|---|---|
+| `dep_debt` | 删 2 条，`limit` 2 → 0 | 已删，`limit = 0`、`entries = []`；`dep-check` 债务 0 条 |
+| tests | +56（总 2017 → 2073） | **+8**（总 2017 → **2025**），2025 条全部通过 |
+| `r3e-script` allow 表 | 保持 3 项不变 | 未动（`dep_rules.json` 无改动） |
+| `lib.rs` 行数 | `r3e-script/lib.rs` 不涨 | 2018 → **1979**（构造三函数搬到新文件 `host_wiring.rs` 抵掉 trait 化新增行）；`r3e-audio/lib.rs` 1375 → 1375、`r3e-physics/lib.rs` 1542 → 1542（注释压缩抵掉 re-export 行） |
+| 回放金标 | 不漂移 | `final=385482eb033d2964`，600 帧 / 10 采样点两次一致 |
+| verify | 11 步全绿 | 全绿 |
+| `capabilities.json` | 一字不改 | 未动（392 命令 / 62 RPC / 330 script-only / 38 不变量） |
+
+### 9.3 落地文件清单
+
+- 新增：`crates/r3e-core/src/host/{mod.rs,physics.rs,audio.rs}`、`crates/r3e-physics/src/host_adapter.rs`、`crates/r3e-audio/src/host_adapter.rs`、`crates/r3e-script/src/host_wiring.rs`
+- 删除：`crates/r3e-script-bind/`（A03 遗留的一次性过渡 crate，能力面已收口到 `r3e-core::host`）
+- 改造：`r3e-script/src/{lib.rs, api/mod.rs, api/physics.rs, api/audio.rs}` + 15 个集成测试文件（`PhysicsFacade::wrap` / `AudioFacade::wrap`）、`r3e-runtime/src/{app.rs,lib.rs,port.rs}`、`r3e-editor-host/src/{host.rs, api/*}`、workspace `Cargo.toml`
+- 台账：`xtask/dep_debt.json`（清空）、`xtask/size_debt.json`（`r3e-script/lib.rs` 2018 → 1979 等 3 项下降登记）、`xtask/tests_baseline.json`（`r3e-core` 633、合计 2025）
+
+### 9.4 对后续卡的结论
+
+1. `dep_debt.limit = 0` 后**没有免死金牌**：B01 建 `r3e-character` 时若想连 `r3e-script`，门禁直接红——照旧走 core 契约 + 命令注册。
+2. `PhysicsHost` / `AudioHost` 的「加一条脚本 API = 加一个 `Req` 变体 + 一行默认方法」这个性质要守住：新脚本 API 一律走能力面，不允许在 `api/physics.rs` 里再摸具体门面。
+3. 接口分层的现状是 **两层**（不是设计稿设想的一层）：`PhysicsQueryPort`（A03，服务 C 阶段的 `r3e-character`，只读查询）与 `PhysicsHost`（A03b，服务脚本绑定，读写全含）。二者互不引用，不要为了"统一"把脚本链路改走 `port.rs`。
+
+---
+
+*（本稿为设计草案，实施前需老板确认 §4.2 的「30 处调用点改 import」这一取舍 —— 已按该取舍实施，见 §9.1 第 3 条。）*
 *（内容由AI生成，仅供参考）*

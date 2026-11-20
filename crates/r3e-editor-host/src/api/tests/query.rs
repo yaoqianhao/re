@@ -49,7 +49,7 @@ fn query_fixture() -> Fixture {
     let physics = Rc::new(RefCell::new(Physics::new()));
     let scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     (scene, physics, scripts)

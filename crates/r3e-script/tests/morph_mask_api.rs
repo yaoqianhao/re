@@ -6,6 +6,7 @@
 //! ③ 掩码与归一化联动：关掉组里一个形状后，剩下的不再被平分；
 //! ④ 非法入参（负下标、超 u32 的掩码、未知物件）一律 -1 / false，不污染场景。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -31,7 +32,7 @@ fn fixture() -> Fixture {
         .expect("spawn 应成功");
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
-    let host = ScriptHost::new(scene, physics, input);
+    let host = ScriptHost::new(scene, PhysicsFacade::wrap(physics), input);
     Fixture { host }
 }
 

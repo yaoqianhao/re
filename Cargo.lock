@@ -2302,6 +2302,7 @@ name = "r3e-audio"
 version = "0.1.0"
 dependencies = [
  "log",
+ "r3e-core",
  "rodio",
 ]
 

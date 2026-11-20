@@ -1,18 +1,5 @@
 {
-  "_comment": "依赖方向债务白名单（M0-S5 建立）。每条 = 一条「按 dep_rules.json 不该有、但当下确实存在」的依赖边：crate 依赖 dep。规则只减不增：entries 条数不得超过 limit；边消失后必须删条（否则门禁红，防止债还了还挂着免死金牌）；全清空时把 limit 改成 0。why = 为什么现在还不能改代码，plan = 什么条件下删掉这条。",
-  "limit": 2,
-  "entries": [
-    {
-      "crate": "r3e-script",
-      "dep": "r3e-physics",
-      "why": "脚本 API 直连 physics 门面。实测全仓 CapabilityHost 命名 0 命中，53 个绑定方法 / 704 行直接连具体实现，端口化属架构重排（与 M0「零行为变化」冲突，D4 熔断，见 docs/m0/M0S5_PROTOCOL.md §13.6）",
-      "plan": "M1：按 §13.6 的 53 条端口契约草案补 CapabilityHost 的物理入口，绑定改走端口后删条"
-    },
-    {
-      "crate": "r3e-script",
-      "dep": "r3e-audio",
-      "why": "同上：音频绑定直连 audio 门面（端口不存在，成本与物理侧同量级）",
-      "plan": "M1：端口注入音频能力后删条，与 physics 那条同批偿还"
-    }
-  ]
+  "_comment": "依赖方向债务白名单（M0-S5 建立）。每条 = 一条「按 dep_rules.json 不该有、但当下确实存在」的依赖边：crate 依赖 dep。规则只减不增：entries 条数不得超过 limit；边消失后必须删条（否则门禁红，防止债还了还挂着免死金牌）；全清空时把 limit 改成 0。why = 为什么现在还不能改代码，plan = 什么条件下删掉这条。\n\n【已清零 · M2-A03b】r3e-script -> r3e-physics / r3e-audio 两条同时偿还：script 侧定义 PhysicsHost / AudioHost 能力面（方法签名全用脚本原生类型，默认实现统一转发 dispatch），runtime 以 PhysicsFacade / AudioFacade 适配真门面。此白名单从此为空，limit=0：今后任何一条新边都会直接门禁红，请改代码而不是加条。",
+  "limit": 0,
+  "entries": []
 }

@@ -125,7 +125,7 @@ AI 和未来的编辑器 UI 必须走**同一条命令通道**。否则两套语
 | `r3e-physics` | 保持 | 物理端口 + rapier 适配器 | 端口 trait 化，`rapier` 默认 feature 待 M2 决策 |
 | `r3e-audio` | 保持 | 音频端口 + rodio 适配器 | rodio 接入待 M2 决策 |
 | `r3e-asset` | 保持 | 导入管线 | 不依赖 render（现状正确） |
-| `r3e-script` | **改造中** | rhai 绑定 | 只能经 `CapabilityHost` trait 注入；现仍直连 `physics`/`audio`（S5-04 还债） |
+| `r3e-script` | **已还清**（M2-A03b） | rhai 绑定 | 物理 / 音频经 `r3e_core::host` 的 `PhysicsHost` / `AudioHost` 能力面注入，lib 依赖不含 physics/audio（S5-04 已结） |
 | `r3e-doc` | **已建（M0-S3/S4）** | Document / Command(14) / Transaction / UndoStack / StateHash / Validator | 只依赖 `core`；写只走 `doc.write` |
 | `r3e-replay` | **已建（M0-S4）** | headless 确定性回放（固定步长 + LCG 种子 + 状态哈希） | 不依赖渲染 / 音频 / 物理后端 |
 | `r3e-protocol` | **待建（M0-S5）** | 协议 + 能力清单 + 事务消息 | **仅 serde**，零引擎类型 |

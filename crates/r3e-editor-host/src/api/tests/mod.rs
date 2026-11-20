@@ -10,6 +10,7 @@ use r3e_core::anim::{AnimBinding, AnimInstance};
 use r3e_core::light::{MAX_LOCAL_SHADOW_BIAS, MIN_LIGHT_RANGE};
 use r3e_core::{AnimClip, AnimKey, AnimTrack, InputState, MeshProvider};
 use r3e_doc::Document;
+use r3e_physics::PhysicsFacade;
 use r3e_physics::{BuiltinBackend, Physics};
 use r3e_runtime::time::FrameTimeWindow;
 use std::sync::Arc;
@@ -46,10 +47,15 @@ fn fixture() -> Fixture {
     let physics = Rc::new(RefCell::new(Physics::new()));
     let scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     (scene, physics, scripts)
+}
+
+/// 编辑器音频面板要读真声源表：测试用静默后端（不碰设备，表结构一致）。
+fn fixture_audio() -> Rc<RefCell<Audio>> {
+    Rc::new(RefCell::new(Audio::silent("编辑器单测不接音频设备")))
 }
 
 /// 三个重叠在原点的 cube：静态层基线本来就不干净，正好用来验「只报新增」。
@@ -87,6 +93,8 @@ fn api_with_nav<'a>(
     LocalEngineApi {
         scene,
         physics,
+        // 音频句柄要在 `LocalEngineApi` 生命周期内一直活着：测试里泄漏一份即可。
+        audio: Box::leak(Box::new(fixture_audio())),
         nav,
         scripts,
         // 单元测试没有资产库：物理复核会因此退回「只出解析结论 + 记 unchecked」，

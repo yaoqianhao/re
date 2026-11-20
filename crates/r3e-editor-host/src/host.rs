@@ -48,6 +48,7 @@ impl EditorService for RpcHost {
         let mut api = LocalEngineApi {
             scene: access.scene,
             physics: access.physics,
+            audio: access.audio,
             // 槽位生命周期与 `RpcHost` 同步：同一进程里反复烘焙复用同一格，
             // 「上一次烘的网格」在没人要求时不会被悄悄丢弃。
             nav: Some(&self.nav),

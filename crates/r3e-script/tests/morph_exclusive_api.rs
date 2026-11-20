@@ -6,6 +6,7 @@
 //! ③ `morph_norm` 给的是**进实例缓冲的那一份权重**（被等比压回 1）；
 //! ④ 非法入参（负下标、越界组号、未知物件）一律返回 false / -1，不污染场景。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -31,7 +32,7 @@ fn fixture() -> Fixture {
         .expect("spawn 应成功");
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { host }
 }
 

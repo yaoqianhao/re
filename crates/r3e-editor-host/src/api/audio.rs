@@ -13,7 +13,7 @@ pub(super) fn audio_spatial_list(
     api: &mut LocalEngineApi<'_>,
     limit: Option<usize>,
 ) -> Result<Value, RpcFailure> {
-    let audio = api.scripts.audio_handle();
+    let audio = api.audio;
     let a = audio.borrow();
     let sources: Vec<Value> = a
         .spatial_keys()
@@ -56,7 +56,7 @@ pub(super) fn audio_spatial_set(
         None => None,
     };
 
-    let audio = api.scripts.audio_handle();
+    let audio = api.audio;
     let mut a = audio.borrow_mut();
     let existed = a.spatial_settings(&patch.key);
     let inserted = existed.is_none();
@@ -106,14 +106,14 @@ pub(super) fn audio_spatial_remove(
     api: &mut LocalEngineApi<'_>,
     key: &str,
 ) -> Result<Value, RpcFailure> {
-    let audio = api.scripts.audio_handle();
+    let audio = api.audio;
     let mut a = audio.borrow_mut();
     let removed = a.detach_spatial(key);
     Ok(json!({ "key": key, "removed": removed, "count": a.spatial_count() }))
 }
 
 pub(super) fn audio_spatial_clear(api: &mut LocalEngineApi<'_>) -> Result<Value, RpcFailure> {
-    let audio = api.scripts.audio_handle();
+    let audio = api.audio;
     let mut a = audio.borrow_mut();
     let removed = a.spatial_count();
     a.clear_spatial();
@@ -124,7 +124,7 @@ pub(super) fn audio_spatial_listener(
     api: &mut LocalEngineApi<'_>,
     patch: Option<ListenerPatch>,
 ) -> Result<Value, RpcFailure> {
-    let audio = api.scripts.audio_handle();
+    let audio = api.audio;
     let mut a = audio.borrow_mut();
     if let Some(patch) = patch {
         let mut pose = a.listener();
@@ -153,7 +153,7 @@ pub(super) fn audio_spatial_set_enabled(
     api: &mut LocalEngineApi<'_>,
     enabled: Option<bool>,
 ) -> Result<Value, RpcFailure> {
-    let audio = api.scripts.audio_handle();
+    let audio = api.audio;
     let mut a = audio.borrow_mut();
     if let Some(on) = enabled {
         a.set_spatial_enabled(on);

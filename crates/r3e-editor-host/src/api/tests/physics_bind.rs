@@ -61,7 +61,7 @@ fn physics_bind_装配主世界且不写回场景() {
     let physics = Rc::new(RefCell::new(physics_on()));
     let mut scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     let mut api = api_with_scene(&scene, &physics, &mut scripts);
@@ -148,7 +148,7 @@ fn physics_bind_连调两次第二次全是复用() {
     let physics = Rc::new(RefCell::new(physics_on()));
     let mut scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     let mut api = api_with_scene(&scene, &physics, &mut scripts);
@@ -195,7 +195,7 @@ fn physics_bind_无网格来源时报专用错误码() {
     let physics = Rc::new(RefCell::new(physics_on()));
     let mut scripts = ScriptHost::new(
         scene.clone(),
-        physics.clone(),
+        PhysicsFacade::wrap(physics.clone()),
         Rc::new(RefCell::new(InputState::default())),
     );
     // 不给 `meshes`：装配需要的形状与尺寸全都拿不到。

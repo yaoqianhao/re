@@ -13,6 +13,7 @@ pub mod env;
 pub mod envmap;
 pub mod frustum;
 pub mod glyph_atlas;
+pub mod host;
 pub mod input;
 pub mod light;
 pub mod material;

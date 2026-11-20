@@ -7,6 +7,7 @@
 //! ③ 关开关只停探针、保留路径；`clear_env_map` 才彻底移除；
 //! ④ 只读函数在未配置时给 `none` / 1.0，不会因为探测而凭空建段。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -24,7 +25,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

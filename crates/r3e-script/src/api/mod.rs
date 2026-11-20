@@ -10,8 +10,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::host::{AudioHost, HitDto, PhysicsHost};
+
 use glam::{Vec3, Vec4};
-use r3e_audio::{Audio, DistanceModel, SpatialSettings};
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
 use r3e_core::postfx::TonemapMode;
 use r3e_doc::Document;
@@ -23,12 +24,9 @@ use r3e_core::ui::{
 };
 use r3e_core::{
     pick_all_from_screen, pick_from_screen, plan_local_shadows, BoneMask, EnvironmentMapSettings,
-    InputState, KeyCode, LayerMode, LayerSync, LocalLight, MeshAabbCache, MeshRef, NodeId,
-    ObjectDesc, PickBounds, PickHit, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
+    InputState, KeyCode, LayerMode, LayerSync, LocalLight, MeshAabbCache, MeshRef, ObjectDesc,
+    PickBounds, PickHit, Scene, SceneCommand, SceneStack, ScreenText, TextAlign,
     NO_EXCLUSIVE_GROUP,
-};
-use r3e_physics::{
-    BodyDesc, BodyHandle, BodyKind, CastShape, Physics, PhysicsKind, Ray, RayHit, ShapeCastHit,
 };
 use rhai::{Array, Dynamic, Engine, Map};
 
@@ -58,9 +56,11 @@ pub struct ScriptContext {
     /// 场景唯一真值：`r3e-doc` 的 Document。只读走 `doc.borrow()`（Deref 到 Scene），
     /// 写入一律走 [`ScriptContext::write`]，不允许长期持有 `&mut Scene`。
     pub doc: Rc<RefCell<Document>>,
-    pub physics: Rc<RefCell<Physics>>,
+    /// 物理能力面（M2-A03b）：脚本只认 trait，不认任何后端实现类型。
+    pub phys: Rc<dyn PhysicsHost>,
     pub input: Rc<RefCell<InputState>>,
-    pub audio: Rc<RefCell<Audio>>,
+    /// 音频能力面（M2-A03b）：同上。
+    pub audio: Rc<dyn AudioHost>,
     pub clock: Rc<RefCell<Clock>>,
     pub rng: Rc<Cell<u64>>,
     /// UI 写入被拒 / 被纠正的记录（`ui_last_error` / `ui_error_count` 的来源）。
@@ -170,24 +170,31 @@ fn empty_query_map() -> Map {
     m
 }
 
+/// `[f64; 3]` → 脚本 `Array`（脚本侧没有 Vec 类型，一律摊成数组）。
+fn f64_array(v: &[f64; 3]) -> Array {
+    let mut a = Array::new();
+    for x in v {
+        a.push(Dynamic::from(*x));
+    }
+    a
+}
+
 /// 命中结果 → 脚本 Map（raycast / shape-cast 共用同一套字段名）。
-fn hit_map(hit: Option<(NodeId, BodyHandle, f32, Vec3, Vec3, bool)>) -> Map {
-    let Some((node, handle, distance, point, normal, inside)) = hit else {
+///
+/// 入参是脚本侧 [`HitDto`]（M2-A03b）：物理后端的具体命中类型不再跨层传递。
+fn hit_map(hit: Option<HitDto>) -> Map {
+    let Some(hit) = hit else {
         return empty_query_map();
     };
     let mut m = Map::new();
     m.insert("hit".into(), Dynamic::from(true));
-    m.insert("node".into(), Dynamic::from(node as i64));
-    m.insert("handle".into(), Dynamic::from(handle.0 as i64));
-    m.insert("distance".into(), Dynamic::from(distance as f64));
-    m.insert("point".into(), Dynamic::from(vec3_array(point)));
-    m.insert("normal".into(), Dynamic::from(vec3_array(normal)));
-    m.insert("inside".into(), Dynamic::from(inside));
+    m.insert("node".into(), Dynamic::from(hit.node));
+    m.insert("handle".into(), Dynamic::from(hit.handle));
+    m.insert("distance".into(), Dynamic::from(hit.distance));
+    m.insert("point".into(), Dynamic::from(f64_array(&hit.point)));
+    m.insert("normal".into(), Dynamic::from(f64_array(&hit.normal)));
+    m.insert("inside".into(), Dynamic::from(hit.inside));
     m
-}
-
-fn ray_hit_map(hit: Option<RayHit>) -> Map {
-    hit_map(hit.map(|h| (h.node, h.handle, h.distance, h.point, h.normal, false)))
 }
 
 /// 拾取结果的空模板（字段名与命中版完全一致，理由同 [`empty_query_map`]）。
@@ -223,17 +230,8 @@ fn pick_map(scene: &Scene, hit: Option<PickHit>) -> Map {
     m
 }
 
-fn shape_cast_map(hit: Option<ShapeCastHit>) -> Map {
-    hit_map(hit.map(|h| {
-        (
-            h.node,
-            h.handle,
-            h.distance,
-            h.point,
-            h.normal,
-            h.started_inside,
-        )
-    }))
+fn shape_cast_map(hit: Option<HitDto>) -> Map {
+    hit_map(hit)
 }
 
 /// 对指定名字的物件做一次可变访问；找不到返回 false。

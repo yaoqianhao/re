@@ -19,11 +19,11 @@
     "crates/r3e-core/src/text.rs": 1111,
     "crates/r3e-core/src/ui.rs": 1652,
     "crates/r3e-physics/src/lib.rs": 1542,
-    "crates/r3e-plugin/src/tools.rs": 1405,
+    "crates/r3e-plugin/src/tools.rs": 1125,
     "crates/r3e-render/src/postfx.rs": 817,
     "crates/r3e-render/src/text.rs": 869,
     "crates/r3e-render/src/ui.rs": 1112,
-    "crates/r3e-runtime/src/app.rs": 3040,
-    "crates/r3e-script/src/lib.rs": 2018
+    "crates/r3e-runtime/src/app.rs": 3032,
+    "crates/r3e-script/src/lib.rs": 1979
   }
 }

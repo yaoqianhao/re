@@ -8,6 +8,8 @@
 //! ④ 节点绑定只是记名字（`app` 负责解析），解除后立刻回落到平面值；
 //! ⑤ 无音频设备时全程降级：不 panic、不算脚本错误、倍速探针恒 false。
 
+use r3e_audio::{Audio, AudioFacade};
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -25,8 +27,16 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
+    // 声源表 / 距离衰减这些策略都在 `Audio` 实现里：用真 `Audio::silent`
+    // （不碰设备），而不是 `ScriptHost::new` 那条纯 no-op 的默认静默能力面。
+    let audio = Rc::new(RefCell::new(Audio::silent("单测不碰音频设备")));
     Fixture {
-        host: ScriptHost::new(scene, physics, input),
+        host: ScriptHost::new_with_audio(
+            scene,
+            PhysicsFacade::wrap(physics),
+            input,
+            AudioFacade::wrap(audio),
+        ),
     }
 }
 

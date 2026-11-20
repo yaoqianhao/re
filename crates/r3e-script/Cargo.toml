@@ -10,7 +10,11 @@ r3e-doc.workspace = true
 glam.workspace = true
 serde_json.workspace = true
 r3e-core.workspace = true
-r3e-physics.workspace = true
-r3e-audio.workspace = true
 rhai.workspace = true
 log.workspace = true
+
+# 测试期才拿真实 physics/audio 门面（行为断言不能退化成 null 后端）。
+# 方向：bind -> script，prod 里没有反向边，所以这里只是 dev 环，不是架构回退。
+[dev-dependencies]
+r3e-physics.workspace = true
+r3e-audio.workspace = true

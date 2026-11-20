@@ -3,7 +3,7 @@
 - 阶段定位：`AI_ROADMAP §3.3` M2，结构期，原估 6–8 周
 - 计划形态：**严格串行**，一卡一提交，前卡 verify 全 11 步绿方可开下一卡
 - 基线口径：全部数字取自 `docs/m2/M2_BASELINE.md`（M2-A01 实测，2026-11-20）
-- 当前进度：**A01 已完成**（提交 `6876995`）；**A02 已完成**（提交 `810d5ce`，D1–D13 结论见 `docs/m2/M2_DECISIONS.md`）；**A03 已完成**（物理查询端口 trait 化 + `rapier` 转默认后端，实施记录见 `M2_A03_PORT_PLAN.md` §16：tests 1817 → **2017**、`r3e-physics/lib.rs` 1929 → **1542** 行（净减 387，判据 ≤0 满足）、`r3e-core` 零改动、verify 11 步全绿）；**下一张卡：A03b（`script` 绑定端口化，偿还 `dep_debt` 2 → 0）**
+- 当前进度：**A01 已完成**（提交 `6876995`）；**A02 已完成**（提交 `810d5ce`，D1–D13 结论见 `docs/m2/M2_DECISIONS.md`）；**A03 已完成**（物理查询端口 trait 化 + `rapier` 转默认后端，实施记录见 `M2_A03_PORT_PLAN.md` §16：tests 1817 → **2017**、`r3e-physics/lib.rs` 1929 → **1542** 行（净减 387，判据 ≤0 满足）、`r3e-core` 零改动、verify 11 步全绿）；**A03b 已完成**（`script` 绑定端口化，能力面落 `r3e-core::host`、适配器落 physics/audio 各自 `host_adapter.rs`，实施记录见 `M2_A03B_HOST_PLAN.md` §9：tests 2017 → **2025**、`dep_debt` 清空且 `limit = 0`、`r3e-script/lib.rs` 2018 → **1979** 行、回放金标未漂移、verify 11 步全绿）；**下一张卡：A04（`scene.rs` 拆域解债）**
 - 拍板后果（已计入本文件全部数字）：D1/D2/D12/D13 四项选 B → 卡数 44 → **45**、tests 目标 +546 → **+750**、引擎 crate 16 → **19**、`dep_debt` 2 → **0**
 - 日期：2026-11-20
 
@@ -18,7 +18,7 @@
 | `M2_DECISIONS.md` | A02 决策清单 D1–D13，已拍板（含 4 项非建议项的落地约定） | **已拍板**（A02 完成，不再阻塞） |
 | `M2_PERF_PLAN.md` | 性能验收口径与跨硬件测试计划（D11 附加要求），H05 按此出结论 | 生效中，M2 全程参考 |
 | `M2_A03_PORT_PLAN.md` | A03 物理查询端口实施规划（落点改 `crates/r3e-physics`，2026-11-20 老板指令） | **已确认**（四项决定拍板），A03 可开工 |
-| `M2_A03B_HOST_PLAN.md` | A03b `script` 绑定端口化设计稿（trait 默认方法 + 函数式适配器） | **设计草案**，A03 收口后进本卡前确认 §4.2 取舍 |
+| `M2_A03B_HOST_PLAN.md` | A03b `script` 绑定端口化设计稿（trait 默认方法 + 函数式适配器） | **已实施**：§9 为实施记录（5 处偏离：trait 落 `r3e-core`、适配器落各域 crate、`new` 签名改 trait 对象、match 内嵌、tests +8 而非 +56）|
 | `M2_PROPOSAL_CAPABILITY_SLOTS.md` | 插件写侧能力槽位提案，提交给 `D:\ai_ide` | 对外提案，**不在 M2 执行链路内**，与本计划无依赖关系 |
 
 阅读顺序：`README.md` → 本文件 → `M2_DECISIONS.md` →（需要核对数字时）`M2_BASELINE.md`。
@@ -99,7 +99,7 @@
 | A01 | 基线对账与 verify 留证 | — | `docs/m2/M2_BASELINE.md` | 已完成（提交 `6876995`）：11 步全绿、基线唯一、偏差清单 8 条处置 |
 | A02 | 决策拍板 D1–D13 | A01 | `docs/m2/M2_DECISIONS.md`、`M2_PERF_PLAN.md` | 已完成：13 项结论全部落盘，4 项非建议项的落地约定写明，计划与预算同步重算 |
 | A03 | 物理端口 trait 化（**双后端 + `rapier` 转默认**，D1=B） | A02 | `r3e-physics`（`port.rs` / `port_impl.rs` / `builtin_backend.rs` / `rapier_backend.rs`），`r3e-core` **零改动** | **已完成**（实测见 `M2_A03_PORT_PLAN.md` §16）：capsule / raycast / heightfield 三组 trait **定义落 `crates/r3e-physics/src/port.rs`**（2026-11-20 修订，原「落 core」作废）；`r3e-physics` 两套实现并存；`default = ["rapier"]` 且 `--no-default-features` 回落 builtin 可跑；**同一套契约测试双后端各跑一遍全绿**；`lib.rs` 净增 ≤0（新代码进新文件）；`r3e-script` 不新增依赖边 |
-| **A03b** | **`dep_debt` 两条偿还：`script` 绑定端口化**（D13=B） | A03 | `r3e-script`（`host.rs` 新建）、`r3e-runtime`（`script_bind.rs` 新建）、`xtask/dep_debt.json` | 形态 = **trait 默认方法 + 函数式适配器**（`PhysicsHost` / `AudioHost`，签名全脚本原生类型，统一转发到 `execute(Req)->Rsp`，闭包即适配器），见 `M2_A03B_HOST_PLAN.md`；实测范围 **69 个绑定调用点 / 706 行**（物理 24 / 340 行、音频 45 / 366 行），trait 能力面 **53 个去重方法**（物理 16 / 音频 37）；「53 个 / 704 行」与实测是两个维度，非粗估误差，详见 `M2_DECISIONS.md` D13 第 2 条口径校准；`dep_debt.json` 删两条、`limit` 2 → 0；`r3e-script` allow 表保持 3 项不变；**零行为变化**（1817 基线测试零删减、回放金标不漂移；接受 30 处 `ScriptHost::new` 的 import 改由 `r3e-runtime` 再导出）；tests **+56** |
+| **A03b** | **`dep_debt` 两条偿还：`script` 绑定端口化**（D13=B） | A03 | `r3e-script`（`host.rs` 新建）、`r3e-runtime`（`script_bind.rs` 新建）、`xtask/dep_debt.json` | 形态 = **trait 默认方法 + 函数式适配器**（`PhysicsHost` / `AudioHost`，签名全脚本原生类型，统一转发到 `execute(Req)->Rsp`，闭包即适配器），见 `M2_A03B_HOST_PLAN.md`；实测范围 **69 个绑定调用点 / 706 行**（物理 24 / 340 行、音频 45 / 366 行），trait 能力面 **53 个去重方法**（物理 16 / 音频 37）；「53 个 / 704 行」与实测是两个维度，非粗估误差，详见 `M2_DECISIONS.md` D13 第 2 条口径校准；`dep_debt.json` 删两条、`limit` 2 → 0；`r3e-script` allow 表保持 3 项不变；**零行为变化**（1817 基线测试零删减、回放金标不漂移；接受 30 处 `ScriptHost::new` 的 import 改由 `r3e-runtime` 再导出）；tests **+56** → 实测 **+8**（2025 合计）｜**已完成**：trait 与 Req/Rsp 落 `r3e-core/src/host/`（`mod.rs` 158 / `physics.rs` 335 / `audio.rs` 510 行），`PhysicsFacade` / `AudioFacade` 落 `r3e-physics|r3e-audio/src/host_adapter.rs`，`ScriptHost` 构造搬 `r3e-script/src/host_wiring.rs`；偏离与理由见 `M2_A03B_HOST_PLAN.md` §9 |
 | A04 | `scene.rs` 拆域解债 | A03b | `r3e-core/src/scene.rs` 3935 | 拆为 `scene/` 子模块，最大文件 ≤ 1200 行；`size_debt.json` 删 `scene.rs` 项；1817 基线测试零删减 |
 | A05 | `size_debt` 收紧 3 项 | A04 | `xtask/size_debt.json` | `r3e-physics/lib.rs` 1929→≤1924（A03 双后端不得抬高本行数）、`r3e-plugin/tools.rs` 1405→≤1125、`r3e-runtime/app.rs` 3040→≤3028 |
 
@@ -197,6 +197,7 @@
 | **目标** | **2567** | **433** | **76** | **48** | **19** |
 
 A 阶段 +256 的构成（供核对，不能只写总数）：A03 双后端 **+200**（原 +130，D1=B 增 +70）、A03b 端口化偿还 **+56**（D13=B）、A04/A05 各 0（零行为变化 / 纯台账收紧）。
+> **实测（2026-11-20）**：A03 落 +200（1817 → 2017）与预算一致；A03b 落 **+8**（2017 → 2025）而非 +56 —— 端口化按「零行为变化」处理，69 个既有绑定测试原样保留（它们现在跑过 Facade，等于顺带覆盖适配器），新增的 8 条只测契约本身。差额不是漏做测试，而是「不重写已有断言」这一判据的必然结果，见 `M2_A03B_HOST_PLAN.md` §9.1 第 5 条。
 
 守恒规则：
 

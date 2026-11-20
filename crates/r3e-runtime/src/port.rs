@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use r3e_audio::Audio;
 use r3e_core::MeshProvider;
 use r3e_doc::Document;
 use r3e_physics::Physics;
@@ -29,6 +30,10 @@ use crate::time::FrameTimeStats;
 pub struct EngineAccess<'a> {
     pub scene: &'a Rc<RefCell<Document>>,
     pub physics: &'a Rc<RefCell<Physics>>,
+    /// 混音器真句柄（M2-A03b）：脚本只能看到能力面，但编辑器的音频面板要读
+    /// `spatial_settings` / `listener` 这类细节，因此由装配层直传给宿主层——
+    /// 与脚本、帧驱动共用**同一个** `Audio`，不存在第二份声源表。
+    pub audio: &'a Rc<RefCell<Audio>>,
     pub scripts: &'a mut ScriptHost,
     /// 网格来源（M1-S4-G）：与主循环装配刚体时**同一个**「资产优先、图元兜底」口径。
     ///

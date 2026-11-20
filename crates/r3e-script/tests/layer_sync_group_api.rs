@@ -8,6 +8,7 @@
 //! ④ 自引用 / 源层不存在 / 成环一律拒，空串清除后跟回自己；
 //! ⑤ 实例或层不存在时返回中性值，不 panic。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -93,7 +94,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

@@ -8,6 +8,7 @@
 //! ④ 片段名写错 / 层不存在一律拒，回显给中性值，不 panic；
 //! ⑤ 开了相位锁的层不看片段速率（要变速请调层 speed）。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -83,7 +84,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

@@ -12,10 +12,9 @@
 //!     碰撞事件。默认不编译，`--features rapier` 构建才可用。
 //!   - `NullBackend`：空转，只登记句柄。
 //!
-//! 物理默认**关闭**（`Physics::new()` 即 Null 后端 + enabled=false），
-//! 通过三层任一入口开启：命令行 `--physics on`、场景 JSON 的 `physics.enabled`、
-//! 脚本 `physics_set_enabled(true)`。关闭时不进入积分、`attach_body` 返回 false、
-//! `body_count` 恒为 0，物件完全由脚本驱动（与旧行为一致）。
+//! 物理默认**关闭**（`Physics::new()` 即 Null 后端 + enabled=false），三层任一入口可开：
+//! 命令行 `--physics on` / 场景 `physics.enabled` / 脚本 `physics_set_enabled(true)`。
+//! 关闭时不积分、`attach_body` 返 false、`body_count` 恒 0，物件全由脚本驱动（同旧行为）。
 //!
 //! **可切换性是硬约束**：`rapier3d` / `parry` 的类型只允许出现在 `rapier_backend.rs`，
 //! 门面、`app`、脚本层只接触 `glam` 向量与本文件的契约类型。
@@ -32,11 +31,12 @@ pub use bind::BindReport;
 mod builtin_backend;
 pub use builtin_backend::{BuiltinBackend, NullBackend};
 
-/// 物理查询端口：上层与具体后端之间的唯一查询边界（M2 · A03）。
-///
-/// 上层拿 `&dyn PhysicsQueryPort` 即可，不必持有门面、不必知道后端是谁。
+mod host_adapter;
+/// 物理查询端口：上层与具体后端的唯一查询边界（M2 · A03），拿 `&dyn PhysicsQueryPort` 即可。
 pub mod port;
 
+/// 能力面门面（M2-A03b）：把真门面适配成 `r3e_core::host` 契约。
+pub use host_adapter::PhysicsFacade;
 /// 端口适配：把 `PhysicsQueryPort` 三组查询接到门面上（纯字段搬运，无决策逻辑）。
 mod port_impl;
 

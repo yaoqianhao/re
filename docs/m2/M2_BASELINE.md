@@ -96,10 +96,11 @@
 
 | 边 | why | plan（原文） | 现状 |
 |---|---|---|---|
-| `r3e-script → r3e-physics` | 脚本 API 直连 physics 门面；53 个绑定方法 / 704 行，端口化属架构重排 | 「M1：补 CapabilityHost 物理入口后删条」 | **未偿还** |
-| `r3e-script → r3e-audio` | 同上，音频绑定直连 audio 门面 | 「M1：端口注入音频能力后删条」 | **未偿还** |
+| `r3e-script → r3e-physics` | 脚本 API 直连 physics 门面；53 个绑定方法 / 704 行，端口化属架构重排 | 「M1：补 CapabilityHost 物理入口后删条」 | **已偿还**（M2-A03b：能力面 `PhysicsHost` 落 `r3e-core::host`，适配器 `PhysicsFacade`）|
+| `r3e-script → r3e-audio` | 同上，音频绑定直连 audio 门面 | 「M1：端口注入音频能力后删条」 | **已偿还**（M2-A03b：`AudioHost` + `AudioFacade`）|
 
 > 这两条是 M2 开工就存在的门禁债，且 `limit=2` 已顶格——**M2 任何新依赖边都会立刻红**。必须在 M2 内排卡或明确顺延，不能悬空。
+> **2026-11-20 已清零**（M2-A03b）：两条同时删除，`dep_debt.limit = 0`、`entries = []`。今后没有免死金牌，新边一律改代码或先改 `dep_rules.json`。
 
 ---
 

@@ -3,25 +3,36 @@
 //! 设计要点：
 //! * 场景是唯一真源，脚本每次修改都直接写进 `Scene`，渲染下一帧即可见。
 //! * 脚本支持热重载：文件 mtime 变化即重新载入并重放基础场景。
-//! * 物理通过 `r3e_physics::Physics` 门面暴露，当前为 `null` 后端（空实现）。
+//! * 物理 / 音频走能力面 trait（`PhysicsHost` / `AudioHost`），实现由装配层注入（M2-A03b）。
 
 pub mod api;
+mod host_wiring;
 mod util;
+
+/// 能力面契约（M2-A03b）：从 `r3e-core` 再导出，`r3e_script::host::PhysicsHost` 老路径照旧可用。
+pub use r3e_core::host;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use r3e_audio::Audio;
-use r3e_core::{InputState, MeshAabbCache, Scene, SceneCommand, SceneStack, UiInteraction};
+use r3e_core::{
+    InputState, MeshAabbCache, PhysicsSceneDesc, Scene, SceneCommand, SceneStack, UiInteraction,
+};
 use r3e_doc::Document;
-use r3e_physics::{Physics, PhysicsConfig};
 use rhai::{Dynamic, Engine, Scope, AST};
 
 pub use api::Clock;
+use r3e_core::host::{AudioHost, PhysicsHost};
 pub use util::array_to_strings;
 use util::has_fn;
+
+/// 仅测试构建：单测要真物理 / 真混音器才能断言行为，故用 `PhysicsFacade` /
+/// `AudioFacade` 把真门面包成能力面。生产构建里 script **不认识**这两个 crate
+/// （A03b 的核心约束：能力面注入，不直连实现）。
+#[cfg(test)]
+use r3e_physics::{Physics, PhysicsFacade};
 
 /// 脚本宿主：持有 Rhai 引擎、编译后的 AST 与持久作用域。
 /// 场景重建后的补挂回调（P3）：宿主用它把资产节点与动画实例重新 spawn 回场景。
@@ -32,10 +43,9 @@ pub struct ScriptHost {
     clock: Rc<RefCell<Clock>>,
     /// 场景唯一真值（M0-S3）：宿主与脚本共用同一份 Document，写一律走 `write`。
     doc: Rc<RefCell<Document>>,
-    physics: Rc<RefCell<Physics>>,
+    /// 物理能力面（M2-A03b）：script 只认识 trait，真实门面由装配层包成 host 注入。
+    physics: Rc<dyn PhysicsHost>,
     input: Rc<RefCell<InputState>>,
-    /// 音频门面。脚本层**不**自己开设备：句柄由 app 注入，或退化成静默后端（编辑器 / 单测）。
-    audio: Rc<RefCell<Audio>>,
     /// UI 指针交互状态。`app` 每帧 `update`，脚本只读——同一个 `Rc`，不存在两份真源。
     ui_interaction: Rc<RefCell<UiInteraction>>,
     /// 场景栈（扩展十八 B）。与 `app` 共用同一份：脚本只读，宿主负责压栈。
@@ -59,74 +69,6 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
-    pub fn new(
-        doc: Rc<RefCell<Document>>,
-        physics: Rc<RefCell<Physics>>,
-        input: Rc<RefCell<InputState>>,
-    ) -> Self {
-        // 默认静默后端：单测 / 编辑器不需要真设备，也不该因为没声卡就报错。
-        Self::new_with_audio(
-            doc,
-            physics,
-            input,
-            Rc::new(RefCell::new(Audio::silent("脚本宿主未接入音频设备"))),
-        )
-    }
-
-    /// 带音频门面的构造：app 层把持有真实设备的 `Audio` 句柄交进来，脚本与 app 共用同一混音器。
-    pub fn new_with_audio(
-        doc: Rc<RefCell<Document>>,
-        physics: Rc<RefCell<Physics>>,
-        input: Rc<RefCell<InputState>>,
-        audio: Rc<RefCell<Audio>>,
-    ) -> Self {
-        let clock = Rc::new(RefCell::new(Clock::default()));
-        let ui_interaction = Rc::new(RefCell::new(UiInteraction::new()));
-        // 场景栈与命令槽在构造时就建好：它们会被 `bind_all` 的闭包捕获，
-        // 之后再换 `Rc` 不会影响已注册的绑定（与 `ui_interaction` 同一约束）。
-        let scene_stack = Rc::new(RefCell::new(SceneStack::new()));
-        let scene_cmd: Rc<RefCell<Option<SceneCommand>>> = Rc::new(RefCell::new(None));
-        // 包围盒表同样在这里建好：绑定闭包捕获的是这个 `Rc`，之后换表不会生效。
-        let pick_bounds = Rc::new(RefCell::new(MeshAabbCache::new()));
-        let ctx = api::ScriptContext {
-            doc: doc.clone(),
-            physics: physics.clone(),
-            input: input.clone(),
-            audio: audio.clone(),
-            clock: clock.clone(),
-            rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
-            ui_log: Rc::new(RefCell::new(api::UiWriteLog::default())),
-            ui_interaction: ui_interaction.clone(),
-            scene_stack: scene_stack.clone(),
-            scene_cmd: scene_cmd.clone(),
-            pick_bounds: pick_bounds.clone(),
-        };
-
-        let mut engine = Engine::new();
-        engine.on_print(|s| println!("[script] {s}"));
-        api::bind_all(&mut engine, &ctx);
-
-        Self {
-            engine,
-            clock,
-            doc,
-            physics,
-            input,
-            audio,
-            ui_interaction,
-            scene_stack,
-            scene_cmd,
-            pick_bounds,
-            ast: None,
-            scope: Scope::new(),
-            script_path: None,
-            script_mtime: None,
-            base_scene_json: None,
-            rebuild_hook: None,
-            last_error: None,
-        }
-    }
-
     /// 注册场景重建回调：每次场景被重放（热重载 / F5）都会在重跑脚本前调用，
     /// 宿主借此把资产节点与动画实例补挂回去，避免热重载后资产凭空消失。
     pub fn set_rebuild_hook(&mut self, hook: impl FnMut(&mut Scene) + 'static) {
@@ -152,11 +94,6 @@ impl ScriptHost {
     /// 文档句柄：app / editor 与脚本共用同一份 [`Document`]（唯一真值）。
     pub fn doc_handle(&self) -> Rc<RefCell<Document>> {
         self.doc.clone()
-    }
-
-    /// 音频门面句柄，供 app 层每帧驱动 `Audio::update` 并读取错误。
-    pub fn audio_handle(&self) -> Rc<RefCell<Audio>> {
-        self.audio.clone()
     }
 
     /// 记录基础场景 JSON，供热重载时重放。
@@ -301,14 +238,11 @@ impl ScriptHost {
     /// 用新的场景 JSON 重建世界，并重跑当前脚本（IDE 里改 scene.json 也会生效）。
     pub fn rebuild_scene(&mut self, json: &str) -> Result<(), String> {
         let new_scene = r3e_doc::parse_scene(json).map_err(|e| format!("场景解析失败: {e}"))?;
-        let phys_cfg = PhysicsConfig::from_scene(&new_scene.physics);
+        let phys_desc = new_scene.physics.clone();
         self.doc.borrow_mut().replace_scene(new_scene);
-        {
-            let mut physics = self.physics.borrow_mut();
-            physics.clear_bodies();
-            if let Err(e) = physics.apply_config(phys_cfg) {
-                println!("[script] 物理配置应用失败: {e}");
-            }
+        // 清空刚体 + 应用场景文件声明的物理配置：一次能力面调用换两次门面操作
+        if let Some(e) = self.physics.reset_scene(&phys_desc) {
+            println!("[script] 物理配置应用失败: {e}");
         }
         self.base_scene_json = Some(json.to_string());
         self.run_rebuild_hook();
@@ -350,11 +284,11 @@ impl ScriptHost {
         }
 
         // 重放基础场景，保证脚本重新执行时状态干净
-        let mut phys_cfg = None;
+        let mut phys_desc: Option<PhysicsSceneDesc> = None;
         if let Some(json) = &self.base_scene_json {
             match r3e_doc::parse_scene(json) {
                 Ok(new_scene) => {
-                    phys_cfg = Some(PhysicsConfig::from_scene(&new_scene.physics));
+                    phys_desc = Some(new_scene.physics.clone());
                     self.doc.borrow_mut().replace_scene(new_scene);
                 }
                 Err(e) => println!("[script] 基础场景重放失败: {e}"),
@@ -362,15 +296,15 @@ impl ScriptHost {
         } else {
             self.doc.borrow_mut().write(|s| s.clear_nodes());
         }
-        {
-            let mut physics = self.physics.borrow_mut();
-            physics.clear_bodies();
-            // 回到场景文件声明的物理配置（脚本里的运行时改动随之重置）
-            if let Some(cfg) = phys_cfg {
-                if let Err(e) = physics.apply_config(cfg) {
+        // 回到场景文件声明的物理配置（脚本里的运行时改动随之重置）；
+        // 没有基础场景时只清刚体，物理配置保持现状——与旧行为逐条对齐。
+        match phys_desc {
+            Some(desc) => {
+                if let Some(e) = self.physics.reset_scene(&desc) {
                     println!("[script] 物理配置应用失败: {e}");
                 }
             }
+            None => self.physics.clear_bodies(),
         }
 
         // 资产节点/动画实例必须重新挂回重放后的场景，且要在脚本 on_start 之前
@@ -396,7 +330,10 @@ mod save_script_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(doc.clone(), physics, input), doc)
+        (
+            ScriptHost::new(doc.clone(), PhysicsFacade::wrap(physics), input),
+            doc,
+        )
     }
 
     #[test]
@@ -465,7 +402,10 @@ mod key_script_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(doc, physics, input.clone()), input)
+        (
+            ScriptHost::new(doc, PhysicsFacade::wrap(physics), input.clone()),
+            input,
+        )
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -578,7 +518,10 @@ mod text_script_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(doc.clone(), physics, input), doc)
+        (
+            ScriptHost::new(doc.clone(), PhysicsFacade::wrap(physics), input),
+            doc,
+        )
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1058,14 +1001,23 @@ mod text_script_tests {
 #[cfg(test)]
 mod audio_script_tests {
     use super::*;
+    use r3e_audio::{Audio, AudioFacade};
 
     /// 静默音频后端 + 空场景：等价于「这台机器没有声卡」的运行环境。
+    ///
+    /// 走真实 `Audio::silent`（而不是 `SilentAudioHost` 那种纯 no-op）：音量夹取、
+    /// 失败记账、`enabled` 开关这些策略都在实现里，换掉后端就等于换掉被测行为。
     fn host_silent() -> ScriptHost {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        // ScriptHost::new 内部就是 Audio::silent —— 单测不碰真设备。
-        ScriptHost::new(doc, physics, input)
+        let audio = Rc::new(RefCell::new(Audio::silent("单测不碰音频设备")));
+        ScriptHost::new_with_audio(
+            doc,
+            PhysicsFacade::wrap(physics),
+            input,
+            AudioFacade::wrap(audio),
+        )
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1240,7 +1192,10 @@ mod postfx_script_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(doc.clone(), physics, input), doc)
+        (
+            ScriptHost::new(doc.clone(), PhysicsFacade::wrap(physics), input),
+            doc,
+        )
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1364,7 +1319,10 @@ mod ui_interaction_script_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(doc.clone(), physics, input), doc)
+        (
+            ScriptHost::new(doc.clone(), PhysicsFacade::wrap(physics), input),
+            doc,
+        )
     }
 
     fn button(scene: &Rc<RefCell<Document>>, key: &str, x: f32, y: f32) {
@@ -1519,7 +1477,10 @@ mod local_light_script_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        (ScriptHost::new(doc.clone(), physics, input), doc)
+        (
+            ScriptHost::new(doc.clone(), PhysicsFacade::wrap(physics), input),
+            doc,
+        )
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {
@@ -1878,7 +1839,7 @@ mod scene_binding_tests {
         let doc = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        ScriptHost::new(doc, physics, input)
+        ScriptHost::new(doc, PhysicsFacade::wrap(physics), input)
     }
 
     fn eval_bool(host: &mut ScriptHost, src: &str) -> bool {

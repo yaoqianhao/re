@@ -9,6 +9,7 @@
 //! ⑤ 摘掉空间后回到手写权重，实例/层不存在时返回中性值；
 //! ⑥ 三维空间（四面体剖分）的顶点 / 棱上落点，以及二维入口在三维空间上等价于 z=0。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -105,7 +106,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

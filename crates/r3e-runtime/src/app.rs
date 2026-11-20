@@ -1,5 +1,7 @@
 //! 应用层：窗口、事件循环、主循环、终端指令与脚本热重载。
 
+use r3e_audio::AudioFacade;
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -512,11 +514,12 @@ impl EngineApp {
             log::info!("音频: {}", a.status_line());
         }
 
+        // 能力面注入（M2-A03b）：脚本只认 trait，真门面由这里包成 host。
         let mut scripts = ScriptHost::new_with_audio(
             scene.clone(),
-            physics.clone(),
+            PhysicsFacade::wrap(physics.clone()),
             input.clone(),
-            audio.clone(),
+            AudioFacade::wrap(audio.clone()),
         );
 
         // UI 指针交互与脚本宿主共用同一份状态：app 推进、脚本读。
@@ -717,6 +720,7 @@ impl EngineApp {
             let access = EngineAccess {
                 scene: &self.scene,
                 physics: &self.physics,
+                audio: &self.audio,
                 meshes: Some(Arc::clone(&meshes)),
                 scripts: &mut self.scripts,
                 renderer: self.renderer.as_mut(),

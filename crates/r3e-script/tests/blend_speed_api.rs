@@ -5,6 +5,7 @@
 //! ② 变速真的进了层的时间推进——同样的 `dt` 走出两倍 `dt` 的时间；
 //! ③ `anim_layer_blend` 回显只在**有变速样本**时追加 `spd=`，全原速时逐字符不变。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -69,7 +70,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(scene)));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(r3e_core::InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

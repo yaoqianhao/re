@@ -9,6 +9,7 @@
 //! 只断言**能载入**，不断言 `on_start` 里做的事成功：部分演示脚本依赖具体资产与场景，
 //! 在空场景下 `on_start` 内部报错是预期行为（那一类错误由各脚本自己的演示场景验证）。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -45,7 +46,7 @@ fn every_demo_script_compiles() {
         let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
         let physics = Rc::new(RefCell::new(Physics::new()));
         let input = Rc::new(RefCell::new(InputState::default()));
-        let mut host = ScriptHost::new(scene, physics, input);
+        let mut host = ScriptHost::new(scene, PhysicsFacade::wrap(physics), input);
 
         if let Err(e) = host.load_file(path) {
             let name = path

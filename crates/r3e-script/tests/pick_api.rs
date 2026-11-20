@@ -9,6 +9,7 @@
 //! ⑤ 屏幕尺寸来自 `UiInteraction`——同一像素坐标在两种分辨率下结论可以不同，
 //!    说明绑定确实用了宿主送进来的尺寸，而不是某个写死的常量。
 
+use r3e_physics::PhysicsFacade;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -26,7 +27,7 @@ fn fixture() -> Fixture {
     let scene = Rc::new(RefCell::new(Document::new(Scene::new())));
     let physics = Rc::new(RefCell::new(Physics::new()));
     let input = Rc::new(RefCell::new(InputState::default()));
-    let host = ScriptHost::new(scene.clone(), physics, input);
+    let host = ScriptHost::new(scene.clone(), PhysicsFacade::wrap(physics), input);
     Fixture { scene, host }
 }
 

@@ -20,6 +20,9 @@ pub use app::{CliOptions, EngineApp, HeadlessReport, HEADLESS_FIXED_DT};
 pub use capture::{absolute_path, capture_to_file, default_capture_name, CaptureInfo};
 pub use cli::{find_project_root, parse, print_usage, run_offscreen_tools, Parsed};
 pub use port::{EditorService, EngineAccess};
+// 脚本宿主与它的装配入口（M2-A03b）：`r3e-script` 已不认识 physics/audio，
+// 需要「拿真实门面构造宿主」的调用方从这里拿，不要直接写 `ScriptHost::new`。
+pub use r3e_script::ScriptHost;
 pub use time::{FrameTimeStats, FrameTimeWindow, FRAME_TIME_WINDOW};
 
 /// 启动引擎：headless 或窗口，二选一。
