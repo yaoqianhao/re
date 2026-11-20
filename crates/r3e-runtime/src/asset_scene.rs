@@ -13,6 +13,13 @@ use r3e_core::{MeshRef, NodeId, ObjectDesc, Scene, SkinInstance};
 
 use crate::app::AssetSpec;
 
+/// 按资产内节点路径把一个 FBX 的每个网格 spawn 成场景物件。
+///
+/// * 物件名默认取网格所属节点的路径（如 `RootNode/Arm/Hand`）；
+/// * 与已有物件或同批重名时追加 `#1`、`#2` 后缀；
+/// * `mesh` 字段写成 `asset:<路径>#<序号>`，渲染层据此从资产库取数据；
+/// * 顶点已是 `geometry_to_world` 后的世界空间坐标，因此默认不加变换；
+///   场景 `assets` 段给了 position/rotation/scale 时会作为整体变换施加。
 pub(crate) fn spawn_asset_nodes(
     scene: &mut Scene,
     library: &AssetLibrary,

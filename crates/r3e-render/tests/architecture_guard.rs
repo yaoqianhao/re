@@ -16,8 +16,22 @@ fn crate_src(crate_dir: &str) -> PathBuf {
         .join("src")
 }
 
+/// 文件本身就是一个测试模块（`tests.rs` / `*_tests.rs`）：整份都是测试代码，不参与守卫。
+///
+/// M2-A05 起内嵌 `#[cfg(test)] mod tests` 被切成独立文件，这种文件里没有
+/// `#[cfg(test)]` 字样可截，必须按文件名整体排除，否则测试里构造的内置图元会被误判。
+fn is_test_module_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n == "tests.rs" || n.ends_with("_tests.rs"))
+        .unwrap_or(false)
+}
+
 /// 读源码并截掉测试模块（测试里允许直接构造内置图元做对照）。
 fn production_source(path: &Path) -> String {
+    if is_test_module_file(path) {
+        return String::new();
+    }
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读 {path:?} 失败: {e}"));
     match text.find("#[cfg(test)]") {
         Some(idx) => text[..idx].to_string(),

@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_f277f7e8e4d211f1bfe1525400dc9a98
+    ReservedCode1: 1wwBIq2y4SwzwevZybwTmKiHJYDjQq+vk5+An1nnaW3fOfe8SaO3cV402mQuwShubyJoZ5ZOkiNyJQrDLHOZrvTnKvjTRhOKFeawdXIQDsPMZHK0WSSaIKoLnXEH86xvFFlbJsIDu4mLjMaj4kpS6SIzJBeN6lIVVEiCBm8DI9vZLNa7Y+7HOrVkzVw=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_f277f7e8e4d211f1bfe1525400dc9a98
+    ReservedCode2: 1wwBIq2y4SwzwevZybwTmKiHJYDjQq+vk5+An1nnaW3fOfe8SaO3cV402mQuwShubyJoZ5ZOkiNyJQrDLHOZrvTnKvjTRhOKFeawdXIQDsPMZHK0WSSaIKoLnXEH86xvFFlbJsIDu4mLjMaj4kpS6SIzJBeN6lIVVEiCBm8DI9vZLNa7Y+7HOrVkzVw=
+---
+
 # M2 · A05 `size_debt` 收紧 3 项 —— 实施方案（规划稿）
 
 > 状态：**待老板拍板 A05-D1（档位选择）后开工**
@@ -256,3 +267,51 @@ Get-Content xtask/size_debt.json -Raw | ConvertFrom-Json | Select-Object -Expand
 **A05-D1**：执行 **档 A**（只搬测试块：physics 1170 / tools 716 / app 2856，债务 22 → 21）还是 **档 B**（推荐：再加 physics 的 `types.rs` + `backend.rs` 横切，physics ≈472、债务 22 → 20）。
 
 档 B 多出的收益是 `r3e-physics/lib.rs` 也进 800 硬门禁（债务再少一条），代价是引入 2 个新文件与一张 re-export 表；风险已由 `pub use types::*` 通配导出压到最低，且 `bind.rs` / 两个后端文件零改动。档 C（连 `app.rs` 一起拆）不推荐，与 G02 撞车。
+*（内容由AI生成，仅供参考）*
+
+---
+
+## 12. 实施记录（2026-11-20，A05-D1 取档 B）
+
+### 12.1 实际落点与行数
+
+| 文件 | 前 | 后 | 说明 |
+|---|---|---|---|
+| `crates/r3e-physics/src/lib.rs` | 1542 | **461** | 只留门面：`mod` 声明 + `pub use` re-export；`size_debt` 条目已删 |
+| `crates/r3e-physics/src/types.rs` | — | **438** | 新建：契约类型段 + `infer_shape` / `half_extents_from`（后者升 `pub(crate)`） |
+| `crates/r3e-physics/src/backend.rs` | — | **289** | 新建：`BackendCaps` impl + `PhysicsBackend` trait + `cast_candidate_better` |
+| `crates/r3e-physics/src/tests.rs` | — | **372** | 新建：原内嵌 16 条测试整块，逐条搬移零删减（去 `mod tests` 包裹，`use super::*` 留在文件顶层） |
+| `crates/r3e-plugin/src/tools.rs` | 1125 | **715** | `size_debt` 条目已删 |
+| `crates/r3e-plugin/src/tools/tests.rs` | — | **411** | 新建：原内嵌 23 条测试 |
+| `crates/r3e-runtime/src/app.rs` | 3032 | **2848** | 留 base、条目保留（G02 拆域用）；base 由 3032 → 2848 |
+| `crates/r3e-runtime/src/app/morph_bind_tests.rs` | — | **82** | 新建：`#[path]` 引入 |
+| `crates/r3e-runtime/src/app/key_event_tests.rs` | — | **98** | 新建：`#[path]` 引入 |
+| `crates/r3e-runtime/src/asset_scene.rs` | 493 | **500** | 承接 `app.rs` 尾部孤儿文档注释（见 §12.3） |
+
+`size_debt.json`：白名单 **22 → 20** 条（`physics/lib.rs`、`plugin/tools.rs` 移除；`runtime/app.rs` 记 2848）。新增 5 个文件全部 ≤800，最大 `types.rs` 438。
+
+### 12.2 判据逐条核对（11 条）
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | `cargo xtask verify` 11 步全绿 | ✅ RC 0 |
+| 2 | `physics/lib.rs ≤800` 且删条 | ✅ 461，条目已删 |
+| 3 | `plugin/tools.rs ≤800` 且删条 | ✅ 715，条目已删 |
+| 4 | `runtime/app.rs ≤3028` 条留 base 收紧 | ✅ 2848 |
+| 5 | `size_debt` 债务 22 → 20 | ✅ 20 |
+| 6 | tests 2025 零删减 | ✅ 2025 → 2025（physics 238 / plugin 47 / runtime 14 均持平） |
+| 7 | API 路径不变 | ✅ 编译 + 全测试通过；`pub use types::*` / `backend::*` 兜住原路径 |
+| 8 | 回放金标不漂移 | ✅ `385482eb033d2964` |
+| 9 | fmt / clippy `-D warnings` 绿 | ✅ |
+| 10 | 新文件 ≤800 | ✅ 最大 438 |
+| 11 | 只改 `size_debt.json`（台账） | ⚠️ 另有两处门禁接缝修正，见 §12.3，均为「拆文件后的必然适配」，不涉行为 |
+
+### 12.3 计划外的三处接缝修正（不涉行为，需知晓）
+
+1. **`xtask/doc_gate.json` 例外登记改路径**：`fn sync_to_scene(&mut self, scene: &mut Scene);` 的写点从 `r3e-physics/src/lib.rs` 移到 `src/backend.rs`，doc-gate 规则 2 白名单按「路径 + needle + count」精确匹配，不改路径则判「漏登记 1 条 + 可下调 1 条」而失败。只改该条 `path` 字段，例外条数不变（10 条）。
+2. **`crates/r3e-render/tests/architecture_guard.rs` 扩一处排除**：守卫的 `production_source` 只按文本截断到第一个 `#[cfg(test)]`，对「整个文件就是测试模块」（`tests.rs` / `*_tests.rs`）没有标记可截，导致 `physics/tests.rs` 里的 `BuiltinMesh` 被误判为生产代码来源分支。新增 `is_test_module_file` 按文件名整文件排除，判定意图不变（测试里本可构造内置图元做对照）。同时因去掉 `mod tests` 包裹，顺便消掉 clippy `module_inception`。
+3. **`app.rs` 尾部孤儿文档注释归位**：`app.rs` 原 2843–2849 行一段描述 `spawn_asset_nodes` 的 `///` 文档注释，A04/P5 把该函数迁到 `asset_scene.rs` 时注释留在原地，只因紧贴 `#[cfg(test)] mod morph_bind_tests` 才没被 clippy 抓到；A05 搬走测试块后 `empty_line_after_doc_comments` 立刻报错。处置 = 注释搬到 `asset_scene.rs` 的 `spawn_asset_nodes` 上方（原函数无文档注释），不删内容。
+
+### 12.4 档 A 的取舍回收
+
+档 A（只搬测试块）会把 physics 留 1170 行、仍超 `limit=800`，债务只能 22 → 21；档 B 用 `types.rs` + `backend.rs` 两刀横切一次清掉两条，且 `bind.rs` / `builtin_backend.rs` / `rapier_backend.rs` 因通配 re-export 零改动 —— 与规划预测一致。

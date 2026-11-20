@@ -20,7 +20,7 @@
       "note": "core 内部快照应用：方案 §5 规则 2 例外（core 自身）"
     },
     {
-      "path": "crates/r3e-physics/src/lib.rs",
+      "path": "crates/r3e-physics/src/backend.rs",
       "needle": "fn sync_to_scene(&mut self, scene: &mut Scene);",
       "count": 1,
       "note": "物理后端把求解结果写回场景（下游接收者）"
