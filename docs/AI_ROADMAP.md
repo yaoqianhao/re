@@ -25,7 +25,7 @@
 | M1-S2 | 语义查询（3 卡） | ✅ 2026-11-17（C→A→B） | `tags` / `interact_radius` 落 `Node` 与 `to_scene_file`（roundtrip 不增生字段）、`StateHash` 覆盖；`r3e-core/src/query.rs` 443 行 `WorldQuery`（八类判据 + 标签 AND/OR + 区域含边界 + 九位组件位，`describe` 与 `query` 共用 `Facts`）；`query.find/describe/stats` 三条只读 RPC：RPC 44 → **47**、命令表 374 → **377**；单测 1,504 → **1,546**；`verify` 十项全绿 |
 | M1-S3 | 意图命令（3 卡） | ✅ 2026-11-17（A→B→C） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；意图白名单三条：`scene.spawn_prefab`（256 上限、重名 / 父引用预检）、`scene.place_light`（上限 = 光源表容量 16、`key` 必填、同批重 key / 场景已有 key / 空位不够三重预检）、`scene.paint_terrain`（数据壳 32 块上限、**同名重刷放行**、`sanitized` 幂等收敛、高度样本逐点入 `StateHash`）——**意图名不进协议**，加意图只改宿主常量、协议零改动（RPC 仍 **48**、命令表仍 **378**）；`impact { objects, lights, terrain, materials }` 四字段恒定回带（不进哈希、不入撤销栈）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；单测 1,546 → **1,574**；`verify` 十项全绿。**M1-S3-C 只做数据壳**：地形网格生成与 LOD 按 D3 裁决留 M2 |
 
-### 0.2 门禁现状（`cargo xtask verify`，2026-11-16 实测）
+### 0.2 门禁现状（`cargo xtask verify`，2026-11-20 实测，M2-A01 留证见 `docs/m2/M2_BASELINE.md`）
 
 | 指标 | 现值（M0-S5 收口） | M0 目标 | 采集 |
 |---|---|---|---|
@@ -36,14 +36,15 @@
 | 依赖债务条数 | 2（`script→physics` / `script→audio`，`limit=2` 只减不增；`plugin→core` / `plugin→physics` 已于 M1-S1-D 偿还，见 `docs/m1/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
 | 能力清单漂移 | 0（`capabilities.json` 392 命令 / 62 RPC / 38 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
 | 不变量三源 | 38 = 38 = 38 | 三源一致 | `cargo xtask invariants` |
-| `verify` 时长（热态） | 14.6–20.4s（九道门全硬）；冷缓存 25.4s；含 crate 重编译最长实测 138.5s（编译成本，不计入门禁判据） | <120s（热态口径） | 实测 |
-| 回放确定性 | **已达成** `final=15b5652e98b3346c` | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
-| `doc-gate` | 299 个 `.rs` / 15 个 crate / **7 条规则**（M1-S1 加写点台账）/ 白名单 10 项 / 写点 5 crate 234 处 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
+| `verify` 步数 | **11 步**（`scene-verify` 为第 11 步，此前文档误记为「九道门 / 十项」） | 全硬 | `xtask/src/main.rs` |
+| `verify` 时长（热态） | 14.6–20.4s（11 步全硬）；冷态实测 **255.6s**（2026-11-20，含 `xtask` 重编译 21.3s + clippy + workspace test + 夹具，编译成本不计入门禁判据） | <120s（热态口径） | 实测 |
+| 回放确定性 | **已达成** `final=385482eb033d2964`（2026-11-20 实测；M1 期间为 `15b5652e98b3346c`，已被后续变更推进） | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
+| `doc-gate` | 332 个 `.rs` / 16 个 crate / **7 条规则**（M1-S1 加写点台账）/ 白名单 10 项 / 写点 5 crate 234 处 / 0 违规 | 0 违规 | `cargo xtask doc-gate` |
 
 ### 0.3 仓库结构现状
 
-- crate 目录 **14 个**：`core / render / physics / audio / asset / script / doc / replay / runtime / editor-host / editor / protocol / plugin / app`，另有 `xtask`（`doc-gate` 计 14 个，不含 xtask）。
-- `r3e-protocol` 已落地（8 文件 / 2,326 行 / 34 测，依赖仅 serde + serde_json），`r3e-editor` 只剩传输层（505 行 / 72 测），旧 `use r3e_editor::` 调用方零改动。
+- crate 目录 **16 个**：`core / render / physics / audio / asset / script / doc / replay / runtime / editor-host / editor / protocol / plugin / app / nav / cli`，另有 `xtask`（`doc-gate` 计 16 个，不含 xtask；workspace 成员 17 个）。
+- `r3e-protocol` 已落地（8 文件 / 2,326 行 / **75 测**，依赖仅 serde + serde_json），`r3e-editor` 只剩传输层（505 行 / 72 测），旧 `use r3e_editor::` 调用方零改动。
 - 依赖违规 **0 条**；债务 **2 条**登记在 `xtask/dep_debt.json`（`script → physics` / `script → audio`，`limit=2`）。`plugin → core` / `plugin → physics` 已于 M1-S1-D 偿还（见 §3.1.7 收尾实测）。
 
 ---
@@ -340,7 +341,7 @@ cargo xtask invariants              # ✅ 38 = 38 = 38
 | M1-S4 ◐ 2026-11-18 | 内容验证器 | 可通行性、悬空、穿模、材质缺失、引用断裂 | 故意生成不可达关卡 → 报出具体失败点位坐标 | M1-5；**V3 改为「先补引擎能力、后接验证器」**：S4-A 材质引用体系 / S4-B `r3e-nav` / S4-C 装配下沉 / S4-D 协议面八条（RPC 48→56、命令表 378→386、`capabilities.json` 重生成）/ S4-E 三层验证器 + 坐标化 Issue（静态 / 物理 / 导航三层落地，`ISSUE_CODES` 24→38，`capabilities.json` 重生成）已落地；S4-F `scene.verify` RPC（RPC 56→57、命令表 386→387）+ `impact.violations`（影子静态层求差）+ `assets/verify` 六夹具 + `cargo xtask scene-verify`（`verify` 第 11 步）已落地；S4-G 把 `impact.violations` 补到物理 / 导航两层（影子世界当场重建 + 影子导航网格，`notChecked` 不再留已跑的层）已落地；S4-H `physics.bind` RPC（RPC 57→58、命令表 387→388、`capabilities.json` 重生成）已落地——编辑态由调用方显式装配主世界、`wroteBackScene: false` 不写回场景，物理关回 `PHYSICS_DISABLED`、无网格来源回新码 `-32023 MESH_SOURCE_UNAVAILABLE`（绝不回空表），`scene.verify` 的新鲜度守卫由此有了消除路径、`passed` 恢复为可用门禁；`#[test]` 1,721→1,725，`verify` 全绿，Gate 1 前置校验就位 |
 | M1-S5 ✅ 2026-11-19 | CLI + 三范式 | ✅ `r3e-cli` 五组子命令：`tx`（begin / apply / intent / preview / commit / rollback / status）、`query`（find / describe / stats）、`verify`、`replay`、`rpc`；退出码语义 `0` 成功 /`1` 业务否定（`passed:false`）/`2` 用法错 /`3` 环境错 /`4` 缺 replay；缺省会话态 `.r3e-cli/session.json`（`txId` 自动接续，`--state-file ""` 可关）；`errmap` 把 `-320xx` 译成人话 + 退出码；`rpc` 双护栏 `TX_ONLY_METHODS` + `TX_ONLY_INTENTS`（协议方法名与意图名是两套命名空间，只拦前者会漏 `scene.spawn_prefab` 等改场景意图）；三范式 `docs/m1/norms/norm1_build.md`（生成）/ `norm2_verify.md`（读失败）/ `norm3_rollback_retry.md`（失败→修正→成功）+ 夹具 `scene_norms.json`、`silent.rhai`（静默脚本，防 `baseHash` 逐帧漂移致 `TX_CONFLICT`）；`RPC` 58、命令表 388、`#[test]` 1,725→**1,817**（`r3e-protocol` 58→75、新增 `r3e-cli` 75），`cargo xtask verify` 全绿 | **Gate 1 ✅**（见下） | M1-6、M1-8 |
 
-**待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 按域拆）。行数已从 4,057 降到 **3,947**（M1-S2-C 拆 `scene_desc.rs`、M1-S3-C 拆 `scene_tables.rs`），私有化仍留 M2——冲击全仓读点，与 M1 并行风险过高（D2 裁决）。
+**待办顺延**：`M1-DOC-FIELDS`（`Scene` 40 个 pub 字段私有化 + `scene.rs` 按域拆）。行数已从 4,057 降到 **3,935**（M1-S2-C 拆 `scene_desc.rs`、M1-S3-C 拆 `scene_tables.rs`；M1 收尾时 3,947，S1-D 删 `rapier` 依赖边后再降），私有化仍留 M2——冲击全仓读点，与 M1 并行风险过高（D2 裁决）。
 
 **Gate 1（M1 退出）**：一个不改引擎代码的 AI Agent，仅用 `r3e-cli` + 协议完成"生成可通行小场景 → 验证 → 失败回滚重试 → 成功提交"，全过程命令可复制粘贴。
 
