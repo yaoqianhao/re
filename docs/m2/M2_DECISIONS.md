@@ -76,6 +76,8 @@
   3. `r3e-script` 的 `allow` 表**不新增** `r3e-character`：脚本通过 `character.*` 命令驱动角色，走命令表与能力面，不直连 crate。
   4. `Scene` 侧新增的角色相关数据结构仍落 `r3e-core`（场景唯一真值在 doc/core，不在 character crate）。
   5. 本决策与 D13 强绑定：建新 crate 会让后续「script 要调角色能力」的诱惑直接撞 `dep_debt` 顶格，故 D13 必须同时选 B。
+  6. **数据结构分层（2026-11-20 补充，BD 拍板）**：`CharacterSpec`（半径/高度/坡度上限/台阶高度/吸附距离/移动速度六个静态配置）**进 `Scene`**，随场景序列化并进撤销栈；`CharacterState`（位置/着地/垂直速度等运行态）**不进 `Scene`**——回放器 `r3e-replay` 只依赖 core + doc、动作集不碰物理，运行态入场景必致回放金标 `385482eb033d2964` 漂移；同时避开 `doc_gate` 规则 7 写点台账（`r3e-character` 源码 `.replace`/`.write(` 口径为 0）。详见 `M2_B_PLAN.md` §3.3。
+  7. **契约落点（BD-2 档 A）**：`CharacterPort` + DTO 追加进 `crates/r3e-physics/src/port.rs`，组合 + 默认实现、**不并入** `PhysicsQueryPort` 超 trait，`port_impl.rs` 零改动。
 
 ## D3 角色命令命名空间
 

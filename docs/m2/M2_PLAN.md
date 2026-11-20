@@ -51,7 +51,7 @@
 |---|---|---|
 | `#[test]` 总数 | 1817 | ≥ 2567（+750） |
 | commands | 392 | ≥ 433（+41） |
-| rpc | 62 | ≥ 76（+14） |
+| rpc | 62 | ≥ 80（+18） |
 | script_only | 330 | ≤ 330（不新增仅脚本命令） |
 | domains | 17 | 19（+2：terrain、game） |
 | invariants | 38 | ≥ 48（+10） |
@@ -76,21 +76,23 @@
 | 阶段 | 卡号 | 对应项 | 卡数 | 门禁增量（tests / cmd / rpc / inv / domains） |
 |---|---|---|---|---|
 | A 清障与准备 | A01–A05 + **A03b** | 前置 | **6** | **+256** / 0 / 0 / 0 / 0 |
-| B 角色控制器 | B01–B05 | 项 1 | 5 | **+82** / +6 / +2 / +2 / 0 |
+| B 角色控制器 | B01–B05 | 项 1 | 5 | **+82** / +6 / +6 / +2 / 0 |
 | C 地形 | C01–C07 | 项 2 | 7 | **+108** / +8 / +3 / +2 / +1 |
 | D 导航 | D01–D06 | 项 3 | 6 | **+82** / +7 / +2 / +2 / 0 |
 | E Prefab | E01–E05 | 项 4 | 5 | +58 / +6 / +2 / +1 / 0 |
 | F 动画 | F01–F06 | 项 5 | 6 | +62 / +6 / +2 / +1 / 0 |
 | G 流式 | G01–G05 | 项 6 | 5 | **+58** / +5 / +2 / +1 / 0 |
 | H 垂直切片 | H01–H05 | 项 7 | 5 | **+44** / +3 / +1 / +1 / +1 |
-| **合计** | 45 卡 | 7 项 | **45** | **+750 / +41 / +14 / +10 / +2** |
+| **合计** | 45 卡 | 7 项 | **45** | **+750 / +41 / +18 / +10 / +2** |
 
 > **卡数演进**（三次变化，逐次留痕）：
 > 1. 草案 42 卡 → **44 卡**：新增 `A05`（`size_debt` 收紧，来自 A01 发现）与 `G02`（`app.rs` 拆域提前）。草案引用 `scene.rs 3947` / crate 16 旧口径按 A01 实测修正为 `3935` / `16 个 r3e-* + xtask = 17 个成员`。
 > 2. 44 卡 → **45 卡**（A02 拍板后）：D13=B 偿还 `dep_debt`，新插 `A03b`。
 > 3. 预算 `+546` → **`+750`**：来自 4 项非建议项的连锁后果（D1 双后端、D2 新 crate、D12 新 crate、D13 偿债卡，以及 D5/D10 可配置、D11 采样脚本）。逐项差额见 `M2_DECISIONS.md`「非建议项影响总览」。
 >
-> 门禁目标值随之为 `tests ≥2567 / commands ≥433 / rpc ≥76 / invariants ≥48 / domains 19 / 债务 0 / crate 19`。
+> 门禁目标值随之为 `tests ≥2567 / commands ≥433 / rpc ≥80 / invariants ≥48 / domains 19 / 债务 0 / crate 19`。
+>
+> **2026-11-20 修订（B 阶段拍板 BD-1 档 A）**：B 阶段 `rpc` 预算由 `+2` 改为 **`+6`**——6 条 `character.*` 命令全部带 rpc 才不破坏守恒规则 4（`script_only` 不增）。全局目标随之 `76` → **`80`**（+14 → +18）。理由与三档取舍见 `M2_B_PLAN.md` §9 BD-1。
 
 ### 3.1 A 阶段：清障与准备（6 卡）
 
@@ -107,11 +109,13 @@
 
 | ID | 任务 | 依赖 | 主文件 | 完成判据 |
 |---|---|---|---|---|
-| B01 | 建 `r3e-character` crate + 控制器契约 + 命令注册（**D2=B**） | A03b | `crates/r3e-character/`、workspace `Cargo.toml`、`xtask/dep_rules.json`、`xtask/tests_baseline.json` | 新 crate 入 workspace（成员 17→**18**）并**同卡**登记 `dep_rules`（`allow = ["r3e-core", "r3e-physics"]`，2026-11-20 修订：原「仅 `r3e-core`」，因 A03 端口落 physics 连带放宽）与 `tests_baseline`；控制器 trait 契约落 `r3e-physics/src/port.rs`（与 A03 同处）、实现落本 crate；**同卡加守卫**：本 crate 源码出现 `r3e_physics::` 后接 `port` 以外路径即 `doc-gate` 失败（补救「物理无关」从编译期保证降为约定守卫）；`character.*` 命令入 `cmd_spec`，`capabilities.json` 生成含新命令；参数（半径/高度/坡度上限/台阶高度/吸附距离）全部可配置；`r3e-script` allow 表**不新增**本 crate；tests +12 |
+| B01 | 建 `r3e-character` crate + 控制器契约 + 命令注册（**D2=B**） | A03b | `crates/r3e-character/`、workspace `Cargo.toml`、`xtask/dep_rules.json`、`xtask/tests_baseline.json`、`crates/r3e-physics/src/port.rs`、`crates/r3e-core`（`scene/character.rs` + `cmd_spec/character.rs`）、`r3e-protocol`/`r3e-script`/`r3e-editor-host`（命令面与能力清单）、`r3e-cli/src/args.rs`（`TX_ONLY_METHODS`）、`xtask/doc_gate.rs`（规则 8） | 新 crate 入 workspace（成员 17→**18**）并**同卡**登记 `dep_rules`（`allow = ["r3e-core", "r3e-physics"]`，2026-11-20 修订：原「仅 `r3e-core`」，因 A03 端口落 physics 连带放宽）与 `tests_baseline`；控制器 trait 契约落 `r3e-physics/src/port.rs`（与 A03 同处）、实现落本 crate；**同卡加守卫**：本 crate 源码出现 `r3e_physics::` 后接 `port` 以外路径即 `doc-gate` 失败（补救「物理无关」从编译期保证降为约定守卫）；`character.*` 命令入 `cmd_spec`，`capabilities.json` 生成含新命令；参数（半径/高度/坡度上限/台阶高度/吸附距离）全部可配置；`r3e-script` allow 表**不新增**本 crate；`r3e-cli` 的 `TX_ONLY_METHODS` **同卡**补 `character.create` / `character.config` / `character.teleport`（否则 `rpc` 直调会绕过事务栈）；`doc_gate` 规则 8 取**档 A**（注释与源码都算违规，不调 `strip_comments`）；tests +12 |
 | B02 | 胶囊碰撞 + 地面吸附 | B01 | 同上 | headless 平面行走不下沉、不掉离地面；吸附距离内贴地；**builtin 与 rapier 双后端各验一遍** |
 | B03 | 台阶与斜坡行进 | B02 | 同上 | 台阶高度内可上，超限被挡；斜坡按坡度上限判定可通过/滑落；**双后端各验一遍**（两套后端对斜坡接触判定可能不同，任一套不过即本卡不过） |
 | B04 | 判据测试与不变量 | B03 | `crates/r3e-character/tests`、`xtask/invariants` | **斜坡上行高度误差 <2cm 自动断言**（多坡度采样，双后端各断言一次）；新增 2 条 invariant 且三源一致 |
 | B05 | 可玩性回归 1 | B04 | `r3e-cli`、回归脚本 | CLI 起一个带斜坡/台阶的场景，脚本驱动角色走完全程，截图或路点日志留证 |
+
+> **B 阶段详细方案见 [`M2_B_PLAN.md`](M2_B_PLAN.md)**：逐卡文件落点、命令面六处硬数字、门禁联动、BD-1~BD-5 决策（**2026-11-20 全选推荐档**）。
 
 ### 3.3 C 阶段：地形（项 2，7 卡）
 
@@ -187,14 +191,14 @@
 |---|---|---|---|---|---|
 | 基线 | 1817 | 392 | 62 | 38 | 17 |
 | A（A03 / A03b / A04 / A05） | **+256** | 0 | 0 | 0 | 0 |
-| B | **+82** | +6 | +2 | +2 | 0 |
+| B | **+82** | +6 | **+6** | +2 | 0 |
 | C | **+108** | +8 | +3 | +2 | +1（terrain） |
 | D | **+82** | +7 | +2 | +2 | 0 |
 | E | +58 | +6 | +2 | +1 | 0 |
 | F | +62 | +6 | +2 | +1 | 0 |
 | G | **+58** | +5 | +2 | +1 | 0 |
 | H | **+44** | +3 | +1 | +1 | +1（game） |
-| **目标** | **2567** | **433** | **76** | **48** | **19** |
+| **目标** | **2567** | **433** | **80** | **48** | **19** |
 
 A 阶段 +256 的构成（供核对，不能只写总数）：A03 双后端 **+200**（原 +130，D1=B 增 +70）、A03b 端口化偿还 **+56**（D13=B）、A04/A05 各 0（零行为变化 / 纯台账收紧）。
 > **实测（2026-11-20）**：A03 落 +200（1817 → 2017）与预算一致；A03b 落 **+8**（2017 → 2025）而非 +56 —— 端口化按「零行为变化」处理，69 个既有绑定测试原样保留（它们现在跑过 Facade，等于顺带覆盖适配器），新增的 8 条只测契约本身。差额不是漏做测试，而是「不重写已有断言」这一判据的必然结果，见 `M2_A03B_HOST_PLAN.md` §9.1 第 5 条。
