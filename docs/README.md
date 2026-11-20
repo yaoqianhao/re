@@ -20,7 +20,7 @@ docs/
 ├─ m0/                           # M0 阶段私有文档（S0–S5）
 ├─ m1/                           # M1 阶段私有文档
 │   └─ norms/                    # M1-S5 三范式（norm1–3）+ 夹具
-└─ m2/                           # M2 阶段私有文档
+└─ m2/                           # M2 阶段文档：索引 / 计划 / 决策 / 基线（入口 m2/README.md）
 ```
 
 | 路径 | 归属 | 说明 |
@@ -48,7 +48,11 @@ docs/
 | `docs/m1/norms/norm3_rollback_retry.md` | M1 归档 | 范式③：回滚与重试 |
 | `docs/m1/norms/scene_norms.json` | M1 夹具 | 三范式验证场景 |
 | `docs/m1/norms/silent.rhai` | M1 夹具 | 三范式静默脚本 |
-| `docs/m2/M2_PROPOSAL_CAPABILITY_SLOTS.md` | M2 归档 | 能力槽位扩展提案（ai_ide 侧） |
+| `docs/m2/README.md` | M2 索引 | M2 文档入口：文件清单、状态、命名约定 |
+| `docs/m2/M2_PLAN.md` | M2 计划 | M2 主计划：七项目标判据、44 卡串行卡表、门禁预算、单卡规程、文件占用、风险 |
+| `docs/m2/M2_DECISIONS.md` | M2 决策 | A02 决策清单 D1–D13（待拍板，红/黄灯分级，含默认建议） |
+| `docs/m2/M2_BASELINE.md` | M2 实测 | A01 基线对账：verify 11 步留证、唯一基线数字、偏差处置、债务台账 |
+| `docs/m2/M2_PROPOSAL_CAPABILITY_SLOTS.md` | M2 归档 | 能力槽位扩展提案（ai_ide 侧），不在 M2 执行链路内 |
 
 ---
 

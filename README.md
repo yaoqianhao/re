@@ -55,16 +55,19 @@ D:\rust3d-engine
 ├─ crates/
 │   ├─ r3e-core/              # 数学 / 节点 / 场景 / 相机 / 光照（零引擎依赖）
 │   ├─ r3e-render/            # wgpu 渲染器、程序化网格、WGSL 着色器
+│   ├─ r3e-asset/             # 外部资产（FBX）导入层：静态网格 + 材质/贴图元数据，不依赖 wgpu
 │   ├─ r3e-physics/           # 物理（PhysicsBackend trait + Null / Builtin 实现 + 开关）
 │   ├─ r3e-nav/               # 导航（场景几何 → 体素导航网格：烘焙 / 连通块 / A* / 可达诊断）
 │   ├─ r3e-script/            # Rhai 引擎、API 绑定、热重载宿主
 │   ├─ r3e-audio/             # 音频（rodio 后端 + 静默降级 + 混音门面 + 3D 空间化）
 │   ├─ r3e-doc/               # 文档层：Scene 唯一真值 + Command + 事务 + 撤销栈 + 状态哈希
 │   ├─ r3e-replay/            # headless 确定性回放（只依赖 core + doc，不开窗口不碰 GPU）
+│   ├─ r3e-protocol/          # 协议层：JSON-RPC 2.0 方法表 / Patch 体 / EngineApi / dispatch（不管怎么传）
 │   ├─ r3e-editor/            # 编辑器 RPC 协议（EngineApi / dispatch）+ TCP 桥
 │   ├─ r3e-plugin/            # IDE 插件进程（工具 schema + 读写侧工具集，JSON-RPC over stdio）
 │   ├─ r3e-runtime/           # 运行时：窗口 / 事件循环 / 主循环 / 时间步 / headless（不认编辑器协议）
 │   ├─ r3e-editor-host/       # 编辑器宿主：把 RPC 服务端接进帧循环的唯一黏合层
+│   ├─ r3e-cli/               # 命令行：一条命令一次 RPC，双通道输出（文本 / --json），稳定退出码
 │   └─ r3e-app/               # 薄壳入口：日志 + argv 交运行时 + 按需挂编辑器桥（30 行）
 ├─ xtask/                     # 工程门禁：verify / lint-size / check-tests / dep-check + 三个数据文件
 └─ docs/
@@ -76,10 +79,10 @@ D:\rust3d-engine
     ├─ capabilities.json      # 机读能力清单（cargo xtask gen-capabilities 生成，路径锁定）
     ├─ m0/                    # M0 阶段私有文档（M0S1–M0S5）
     ├─ m1/                    # M1 阶段私有文档（M1_PLAN 等），norms/ 下为三范式与夹具
-    └─ m2/                    # M2 阶段私有文档
+    └─ m2/                    # M2 阶段文档（索引 / 计划 / 决策 / 基线，入口 docs/m2/README.md）
 ```
 
-workspace 共 **14 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：
+workspace 共 **16 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：
 `app → editor-host → (editor, runtime) → render / script / physics / audio / asset → core`，核心层不认识 wgpu；
 旁挂三条：`doc → core`（文档层，场景写入口与哈希）、`replay → core + doc`（回放器）、
 `nav → core + physics`（导航烘焙只吃 `&Scene`，工具链 / 编辑器 / 运行时共用同一份）。
