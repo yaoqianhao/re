@@ -299,6 +299,9 @@ Rapier 底层确实还有 `impulse_joints` / `multibody_joints`，但 `PhysicsBa
 
 ### 7.4 查询层：raycast / overlap / shape-cast
 
+> A03 起，这一层对外收口为**查询端口 trait**（`r3e-physics::port`），上层拿 `&dyn PhysicsQueryPort`
+> 就不必认识后端。端口契约、能力位与注入方式见 §13；本节描述的是门面方法与其语义细则。
+
 查询是**后端无关**的：`PhysicsBackend` 上三个带默认实现的可选方法，门面 `Physics::raycast` /
 `Physics::overlap_sphere` / `Physics::shape_cast`（另有 `shape_cast_sphere` / `shape_cast_box` 便捷版）
 再做一次能力位与开关过滤（物理关闭时直接返回空，不会拿旧数据糊弄）。
@@ -537,3 +540,93 @@ BodyDesc::from_node_with(node, Some(&mesh))  // 场景构建时的默认路径
 
 验收：`cargo test -p r3e-physics --features rapier`（16 单测 + 9 契约 + 3 穿透 = 28 passed），其中
 `shape_inference_reads_geometry_not_source`、`infer_reads_mesh_shape` 覆盖球/圆柱/盒与平移不变性。
+
+---
+
+## 13. 查询端口（A03 落地：`port.rs`）
+
+物理查询对上层只需要「能查什么」，不需要「谁在查」。A03 把三组查询抽成 trait 放
+`crates/r3e-physics/src/port.rs`（`pub mod port`），角色控制器、脚本宿主这类上层模块
+只依赖 `&dyn PhysicsQueryPort`，不依赖 `Physics` 门面、更不依赖具体后端。
+
+### 13.1 三组 trait
+
+| trait | 方法 | 说明 |
+| --- | --- | --- |
+| `RaycastPort` | `cast_ray(&CastRay) -> Option<PortHit>` | 射线；方向自动归一化，零向量按 `+Y` |
+| `CapsulePort` | `capsule_overlap(&Capsule) -> Vec<PortHit>` / `capsule_sweep(&Capsule, dir, max_distance) -> Option<PortHit>` | 胶囊重叠与扫掠（角色控制器的主用面） |
+| `GroundPort` | `sample_ground(x, z) -> Option<GroundSample>` | 地表采样：高度、法线、可站性 |
+| `PhysicsQueryPort` | `port_caps(&self) -> PortCaps` | 上面三者的组合超 trait，附带能力申报 |
+
+要点：
+
+- 每个方法都有**默认实现**（返回未命中 / 空表 / `None`），新增后端只覆盖它真支持的部分，
+  不会因为「少写一个方法」而编译不过；
+- trait 是**对象安全**的，`Box<dyn PhysicsQueryPort>` / `&dyn PhysicsQueryPort` 可直接注入；
+- 输入校验在类型侧（`CastRay::new` / `Capsule::new`）完成：NaN、无穷、负半径一律拒断，
+  不让非法输入流到后端再靠断言兜底。
+
+### 13.2 `PortCaps` 与 `BackendCaps` 为什么分开
+
+| | `BackendCaps`（§7.3） | `PortCaps`（本节） |
+| --- | --- | --- |
+| 描述对象 | **物理模拟**能力：互撞、旋转、CCD、事件 | **查询端口**能力：`raycast` / `capsule` / `ground` |
+| 消费方 | 脚本与命令层，决定「这个后端能模拟到什么程度」 | 角色控制器、AI 寻路这类查询方 |
+| 字段是否共享 | 否，故意不共享 | 否，故意不共享 |
+
+理由：端口能力将来会随角色控制器扩展（台阶探测、斜坡吸附），不该反过来拉动脚本能看到的
+模拟能力面。两套能力位各自独立演进，互不牵连。
+
+当前两个后端（builtin / rapier）都申报 `PortCaps::FULL`；空后端与未启用物理时是
+`PortCaps::NONE`。
+
+### 13.3 注入方式
+
+```rust
+use r3e_physics::port::{CastRay, PhysicsQueryPort, RaycastPort};
+use r3e_physics::Physics;
+
+let physics = Physics::new();          // 后端由 features + 配置决定，上层不关心
+let port: &dyn PhysicsQueryPort = &physics;
+if port.port_caps().raycast {
+    let hit = port.cast_ray(&CastRay::new(Vec3::new(0.0, 10.0, 0.0), -Vec3::Y, 20.0));
+}
+```
+
+- `impl PhysicsQueryPort for Physics` 落在 `src/port_impl.rs`，只做字段搬运（`RayHit` →
+  `PortHit`、`distance == 0` → `started_inside`），不做任何决策；
+- 后端切换（`apply_config` 改 `kind`、`set_enabled` 开关）**不需要重新注入**：
+  同一个 `&dyn` 引用会跟着门面走，物理关闭时查询按「查不到」如实返回；
+- 门面版的同义方法（`Physics::cast_ray` / `overlap_capsule` / `sweep_capsule` /
+  `sample_ground`）仍然保留，内部与端口走同一条路径。
+
+### 13.4 双后端测试矩阵
+
+| 文件 | 内容 | 口径 |
+| --- | --- | --- |
+| `tests/port_contract.rs` | 射线 + 接线（43 条） | 跑遍**当前构建可选的每个后端**（`selectable()`），只断言两后端都成立的口径 |
+| `tests/port_capsule_contract.rs` | 胶囊重叠 + 扫掠（27 条） | 同上 |
+| `tests/port_ground_contract.rs` | 地面采样（24 条） | 同上 |
+| `tests/rapier_query.rs` | 精确法线 / 旋转体 / AABB 答错的部分（23 条） | `#[cfg(feature = "rapier")]`，专钉真窄相才成立的细节 |
+| `tests/rapier_query_ground.rs` | 地面精度 / 扫掠 / 输入校验 / 确定性（34 条） | 同上 |
+
+- 契约三族**不写 `#[cfg]`**：`--no-default-features` 时 `selectable()` 只剩 builtin，
+  同一批断言照样跑，这就是「同一套契约测试双后端各跑一遍」的落地形态；
+- rapier 两族反过来把 builtin 的近似差异**明写在断言里**（斜面法线必须倾斜、旋转盒不吃
+  AABB、球面角落不许误命中），免得日后有人拿「测试都过了」当成两后端等价；
+- 共用夹具在 `tests/common/mod.rs`（`selectable()` / `physics_of()` / `world_shapes()` /
+  `world_specs()`），单个测试文件都在 lint-size 800 行以下。
+
+### 13.5 已知口径差异（有测试钉住，不是缺陷）
+
+| 场景 | builtin | rapier |
+| --- | --- | --- |
+| 斜面法线 | 竖直向上（AABB 面法线） | 真实斜面法线 |
+| 旋转盒命中 | 按未旋转 AABB 判定，可能误命中 | 真实窄相，不命中 |
+| 球贴盒棱角 | 立方膨胀近似，可能提前命中 | 精确 |
+| 地面（斜坡） | 平面高度 | 曲面采样高度 |
+
+需要「精确窄相」的玩法（近身判定、擦角射击）必须显式要求 rapier；builtin 是保证
+`--no-default-features` 也能跑的可读近似实现。
+
+*（内容由AI生成，仅供参考）*

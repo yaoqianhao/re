@@ -6,8 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = []
-# Rapier 后端：默认不编译，`--features rapier` 才把 rapier3d 拉进来
+# D1=B：rapier 是默认后端；`--no-default-features` 落到内置近似后端。
+default = ["rapier"]
 rapier = ["dep:rapier3d"]
 
 [dependencies]

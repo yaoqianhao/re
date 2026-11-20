@@ -23,8 +23,22 @@
 use glam::Vec3;
 use r3e_core::{Aabb, MeshData, Node, NodeId, PhysicsSceneDesc, Scene};
 
+use crate::port::{Capsule, GroundSample, PortHit};
+
 mod bind;
 pub use bind::BindReport;
+
+/// 内置 / 空后端（零 rapier 依赖，`--no-default-features` 下唯一可用的实现）。
+mod builtin_backend;
+pub use builtin_backend::{BuiltinBackend, NullBackend};
+
+/// 物理查询端口：上层与具体后端之间的唯一查询边界（M2 · A03）。
+///
+/// 上层拿 `&dyn PhysicsQueryPort` 即可，不必持有门面、不必知道后端是谁。
+pub mod port;
+
+/// 端口适配：把 `PhysicsQueryPort` 三组查询接到门面上（纯字段搬运，无决策逻辑）。
+mod port_impl;
 
 #[cfg(feature = "rapier")]
 mod rapier_backend;
@@ -439,6 +453,19 @@ impl PhysicsKind {
         }
     }
 
+    /// 当前构建的**默认后端**：编译了 rapier 就用 rapier，否则退到内置后端。
+    ///
+    /// D1=B 之后「默认物理」不再是内置近似后端：能上真引擎就上真引擎，
+    /// 内置后端退居「无 rapier 构建时的降级实现」。
+    /// 只在**没有显式指定后端**时使用 —— 场景/命令行显式给出的 kind 永远优先。
+    pub fn preferred_default() -> Self {
+        if cfg!(feature = "rapier") {
+            Self::Rapier
+        } else {
+            Self::Builtin
+        }
+    }
+
     /// 当前构建真正可用的后端名（错误提示与帮助文本用，避免写死）。
     pub fn available_names() -> Vec<&'static str> {
         Self::ALL
@@ -718,471 +745,34 @@ pub trait PhysicsBackend {
     ) -> Option<ShapeCastHit> {
         None
     }
-}
 
-// ---------------------------------------------------------------------------
-// Null 后端：不做任何模拟，只记录句柄，保证脚本仍完全掌控物件。
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct NullBackend {
-    next: u64,
-    bodies: Vec<BodyHandle>,
-}
-
-impl NullBackend {
-    pub fn new() -> Self {
-        Self {
-            next: 1,
-            bodies: Vec::new(),
-        }
-    }
-}
-
-impl PhysicsBackend for NullBackend {
-    fn name(&self) -> &'static str {
-        "null"
-    }
-
-    fn create_body(&mut self, _node: NodeId, _desc: BodyDesc) -> BodyHandle {
-        let handle = BodyHandle(self.next);
-        self.next += 1;
-        self.bodies.push(handle);
-        handle
-    }
-
-    fn destroy_body(&mut self, handle: BodyHandle) {
-        self.bodies.retain(|h| *h != handle);
-    }
-
-    /// 空后端不模拟，但它**确实**发出过句柄，句柄表是准的——
-    /// 复用判定要如实回答，否则每次装配都重建一遍，报告里的数字就没意义了。
-    fn has_body(&self, handle: BodyHandle) -> bool {
-        self.bodies.contains(&handle)
-    }
-
-    fn apply_impulse(&mut self, _handle: BodyHandle, _impulse: Vec3) {}
-
-    fn set_gravity(&mut self, _gravity: Vec3) {}
-
-    fn step(&mut self, _dt: f32) {}
-
-    fn sync_to_scene(&mut self, _scene: &mut Scene) {}
-
-    fn body_count(&self) -> usize {
-        self.bodies.len()
-    }
-
-    fn take_all_handles(&self) -> Option<Vec<BodyHandle>> {
-        Some(self.bodies.clone())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 内置最简物理后端
-// ---------------------------------------------------------------------------
-
-/// 单个刚体的运行期状态。位置以自身为准，每帧与场景节点双向对齐。
-#[derive(Debug, Clone)]
-struct RigidBody {
-    handle: BodyHandle,
-    node: NodeId,
-    kind: BodyKind,
-    shape: ColliderShape,
-    half: Vec3,
-    inv_mass: f32,
-    velocity: Vec3,
-    restitution: f32,
-    friction: f32,
-    position: Vec3,
-    sleep_timer: f32,
-    sleeping: bool,
-}
-
-impl RigidBody {
-    /// 支撑半高：刚体中心到底面的距离。
-    fn support(&self) -> f32 {
-        let v = match self.shape {
-            ColliderShape::Sphere => self.half.x,
-            ColliderShape::Box | ColliderShape::Capsule | ColliderShape::Cylinder => self.half.y,
-        };
-        v.abs().max(0.001)
-    }
-
-    fn is_dynamic(&self) -> bool {
-        matches!(self.kind, BodyKind::Dynamic)
-    }
-}
-
-/// 内置最简物理：重力 + 地面平面碰撞 + 弹性 + 摩擦 + 休眠。
-///
-/// 明确的能力边界（刻意不做，保证 ~400 行可读）：
-/// * 物件之间不碰撞，只与一张无限大的地面平面相交
-/// * 不做旋转动力学，物体不会翻滚
-/// * 无关节、无堆叠求解、无连续碰撞检测（CCD）
-pub struct BuiltinBackend {
-    next: u64,
-    gravity: Vec3,
-    ground: f32,
-    bodies: Vec<RigidBody>,
-}
-
-impl BuiltinBackend {
-    pub fn new(gravity: Vec3, ground: f32) -> Self {
-        Self {
-            next: 1,
-            gravity,
-            ground,
-            bodies: Vec::new(),
-        }
-    }
-
-    fn find_mut(&mut self, handle: BodyHandle) -> Option<&mut RigidBody> {
-        self.bodies.iter_mut().find(|b| b.handle == handle)
-    }
-
-    fn substep(&mut self, dt: f32) {
-        let gravity = self.gravity;
-        let ground = self.ground;
-        for rb in self.bodies.iter_mut() {
-            if !rb.is_dynamic() || rb.sleeping {
-                continue;
-            }
-
-            // 1) 半隐式欧拉积分
-            rb.velocity += gravity * dt;
-            rb.position += rb.velocity * dt;
-
-            // 2) 与地面平面求解
-            let floor = ground + rb.support();
-            if rb.position.y <= floor {
-                rb.position.y = floor;
-                let impact = -rb.velocity.y;
-                if rb.velocity.y < 0.0 {
-                    if impact > 0.6 && rb.restitution > 0.01 {
-                        // 弹性：足够快的撞击才反弹，避免落地时无休止抖动
-                        rb.velocity.y = impact * rb.restitution;
-                    } else {
-                        rb.velocity.y = 0.0;
-                    }
-                }
-
-                // 3) 地面摩擦：指数衰减，与帧率无关
-                let k = (1.0 - rb.friction * 8.0 * dt).clamp(0.0, 1.0);
-                rb.velocity.x *= k;
-                rb.velocity.z *= k;
-
-                // 4) 静止阈值 -> 休眠（省算力，也彻底消除数值抖动）
-                if rb.velocity.length_squared() < 0.0025 {
-                    rb.sleep_timer += dt;
-                    if rb.sleep_timer > 0.35 {
-                        rb.sleeping = true;
-                        rb.velocity = Vec3::ZERO;
-                    }
-                } else {
-                    rb.sleep_timer = 0.0;
-                }
-            } else {
-                rb.sleep_timer = 0.0;
-                // 空气阻尼：防止长时间自由落体后数值过大
-                rb.velocity *= (1.0 - 0.02 * dt).clamp(0.0, 1.0);
-            }
-        }
-    }
-}
-
-impl PhysicsBackend for BuiltinBackend {
-    fn name(&self) -> &'static str {
-        "builtin"
-    }
-
-    /// 只有「刚体 vs 地面」一条接触规则：不互撞、不旋转、无事件、无 CCD。
-    fn capabilities(&self) -> BackendCaps {
-        BackendCaps::BASIC
-    }
-
-    fn create_body(&mut self, node: NodeId, desc: BodyDesc) -> BodyHandle {
-        let handle = BodyHandle(self.next);
-        self.next += 1;
-        let inv_mass = match desc.kind {
-            BodyKind::Dynamic => {
-                if desc.mass > 1e-4 {
-                    1.0 / desc.mass
-                } else {
-                    1.0
-                }
-            }
-            _ => 0.0,
-        };
-        let half = body_half_extents(&desc);
-        self.bodies.push(RigidBody {
-            handle,
-            node,
-            kind: desc.kind,
-            shape: desc.shape,
-            half,
-            inv_mass,
-            velocity: Vec3::ZERO,
-            restitution: desc.restitution.clamp(0.0, 1.0),
-            friction: desc.friction.clamp(0.0, 2.0),
-            position: desc.position,
-            sleep_timer: 0.0,
-            sleeping: false,
-        });
-        handle
-    }
-
-    fn destroy_body(&mut self, handle: BodyHandle) {
-        self.bodies.retain(|b| b.handle != handle);
-    }
-
-    fn apply_impulse(&mut self, handle: BodyHandle, impulse: Vec3) {
-        if let Some(rb) = self.find_mut(handle) {
-            if rb.inv_mass > 0.0 {
-                rb.velocity += impulse * rb.inv_mass;
-                rb.sleeping = false;
-                rb.sleep_timer = 0.0;
-            }
-        }
-    }
-
-    fn set_gravity(&mut self, gravity: Vec3) {
-        self.gravity = gravity;
-    }
-
-    fn set_ground(&mut self, ground: f32) {
-        self.ground = ground;
-    }
-
-    fn step(&mut self, dt: f32) {
-        // 固定子步上限：掉帧时切成多步，保证碰撞不会穿透地板
-        let total = dt.clamp(0.0, 0.1);
-        if total <= 0.0 {
-            return;
-        }
-        let steps = ((total / (1.0 / 60.0)).ceil() as usize).clamp(1, 6);
-        let h = total / steps as f32;
-        for _ in 0..steps {
-            self.substep(h);
-        }
-    }
-
-    fn pull_from_scene(&mut self, scene: &Scene) {
-        for rb in self.bodies.iter_mut() {
-            let Some(node) = scene.get(rb.node) else {
-                continue;
-            };
-            // 脚本用 set_pos 挪过节点：以节点为准并唤醒刚体
-            if (node.transform.position - rb.position).length_squared() > 1e-8 {
-                rb.position = node.transform.position;
-                rb.velocity = Vec3::ZERO;
-                rb.sleeping = false;
-                rb.sleep_timer = 0.0;
-            }
-        }
-    }
-
-    fn sync_to_scene(&mut self, scene: &mut Scene) {
-        let mut dead: Vec<usize> = Vec::new();
-        for (i, rb) in self.bodies.iter().enumerate() {
-            match scene.get_mut(rb.node) {
-                Some(node) => {
-                    node.transform.position = rb.position;
-                    node.body = Some(rb.handle.0);
-                }
-                None => dead.push(i),
-            }
-        }
-        // 节点被 despawn 的刚体自动回收，避免句柄泄漏
-        for i in dead.into_iter().rev() {
-            self.bodies.remove(i);
-        }
-    }
-
-    fn body_count(&self) -> usize {
-        self.bodies.len()
-    }
-
-    fn has_body(&self, handle: BodyHandle) -> bool {
-        self.bodies.iter().any(|b| b.handle == handle)
-    }
-
-    fn take_all_handles(&self) -> Option<Vec<BodyHandle>> {
-        Some(self.bodies.iter().map(|b| b.handle).collect())
-    }
-
-    /// 解析法射线查询：把每个刚体化成世界 AABB 做 slab 测试，取最近命中。
+    /// 可选：胶囊与场景刚体的重叠查询（角色控制器的站姿 / 蹲姿判定入口）。
     ///
-    /// 内置后端不旋转、形状本身就轴对齐，AABB 即精确包围体；
-    /// 球用半径立方体近似（脚本拿来做拾取足够，需要精确球面就走 Rapier）。
-    fn raycast(&self, ray: Ray, max_distance: f32) -> Option<RayHit> {
-        if max_distance <= 0.0 {
-            return None;
-        }
-        let mut best: Option<RayHit> = None;
-        for rb in self.bodies.iter() {
-            let (min, max) = body_aabb(rb.shape, rb.position, rb.half);
-            let Some((t, normal)) = ray_aabb(&ray, min, max, max_distance) else {
-                continue;
-            };
-            if best.map_or(true, |b| t < b.distance) {
-                best = Some(RayHit {
-                    handle: rb.handle,
-                    node: rb.node,
-                    distance: t,
-                    point: ray.point_at(t),
-                    normal,
-                });
-            }
-        }
-        best
-    }
-
-    /// 解析法球体重叠：球心到 AABB 的最近距离 <= 半径即算命中。
-    fn overlap_sphere(&self, center: Vec3, radius: f32) -> Vec<OverlapHit> {
-        if radius <= 0.0 {
-            return Vec::new();
-        }
-        let mut hits: Vec<OverlapHit> = self
-            .bodies
-            .iter()
-            .filter(|rb| {
-                let (min, max) = body_aabb(rb.shape, rb.position, rb.half);
-                aabb_distance_sq(center, min, max) <= radius * radius
-            })
-            .map(|rb| OverlapHit {
-                handle: rb.handle,
-                node: rb.node,
-            })
-            .collect();
-        hits.sort_by_key(|h| h.node);
-        hits
-    }
-
-    /// 解析法扫掠：把目标 AABB 按查询形状的半尺寸做 **Minkowski 展开**，再用射线 slab 求交。
+    /// 结果按 `node` 升序。默认实现返回空表。
     ///
-    /// 盒 vs 盒是精确的（两个 AABB 的和仍是 AABB）；球用「半径立方体」展开，
-    /// 因此在盒子棱角处偏保守（把圆角当方角），需要精确球面接触就走 Rapier。
-    /// 这与 `raycast` 的近似口径保持一致，不额外引入第三套几何假设。
-    fn shape_cast(
-        &self,
-        shape: CastShape,
-        origin: Vec3,
-        dir: Vec3,
-        max_distance: f32,
-    ) -> Option<ShapeCastHit> {
-        if max_distance <= 0.0 || shape.is_degenerate() {
-            return None;
-        }
-        let ray = Ray::new(origin, dir);
-        let inflate = shape.half_extents();
-        let mut best: Option<ShapeCastHit> = None;
-        for rb in self.bodies.iter() {
-            let (min, max) = body_aabb(rb.shape, rb.position, rb.half);
-            let (min, max) = (min - inflate, max + inflate);
-            // 起点已在膨胀盒内 → 初始重叠：距离 0，法线朝来向（与 raycast 内部起点口径一致）
-            if point_in_aabb(ray.origin, min, max) {
-                let cand = ShapeCastHit {
-                    handle: rb.handle,
-                    node: rb.node,
-                    distance: 0.0,
-                    point: ray.origin,
-                    normal: -ray.dir,
-                    started_inside: true,
-                };
-                if cast_candidate_better(&cand, best.as_ref()) {
-                    best = Some(cand);
-                }
-                continue;
-            }
-            let Some((t, normal)) = ray_aabb(&ray, min, max, max_distance) else {
-                continue;
-            };
-            let cand = ShapeCastHit {
-                handle: rb.handle,
-                node: rb.node,
-                distance: t,
-                point: ray.point_at(t),
-                normal,
-                started_inside: false,
-            };
-            if cast_candidate_better(&cand, best.as_ref()) {
-                best = Some(cand);
-            }
-        }
-        best
+    /// 申报口径与 `capabilities()` **刻意分开**：`BackendCaps` 描述「能模拟什么」，
+    /// 端口能力 `PortCaps`（`port.rs`）描述「能查什么」。把胶囊查询塞进 `BackendCaps`
+    /// 会牵动 `r3e-protocol` 的 DTO 映射与 `capabilities.json` 三源门，
+    /// 而这里只是一条新的查询方法，不该有那个连带成本。
+    fn overlap_capsule(&self, _capsule: Capsule) -> Vec<PortHit> {
+        Vec::new()
     }
-}
 
-/// 刚体在世界空间的轴对齐包围盒（内置后端不旋转，AABB 精确）。
-fn body_aabb(shape: ColliderShape, center: Vec3, half: Vec3) -> (Vec3, Vec3) {
-    let h = match shape {
-        ColliderShape::Sphere => Vec3::splat(half.x.abs()),
-        ColliderShape::Box => half.abs(),
-        // 胶囊 / 圆柱在竖直方向更高，水平方向按半径处理
-        ColliderShape::Capsule | ColliderShape::Cylinder => {
-            Vec3::new(half.x.abs(), half.y.abs(), half.x.abs())
-        }
-    };
-    (center - h, center + h)
-}
-
-/// 射线 vs AABB（slab 法）。返回 `(距离, 法线)`；起点在盒内时距离取 0、法线取 `-dir`。
-fn ray_aabb(ray: &Ray, min: Vec3, max: Vec3, max_distance: f32) -> Option<(f32, Vec3)> {
-    let mut t_enter = 0.0f32;
-    let mut t_exit = max_distance;
-    let mut normal = -ray.dir;
-    for axis in 0..3 {
-        let o = ray.origin[axis];
-        let d = ray.dir[axis];
-        let (lo, hi) = (min[axis], max[axis]);
-        if d.abs() < 1e-6 {
-            if o < lo || o > hi {
-                return None;
-            }
-            continue;
-        }
-        let inv = 1.0 / d;
-        let mut t1 = (lo - o) * inv;
-        let mut t2 = (hi - o) * inv;
-        // 从哪一端进入：沿正方向走就是撞到 lo 面（法线朝 -轴），反之撞 hi 面。
-        let mut n = Vec3::ZERO;
-        n[axis] = if d > 0.0 { -1.0 } else { 1.0 };
-        if t1 > t2 {
-            std::mem::swap(&mut t1, &mut t2);
-        }
-        if t1 > t_enter {
-            t_enter = t1;
-            normal = n;
-        }
-        t_exit = t_exit.min(t2);
-        if t_enter > t_exit {
-            return None;
-        }
+    /// 可选：把胶囊沿 `dir` 推 `max_distance`，返回最近一次接触（扫掠）。
+    ///
+    /// 起点已重叠时返回 `distance == 0` 且 `started_inside == true` 的命中。
+    /// 默认实现返回 `None`。
+    fn sweep_capsule(&self, _capsule: Capsule, _dir: Vec3, _max_distance: f32) -> Option<PortHit> {
+        None
     }
-    (t_enter <= max_distance).then_some((t_enter, normal))
-}
 
-/// 点到 AABB 的最近距离平方。
-fn aabb_distance_sq(p: Vec3, min: Vec3, max: Vec3) -> f32 {
-    let mut d2 = 0.0;
-    for axis in 0..3 {
-        let v = p[axis];
-        let e = if v < min[axis] {
-            min[axis] - v
-        } else if v > max[axis] {
-            v - max[axis]
-        } else {
-            0.0
-        };
-        d2 += e * e;
+    /// 可选：采样世界 `(x, z)` 处可站立的最高表面。
+    ///
+    /// 输入非有限值返回 `None`；后端自带的地面平面恒存在，正常情况下总能拿到样本。
+    /// 默认实现返回 `None`（表示「本后端不提供地表采样」，不是「此处无地面」）。
+    fn sample_ground(&self, _x: f32, _z: f32) -> Option<GroundSample> {
+        None
     }
-    d2
-}
-
-/// 点是否落在 AABB 内（含边界）。
-fn point_in_aabb(p: Vec3, min: Vec3, max: Vec3) -> bool {
-    (0..3).all(|axis| p[axis] >= min[axis] && p[axis] <= max[axis])
 }
 
 /// 扫掠候选的择优规则，两个后端共用同一套，保证换后端不换「谁更近」的判定：
@@ -1198,16 +788,6 @@ pub(crate) fn cast_candidate_better(cand: &ShapeCastHit, best: Option<&ShapeCast
         return cand.distance < best.distance;
     }
     cand.node < best.node
-}
-
-/// 统一推导碰撞体半尺寸：优先 BodyDesc.half_extents，退化到 scale * 0.5。
-fn body_half_extents(desc: &BodyDesc) -> Vec3 {
-    let h = desc.half_extents;
-    if h.length_squared() > 1e-8 {
-        h.abs()
-    } else {
-        (desc.scale.abs() * 0.5).max(Vec3::splat(0.001))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,10 +876,10 @@ impl Physics {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
-        // 「开物理」但后端仍是 null（默认）时自动升级到内置后端，
+        // 「开物理」但后端仍是 null（默认）时自动升级到**当前构建的默认后端**，
         // 否则用户开了开关却什么都不会动。显式选 null 后端请用 set_kind。
         if enabled && self.kind == PhysicsKind::Null {
-            let _ = self.set_kind(PhysicsKind::Builtin);
+            let _ = self.set_kind(PhysicsKind::preferred_default());
         }
         if self.enabled != enabled {
             self.enabled = enabled;
@@ -1505,6 +1085,35 @@ impl Physics {
         self.shape_cast(CastShape::boxed(half), center, dir, max_distance)
     }
 
+    /// 胶囊重叠查询（[`port::CapsulePort`] 的门面版）：物理关闭时返回空表。
+    ///
+    /// 走的是后端的 `overlap_capsule`，结果已按 `node` 升序；后端不支持时由
+    /// 后端默认实现返回空表 —— 门面不额外造一套「不支持」的错误语义。
+    pub fn overlap_capsule(&self, capsule: Capsule) -> Vec<PortHit> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.backend.overlap_capsule(capsule)
+    }
+
+    /// 胶囊扫掠查询（[`port::CapsulePort`] 的门面版）：物理关闭时返回 `None`。
+    pub fn sweep_capsule(&self, capsule: Capsule, dir: Vec3, max_distance: f32) -> Option<PortHit> {
+        if !self.enabled {
+            return None;
+        }
+        self.backend.sweep_capsule(capsule, dir, max_distance)
+    }
+
+    /// 地表采样（[`port::GroundPort`] 的门面版）：物理关闭时返回 `None`。
+    ///
+    /// 与端口契约一致：开启时只要后端自带地面，正常情况下总能拿到样本。
+    pub fn sample_ground(&self, x: f32, z: f32) -> Option<GroundSample> {
+        if !self.enabled {
+            return None;
+        }
+        self.backend.sample_ground(x, z)
+    }
+
     /// 创建刚体；物理关闭时返回 `None`，由调用方决定如何提示。
     pub fn try_create_body(&mut self, node: NodeId, desc: BodyDesc) -> Option<BodyHandle> {
         if !self.enabled {
@@ -1617,14 +1226,18 @@ mod tests {
     }
 
     #[test]
-    fn enabling_without_backend_upgrades_to_builtin() {
+    fn enabling_without_backend_upgrades_to_preferred_default() {
         let mut physics = Physics::new();
         assert_eq!(physics.kind(), PhysicsKind::Null);
         physics
             .apply_config(PhysicsConfig::default().with_enabled(true))
             .unwrap();
-        assert_eq!(physics.kind(), PhysicsKind::Builtin);
+        // 升到「当前构建默认」：带 rapier 的构建升 rapier，无 rapier 构建升内置
+        assert_eq!(physics.kind(), PhysicsKind::preferred_default());
         assert!(physics.enabled());
+        // 申报的后端必须真的可用，不能升到一个没编译进来的 kind
+        assert!(physics.kind().is_available());
+        assert_eq!(physics.backend_name(), physics.kind().name());
     }
 
     #[test]
@@ -1870,8 +1483,13 @@ mod tests {
     #[test]
     fn builtin_backend_honestly_reports_no_ccd() {
         let mut physics = Physics::new();
+        // 显式点内置后端：默认后端已是 rapier（D1=B），这条测试只对内置口径负责
         physics
-            .apply_config(PhysicsConfig::default().with_enabled(true))
+            .apply_config(
+                PhysicsConfig::default()
+                    .with_enabled(true)
+                    .with_kind(PhysicsKind::Builtin),
+            )
             .unwrap();
         assert_eq!(physics.kind(), PhysicsKind::Builtin);
         assert!(!physics.capabilities().ccd);

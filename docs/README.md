@@ -20,7 +20,7 @@ docs/
 ├─ m0/                           # M0 阶段私有文档（S0–S5）
 ├─ m1/                           # M1 阶段私有文档
 │   └─ norms/                    # M1-S5 三范式（norm1–3）+ 夹具
-└─ m2/                           # M2 阶段文档：索引 / 计划 / 决策 / 基线 / 性能计划（入口 m2/README.md）
+└─ m2/                           # M2 阶段文档：索引 / 计划 / 决策 / 基线 / 性能计划 / A03 实施规划（入口 m2/README.md）
 ```
 
 | 路径 | 归属 | 说明 |
@@ -53,6 +53,8 @@ docs/
 | `docs/m2/M2_DECISIONS.md` | M2 决策 | A02 决策清单 D1–D13（**已拍板 2026-11-20**，含 4 项非建议项落地约定与连锁影响） |
 | `docs/m2/M2_PERF_PLAN.md` | M2 性能 | 性能验收口径（60 秒采样、p99 ≤16.6ms、留证格式）与跨硬件测试矩阵 |
 | `docs/m2/M2_BASELINE.md` | M2 实测 | A01 基线对账：verify 11 步留证、唯一基线数字、偏差处置、债务台账 |
+| `docs/m2/M2_A03_PORT_PLAN.md` | M2 规划 | A03 物理查询端口实施规划（落点改 `crates/r3e-physics`，**已确认 2026-11-20**，四项拍板见 §15） |
+| `docs/m2/M2_A03B_HOST_PLAN.md` | M2 设计稿 | A03b `script` 绑定端口化：为何不能依赖 physics、trait 默认方法 + 函数式适配器 |
 | `docs/m2/M2_PROPOSAL_CAPABILITY_SLOTS.md` | M2 归档 | 能力槽位扩展提案（ai_ide 侧），不在 M2 执行链路内 |
 
 ---

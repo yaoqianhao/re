@@ -55,7 +55,7 @@
 - 拍板人 / 日期：老板 / 2026-11-20
 - 非建议项，选了工作量翻倍的路线。落地约定（A03 起生效，后续卡不得改）：
   1. `r3e-physics/Cargo.toml`：`default = []` → `default = ["rapier"]`，`rapier3d` 由可选转默认依赖；**builtin 后端代码保留**，靠 `--no-default-features` 回落，供契约测试与低配环境使用。
-  2. **端口 trait 定义放 `r3e-core`**（纯 trait + 数据，不含实现），实现在 `r3e-physics`（`builtin_backend.rs` / `rapier_backend.rs` 各一文件）。这条是硬约束：D2 选 B 后 `r3e-character` 只许依赖 core，若 trait 留在 physics，角色 crate 就得再加一条依赖边。
+  2. ~~**端口 trait 定义放 `r3e-core`**（纯 trait + 数据，不含实现），实现在 `r3e-physics`（`builtin_backend.rs` / `rapier_backend.rs` 各一文件）。~~ **2026-11-20 修订（老板指令，A03 落点四项决定之一）**：端口 trait 与数据类型改落 **`crates/r3e-physics/src/port.rs`**，实现落 `port_impl.rs` + `builtin_backend.rs` / `rapier_backend.rs`，`r3e-core` 零新增。原「落 core」的唯一理由是 D2=B 后角色 crate 只许依赖 core，该理由由 D2 落地约定第 2 条同步修订处置（allow 加 `r3e-physics`）。修订依据：`M2_A03_PORT_PLAN.md` §5 / §15。
   3. `rapier` 类型仍只允许出现在 `rapier_backend.rs`（沿用既有约束），`lib.rs` 净增 ≤0 —— 保证 A05 对 `r3e-physics/src/lib.rs` 的 1929→≤1924 收紧目标不被本决策破坏。
   4. 契约测试**双后端各跑一遍**：trait 契约（capsule / raycast / heightfield 三组）同一套用例，默认构建跑 rapier、`--no-default-features` 跑 builtin；两套结果都必须绿。
   5. 判据卡双后端：**B02、B03、C04、D01** 四张必须两套后端各验一次，验收记录写明后端名。
@@ -72,7 +72,7 @@
 - 拍板人 / 日期：老板 / 2026-11-20
 - 非建议项。落地约定：
   1. B01 改为「建 crate + 契约 + 命令注册」：新 crate 入 workspace 成员（17 → 18），并**同卡**完成三处登记，否则门禁必红 —— `xtask/dep_rules.json`（doc_gate 规则 5：未登记 crate 一律失败）、`xtask/tests_baseline.json`、`xtask/size_debt.json`（新文件超 800 行才需登记）。
-  2. `r3e-character` 的依赖白名单：`allow = ["r3e-core"]`。控制器**不得**依赖 `r3e-physics` —— 胶囊查询走 D1 落在 core 的端口 trait，由宿主在 `r3e-physics` 侧注入实现。
+  2. `r3e-character` 的依赖白名单：~~`allow = ["r3e-core"]`。控制器**不得**依赖 `r3e-physics` —— 胶囊查询走 D1 落在 core 的端口 trait，由宿主在 `r3e-physics` 侧注入实现。~~ **2026-11-20 修订（A03 落点决定连带，老板已确认「可以加白名单」）**：`allow = ["r3e-core", "r3e-physics"]`，胶囊查询走 `r3e_physics::port` 的端口 trait。隔离性由「编译期不可能」降为「约定上只用 `port` 子模块」，补救守卫见 `M2_A03_PORT_PLAN.md` §5.1（B01 同卡落地：源码出现 `r3e_physics::` 后跟 `port` 以外路径即 `doc-gate` 失败）。
   3. `r3e-script` 的 `allow` 表**不新增** `r3e-character`：脚本通过 `character.*` 命令驱动角色，走命令表与能力面，不直连 crate。
   4. `Scene` 侧新增的角色相关数据结构仍落 `r3e-core`（场景唯一真值在 doc/core，不在 character crate）。
   5. 本决策与 D13 强绑定：建新 crate 会让后续「script 要调角色能力」的诱惑直接撞 `dep_debt` 顶格，故 D13 必须同时选 B。
@@ -199,7 +199,8 @@
 - 拍板人 / 日期：老板 / 2026-11-20
 - 非建议项。落地约定：
   1. 新卡 **A03b「`dep_debt` 两条偿还：`script` 绑定端口化」**，位置在 A03（端口 trait 化）之后、A04（`scene.rs` 拆域）之前 —— 必须排在 A03 后，因为端口契约来自 A03；排在 A04 前，因为拆域与绑定重写同批改动会互相干扰。
-  2. 范围：按 M0S5 §13.6 的 53 条端口契约草案补 `CapabilityHost` 的物理入口，`r3e-script` 的 53 个物理绑定方法 / 704 行改走端口；音频绑定同批改端口注入。
+  2. 范围：按 M0S5 §13.6 的端口契约草案补 `CapabilityHost` 的物理入口，`r3e-script` 的物理绑定方法改走端口；音频绑定同批改端口注入。**2026-11-20 口径校准（A03 落点决定连带）**：原记载「53 个绑定方法 / 704 行」与实测「69 个绑定 / 706 行」不矛盾，是**两个维度**：**53 = 去重被调方法数**（`physics 16` + `audio 37`，即 `M0S5_PROTOCOL.md` §13.4 的按符号细分，也是 trait 需覆盖的能力数）；**69 = `register_fn` 注册数**（实测 `api/physics.rs` 24 + `api/audio.rs` 45，即要改的调用点数，同一后端方法可注册成多个脚本名）。行数实测 706（340 + 366），`M0S5` 记 704，漂移 2 行。另注：`dep_debt` 物理条目里的「704 行」实为两条债行数的合计，不是物理单条。本卡测试 `+56` 预算总额不变，按「16 + 37 个能力」设计 trait、按「69 个调用点」估工时。
+  2b. **实现形态（老板 2026-11-20 拍板：trait 默认方法 + 函数式适配器）**：`r3e-script` 侧自建 `PhysicsHost` / `AudioHost` trait，方法签名**全用脚本原生类型**（`&str` / `f64` / `bool` / `Array` / script 侧扁平 DTO），不含 `r3e-physics` / `r3e-audio` 任何类型；每个能力**都有默认实现**，统一转发到唯一必实现的函数式入口 `execute(Req) -> Rsp`，并由 `impl<F: Fn(Req)->Rsp> Host for F` 让闭包本身即为适配器；实现方（`RhaiPhysicsHost` / `RhaiAudioHost`）落 `r3e-runtime/src/script_bind.rs`。设计见 `docs/m2/M2_A03B_HOST_PLAN.md`。此形态替代 `M2_A03_PORT_PLAN.md` §5.2 原规划的「runtime DTO 桥」——后者只解查询、写操作仍需直连，故无法让债务归零。
   3. 收口：`xtask/dep_debt.json` 删两条 entry、`limit` 2 → 0；`r3e-script` 的 allow 表保持 `[r3e-core, r3e-doc, r3e-protocol]` 不变（端口注入不产生新依赖边）。
   4. 门禁要求：A03b 必须做到「零行为变化」——1817 基线测试零删减，回放金标不因本卡漂移。
 
@@ -236,4 +237,24 @@ D1 / D2 / D12 / D13 四项全部选了非建议项，且**互相咬合**：建�
 3. ✅ 新增 `docs/m2/M2_PERF_PLAN.md`（D11 的跨硬件测试计划），`docs/m2/README.md`、`docs/README.md` 索引同步。
 4. ✅ `M2_PLAN.md` 顶部「当前进度」已改为「A02 已完成」。
 5. 单次提交：`docs(m2-a02): 拍板 D1–D13 并同步计划`。
-6. **A03 是下一张卡**，可立即开工；A03 开工前须先读 D1 的 6 条落地约定（trait 落 core、builtin 保留、lib.rs 净增 ≤0、双后端契约测试）。
+6. **A03 是下一张卡**，可立即开工；A03 开工前须先读 D1 的 6 条落地约定（~~trait 落 core~~ **trait 落 `r3e-physics/src/port.rs`（2026-11-20 修订）**、builtin 保留、`lib.rs` 净增 ≤0、双后端契约测试、判据卡双验、接受编译时间上涨）。
+
+---
+
+## 补充决定（2026-11-20，A03 落点四项确认）
+
+A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/r3e-physics`」，A03 规划据此提出四项待定，老板于 2026-11-20 逐项拍板。四项均已完成文档回写，后续卡不得再改，除非老板另下指令。
+
+| # | 事项 | 老板原话/结论 | 回写位置 |
+|---|---|---|---|
+| 1 | D1 落地约定第 2 条「trait 落 core」 | **确认修改** → 端口 trait + 数据类型落 `crates/r3e-physics/src/port.rs`，`r3e-core` 零新增 | 本文件 D1 第 2 条；`M2_PLAN.md` §3.1 A03 判据 |
+| 2 | `r3e-character` 白名单是否加 `r3e-physics` | **可以加白名单** → `allow = ["r3e-core", "r3e-physics"]`；补救守卫（源码只许用 `port` 子模块）落 B01 | 本文件 D2 第 2 条；`M2_PLAN.md` §3.2 B01 判据 |
+| 3 | A03b 的实现形态（原规划「runtime DTO 桥」是否可以更彻底） | **采用 trait 默认方法 + 函数式适配器**，替代原 DTO 桥；并说明「53 个方法 / 704 行」与实测「物理 24 + 音频 45 = 69 个注册点 / 706 行」是两个统计维度（去重方法数 vs `register_fn` 数），形态与口径见 D13 第 2 / 2b 条 | 本文件 D13 第 2 / 2b 条；新增 `docs/m2/M2_A03B_HOST_PLAN.md` |
+| 4 | 默认后端是否改 `rapier` | **默认后端改为 rapier** → `default = ["rapier"]`，`set_enabled` 自动升级目标由 `Builtin` 改为「当前构建默认可用后端」，`scene-verify` 6 夹具逐个复核 | 本文件 D1 第 1 条；`M2_A03_PORT_PLAN.md` §7 确认 |
+
+**四项的连锁后果（已记账，不需再决策）**：
+
+1. `r3e-core` 在 A03 保持零改动，A05 对 `r3e-physics/src/lib.rs` 的 1929→≤1924 收紧目标由 A03 的迁出（≈ -445）提前达成。
+2. `r3e-character` 的「物理无关」从编译期保证降为约定 + `doc-gate` 守卫，这是选 B 换来的隔离性下降，如实记档。
+3. A03b 的「零行为变化」判据不变（1817 基线零删减、回放金标不漂移），但**接受一处 import 变更**：30 处 `ScriptHost::new` 调用点由 `r3e_script` 改为 `r3e_runtime` 同名再导出 —— 这是把 `RhaiPhysicsHost` 搬出 `r3e-script` 才可能真正删边的前提，二者不可兼得（详见 `M2_A03B_HOST_PLAN.md` §4.2）。
+4. 默认 rapier 后，`--no-default-features` 回落 builtin 的两轮验证从 A03 起成为固定动作，A03b / B02 / B03 / C04 / D01 全部沿用。

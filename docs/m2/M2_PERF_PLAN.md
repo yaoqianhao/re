@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_a4aab846e48611f1a5ef525400638852
+    ReservedCode1: sxes230APO64H3knz3+OfL/4iQ0Wi2eiPNYTLCnlq8GRruENo4OKV20iJhZGMUXPXTZxiNS5FW+GV+Iu6h4QoDKKDakSMf93oChxKfP7uvOvr36L3WZoHGexpjV1JO/bOStA4/RRALpkD94JlRjm7PW376wZQtMebIuy09tCvqyCWOIkqqakakIWZTw=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_a4aab846e48611f1a5ef525400638852
+    ReservedCode2: sxes230APO64H3knz3+OfL/4iQ0Wi2eiPNYTLCnlq8GRruENo4OKV20iJhZGMUXPXTZxiNS5FW+GV+Iu6h4QoDKKDakSMf93oChxKfP7uvOvr36L3WZoHGexpjV1JO/bOStA4/RRALpkD94JlRjm7PW376wZQtMebIuy09tCvqyCWOIkqqakakIWZTw=
+---
+
 # M2 性能验收计划（D11 落地）
 
 - 用途：把 `AI_ROADMAP §3.3` 项 7 判据「目标硬件稳定 60fps」变成**可复现、可跨机器对比**的验收口径，并提供后续其他硬件的测试计划
@@ -115,3 +126,4 @@
 1. H05：采集基准机（第 1 行）环境信息与三次采样结果，填表并出结论。
 2. H05 同卡：把采样脚本固化为一条命令，写进 `docs/m2/M2_PLAN.md` §3.8 的 H05 完成判据备注。
 3. 老板确认矩阵机型槽位（§6 第 2–4 行）是否保留；
+*（内容由AI生成，仅供参考）*

@@ -79,7 +79,7 @@ D:\rust3d-engine
     ├─ capabilities.json      # 机读能力清单（cargo xtask gen-capabilities 生成，路径锁定）
     ├─ m0/                    # M0 阶段私有文档（M0S1–M0S5）
     ├─ m1/                    # M1 阶段私有文档（M1_PLAN 等），norms/ 下为三范式与夹具
-    └─ m2/                    # M2 阶段文档（索引 / 计划 / 决策 / 基线 / 性能计划，入口 docs/m2/README.md）
+    └─ m2/                    # M2 阶段文档（索引 / 计划 / 决策 / 基线 / 性能计划 / A03 实施规划 / A03b 设计稿，入口 docs/m2/README.md）
 ```
 
 workspace 共 **16 个引擎 crate** + 1 个 `xtask` 工具 crate，依赖单向：

@@ -33,9 +33,10 @@ use rapier3d::na::Unit;
 use rapier3d::parry::query::{
     cast_shapes, intersection_test, Ray as ParryRay, ShapeCastOptions, ShapeCastStatus,
 };
-use rapier3d::parry::shape::{Ball, Cuboid};
+use rapier3d::parry::shape::{Ball, Capsule as ParryCapsule, Cuboid};
 use rapier3d::prelude::*;
 
+use crate::port::{Capsule, GroundSample, PortHit};
 use crate::{
     cast_candidate_better, BackendCaps, BodyDesc, BodyHandle, BodyKind, CastShape, ColliderShape,
     OverlapHit, PhysicsBackend, PhysicsEvent, PhysicsEventKind, Ray, RayHit, ShapeCastHit,
@@ -622,4 +623,162 @@ impl PhysicsBackend for RapierBackend {
         }
         best
     }
+
+    /// 胶囊重叠：parry 胶囊 vs 任意碰撞体的窄相相交测试（精确，不是 AABB 近似）。
+    ///
+    /// 与内置后端的差别记在这里：内置是包围盒近似（宁多报不漏报），
+    /// 这里是真实窄相，贴边擦过不会误报。两者都按 `node` 升序返回。
+    fn overlap_capsule(&self, capsule: Capsule) -> Vec<PortHit> {
+        if capsule.is_degenerate() {
+            return Vec::new();
+        }
+        let probe = ParryCapsule::new_y(capsule.half_height.abs(), capsule.radius.abs());
+        let pose = Pose3::translation(capsule.center.x, capsule.center.y, capsule.center.z);
+        let mut hits: Vec<PortHit> = self
+            .records
+            .iter()
+            .filter(|(_, rec)| {
+                let Some(collider) = self.colliders.get(rec.collider) else {
+                    return false;
+                };
+                intersection_test(&pose, &probe, collider.position(), collider.shape())
+                    .map(|r| r.intersecting)
+                    .unwrap_or(false)
+            })
+            .map(|(handle, rec)| PortHit {
+                body: handle.0,
+                node: rec.node,
+                distance: 0.0,
+                point: capsule.center,
+                normal: Vec3::ZERO,
+                started_inside: true,
+            })
+            .collect();
+        hits.sort_by_key(|h| h.node);
+        hits
+    }
+
+    /// 胶囊扫掠：parry `cast_shapes` 真窄相，TOI 归一化技巧同 `shape_cast`。
+    fn sweep_capsule(&self, capsule: Capsule, dir: Vec3, max_distance: f32) -> Option<PortHit> {
+        if capsule.is_degenerate() || max_distance <= 0.0 {
+            return None;
+        }
+        let d = dir.normalize_or_zero();
+        if d == Vec3::ZERO {
+            return None;
+        }
+        let probe = ParryCapsule::new_y(capsule.half_height.abs(), capsule.radius.abs());
+        let pose = Pose3::translation(capsule.center.x, capsule.center.y, capsule.center.z);
+        let vel = to_rapier(d * max_distance);
+        let options = ShapeCastOptions {
+            max_time_of_impact: 1.0,
+            target_distance: 0.0,
+            stop_at_penetration: true,
+            compute_impact_geometry_on_penetration: true,
+        };
+        let mut best: Option<PortHit> = None;
+        for (handle, rec) in self.records.iter() {
+            let Some(collider) = self.colliders.get(rec.collider) else {
+                continue;
+            };
+            let Ok(Some(hit)) = cast_shapes(
+                &pose,
+                vel,
+                &probe,
+                collider.position(),
+                Vector::new(0.0, 0.0, 0.0),
+                collider.shape(),
+                options,
+            ) else {
+                continue;
+            };
+            let started_inside =
+                matches!(hit.status, ShapeCastStatus::PenetratingOrWithinTargetDist);
+            let distance = if started_inside {
+                0.0
+            } else {
+                (hit.time_of_impact * max_distance).max(0.0)
+            };
+            let normal = if started_inside {
+                d * -1.0
+            } else {
+                let g = to_glam(hit.normal2).normalize_or_zero();
+                if g.length_squared() > 0.5 {
+                    g
+                } else {
+                    d * -1.0
+                }
+            };
+            let cand = PortHit {
+                body: handle.0,
+                node: rec.node,
+                distance,
+                point: capsule.center + d * distance,
+                normal,
+                started_inside,
+            };
+            if port_hit_better(&cand, best.as_ref()) {
+                best = Some(cand);
+            }
+        }
+        best
+    }
+
+    /// 地表采样：从 `(x, 高处, z)` 朝 -Y 打一条射线，取最近命中的顶面；
+    /// 一个刚体都没命中就退回后端自带的地面平面。
+    ///
+    /// 地面半空间不参与（它不在 `records` 里），永远以 `ground` 字段兜底，
+    /// 因此「站在空地上」返回的是 `body = None` 的平地样本，与内置后端一致。
+    fn sample_ground(&self, x: f32, z: f32) -> Option<GroundSample> {
+        if !x.is_finite() || !z.is_finite() {
+            return None;
+        }
+        let mut top = self.ground + 1.0;
+        for rec in self.records.values() {
+            if let Some(collider) = self.colliders.get(rec.collider) {
+                top = top.max(collider.compute_aabb().maxs.y);
+            }
+        }
+        let origin = Vec3::new(x, top + 1.0, z);
+        let parry_ray = ParryRay::new(to_rapier(origin), to_rapier(Vec3::NEG_Y));
+        let max_distance = (origin.y - self.ground) + 1.0;
+        let mut best = GroundSample::flat(self.ground);
+        for (handle, rec) in self.records.iter() {
+            let Some(collider) = self.colliders.get(rec.collider) else {
+                continue;
+            };
+            let Some(hit) = collider.shape().cast_ray_and_get_normal(
+                collider.position(),
+                &parry_ray,
+                max_distance,
+                true,
+            ) else {
+                continue;
+            };
+            let height = origin.y - hit.time_of_impact;
+            if height > best.height {
+                best = GroundSample {
+                    height,
+                    normal: to_glam(hit.normal).normalize_or_zero(),
+                    body: Some(handle.0),
+                    node: Some(rec.node),
+                };
+            }
+        }
+        Some(best)
+    }
+}
+
+/// 端口命中的择优规则：与 `cast_candidate_better` 同一套口径，只是字段不同。
+fn port_hit_better(cand: &PortHit, best: Option<&PortHit>) -> bool {
+    let Some(best) = best else {
+        return true;
+    };
+    if cand.started_inside != best.started_inside {
+        return cand.started_inside;
+    }
+    if (cand.distance - best.distance).abs() > 1e-4 {
+        return cand.distance < best.distance;
+    }
+    cand.node < best.node
 }

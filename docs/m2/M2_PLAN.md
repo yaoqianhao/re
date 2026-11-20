@@ -3,7 +3,7 @@
 - 阶段定位：`AI_ROADMAP §3.3` M2，结构期，原估 6–8 周
 - 计划形态：**严格串行**，一卡一提交，前卡 verify 全 11 步绿方可开下一卡
 - 基线口径：全部数字取自 `docs/m2/M2_BASELINE.md`（M2-A01 实测，2026-11-20）
-- 当前进度：**A01 已完成**（提交 `6876995`）；**A02 已完成**（老板已拍板 D1–D13，结论与联动影响见 `docs/m2/M2_DECISIONS.md`）；**下一张卡：A03 物理端口 trait 化**
+- 当前进度：**A01 已完成**（提交 `6876995`）；**A02 已完成**（提交 `810d5ce`，D1–D13 结论见 `docs/m2/M2_DECISIONS.md`）；**A03 已完成**（物理查询端口 trait 化 + `rapier` 转默认后端，实施记录见 `M2_A03_PORT_PLAN.md` §16：tests 1817 → **2017**、`r3e-physics/lib.rs` 1929 → **1542** 行（净减 387，判据 ≤0 满足）、`r3e-core` 零改动、verify 11 步全绿）；**下一张卡：A03b（`script` 绑定端口化，偿还 `dep_debt` 2 → 0）**
 - 拍板后果（已计入本文件全部数字）：D1/D2/D12/D13 四项选 B → 卡数 44 → **45**、tests 目标 +546 → **+750**、引擎 crate 16 → **19**、`dep_debt` 2 → **0**
 - 日期：2026-11-20
 
@@ -17,6 +17,8 @@
 | `M2_PLAN.md` | 本文件：目标、45 卡串行计划、门禁预算、执行规程 | 生效中 |
 | `M2_DECISIONS.md` | A02 决策清单 D1–D13，已拍板（含 4 项非建议项的落地约定） | **已拍板**（A02 完成，不再阻塞） |
 | `M2_PERF_PLAN.md` | 性能验收口径与跨硬件测试计划（D11 附加要求），H05 按此出结论 | 生效中，M2 全程参考 |
+| `M2_A03_PORT_PLAN.md` | A03 物理查询端口实施规划（落点改 `crates/r3e-physics`，2026-11-20 老板指令） | **已确认**（四项决定拍板），A03 可开工 |
+| `M2_A03B_HOST_PLAN.md` | A03b `script` 绑定端口化设计稿（trait 默认方法 + 函数式适配器） | **设计草案**，A03 收口后进本卡前确认 §4.2 取舍 |
 | `M2_PROPOSAL_CAPABILITY_SLOTS.md` | 插件写侧能力槽位提案，提交给 `D:\ai_ide` | 对外提案，**不在 M2 执行链路内**，与本计划无依赖关系 |
 
 阅读顺序：`README.md` → 本文件 → `M2_DECISIONS.md` →（需要核对数字时）`M2_BASELINE.md`。
@@ -96,8 +98,8 @@
 |---|---|---|---|---|
 | A01 | 基线对账与 verify 留证 | — | `docs/m2/M2_BASELINE.md` | 已完成（提交 `6876995`）：11 步全绿、基线唯一、偏差清单 8 条处置 |
 | A02 | 决策拍板 D1–D13 | A01 | `docs/m2/M2_DECISIONS.md`、`M2_PERF_PLAN.md` | 已完成：13 项结论全部落盘，4 项非建议项的落地约定写明，计划与预算同步重算 |
-| A03 | 物理端口 trait 化（**双后端 + `rapier` 转默认**，D1=B） | A02 | `r3e-core`（trait 定义）、`r3e-physics`（`builtin_backend.rs` / `rapier_backend.rs`） | capsule / raycast / heightfield 三组 trait 定义落 `r3e-core`；`r3e-physics` 两套实现并存；`default = ["rapier"]` 且 `--no-default-features` 回落 builtin 可跑；**同一套契约测试双后端各跑一遍全绿**；`lib.rs` 净增 ≤0（新代码进新文件）；`r3e-script` 不新增依赖边 |
-| **A03b** | **`dep_debt` 两条偿还：`script` 绑定端口化**（D13=B） | A03 | `r3e-script`、`r3e-core`（端口契约）、`xtask/dep_debt.json` | 按 M0S5 §13.6 的 53 条端口契约补 `CapabilityHost` 物理入口，53 个绑定方法 / 704 行改走端口；音频绑定同批端口注入；`dep_debt.json` 删两条、`limit` 2 → 0；`r3e-script` allow 表不变；**零行为变化**（1817 基线测试零删减、回放金标不漂移）；tests **+56** |
+| A03 | 物理端口 trait 化（**双后端 + `rapier` 转默认**，D1=B） | A02 | `r3e-physics`（`port.rs` / `port_impl.rs` / `builtin_backend.rs` / `rapier_backend.rs`），`r3e-core` **零改动** | **已完成**（实测见 `M2_A03_PORT_PLAN.md` §16）：capsule / raycast / heightfield 三组 trait **定义落 `crates/r3e-physics/src/port.rs`**（2026-11-20 修订，原「落 core」作废）；`r3e-physics` 两套实现并存；`default = ["rapier"]` 且 `--no-default-features` 回落 builtin 可跑；**同一套契约测试双后端各跑一遍全绿**；`lib.rs` 净增 ≤0（新代码进新文件）；`r3e-script` 不新增依赖边 |
+| **A03b** | **`dep_debt` 两条偿还：`script` 绑定端口化**（D13=B） | A03 | `r3e-script`（`host.rs` 新建）、`r3e-runtime`（`script_bind.rs` 新建）、`xtask/dep_debt.json` | 形态 = **trait 默认方法 + 函数式适配器**（`PhysicsHost` / `AudioHost`，签名全脚本原生类型，统一转发到 `execute(Req)->Rsp`，闭包即适配器），见 `M2_A03B_HOST_PLAN.md`；实测范围 **69 个绑定调用点 / 706 行**（物理 24 / 340 行、音频 45 / 366 行），trait 能力面 **53 个去重方法**（物理 16 / 音频 37）；「53 个 / 704 行」与实测是两个维度，非粗估误差，详见 `M2_DECISIONS.md` D13 第 2 条口径校准；`dep_debt.json` 删两条、`limit` 2 → 0；`r3e-script` allow 表保持 3 项不变；**零行为变化**（1817 基线测试零删减、回放金标不漂移；接受 30 处 `ScriptHost::new` 的 import 改由 `r3e-runtime` 再导出）；tests **+56** |
 | A04 | `scene.rs` 拆域解债 | A03b | `r3e-core/src/scene.rs` 3935 | 拆为 `scene/` 子模块，最大文件 ≤ 1200 行；`size_debt.json` 删 `scene.rs` 项；1817 基线测试零删减 |
 | A05 | `size_debt` 收紧 3 项 | A04 | `xtask/size_debt.json` | `r3e-physics/lib.rs` 1929→≤1924（A03 双后端不得抬高本行数）、`r3e-plugin/tools.rs` 1405→≤1125、`r3e-runtime/app.rs` 3040→≤3028 |
 
@@ -105,7 +107,7 @@
 
 | ID | 任务 | 依赖 | 主文件 | 完成判据 |
 |---|---|---|---|---|
-| B01 | 建 `r3e-character` crate + 控制器契约 + 命令注册（**D2=B**） | A03b | `crates/r3e-character/`、workspace `Cargo.toml`、`xtask/dep_rules.json`、`xtask/tests_baseline.json` | 新 crate 入 workspace（成员 17→**18**）并**同卡**登记 `dep_rules`（`allow` 仅 `r3e-core`）与 `tests_baseline`；控制器 trait 契约落 `r3e-core`、实现落本 crate；`character.*` 命令入 `cmd_spec`，`capabilities.json` 生成含新命令；参数（半径/高度/坡度上限/台阶高度/吸附距离）全部可配置；`r3e-script` allow 表**不新增**本 crate；tests +12 |
+| B01 | 建 `r3e-character` crate + 控制器契约 + 命令注册（**D2=B**） | A03b | `crates/r3e-character/`、workspace `Cargo.toml`、`xtask/dep_rules.json`、`xtask/tests_baseline.json` | 新 crate 入 workspace（成员 17→**18**）并**同卡**登记 `dep_rules`（`allow = ["r3e-core", "r3e-physics"]`，2026-11-20 修订：原「仅 `r3e-core`」，因 A03 端口落 physics 连带放宽）与 `tests_baseline`；控制器 trait 契约落 `r3e-physics/src/port.rs`（与 A03 同处）、实现落本 crate；**同卡加守卫**：本 crate 源码出现 `r3e_physics::` 后接 `port` 以外路径即 `doc-gate` 失败（补救「物理无关」从编译期保证降为约定守卫）；`character.*` 命令入 `cmd_spec`，`capabilities.json` 生成含新命令；参数（半径/高度/坡度上限/台阶高度/吸附距离）全部可配置；`r3e-script` allow 表**不新增**本 crate；tests +12 |
 | B02 | 胶囊碰撞 + 地面吸附 | B01 | 同上 | headless 平面行走不下沉、不掉离地面；吸附距离内贴地；**builtin 与 rapier 双后端各验一遍** |
 | B03 | 台阶与斜坡行进 | B02 | 同上 | 台阶高度内可上，超限被挡；斜坡按坡度上限判定可通过/滑落；**双后端各验一遍**（两套后端对斜坡接触判定可能不同，任一套不过即本卡不过） |
 | B04 | 判据测试与不变量 | B03 | `crates/r3e-character/tests`、`xtask/invariants` | **斜坡上行高度误差 <2cm 自动断言**（多坡度采样，双后端各断言一次）；新增 2 条 invariant 且三源一致 |
