@@ -365,7 +365,7 @@ cargo xtask invariants              # ✅ 38 = 38 = 38
 
 **目标**：补齐 RPG/沙盒的结构性缺口。**严格串行，不可并行**（后项依赖前项）。
 
-> 执行层文档：`docs/m2/README.md`（索引）、`docs/m2/M2_PLAN.md`（44 卡串行计划）、`docs/m2/M2_DECISIONS.md`（D1–D13 待拍板）、`docs/m2/M2_BASELINE.md`（A01 实测基线）。本节只定义目标与判据，卡表与数字以这三份为准。
+> 执行层文档：`docs/m2/README.md`（索引）、`docs/m2/M2_PLAN.md`（45 卡串行计划）、`docs/m2/M2_DECISIONS.md`（D1–D13 已于 2026-11-20 全部拍板）、`docs/m2/M2_BASELINE.md`（A01 实测基线）、`docs/m2/M2_PERF_PLAN.md`（性能验收口径与跨硬件测试计划）。本节只定义目标与判据，卡表与数字以上述文档为准；若本节与 `M2_PLAN.md` §2 目标值冲突，以 `M2_PLAN.md` 为准（其已按 A02 拍板结果重算：tests ≥2567 / commands ≥433 / rpc ≥76 / invariants ≥48 / domains 19 / 债务 0 / 引擎 crate 19）。
 
 | 序 | 内容 | 前置 | 判据（可自动判定） |
 |---|---|---|---|
