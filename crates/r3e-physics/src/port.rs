@@ -390,7 +390,22 @@ pub trait CharacterPort: PhysicsQueryPort {
             return (here, false, 0.0);
         }
 
-        if let Some(hit) = self.capsule_sweep(capsule, dir, distance) {
+        // 起点脱开：站稳的瞬间胶囊底面与地面零间隙，扫掠会把「贴着地面站着」
+        // 判成 `started_inside`，若照「起点重叠 ⇒ 一步都不走」处理，角色一落地
+        // 就再也迈不开腿 —— 这是 B02 在真后端上抓到的缺陷（Rapier / Builtin
+        // 都表现为「站稳以后所有水平移动全被 blocked」）。所以先上抬 `SKIN`
+        // 让接触让开：抬了仍与几何重叠，才说明真的卡在墙里，那时才拒动。
+        let lifted = Capsule::new(here + Vec3::Y * SKIN, capsule.half_height, capsule.radius);
+        let from = if self.capsule_overlap(&lifted).is_empty() {
+            &lifted
+        } else {
+            capsule
+        };
+        // 结果里的 y 一律以原始中心为基准：抬 `SKIN` 只是查询技巧，
+        // 不该让角色每帧真的抬高 1 毫米（竖直位移只由 `settle_vertical` 决定）。
+        let y_bias = from.center.y - here.y;
+
+        if let Some(hit) = self.capsule_sweep(from, dir, distance) {
             if hit.started_inside {
                 // 起点就重叠：一步都不走，交给上层决定「贴脸滑开」还是「原地不动」。
                 return (here, true, 0.0);
@@ -405,8 +420,11 @@ pub trait CharacterPort: PhysicsQueryPort {
                 0.0
             };
             if step > SKIN {
-                let lifted =
-                    Capsule::new(here + Vec3::Y * step, capsule.half_height, capsule.radius);
+                let lifted = Capsule::new(
+                    from.center + Vec3::Y * step,
+                    capsule.half_height,
+                    capsule.radius,
+                );
                 if self.capsule_overlap(&lifted).is_empty() {
                     let advance = self
                         .capsule_sweep(&lifted, dir, distance)
@@ -428,7 +446,8 @@ pub trait CharacterPort: PhysicsQueryPort {
                             if !drop.started_inside {
                                 let raised = drop.distance.min(step);
                                 if step - raised > SKIN {
-                                    let pos = Vec3::new(ahead.x, ahead.y - raised, ahead.z);
+                                    let pos =
+                                        Vec3::new(ahead.x, ahead.y - raised - y_bias, ahead.z);
                                     return (pos, false, step - raised);
                                 }
                             }
@@ -478,30 +497,32 @@ pub trait CharacterPort: PhysicsQueryPort {
         } else {
             0.0
         };
+        // 向下探测一律先把起点上抬 `SKIN`：站在地上时「从接触位置直接下扫」踩在后端的
+        // 预测距离边界上，Rapier 会给出不可靠结论（实测同一点位有时报 0.6 mm、
+        // 有时直接「无命中」，后者让角色按自由落体往下掉，60 帧沉 1.8 厘米）。
+        // 抬 `SKIN` 后扫 `reach + SKIN`，再把结果减掉 `SKIN` —— 与不抬等价，但不踩边界。
+        let probe_at = |center: Vec3| {
+            Capsule::new(center + Vec3::Y * SKIN, capsule.half_height, capsule.radius)
+        };
         if fall > 0.0 {
-            if let Some(hit) = self.capsule_sweep(capsule, -Vec3::Y, fall) {
-                let down = if hit.started_inside {
-                    0.0
-                } else {
-                    hit.distance.min(fall)
-                };
-                return (Vec3::new(here.x, here.y - down, here.z), true, hit.normal);
+            if let Some(hit) = self.capsule_sweep(&probe_at(here), -Vec3::Y, fall + SKIN) {
+                if !hit.started_inside {
+                    let down = (hit.distance - SKIN).max(0.0).min(fall);
+                    return (Vec3::new(here.x, here.y - down, here.z), true, hit.normal);
+                }
             }
         }
         let dropped = Vec3::new(here.x, here.y - fall, here.z);
         if snap > 0.0 {
-            let probe = Capsule::new(dropped, capsule.half_height, capsule.radius);
-            if let Some(hit) = self.capsule_sweep(&probe, -Vec3::Y, snap) {
-                let down = if hit.started_inside {
-                    0.0
-                } else {
-                    hit.distance.min(snap)
-                };
-                return (
-                    Vec3::new(dropped.x, dropped.y - down, dropped.z),
-                    true,
-                    hit.normal,
-                );
+            if let Some(hit) = self.capsule_sweep(&probe_at(dropped), -Vec3::Y, snap + SKIN) {
+                if !hit.started_inside {
+                    let down = (hit.distance - SKIN).max(0.0).min(snap);
+                    return (
+                        Vec3::new(dropped.x, dropped.y - down, dropped.z),
+                        true,
+                        hit.normal,
+                    );
+                }
             }
         }
         (dropped, false, Vec3::ZERO)
