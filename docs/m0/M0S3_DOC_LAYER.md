@@ -254,7 +254,7 @@ pub trait Command {
 
 ## 5. 强制机制：`cargo xtask doc-gate`（新增子命令，纳入 `verify`）✅ 已落地（2026-11-15）
 
-架构约束靠文档约束不住，必须落到 CI 命令。6 条规则：
+架构约束靠文档约束不住，必须落到 CI 命令。8 条规则（第 7、8 条为后续阶段追加，见各条备注）：
 
 | # | 规则 | 例外白名单 | 实际落点 |
 |---|---|---|---|
@@ -264,6 +264,8 @@ pub trait Command {
 | 4 | `runtime` / `editor-host` / `script` 不得出现 `Scene::from_json_str`，场景解析统一走 `r3e-doc` 的解析入口 | 无 | 新增 `r3e_doc::parse_scene`，13 处上游调用全部迁移（app 6 / script 4 / host 3） |
 | 5 | 未登记 `dep_rules.json` 的 crate 一律失败 | 无（现状已具备） | 直接读 `dep_rules.json` 的 crate 集比对 |
 | 6 | `doc.write(\|s\| ...)` 闭包体内不得出现 `.borrow()` / `.borrow_mut()`（RefCell 重入静态扫描） | 无 | 载体名（`s` / `scene` / 任意标识符）由 `doc_gate.json` 的 `rule6_scene_keys` 配置 |
+| 7 | `.write(` 写点数不得超过 `docs/m1/M1_PLAN.md` §5 台账登记（M1-S1 起，M1-S4-E 并入） | 无，台账即登记 | 按 crate 逐行累计字面命中；数字比台账大即红，比台账小只提示「可下调」 |
+| 8 | `crates/r3e-character/src/` 只许引 `r3e_physics::port`（M2-B01） | 本 crate 的 `tests/` | 源码与注释都查（BD-5 档 A）；`tests/` 豁免理由见 B02：双后端判据必须装配真后端 |
 
 实现要点（实测，与方案期估算的差异写在此处）：`xtask/src/doc_gate.rs` **282 行**（不是 120 行，多出的量在去噪与三处判定细节上），
 配置外置为 `xtask/doc_gate.json`（`rule4_scope` / `rule6_scene_keys` / `rule2_exceptions`），与 `size_debt.json` 同纪律——**改动即评审**。

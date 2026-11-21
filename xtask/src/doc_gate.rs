@@ -13,7 +13,7 @@
 //! | 5 | 未登记 `xtask/dep_rules.json` 的 crate 一律失败 | 无 |
 //! | 6 | `write(|s| ...)` 闭包体内不得再借用场景载体（RefCell 重入） | 无 |
 //! | 7 | `.write(` 写点数不得超过 `docs/m1/M1_PLAN.md` §5 台账登记（M1-S1 起，M1-S4-E 并入） | 无，台账即登记 |
-//! | 8 | `crates/r3e-character/` 只许引 `r3e_physics::port`（源码与注释都查，M2-B01） | 无 |
+//! | 8 | `crates/r3e-character/src/` 只许引 `r3e_physics::port`（源码与注释都查，M2-B01） | 本 crate 的 `tests/` |
 //!
 //! 白名单和 `lint-size` 一样**只许减**：条目对不上就报「可删」，多出来的直接失败。
 //! 规则 7 同理——台账数字比实际大就提示「可下调」，比实际小就红。
@@ -36,6 +36,10 @@ const DOC_CRATE: &str = "crates/r3e-doc/";
 /// 口径（BD-5 档 A）：**源码与注释都查**。这条与规则 1/4 不同——那两条只看
 /// `//` 之前的代码，因为注释里提到 `RefCell<Scene>` 只是解释历史；而这里注释里
 /// 写 `r3e_physics::Physics` 就是在教下一个人走错路，所以连文档注释一起算。
+///
+/// 例外只有一处：**本 crate 的 `tests/`**。B02 的判据是「builtin 与 rapier 双后端
+/// 各验一遍」，装配真后端（`Physics::with_backend` / `PhysicsKind`）正是测试的职责，
+/// 不给测试口子就只能验一套后端。产品代码（`src/`）依旧只认 `port`。
 const PORT_ONLY_CRATE: &str = "crates/r3e-character/";
 const PORT_ONLY_HOST: &str = "r3e_physics";
 const PORT_ONLY_ALLOWED: &str = "port";
@@ -204,8 +208,8 @@ pub fn run(root: &Path) -> i32 {
             }
         }
 
-        // ---- 规则 8：`r3e-character` 只许引 `r3e_physics::port`
-        if path.starts_with(PORT_ONLY_CRATE) {
+        // ---- 规则 8：`r3e-character` 只许引 `r3e_physics::port`（`tests/` 豁免）
+        if path.starts_with(PORT_ONLY_CRATE) && !path.contains("/tests/") {
             for (i, raw) in lines.iter().enumerate() {
                 for piece in bad_port_refs(raw) {
                     bad.push(format!(

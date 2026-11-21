@@ -259,6 +259,10 @@ pub trait CharacterPort: PhysicsQueryPort {
 * `doc_gate` 运行摘要行「规则 N 条」7 → 8（该行是 `println!`，无断言，但有测试快照则需同步——实测无断言，安全）。
 * 规则 8 只对 `crates/r3e-character/` 生效，其他 crate 不受影响（`r3e-runtime` 可以正常用 `Physics` 门面）。
 
+**B02 实测偏差（2026-11-21）**：规则 8 的范围从 `crates/r3e-character/` 收窄为 `crates/r3e-character/src/`——本 crate 的 `tests/` 豁免。
+原因不是放宽，而是 B02 的判据本身要求「builtin 与 rapier 双后端各验一遍」，装配真后端只能写 `r3e_physics::{Physics, PhysicsKind}`；不给测试口子就只剩一条腿，判据无法成立。
+`src/` 侧一字未松：现在 `crates/r3e-character/src/` 里仍然只出现 `r3e_physics::port`。
+
 ### 4.6 参数可配置面（卡表「全部可配置」的落地）
 
 `CharacterConfig` 六个字段全部可配，默认值写死在 `Default`，可在运行期经 `character.config` 覆盖：
@@ -336,6 +340,21 @@ macro_rules! both_backends { ($f:ident) => { #[test] fn $f() { run_on_rapier($f)
 ### 5.4 测试明细（+20）
 
 10 个断言点 × 2 后端 = 20 条 `#[test]`（每后端 10 条：下沉/不掉地/吸附内/吸附外/无重力时不动/低帧率下仍贴地/斜向行走 Y 不变/dt=0 幂等/巨大 dt 不穿透/被墙挡时仍着地）。
+
+### 5.5 B02 实到（2026-11-21）
+
+* 落点：`crates/r3e-character/tests/ground_spec.rs`（20 条，10 判据 × 双后端）、`tests/common/mod.rs` 补 `backends()`/`physics_of()`/`floor_world()`/`with_wall()` 真后端夹具（解析夹具仍留给 B01 的几何恒等式用）。
+* 基线：`r3e-character` **18 → 38**（`tests_baseline` 已同步），全量 2062 → 2082。
+* 判据实测：Rapier 与 Builtin 各 10 条全绿；行走 60 帧 `position.y` 与初值差 < `1e-3`，`grounded` 逐帧为真 0 次 false。
+
+**同卡修掉 `CharacterPort` 默认实现的两处真实缺陷**（判据与阈值一条未放宽，属端口实现修正，不是调测试）：
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 角色**一落地就迈不开腿**：落地后每帧 `blocked = true`、`step_up = 0`、位置不动（两个后端都复现） | 站稳瞬间胶囊底面与地面零间隙，`capsule_sweep` 把「贴着地面」判成 `started_inside`，而 `move_horizontal` 的 `started_inside ⇒ 拒动` 分支直接把整个位移吃掉 | 扫掠前先把起点上抬 `SKIN` 脱开；抬了**仍与几何重叠**才判定「真卡在墙里」并拒动。结果里的 y 以原始中心为基准回写，抬升量不外泄 |
+| 2 | 站着**缓慢下沉**：Rapier 上 60 帧沉 1.8 cm；同一帧既可能报 0.6 mm 命中、也可能「无命中」后者按自由落体下移 | `settle_vertical` 从贴地位置直接向下扫，恰好踩在 Rapier 的预测距离边界上，结论不稳定 | 向下探测一律把起点上抬 `SKIN`、扫 `reach + SKIN`，再把命中距离减掉 `SKIN`——与不抬等价，但不踩边界；起点上抬后仍 `started_inside` 时不下移 |
+
+`BuiltinBackend` 是解析法、不会出现上面两处边缘，所以这两条缺陷只在真后端上暴露——这正是计划 §5.3 坚持「双后端各验一遍」的价值所在。
 
 ---
 
