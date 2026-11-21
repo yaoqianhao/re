@@ -14,6 +14,7 @@ use std::fmt;
 use r3e_core::Scene;
 
 mod bounds;
+mod character;
 mod geom;
 mod invariants;
 mod material;
@@ -61,6 +62,8 @@ pub enum Category {
     Overlap,
     /// 可达性（出生点 / 目标 / 连通块）
     Reachability,
+    /// 角色控制器（配置越界 / 埋进支撑面）
+    Character,
 }
 
 impl Category {
@@ -73,6 +76,7 @@ impl Category {
             Self::Support => "support",
             Self::Overlap => "overlap",
             Self::Reachability => "reachability",
+            Self::Character => "character",
         }
     }
 
@@ -88,6 +92,7 @@ impl Category {
             "support" => Self::Support,
             "overlap" => Self::Overlap,
             "nav" => Self::Reachability,
+            "character" => Self::Character,
             _ => Self::Bounds,
         }
     }
@@ -216,6 +221,7 @@ pub fn validate(scene: &Scene) -> Vec<Issue> {
     refs::check(scene, &mut out);
     bounds::check(scene, &mut out);
     material::check(scene, &mut out);
+    character::check(scene, &mut out);
     sort_issues(&mut out);
     out
 }
@@ -235,6 +241,12 @@ pub fn validate_geometry(scene: &Scene) -> Vec<Issue> {
     let mut out = Vec::new();
     support::check(scene, &mut out);
     overlap::check(scene, &mut out);
+    // 角色族（M2-B04）：`character.*` 是**确定**结论，不是近似候选——脚底与支撑面
+    // 都由场景内真值算得出，物理层没有更准的第二份口径去复核它。放这里是因为
+    // 三层验证报告（`scene.verify`）必须以静态层为入口把这两条码交出去；
+    // 只挂 `validate` 的话，加载期看得到、验证期反而看不到，同一份场景给两个结论。
+    // 它们是精确条目（`approximate = false`），不会参与「近似被覆盖」那条规则。
+    character::check(scene, &mut out);
     sort_issues(&mut out);
     dedup_superseded(out)
 }
@@ -344,6 +356,7 @@ pub fn validate_in_dir(scene: &Scene, dir: &std::path::Path) -> Vec<Issue> {
     refs::check(scene, &mut out);
     bounds::check(scene, &mut out);
     material::check_in_dir(scene, dir, &mut out);
+    character::check(scene, &mut out);
     sort_issues(&mut out);
     out
 }

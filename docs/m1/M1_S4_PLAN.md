@@ -248,13 +248,15 @@ pub struct NavGrid { origin: [f32;3], dims: [u32;2], cell_size: f32,
 
 | 层 | crate | 判定对象 | 检查项 |
 |---|---|---|---|
-| 静态层 | `r3e-doc/validate/*`（只依赖 core） | 几何/引用上确定错 | 引用断裂、材质六码（S4-A）、AABB 重叠初筛、AABB 悬空初筛、表容量越界 |
+| 静态层 | `r3e-doc/validate/*`（只依赖 core） | 几何/引用上确定错 | 引用断裂、材质六码（S4-A）、AABB 重叠初筛、AABB 悬空初筛、表容量越界、角色族两码（M2-B04） |
 | 物理层 | `r3e-editor-host/src/verify/*`（已依赖 physics） | 物理世界确定错 | 悬空精确判定（向下 `shape_cast` 找支撑面）、穿透精确判定（`overlap_sphere` 逐对候选） |
 | 导航层 | `r3e-editor-host/src/verify/*`（新增依赖 nav） | 可达性确定错 | spawn → 目标无路径（报 `disconnect_point`）、spawn 落非 walkable 格、目标落非 walkable 格、region 数异常 |
 
-`Issue` 扩展（已完成）：新增 `category`（**六族**：`Reference|Bounds|Material|Support|Overlap|Reachability`——`nav.*` 归 `Reachability`，不另立 `Nav` 族，族是「问题族」不是「发现它的层」）、`target: Option<String>`、`location: Option<[f32;3]>`、`hint: Option<String>`、`approximate: bool`。全部为**只增不改**，旧字段与旧构造入口（`Issue::error` / `Issue::warn`）签名不变，三十余处既有调用点零改动；新增链式构造 `with_target` / `at` / `with_hint` / `approx`。
+`Issue` 扩展（已完成）：新增 `category`（**六族**：`Reference|Bounds|Material|Support|Overlap|Reachability`——`nav.*` 归 `Reachability`，不另立 `Nav` 族，族是「问题族」不是「发现它的层」；M2-B04 扩到**七族**，新增 `Character`，见下）、`target: Option<String>`、`location: Option<[f32;3]>`、`hint: Option<String>`、`approximate: bool`。全部为**只增不改**，旧字段与旧构造入口（`Issue::error` / `Issue::warn`）签名不变，三十余处既有调用点零改动；新增链式构造 `with_target` / `at` / `with_hint` / `approx`。
 
 `ISSUE_CODES` **24 → 38**（+14）：`overlap.suspect`、`support.suspect`（静态层近似）、`overlap.penetration`、`support.floating`（物理层精确）、`nav.spawn_offmesh` / `nav.target_offmesh` / `nav.no_path` / `nav.region_split`（导航层），以及 S4-A 已落的材质六码；`layer` 白名单扩到 `refs|bounds|material|support|overlap|physics|nav`，自检测试口径同步。
+
+**M2-B04 追加（角色族，`ISSUE_CODES` 38 → 40）**：`character.config.invalid`（角色配置越界/非有限）与 `character.ground.penetration`（脚底低于支撑面超过 `snap_distance`）落在静态层新文件 `r3e-doc/src/validate/character.rs`，`layer = "character"` 随之进白名单，`Category` 加第七个变体 `Character`，`r3e-editor-host::verify::layer_of` 的穷尽 `match` 把该族归 `Layer::Static`（归错层会让「角色埋进地里」被当成几何问题，调用方按层过滤时漏看，故由 `r3e-editor-host/tests/verify_layers.rs` 两条测试钉住归层与条数）。两条码是**确定**结论（脚底与支撑面都由场景内真值算得出，物理层没有更准的第二份口径），不是近似候选， 因此 `validate_geometry` 也调 `character::check`——否则 `scene.verify` 的静态层看不到加载期能看到的结论，同一份场景会给出两个答案。
 
 **铁律**：① doc 层只做 AABB 近似并标 `approximate`，物理/导航层出结论后**覆盖**而非并列；② 覆盖按 **`(category,target)` 族级**判定——静态层报 `support.suspect`、物理层确认 `support.floating`，两条码不同但同族同对象，近似那条必须被顶掉；精确条目之间再按 `(category,target,code)` 压重，无 `target` 的汇总类条目不参与覆盖；③ 物理或 nav 不可用时整体降级进 `unchecked` 并写明原因，不报假警；④ 层与层共用同一份几何口径（`node_bounds` / `is_dynamic_node` / `nodes_related`），否则两层对「这个物件多大」各有一套判断。
 
@@ -326,7 +328,7 @@ S4-A 材质引用（2–3 提交）
 | RPC 条数 | 48 | 57 |
 | workspace crate | 15 | 16（`r3e-nav`） |
 | `CommandKind` | 15 | 18 |
-| `ISSUE_CODES` | 24 | 38（实测 S4-E 收口 **38**，比预估多 2：`support.suspect` / `overlap.suspect` 与精确码分开登记） |
+| `ISSUE_CODES` | 24 | 38（实测 S4-E 收口 **38**，比预估多 2：`support.suspect` / `overlap.suspect` 与精确码分开登记；M2-B04 再 +2 到 **40**：`character.config.invalid` / `character.ground.penetration`） |
 | 单测 | 1,574 | 1,705（实测 S4-D 收口 1,677、S4-E 收口 **1,705**） |
 | 预估工期 | — | 2.5–3.5 周（比 V2 多约 1–1.5 周，Gate 1 相应顺延） |
 

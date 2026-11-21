@@ -224,6 +224,17 @@ pub const ISSUE_CODES: &[IssueCode] = &[
         layer: "nav",
         severity: Severity::Warn,
     },
+    // --------------------------------------------------- character.rs（静态确定结论）
+    IssueCode {
+        code: "character.config.invalid",
+        layer: "character",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "character.ground.penetration",
+        layer: "character",
+        severity: Severity::Error,
+    },
 ];
 
 /// 按 `code` 查表。查不到返回 `None`（代表上报了一个没登记的字面量，属于缺陷）。
@@ -263,7 +274,14 @@ mod tests {
             assert!(
                 matches!(
                     ic.layer,
-                    "bounds" | "refs" | "material" | "overlap" | "support" | "physics" | "nav"
+                    "bounds"
+                        | "refs"
+                        | "material"
+                        | "overlap"
+                        | "support"
+                        | "physics"
+                        | "nav"
+                        | "character"
                 ),
                 "未知校验层 {}（新增校验模块须同步本表）",
                 ic.layer

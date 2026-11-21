@@ -441,6 +441,31 @@ macro_rules! both_backends { ($f:ident) => { #[test] fn $f() { run_on_rapier($f)
 | 轨迹确定性（同输入两次跑逐位相同） | 2 |
 | **合计** | **18** |
 
+### 7.4 B03 / B04 实到（2026-11-21）
+
+**落点**：`crates/r3e-character/tests/step_spec.rs`（B03，20 条）、`tests/ramp_accuracy.rs`（B04 §7.1，8 条）、
+`tests/ramp_sampler.rs`（B04 采样器与确定性，4 条）、`tests/common/mod.rs` 补坡度夹具与 2cm 容差常量；
+`r3e-doc/src/validate/character.rs`（新层，6 条单测）、`r3e-doc/tests/character_issues.rs`（两条码的正反例，6 条）、
+`r3e-editor-host/tests/verify_layers.rs`（归层，2 条）；`r3e-physics/src/slope.rs` 前缘对齐口径 1 条。
+
+**基线演进（实测）**：`r3e-character` 38 → 58 → 70，`r3e-physics` 238 → 239，`r3e-doc` 152 → 164，
+`r3e-editor-host` 132 → 134，合计 2082 → 2129（`tests_baseline` 已按实测同步，含说明）。
+
+**B03 判据跑出来的三处真实缺陷（阈值一条没放宽）**：
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 上坡三步即失速、重力接管、穿地（Rapier 40° 稳定复现；Builtin 无此现象） | `slope_verdict` 落点只按坡度增量外推，坡脚首帧的抬升相对真实坡面本就跳变，之后每帧差同一截、永远追不上，落点逐帧埋深后被重叠闸整体拒掉 | 落点取 `max(增量外推, 前缘坡面高度对齐)` |
+| 2 | 落地后下一帧被读成「脚下没地面」 | 贴面落点零间隙，下一次竖直扫掠起点被判重叠（parry 预测距离 2mm），`started_inside` ⇒ 悬空 | 落点主动让出 1cm 由吸附落回；`settle_vertical` 加朝上面兜底 |
+| 3 | 斜坡上脚底比平面接触高出 `radius*(1/n.y-1)` | 竖直胶囊贴斜面时圆心距离是法线方向的 `radius`，投影到竖直方向要除以 `n.y` | 落点按该量校正，Rapier 误差降到 0.5mm |
+
+**B04 不变量落地（invariants 38 → 40）**：`character.config.invalid`（配置越界/非有限）与
+`character.ground.penetration`（脚底低于支撑面超过 `snap_distance`）登记进 `validate/invariants.rs`，
+判定在 `validate/character.rs`；`Category` 加第七变体 `Character`，`layer_of` 归 `Layer::Static`，
+并由 `verify_layers.rs` 两条测试钉住「归层不错 + 报告里条数对得上」。
+`character::check` 已接入 `validate_geometry`——不接的话 `scene.verify` 的静态层看不见加载期就能看见的结论，同一份场景两个答案。
+`cargo xtask invariants` 现 A=B=C=40；`gen-capabilities` 输出 commands=398 / rpc=68 / script_only=330 / domains=17 / invariants=40。
+
 ---
 
 ## 8. B05 可玩性回归 1（tests +12）
@@ -555,6 +580,8 @@ r3e-cli --addr <endpoint> rpc character.state   '["ramp_walker"]'               
 | **合计** | **+82** ✓ | 与 `M2_PLAN` §4 B 行一致 |
 
 `tests_baseline` 演进：2025 → 2037（B01）→ 2057（B02）→ 2077（B03）→ 2095（B04）→ 2107（B05）。
+
+**实到对照**：B02 收口 **2082**、B03 收口 **2103**、B04 收口 **2129**——比计划高，差额来自同卡修缺陷时补的夹具（`r3e-physics` 前缘对齐 1 条）与 `r3e-doc`/`r3e-editor-host` 两侧的归层测试，卡内判据数一条未减。
 
 ### 10.2 其他门禁项
 

@@ -217,7 +217,10 @@ impl VerifyReport {
 /// 与 [`Category`] 的划分对齐：几何近似类在静态层，穿透在物理层，可走 / 可达在导航层。
 fn layer_of(category: Category) -> Layer {
     match category {
-        Category::Reference | Category::Bounds | Category::Material => Layer::Static,
+        // 角色配置 / 踩地判据是静态可判的确定性结论（不吃物理后端），归静态层
+        Category::Reference | Category::Bounds | Category::Material | Category::Character => {
+            Layer::Static
+        }
         Category::Support | Category::Overlap => Layer::Physics,
         Category::Reachability => Layer::Nav,
     }

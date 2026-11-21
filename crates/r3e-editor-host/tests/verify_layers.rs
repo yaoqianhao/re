@@ -335,3 +335,70 @@ fn target_off_mesh_is_reported_before_reachability() {
         "目标点自己就站不住时不该再报不可达：那是上一个结论的下游噪音"
     );
 }
+
+// ------------------------------------------------------------------ 角色族归层（M2-B04）
+
+/// 角色族的码由静态层判出，必须归 `Layer::Static`。
+///
+/// `layer_of` 是穷尽 `match`：新加 `Category::Character` 却漏了这一臂，编译就过不去；
+/// 但**归对了没**只能靠这条测试钉——归错层会让报告把「角色埋进地里」说成几何问题，
+/// 调用方按层过滤时就会漏看。
+fn character_report(pos: [f32; 3], spec: r3e_core::CharacterSpec) -> VerifyReport {
+    let mut scene = Scene::new();
+    let id = scene
+        .spawn(ObjectDesc {
+            name: "hero".to_string(),
+            position: Some(pos),
+            ..Default::default()
+        })
+        .expect("角色节点应能落进场景");
+    scene.get_mut(id).expect("刚建的节点").character = Some(spec);
+    scene.update_world_transforms();
+    // 物理关着：这两条码与物理无关，静态层必须独立判出来
+    VerifyReport::collect(&scene, &Physics::new(), None)
+}
+
+fn static_count_without_character() -> usize {
+    let mut scene = Scene::new();
+    spawn(&mut scene, "hero", [0.0, -0.5, 0.0], 1.0, None);
+    scene.update_world_transforms();
+    VerifyReport::collect(&scene, &Physics::new(), None).count_by_layer(Layer::Static)
+}
+
+#[test]
+fn character_penetration_lands_on_static_layer() {
+    let spec = r3e_core::CharacterSpec::new();
+    let report = character_report([0.0, -0.5, 0.0], spec);
+    assert!(
+        has_code(&report, "character.ground.penetration"),
+        "角色脚底埋进地面半个身位，静态层必须报穿地"
+    );
+    assert_eq!(
+        report.count_by_layer(Layer::Static),
+        static_count_without_character() + 1,
+        "多出来的那一条必须记在静态层（归错层等于让调用方漏看）"
+    );
+    let issue = find(&report, "character.ground.penetration").expect("应有穿地条目");
+    assert_eq!(issue.category, Category::Character);
+    assert_eq!(issue.target.as_deref(), Some("hero"));
+}
+
+#[test]
+fn character_config_invalid_lands_on_static_layer() {
+    let mut spec = r3e_core::CharacterSpec::new();
+    spec.radius = 0.0;
+    let report = character_report([0.0, 0.0, 0.0], spec);
+    assert!(
+        has_code(&report, "character.config.invalid"),
+        "半径为 0 的角色配置必须被静态层报出来，不能静默夹取"
+    );
+    assert_eq!(
+        report.count_by_layer(Layer::Static),
+        static_count_without_character() + 1,
+        "配置非法也必须记在静态层"
+    );
+    assert!(
+        !has_code(&report, "character.ground.penetration"),
+        "配置非法时几何不可信，不该连带报穿地"
+    );
+}

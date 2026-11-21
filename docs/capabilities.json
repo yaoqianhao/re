@@ -8,7 +8,7 @@
     "rpc": 68,
     "script_only": 330,
     "domains": 17,
-    "invariants": 38
+    "invariants": 40
   },
   "domains": [
     "scene",
@@ -4937,6 +4937,16 @@
     {
       "code": "camera.non_finite",
       "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "character.config.invalid",
+      "layer": "character",
+      "severity": "error"
+    },
+    {
+      "code": "character.ground.penetration",
+      "layer": "character",
       "severity": "error"
     },
     {
