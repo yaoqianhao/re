@@ -13,6 +13,7 @@
 //! | 5 | 未登记 `xtask/dep_rules.json` 的 crate 一律失败 | 无 |
 //! | 6 | `write(|s| ...)` 闭包体内不得再借用场景载体（RefCell 重入） | 无 |
 //! | 7 | `.write(` 写点数不得超过 `docs/m1/M1_PLAN.md` §5 台账登记（M1-S1 起，M1-S4-E 并入） | 无，台账即登记 |
+//! | 8 | `crates/r3e-character/` 只许引 `r3e_physics::port`（源码与注释都查，M2-B01） | 无 |
 //!
 //! 白名单和 `lint-size` 一样**只许减**：条目对不上就报「可删」，多出来的直接失败。
 //! 规则 7 同理——台账数字比实际大就提示「可下调」，比实际小就红。
@@ -25,6 +26,19 @@ use crate::{read_json, rel, rust_files};
 
 /// 文档层目录：规则 1、2 对这里完全豁免。
 const DOC_CRATE: &str = "crates/r3e-doc/";
+
+/// 规则 8：只许认端口的 crate（M2-B01）。
+///
+/// `r3e-character` 的能力来自 `r3e_physics`，但**只许**经 `r3e_physics::port`
+/// 拿（`PhysicsQueryPort` 及其子 trait）。直接抓 `Physics` 门面会让「换个物理
+/// 后端」变成改两个 crate，也会让角色系统顺手调用门面上的写接口。
+///
+/// 口径（BD-5 档 A）：**源码与注释都查**。这条与规则 1/4 不同——那两条只看
+/// `//` 之前的代码，因为注释里提到 `RefCell<Scene>` 只是解释历史；而这里注释里
+/// 写 `r3e_physics::Physics` 就是在教下一个人走错路，所以连文档注释一起算。
+const PORT_ONLY_CRATE: &str = "crates/r3e-character/";
+const PORT_ONLY_HOST: &str = "r3e_physics";
+const PORT_ONLY_ALLOWED: &str = "port";
 
 pub fn run(root: &Path) -> i32 {
     let cfg = read_json(&root.join("xtask/doc_gate.json"));
@@ -190,6 +204,18 @@ pub fn run(root: &Path) -> i32 {
             }
         }
 
+        // ---- 规则 8：`r3e-character` 只许引 `r3e_physics::port`
+        if path.starts_with(PORT_ONLY_CRATE) {
+            for (i, raw) in lines.iter().enumerate() {
+                for piece in bad_port_refs(raw) {
+                    bad.push(format!(
+                        "规则8 {path}:{} 只许引 `{PORT_ONLY_HOST}::{PORT_ONLY_ALLOWED}`，却写了 `{piece}`",
+                        i + 1
+                    ));
+                }
+            }
+        }
+
         // ---- 规则 6：write 闭包体内不得再借用场景载体
         let clean = strip_noise(&text);
         let mut from = 0usize;
@@ -317,7 +343,7 @@ pub fn run(root: &Path) -> i32 {
     }
 
     println!(
-        "[doc-gate] 扫描 {checked} 个 .rs，{} 个 crate，规则 7 条，白名单 {} 项，写点台账 {} 个 crate / {} 处",
+        "[doc-gate] 扫描 {checked} 个 .rs，{} 个 crate，规则 8 条，白名单 {} 项，写点台账 {} 个 crate / {} 处",
         crates.len(),
         allow.len(),
         ledger.len(),
@@ -390,6 +416,51 @@ fn strip_noise(s: &str) -> String {
             out.push(chars[i]);
             i += 1;
         }
+    }
+    out
+}
+
+/// 抽出某行里所有"越界"的 `r3e_physics::X` 引用（X 不是 `port`）。
+///
+/// 三种形态都算违规：
+/// * `r3e_physics::Physics` —— 直接抓门面；
+/// * `r3e_physics::{port, Physics}` —— 花括号里只要有一个不是 `port` 就算，
+///   因为守卫没法在一行里可靠地区分「哪一项被用了」；
+/// * `pub use r3e_physics` / `extern crate r3e_physics as p` —— 先起别名再绕，
+///   规则要按字面堵死。
+///
+/// 注释与字符串一并算（BD-5 档 A 的口径），所以这里**不做** `strip_noise`。
+fn bad_port_refs(line: &str) -> Vec<String> {
+    const HOST: &str = "r3e_physics";
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(off) = line[from..].find(HOST) {
+        let start = from + off;
+        from = start + HOST.len();
+        // 前面紧跟标识符字符 = 命中别的名字（如 `my_r3e_physics`），跳过。
+        if line[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let rest = &line[from..];
+        // `r3e_physics::port::...` 是唯一合法形态。
+        let Some(after) = rest.strip_prefix("::") else {
+            // 没有 `::`：可能是 `use r3e_physics;` 或 `r3e_physics as p`。
+            out.push(HOST.to_string());
+            continue;
+        };
+        let ident: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if ident == PORT_ONLY_ALLOWED {
+            continue;
+        }
+        let tail: String = after.chars().take(24).collect();
+        out.push(format!("{HOST}::{tail}"));
     }
     out
 }

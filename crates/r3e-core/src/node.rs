@@ -220,6 +220,15 @@ pub struct Node {
     ///
     /// 写入前必须经过 [`normalize_interact_radius`] 收敛（非正值与非有限值视为不声明）。
     pub interact_radius: Option<f32>,
+    /// 角色控制器配置（M2-B01）。`Some` = 这个物件由角色控制器驱动。
+    ///
+    /// 只放**静态**配置（半径 / 身高 / 坡度 / 台阶 / 吸附），每帧的位置与速度等
+    /// 运行态**不在这里**——运行态归 `r3e-character` 的控制器，不进场景真值，
+    /// 否则回放金标会随物理步进漂移（见 `docs/m2/M2_B_PLAN.md` §3.3）。
+    ///
+    /// 写入前必须经过 [`crate::CharacterSpec::validate`]；改它走 `r3e-doc` 的
+    /// `SetCharacter` 命令（可撤销、进 `StateHash`）。
+    pub character: Option<crate::CharacterSpec>,
     /// 每帧由 `Scene::update_world_transforms` 计算的缓存。
     pub world: Mat4,
     /// 世界法线矩阵缓存。
@@ -243,6 +252,7 @@ impl Node {
             material_ref: None,
             tags: Vec::new(),
             interact_radius: None,
+            character: None,
             world: Mat4::IDENTITY,
             world_normal: glam::Mat3::IDENTITY,
         }

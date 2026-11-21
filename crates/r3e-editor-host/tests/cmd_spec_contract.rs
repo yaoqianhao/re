@@ -66,6 +66,8 @@ fn rpc_of(method: &str) -> Option<String> {
                 // 归在 `scene` 命名空间下，而不是自立一个顶级 `material.` 域。
                 "material_",
                 "nav_",
+                // `character_*` 折成 `character.*`（M2-B01）。
+                "character_",
             ] {
                 if let Some(tail) = method.strip_prefix(prefix) {
                     let ns = match prefix {
@@ -80,6 +82,7 @@ fn rpc_of(method: &str) -> Option<String> {
                         "query_" => "query",
                         "material_" => "scene.material",
                         "nav_" => "nav",
+                        "character_" => "character",
                         _ => unreachable!(),
                     };
                     return Some(format!("{ns}.{}", flat(tail)));
@@ -96,8 +99,8 @@ fn 宿主实现的每个方法都能在表里找到rpc() {
     let methods = host_methods();
     assert_eq!(
         methods.len(),
-        62,
-        "宿主 EngineApi 方法数应为 62（M1-S1-D 起 `scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 也在内），实际 {}",
+        68,
+        "宿主 EngineApi 方法数应为 68（M1-S1-D 起 `scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 也在内；M2-B01 加 `character.*` 六条），实际 {}",
         methods.len()
     );
 

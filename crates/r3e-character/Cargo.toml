@@ -1,0 +1,12 @@
+[package]
+name = "r3e-character"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "r3e 角色控制器：胶囊运动学（水平扫掠 / 台阶 / 落地吸附 / 坡度裁决），只认 physics 查询端口"
+
+[dependencies]
+r3e-core.workspace = true
+r3e-physics.workspace = true
+glam.workspace = true

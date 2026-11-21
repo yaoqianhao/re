@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::host::{AudioHost, HitDto, PhysicsHost};
+use crate::host::{AudioHost, CharacterHost, CharacterStateDto, HitDto, PhysicsHost};
 
 use glam::{Vec3, Vec4};
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
@@ -58,6 +58,10 @@ pub struct ScriptContext {
     pub doc: Rc<RefCell<Document>>,
     /// 物理能力面（M2-A03b）：脚本只认 trait，不认任何后端实现类型。
     pub phys: Rc<dyn PhysicsHost>,
+    /// 角色控制器能力面（M2-B01）：与物理同一套路，脚本只认 trait，
+    /// 真实现由装配层注入（`ScriptHost::new_with_character` / 编辑器宿主）。
+    /// 未注入时是 [`NullCharacterHost`](crate::host::NullCharacterHost)。
+    pub character: Rc<dyn CharacterHost>,
     pub input: Rc<RefCell<InputState>>,
     /// 音频能力面（M2-A03b）：同上。
     pub audio: Rc<dyn AudioHost>,
@@ -286,6 +290,7 @@ mod anim_morph;
 mod anim_sync;
 mod audio;
 mod basic;
+mod character;
 mod env;
 mod input;
 mod light;
@@ -312,6 +317,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     shadow::register(engine, ctx);
     input::register(engine, ctx);
     physics::register(engine, ctx);
+    character::register(engine, ctx);
     text::register(engine, ctx);
     ui::register(engine, ctx);
     light::register(engine, ctx);

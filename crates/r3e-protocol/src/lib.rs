@@ -21,7 +21,7 @@
 //! | `msg.rs` | `Request` / `Response` / `RpcError` / `RpcFailure` / 元信息 DTO |
 //! | `client.rs` | 引擎 RPC 客户端（M1-S5：TCP + NDJSON 长连接、令牌注入、方法名校验） |
 //! | `patch.rs` | 14 个 `*Patch`（只给要改的字段，其余保持原值） |
-//! | `api.rs` | `trait EngineApi`（62 方法，全部在主线程调用） |
+//! | `api.rs` | `trait EngineApi`（68 方法，全部在主线程调用） |
 //! | `dispatch/mod.rs` | 派发骨架 + 参数解码 + 元命令（`ping` / `engine.*` / `script.*` / `capture.*`） |
 //! | `dispatch/tx.rs` | `tx.*` 事务臂（M1-S1：begin / apply / preview / commit / rollback） |
 //! | `dispatch/scene.rs` | `scene.*` / `anim.*` 臂 |
@@ -36,6 +36,7 @@
 
 pub mod api;
 pub mod caps;
+pub mod character;
 pub mod client;
 pub mod dispatch;
 pub mod inspect;
@@ -47,6 +48,7 @@ pub mod probe;
 pub mod query;
 pub mod verify;
 
+pub use self::character::*;
 pub use self::client::*;
 pub use self::dispatch::{canonical_method, dispatch};
 pub use api::EngineApi;
@@ -63,12 +65,12 @@ pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// 对外 RPC 能力方法表（62 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+/// 对外 RPC 能力方法表（68 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
 ///
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「62 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「68 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
@@ -114,6 +116,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 四条全部**只读场景**——`physics.simulate` 在宿主侧另建世界跑，算完只回位移，
 /// `Node` 一个字段都不改；所以同样不新增脚本函数，落在 `cmd_spec` 的 `Meta` 域。
 ///
+/// M2-B01 增 6 条（62 → 68）：角色控制器命令面。`character.*` 六条与脚本函数同名
+/// （`cmd_spec` 的 `character` 域），是 B 阶段唯一新增的对外入口——把「角色站在哪、
+/// 能不能走」从编辑器内部能力变成协议面可驱动，B05 的可玩性回归才不必依赖 GUI。
+/// 六条全部挂 `Domain::Physics`（吃的是物理查询），故本表增员而 `domains` 不变。
+///
 /// 命名铁律：本表里的名字必须是 `dispatch::canonical_method()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
@@ -127,6 +134,12 @@ pub const RPC_METHODS: &[&str] = &[
     "audio.spatial.set",
     "audio.spatial.setenabled",
     "capture.frame",
+    "character.config",
+    "character.create",
+    "character.state",
+    "character.stats",
+    "character.step",
+    "character.teleport",
     "engine.info",
     "engine.stats",
     "light.clear",
@@ -233,3 +246,13 @@ pub const NAV_NOT_BAKED: i32 = -32022;
 /// 根本没有几何来源」（headless / 资产库未就绪）。两者该做的事不同——前者换后端，
 /// 后者补网格来源——合成一个码等于让调用方去猜。
 pub const MESH_SOURCE_UNAVAILABLE: i32 = -32023;
+/// 该节点还没有角色控制器（`character.step` / `state` / `teleport` 的前置条件没满足）。
+///
+/// 与 `NAV_NOT_BAKED` 同一教训：**绝不回全零运行态**。`position: [0,0,0]` 会被读成
+/// 「角色在世界原点站着」，然后据此去调地形、判定掉落，越查越偏。
+pub const CHARACTER_NOT_READY: i32 = -32030;
+/// 节点上的角色配置非法（半径 <= 0、坡度越界、身高小于半径等），控制器不会建立。
+///
+/// 判据来自 `CharacterSpec::validate`，回包 `message` 直接带它的原文——不在宿主另写
+/// 一份「参数不对」的话术，否则同一个上限两个真源。
+pub const CHARACTER_SPEC_INVALID: i32 = -32031;

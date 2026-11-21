@@ -29,8 +29,9 @@ mod terrain;
 mod ui;
 
 use r3e_core::{
-    Camera, EnvironmentSettings, LocalLight, NodeId, ObjectDesc, PostFxSettings, Scene,
-    SceneMaterialDecl, ScreenText, SurfaceMaterial, TerrainPatch, Transform, UiElement, Vec4,
+    Camera, CharacterSpec, EnvironmentSettings, LocalLight, NodeId, ObjectDesc, PostFxSettings,
+    Scene, SceneMaterialDecl, ScreenText, SurfaceMaterial, TerrainPatch, Transform, UiElement,
+    Vec4,
 };
 
 use crate::{DocError, Document, Mark, UndoGroup};
@@ -194,6 +195,19 @@ pub enum CommandKind {
         /// 新值。
         new: Option<String>,
     },
+    /// 改节点的角色控制器配置（M2-B01）；`None` = 该节点不再是角色。
+    ///
+    /// `CharacterSpec` 只是**静态配置**，所以进撤销栈是安全的：运行态
+    /// （位置 / 速度 / 是否着地）一律不进场景，否则「同一场景两次回放」
+    /// 会因为角色走到哪儿而产生不同的 `state_hash`。
+    SetNodeCharacter {
+        /// 目标节点名。
+        name: String,
+        /// 前像。
+        old: Option<CharacterSpec>,
+        /// 新值。
+        new: Option<CharacterSpec>,
+    },
 }
 
 impl CommandKind {
@@ -218,6 +232,7 @@ impl CommandKind {
             Self::UpsertMaterial { .. } => "写材质",
             Self::RemoveMaterial { .. } => "删材质",
             Self::SetNodeMaterialRef { .. } => "改材质引用",
+            Self::SetNodeCharacter { .. } => "改角色配置",
         }
     }
 
@@ -244,6 +259,7 @@ impl CommandKind {
             Self::SetNodeMaterialRef { name, new, .. } => {
                 material::write_node_material_ref(s, name, new)
             }
+            Self::SetNodeCharacter { name, new, .. } => scene::write_character(s, name, new),
         }
     }
 
@@ -285,6 +301,7 @@ impl CommandKind {
             Self::SetNodeMaterialRef { name, old, .. } => {
                 material::write_node_material_ref(s, name, old)
             }
+            Self::SetNodeCharacter { name, old, .. } => scene::write_character(s, name, old),
         }
     }
 

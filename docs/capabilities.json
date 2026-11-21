@@ -4,8 +4,8 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 392,
-    "rpc": 62,
+    "commands": 398,
+    "rpc": 68,
     "script_only": 330,
     "domains": 17,
     "invariants": 38
@@ -1127,6 +1127,92 @@
       "reversible": true,
       "cost": "heavy",
       "since": "M0-backfill"
+    },
+    {
+      "name": "character_config",
+      "domain": "physics",
+      "rpc": "character.config",
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M2-B01"
+    },
+    {
+      "name": "character_create",
+      "domain": "physics",
+      "rpc": "character.create",
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M2-B01"
+    },
+    {
+      "name": "character_state",
+      "domain": "physics",
+      "rpc": "character.state",
+      "params": [
+        "&str"
+      ],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M2-B01"
+    },
+    {
+      "name": "character_stats",
+      "domain": "physics",
+      "rpc": "character.stats",
+      "params": [],
+      "returns": "Map",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M2-B01"
+    },
+    {
+      "name": "character_step",
+      "domain": "physics",
+      "rpc": "character.step",
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "()",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M2-B01"
+    },
+    {
+      "name": "character_teleport",
+      "domain": "physics",
+      "rpc": "character.teleport",
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M2-B01"
     },
     {
       "name": "clear_anim_layer_blend",

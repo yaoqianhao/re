@@ -7,7 +7,8 @@
 //!             └─ scene::dispatch_scene scene.* / anim.*
 //!                  └─ media::dispatch_media ui.* / light.* / audio.*
 //!                       └─ physics::dispatch_physics physics.*（M1-S4-D，只读）
-//!                            └─ nav::dispatch_nav nav.*（M1-S4-D）
+//!                            └─ character::dispatch_character character.*（M2-B01）
+//!                                 └─ nav::dispatch_nav nav.*（M1-S4-D）
 //!                                 └─ inspect::dispatch_inspect scene.snapshot / mesh.stats
 //!                                      / scene.validate / physics.simulate（M1-S1-D）
 //!                                      └─ 未知方法 → METHOD_NOT_FOUND
@@ -26,6 +27,7 @@ use crate::patch::*;
 use crate::probe::{CastQuery, CastShapeSpec, OverlapQuery, RayQuery};
 use crate::{INTERNAL_ERROR, METHOD_NOT_FOUND, PROTOCOL_VERSION};
 
+mod character;
 mod inspect;
 mod media;
 mod nav;

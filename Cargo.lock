@@ -2307,6 +2307,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-character"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "r3e-core",
+ "r3e-physics",
+]
+
+[[package]]
 name = "r3e-cli"
 version = "0.1.0"
 dependencies = [
@@ -2353,6 +2362,7 @@ dependencies = [
  "log",
  "r3e-asset",
  "r3e-audio",
+ "r3e-character",
  "r3e-core",
  "r3e-doc",
  "r3e-editor",

@@ -148,12 +148,12 @@ RPC 是**无状态请求-响应**模型，无法在一次调用之间保持一�
 | crate | 登记写点数 | 说明 |
 | --- | --- | --- |
 | r3e-doc | 62 | **合法收口本体**：`Document` 自己执行命令、`#[cfg(test)]` 内的夹具构造。这里的数字跟着新测试涨，收口性质不变，登记数可随测试增长而更新（M1-S3-C 地形命令测试 +2：`tests/command.rs` 的 `paint` 与一次 undo 全退两处夹具；M1-S4-A 材质校验契约 +1：`tests/validate_material.rs` 的「引用与内联材质冲突」夹具绕过命令层直写 `Node.material`，故意造非法态） |
-| r3e-script | 137 | 脚本宿主（`.rhai` 绑定）。绝大多数是「脚本直接改场景」——M1-S3 意图命令要收的对象；眼下是最大单笔债 |
+| r3e-script | 138 | 脚本宿主（`.rhai` 绑定）。绝大多数是「脚本直接改场景」——M1-S3 意图命令要收的对象；眼下是最大单笔债。M2-B01 +1：`api/character.rs` 的 `write_spec` 借 `ctx.write` 写 `Node::character`（同 `physics` 域口径——脚本侧配置直写场景，等意图命令收口时一并归并） |
 | r3e-editor-host | 22 | 编辑器宿主写路径（新建节点、属性面板、播放态回写）。M1-S1 之后新写的必须走 `tx_*` 或命令层。M1-S4-D +3：`physics_nav.rs` 的 `materialRef` 反查夹具一处、nav 测试的两处地面 spawn 夹具两处，均属 `#[cfg(test)]` 夹具（故意绕过命令层直接造态）。原先 `src/api/material.rs` 的第四处写点（`scene.material.upsert` 直写材质表：推版本/置脏/计写次但不入撤销栈）已于 M1-S4-E 前置补债清除——该 RPC 两条路都改走命令层（无事务 `Document::apply`、有事务 `tx_apply`），于是这里 22 → 21。M1-S4-F +1：`src/api/tests/verify.rs` 的「物理世界与场景不同步」夹具借 `doc.write` 直造一个带 `physics` 段的节点（世界侧故意不装），属 `#[cfg(test)]` 夹具 |
 | r3e-runtime | 11 | 运行时（物理回写 / 动画采样）。**结构性不可映射**：这些写点由每帧计算驱动，没有对应的用户意图，不上撤销栈是对的，登记在案即可 |
 | r3e-replay | 2 | 回放装载。走 `replace_scene` 之外的少量补写，M1-S2 语义查询若覆盖可再降 |
 
-合计 **234** 处（= 上表五列登记数之和，`doc-gate` 打印值一致；M1-S4-E 前登记 234 处，材质 `upsert` 改走命令层后 -1，M1-S4-F 夹具 +1 回到 234）。
+合计 **235** 处（= 上表五列登记数之和，`doc-gate` 打印值一致；M1-S4-E 前登记 234 处，材质 `upsert` 改走命令层后 -1，M1-S4-F 夹具 +1 回到 234，M2-B01 脚本侧角色配置写点 +1 到 235）。
 
 <!-- write-sites:end -->
 

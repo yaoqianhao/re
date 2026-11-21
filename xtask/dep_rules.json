@@ -16,6 +16,7 @@
     "r3e-replay",
     "r3e-app",
     "r3e-nav",
+    "r3e-character",
     "r3e-cli"
   ],
   "crates": {
@@ -100,7 +101,8 @@
         "r3e-physics",
         "r3e-render",
         "r3e-script",
-        "r3e-nav"
+        "r3e-nav",
+        "r3e-character"
       ],
       "note": "叶子适配器：把 EngineApi 桥到运行时，允许依赖下层全部子系统（反向则一条都不许）。三条不变式：① 不得被任何下层 crate 反向依赖；② 不得依赖 plugin（进程外工具）；③ forbid_engine_all 不因此放开"
     },
@@ -128,6 +130,13 @@
         "r3e-physics"
       ],
       "note": "导航只许依赖 core（场景数据 / 地形高度）+ physics（碰撞形状语义，障碍物怎么挡人）；不得依赖 render / runtime / doc——工具链与编辑器都要能在不开启渲染的情况下烘焙与校验"
+    },
+    "r3e-character": {
+      "allow": [
+        "r3e-core",
+        "r3e-physics"
+      ],
+      "note": "角色控制器只许依赖 core（纯数据）+ physics（查询端口 trait）；不写场景、不认后端，宿主负责把结果写回场景"
     },
     "r3e-cli": {
       "allow": [

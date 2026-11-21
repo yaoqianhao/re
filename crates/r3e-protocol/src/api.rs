@@ -1,10 +1,13 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 62 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 68 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
 
 use serde_json::Value;
 
+use crate::character::{
+    CharacterBindQuery, CharacterNameQuery, CharacterStepQuery, CharacterTeleportQuery,
+};
 use crate::inspect::{MeshStatsQuery, SimulateQuery, SnapshotQuery, ValidateQuery};
 use crate::material::MaterialUpsert;
 use crate::msg::{EngineInfo, NodeBrief, RpcFailure};
@@ -464,6 +467,75 @@ pub trait EngineApi {
     /// 没人会在编辑时偷偷替你建世界。
     fn physics_bind(&mut self) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("physics.bind"))
+    }
+
+    // ---- M2-B01：角色控制器（六条）----
+    //
+    // 六条的共同口径：
+    //
+    // 1. **配置真源在场景**：`character.create` / `character.config` 写的是
+    //    `Node::character`，不是宿主内部的一份影子配置。写成功即 `stateHash` 变；
+    //    宿主缓存的控制器只是它的运行副本。
+    // 2. **运行态不写场景**：`step` / `state` / `teleport` 只动宿主侧控制器，
+    //    `stateHash` 前后必须一致（脚底位置由宿主主循环同步回 `Transform`，
+    //    不在协议臂里做）。
+    // 3. **区分「没有」和「不会」**：节点不存在回 `INVALID_PARAMS`-级的具体原因，
+    //    节点没配 `character` 段回「未创建控制器」，**绝不回一个全零状态**糊过去
+    //    （全零会被读成「角色站在原点」）。
+
+    /// 建立角色控制器（M2-B01）：按「给了的字段 + 缺省值」建，已存在则等价于 `config`。
+    ///
+    /// 回包契约：`{ "node": String, "created": bool, "spec": { "radius": f32,
+    /// "height": f32, "slopeLimitDeg": f32, "stepHeight": f32,
+    /// "snapDistance": f32 }, "stateHash": String }`。
+    ///
+    /// `created: false` 有两种情形（已存在 / 复用），宿主必须带 `spec` 让调用方看得见
+    /// 实际生效的参数——「我明明传了 45° 为什么还是上不去」这类问题只能靠回读解释。
+    fn character_create(&mut self, _q: CharacterBindQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("character.create"))
+    }
+
+    /// 修改已有控制器配置（M2-B01）：**只改给了的字段**，没给的保持现值。
+    ///
+    /// 回包契约与 `character.create` 同构；控制器不存在时回 `created: false` 且
+    /// `spec` 反映新建后的值（等价于 `create`），不单独报错——脚本里
+    /// 「先 config 再 create」和「先 create 再 config」都该工作。
+    fn character_config(&mut self, _q: CharacterBindQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("character.config"))
+    }
+
+    /// 推进一个固定步长（M2-B01）。回的是**这一帧的结果**，不是缓存。
+    ///
+    /// 回包契约：`{ "node": String, "position": [f32;3], "verticalSpeed": f32,
+    /// "grounded": bool, "blocked": bool, "stepUp": bool }`；
+    /// `position` 是**脚底**。
+    ///
+    /// 未创建控制器回 `CharacterNotCreated` 类失败（`INVALID_PARAMS`）而不是
+    /// 自动建一个：自动建会拿缺省尺寸把角色瞬移到原点，比不生效更糟。
+    fn character_step(&mut self, _q: CharacterStepQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("character.step"))
+    }
+
+    /// 读运行态（M2-B01，只读）：字段与 `character.step` 的回包一致。
+    fn character_state(&mut self, _q: CharacterNameQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("character.state"))
+    }
+
+    /// 直接落位（M2-B01）：把竖直速度清零并把脚底放到目标点，用于传送 / 复活。
+    ///
+    /// 回包契约：`{ "node": String, "position": [f32;3], "stateHash": String }`。
+    /// 落位后 `grounded` 为 `false`（下一步由求解器裁决），宿主**不得**替它猜。
+    fn character_teleport(&mut self, _q: CharacterTeleportQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("character.teleport"))
+    }
+
+    /// 累计统计（M2-B01，只读）：`{ "backend": String, "controllers": u64,
+    /// "steps": u64, "blocked": u64, "stepUps": u64 }`。
+    ///
+    /// `backend` 必须如实带出（`"none"` 表示宿主没接真实现）：没有这一项，
+    /// 「统计全是 0」会被读成「角色没动过」，而真相是「压根没接」。
+    fn character_stats(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("character.stats"))
     }
 
     /// 烘焙导航网格（M1-S4-D）。产物挂在宿主侧，**不写场景**。

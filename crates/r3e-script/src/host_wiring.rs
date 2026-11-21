@@ -39,6 +39,27 @@ impl ScriptHost {
         input: Rc<RefCell<InputState>>,
         audio: Rc<dyn AudioHost>,
     ) -> Self {
+        Self::new_with_capabilities(
+            doc,
+            physics,
+            input,
+            audio,
+            Rc::new(host::NullCharacterHost::new()),
+        )
+    }
+
+    /// 底层构造：三个能力面都显式给出（M2-B01 起，角色控制器也走注入）。
+    ///
+    /// `character` 用 [`host::NullCharacterHost`](crate::host::NullCharacterHost) 兜底时，
+    /// 脚本里 `character_*` 全部返回「没有控制器」，但**不 panic、不中断脚本**——
+    /// 与音频的静默后端同一口径：没接能力不该让整段脚本挂掉。
+    pub fn new_with_capabilities(
+        doc: Rc<RefCell<Document>>,
+        physics: Rc<dyn PhysicsHost>,
+        input: Rc<RefCell<InputState>>,
+        audio: Rc<dyn AudioHost>,
+        character: Rc<dyn CharacterHost>,
+    ) -> Self {
         let clock = Rc::new(RefCell::new(Clock::default()));
         let ui_interaction = Rc::new(RefCell::new(UiInteraction::new()));
         // 场景栈与命令槽在构造时就建好：它们会被 `bind_all` 的闭包捕获，
@@ -52,6 +73,7 @@ impl ScriptHost {
             phys: physics.clone(),
             input: input.clone(),
             audio: audio.clone(),
+            character: character.clone(),
             clock: clock.clone(),
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
             ui_log: Rc::new(RefCell::new(api::UiWriteLog::default())),

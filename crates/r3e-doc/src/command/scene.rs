@@ -4,7 +4,7 @@
 //! 收敛入口 `set_material`（拒绝绕过 `sanitized`，否则 NaN 会从编辑命令漏进场景）。
 //! 撤销 = 把前像按同一个写函数写回去，写函数的幂等性保证 round-trip 精确。
 
-use r3e_core::{Node, NodeId, ObjectDesc, Scene, SurfaceMaterial, Transform, Vec4};
+use r3e_core::{CharacterSpec, Node, NodeId, ObjectDesc, Scene, SurfaceMaterial, Transform, Vec4};
 
 use crate::{command::CommandKind, DocError};
 
@@ -112,4 +112,44 @@ fn node_ref(s: &Scene, id: NodeId) -> Result<&Node, DocError> {
 fn node_ref_by_name<'a>(s: &'a Scene, name: &str) -> Result<&'a Node, DocError> {
     s.find(name)
         .ok_or_else(|| DocError::NotFound(format!("节点 `{name}`")))
+}
+
+/// 写角色控制器配置（M2-B01）；`None` = 把这个节点上的角色配置清掉。
+///
+/// 按名字寻址而非 `NodeId`：角色配置的唯一真源是 `Node::character`，
+/// 撤销与重做都写同一格，按名字与 `write_material` 保持同一口径。
+/// **合法性交给调用方**（`CharacterSpec::validate`）：doc 层只负责写，
+/// 不认「半径该多大」——那是 core 的规则，抄一份到这里迟早两边打架。
+pub(super) fn write_character(
+    s: &mut Scene,
+    name: &str,
+    spec: &Option<CharacterSpec>,
+) -> Result<(), DocError> {
+    let node = s
+        .find_mut(name)
+        .ok_or_else(|| DocError::NotFound(format!("节点 `{name}`")))?;
+    node.character = *spec;
+    Ok(())
+}
+
+impl CommandKind {
+    /// 改角色配置命令；`new = None` 表示把角色摘掉。
+    ///
+    /// 前像从当前场景抓（按名字），与 `set_node_material` 同一套路：
+    /// 调用方只需要说「改成什么」，不需要自己回读旧值。
+    pub fn set_node_character(
+        s: &Scene,
+        name: &str,
+        new: Option<CharacterSpec>,
+    ) -> Result<Self, DocError> {
+        let old = s
+            .find(name)
+            .ok_or_else(|| DocError::NotFound(format!("节点 `{name}`")))?
+            .character;
+        Ok(Self::SetNodeCharacter {
+            name: name.to_string(),
+            old,
+            new,
+        })
+    }
 }

@@ -1,6 +1,7 @@
 //! `physics.*` 查询臂（M1-S4-D）：`raycast` / `overlap` / `cast`。
 //!
-//! 命中不到本组时交给 [`super::nav::dispatch_nav`]，不在本文件回错误。
+//! 命中不到本组时交给 [`super::character::dispatch_character`]（M2-B01 插在
+//! physics 与 nav 之间），不在本文件回错误。
 //!
 //! 本文件只做**参数形状**校验（三元数组够不够、半径给没给），一行业务判断都不做：
 //! 射程缺省、方向归一化、`radius <= 0` 的裁决全在宿主——协议层的 `dir` 归一化
@@ -95,7 +96,7 @@ pub(super) fn dispatch_physics(
             Ok(r) => Response::ok(id, r),
             Err(f) => Response::fail(id, f),
         },
-        _ => nav::dispatch_nav(api, id, params, method, raw),
+        _ => character::dispatch_character(api, id, params, method, raw),
     }
 }
 

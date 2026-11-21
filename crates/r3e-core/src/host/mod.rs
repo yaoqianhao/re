@@ -15,9 +15,13 @@
 //!   测试里写一个闭包就是一套后端。
 
 mod audio;
+mod character;
 mod physics;
 
 pub use audio::{AudioHost, AudioReq, AudioRsp, NullAudioHost, SilentAudioHost};
+pub use character::{
+    CharReq, CharRsp, CharacterHost, CharacterStateDto, CharacterStatsDto, NullCharacterHost,
+};
 pub use physics::{HitDto, NullPhysicsHost, PhysReq, PhysRsp, PhysicsHost};
 
 #[cfg(test)]
@@ -132,6 +136,29 @@ mod tests {
         );
     }
 
+    /// 闭包即适配器：角色。
+    #[test]
+    fn closure_is_a_character_host() {
+        let h = |req: CharReq<'_>| match req {
+            CharReq::Bind { node } => CharRsp::Bool(node.character.is_some()),
+            CharReq::Stats => CharRsp::Stats(CharacterStatsDto {
+                controllers: 3,
+                steps: 7,
+                blocked: 1,
+                step_ups: 2,
+            }),
+            CharReq::Backend => CharRsp::Text("closure".into()),
+            _ => CharRsp::Bool(false),
+        };
+        let mut node = node();
+        node.character = Some(crate::CharacterSpec::default());
+        assert!(h.bind(&node));
+        node.character = None;
+        assert!(!h.bind(&node));
+        assert_eq!(h.stats().controllers, 3);
+        assert_eq!(h.backend(), "closure");
+    }
+
     /// 空实现也实现了 `as_any`（装配层取回实现体的通道）。
     #[test]
     fn null_hosts_expose_any() {
@@ -139,6 +166,8 @@ mod tests {
         assert!(p.as_any().downcast_ref::<NullPhysicsHost>().is_some());
         let a = NullAudioHost;
         assert!(a.as_any().downcast_ref::<NullAudioHost>().is_some());
+        let c = NullCharacterHost::new();
+        assert!(c.as_any().downcast_ref::<NullCharacterHost>().is_some());
     }
 
     /// `Node` 快照可跨 trait 边界：`attach` 只依赖 core 类型。

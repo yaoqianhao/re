@@ -8,6 +8,7 @@ pub mod anim;
 pub mod anim_blend;
 pub mod blend_space;
 pub mod camera;
+pub mod character;
 pub mod cmd_spec;
 pub mod env;
 pub mod envmap;
@@ -54,6 +55,11 @@ pub use anim_blend::{
 };
 pub use blend_space::{BlendDim, BlendSample, BlendSpace, MAX_BLEND_SAMPLES};
 pub use camera::Camera;
+pub use character::{
+    CharacterSpec, CharacterSpecError, CHARACTER_MAX_HEIGHT, CHARACTER_MAX_RADIUS,
+    CHARACTER_MAX_SLOPE_DEG, CHARACTER_MAX_SNAP_DISTANCE, CHARACTER_MAX_STEP_HEIGHT,
+    CHARACTER_MIN_HEIGHT, CHARACTER_MIN_RADIUS,
+};
 pub use env::{
     env_brdf_approx, sh_basis, sky_radiance, sky_radiance_blurred, specular_dominant_dir,
     EnvironmentSettings, Sh9, DEFAULT_SH_SAMPLES, MAX_ENV_RADIANCE, MAX_IBL_INTENSITY,

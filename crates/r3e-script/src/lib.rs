@@ -24,7 +24,7 @@ use r3e_doc::Document;
 use rhai::{Dynamic, Engine, Scope, AST};
 
 pub use api::Clock;
-use r3e_core::host::{AudioHost, PhysicsHost};
+use r3e_core::host::{AudioHost, CharacterHost, PhysicsHost};
 pub use util::array_to_strings;
 use util::has_fn;
 

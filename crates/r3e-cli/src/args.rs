@@ -243,6 +243,12 @@ pub enum Cmd {
 /// 另有一条只有 `tx apply` 认、但本身也是协议方法的：`scene.remove`
 /// （协议里可 rpc 直调，事务侧没有对应 op，`rpc` 放行等于给一条
 /// 「删了就撤不回来」的旁路，比改属性更狠）。
+///
+/// M2-B01 追加 `character.*` 三条：`create` / `config` 写的是节点上的
+/// `Node::character`（进场景、进 `state_hash`），`teleport` 只改控制器运行态但
+/// 事务侧同样没有对应 op——`rpc` 放行就等于让「角色被搬到别处」这件事既不进
+/// 撤销栈也不留记账，与 `scene.remove` 是同一类旁路。`step` / `state` / `stats`
+/// 不在表里：它们是每帧可重复的推进与只读查询，拦下来只会让驱动脚本没法跑。
 const TX_ONLY_METHODS: &[&str] = &[
     "scene.spawn",
     "scene.settransform",
@@ -251,6 +257,9 @@ const TX_ONLY_METHODS: &[&str] = &[
     "scene.remove",
     "light.remove",
     "ui.remove",
+    "character.create",
+    "character.config",
+    "character.teleport",
 ];
 
 /// 只被 `tx intent` 接受的高层意图名（不在 [`RPC_METHODS`] 里）。

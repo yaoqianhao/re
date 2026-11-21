@@ -7,6 +7,7 @@ use super::support::*;
 
 use super::*;
 use r3e_core::anim::{AnimBinding, AnimInstance};
+use r3e_core::host::CharacterHost;
 use r3e_core::light::{MAX_LOCAL_SHADOW_BIAS, MIN_LIGHT_RANGE};
 use r3e_core::{AnimClip, AnimKey, AnimTrack, InputState, MeshProvider};
 use r3e_doc::Document;
@@ -96,6 +97,9 @@ fn api_with_nav<'a>(
         // 音频句柄要在 `LocalEngineApi` 生命周期内一直活着：测试里泄漏一份即可。
         audio: Box::leak(Box::new(fixture_audio())),
         nav,
+        // 单元测试默认不接角色控制器（headless）：六条 `character.*` 应当回
+        // `CHARACTER_NOT_READY`，而不是编一个「角色站在原点」的全零运行态。
+        character: None,
         scripts,
         // 单元测试没有资产库：物理复核会因此退回「只出解析结论 + 记 unchecked」，
         // 这正是 headless 下该有的诚实结论（M1-S4-G）。
@@ -118,6 +122,19 @@ fn api_with_nav<'a>(
         uptime_ms: 700,
         paused: false,
     }
+}
+
+/// 带角色控制器的构造（M2-B01）：控制器与外层共享**同一个** `Physics`，
+/// 于是 `character.step` 的落地判定与 `physics.*` 看到的是同一个世界。
+fn api_with_character<'a>(
+    scene: &'a Rc<RefCell<Document>>,
+    physics: &'a Rc<RefCell<Physics>>,
+    scripts: &'a mut ScriptHost,
+    character: &'a Rc<dyn CharacterHost>,
+) -> LocalEngineApi<'a> {
+    let mut api = api(scene, physics, scripts);
+    api.character = Some(character);
+    api
 }
 
 /// 带网格来源的构造（M1-S4-G）：生产侧由 `EngineAccess::meshes` 递进运行时那份
@@ -194,6 +211,7 @@ fn env_map_patch(equirect: Option<&str>, faces: Option<Vec<String>>) -> Environm
 }
 
 mod anim_audio;
+mod character;
 mod core;
 mod physics_bind;
 mod physics_nav;

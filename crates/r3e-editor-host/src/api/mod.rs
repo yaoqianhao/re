@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use glam::{Quat, Vec3};
 use r3e_audio::{Audio, DistanceModel, MAX_SPATIAL_SOURCES};
+use r3e_core::host::CharacterHost;
 use r3e_core::light::MAX_LOCAL_LIGHTS;
 use r3e_core::postfx::{PostFxSettings, TonemapMode};
 use r3e_core::scene_stack::{SceneArchive, SceneCommand, ARCHIVE_FORMAT, ARCHIVE_VERSION};
@@ -30,7 +31,8 @@ use r3e_core::{LocalLight, LocalLightKind, Node, ObjectDesc, Scene};
 use r3e_core::{ShadowSettings, MAX_CASCADES, MAX_SCENE_STACK};
 use r3e_doc::Document;
 use r3e_editor::{
-    AnimLayerPatch, AudioSpatialPatch, CastQuery, EngineApi, EngineInfo, EnvironmentMapPatch,
+    AnimLayerPatch, AudioSpatialPatch, CastQuery, CharacterBindQuery, CharacterNameQuery,
+    CharacterStepQuery, CharacterTeleportQuery, EngineApi, EngineInfo, EnvironmentMapPatch,
     EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, MeshStatsQuery,
     NavBakeOptions, NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch,
     QuerySpec, RayQuery, RpcFailure, ShadowPatch, SimulateQuery, SnapshotQuery, SsaoPatch,
@@ -68,6 +70,12 @@ pub struct LocalEngineApi<'a> {
     /// `None` = 该宿主压根没接导航槽位（headless 测试）：三条 `nav.*` 一律回
     /// `NAV_NOT_BAKED`，绝不回空表假装「烘过了但一格都没有」。
     pub nav: Option<&'a RefCell<Option<Nav>>>,
+    /// 角色控制器能力面（M2-B01）：由装配层注入 `CharacterRuntime` 后的
+    /// `Rc<dyn CharacterHost>`；headless 宿主为 `None`，六条 `character.*`
+    /// 一律回 `CHARACTER_NOT_READY`，绝不回全零运行态假装「角色就站在原点」。
+    ///
+    /// 与控制器的运行态一样，它**不是场景数据**：拿的是 `&Rc`，不参与 `state_hash`。
+    pub character: Option<&'a Rc<dyn CharacterHost>>,
     pub scripts: &'a mut ScriptHost,
     /// 网格来源（M1-S4-G）：影子场景复核要**装配**物理世界，装配就得有形状来源。
     ///
@@ -95,6 +103,7 @@ pub struct LocalEngineApi<'a> {
 // ---- M0-S2：按功能域拆分的子模块（原 3553 行单体 impl 已全部下沉） ----
 mod anim;
 mod audio;
+mod character;
 mod env;
 mod info;
 mod inspect;
@@ -314,6 +323,32 @@ impl EngineApi for LocalEngineApi<'_> {
     // ---- M1-S4-F：三层体检（协议面 56 → 57 条） ----
     fn scene_verify(&mut self, query: VerifyQuery) -> Result<Value, RpcFailure> {
         verify::scene_verify(self, query)
+    }
+
+    // ---- M2-B01：角色控制器六条（协议面 62 → 68 条） ----
+    // 配置进场景（可撤销），运行态留在控制器里——`step` / `teleport` 不回写节点。
+    fn character_create(&mut self, query: CharacterBindQuery) -> Result<Value, RpcFailure> {
+        character::character_create(self, query)
+    }
+
+    fn character_config(&mut self, query: CharacterBindQuery) -> Result<Value, RpcFailure> {
+        character::character_config(self, query)
+    }
+
+    fn character_step(&mut self, query: CharacterStepQuery) -> Result<Value, RpcFailure> {
+        character::character_step(self, query)
+    }
+
+    fn character_state(&mut self, query: CharacterNameQuery) -> Result<Value, RpcFailure> {
+        character::character_state(self, query)
+    }
+
+    fn character_teleport(&mut self, query: CharacterTeleportQuery) -> Result<Value, RpcFailure> {
+        character::character_teleport(self, query)
+    }
+
+    fn character_stats(&mut self) -> Result<Value, RpcFailure> {
+        character::character_stats(self)
     }
 
     fn scene_snapshot(&mut self, query: SnapshotQuery) -> Result<Value, RpcFailure> {

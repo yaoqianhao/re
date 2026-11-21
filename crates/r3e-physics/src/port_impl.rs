@@ -16,6 +16,8 @@
 //! 字段，用 `distance == 0` 反推（起点与目标重叠时后端返回的正是 0）。
 //! 这条规则必须在三套后端上一致，否则上层拿到的 `started_inside` 会随后端漂移。
 
+use std::cell::RefCell;
+
 use glam::Vec3;
 
 use crate::port::{
@@ -66,6 +68,45 @@ impl PhysicsQueryPort for Physics {
     /// 这一点与 `BackendCaps` 一致：后者申报的是后端接线能力，不是运行时开关。
     fn port_caps(&self) -> PortCaps {
         PortCaps::FULL
+    }
+}
+
+/// 共享槽位本身就是查询端口（M2-B01）。
+///
+/// 装配层手里是 `Rc<RefCell<Physics>>`（脚本 / 编辑器 / 角色系统共用一个后端），
+/// 而 `r3e-character` 只许认端口 trait、不许认 [`Physics`] 具体类型（`doc-gate`
+/// 规则 8 看守）。实现落在**内层** `RefCell<Physics>` 上，于是
+/// `Rc<RefCell<Physics>>` 能直接强制转换成 `Rc<dyn PhysicsQueryPort>`，
+/// 装配层不必包一层转接头。
+///
+/// 借用期只覆盖单次查询：不在端口里缓存 `Ref`，也不跨查询持有，避免
+/// 「角色推进时物理正被脚本改」这类重入 panic —— 重入时 `borrow()` 会当场
+/// 报错而不是给出半旧的结果，这是想要的失败方式。
+impl RaycastPort for RefCell<Physics> {
+    fn cast_ray(&self, ray: &CastRay) -> Option<PortHit> {
+        self.borrow().cast_ray(ray)
+    }
+}
+
+impl CapsulePort for RefCell<Physics> {
+    fn capsule_overlap(&self, capsule: &Capsule) -> Vec<PortHit> {
+        self.borrow().capsule_overlap(capsule)
+    }
+
+    fn capsule_sweep(&self, capsule: &Capsule, dir: Vec3, max_distance: f32) -> Option<PortHit> {
+        self.borrow().capsule_sweep(capsule, dir, max_distance)
+    }
+}
+
+impl GroundPort for RefCell<Physics> {
+    fn sample_ground(&self, x: f32, z: f32) -> Option<GroundSample> {
+        self.borrow().sample_ground(x, z)
+    }
+}
+
+impl PhysicsQueryPort for RefCell<Physics> {
+    fn port_caps(&self) -> PortCaps {
+        self.borrow().port_caps()
     }
 }
 

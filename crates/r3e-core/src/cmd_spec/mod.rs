@@ -14,6 +14,7 @@
 mod anim;
 mod anim_blend;
 mod audio;
+mod character;
 mod env;
 mod input;
 mod light;
@@ -122,6 +123,7 @@ pub fn all() -> impl Iterator<Item = &'static CommandSpec> {
         anim::ALL,
         anim_blend::ALL,
         audio::ALL,
+        character::ALL,
         env::ALL,
         input::ALL,
         light::ALL,
@@ -189,8 +191,8 @@ mod tests {
         );
         assert_eq!(
             rpc,
-            rpc_only + 23,
-            "62 个 RPC 方法里 23 个能对到脚本命令，其余 39 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* / material / verify / M1-S1-D 四条）"
+            rpc_only + 29,
+            "68 个 RPC 方法里 29 个能对到脚本命令（含 M2-B01 的 character 六条），其余 39 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* / material / verify / M1-S1-D 四条）"
         );
     }
 

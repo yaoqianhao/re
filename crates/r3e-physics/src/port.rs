@@ -300,6 +300,220 @@ pub trait PhysicsQueryPort: RaycastPort + CapsulePort + GroundPort {
     fn port_caps(&self) -> PortCaps;
 }
 
+// ======================================================================
+// 角色移动端口（M2 · B01）
+// ======================================================================
+
+/// 正面阻挡判据：命中法线与运动方向的对齐度超过它才算「撞上了」。
+///
+/// 贴在切向上的接触（站在地上横着走、沿着斜坡滑）法线垂直于运动方向，
+/// 这类命中若当成阻挡，角色每一帧都会「被地面卡住」。
+const BLOCK_DOT: f32 = 0.1;
+
+/// 贴面余量：贴墙停下 / 抬升落回时故意留出的极小间隙。
+///
+/// 取值同时要满足两个约束：大到能让下一次查询不再判定「起点重叠」，
+/// 小到肉眼与断言都当它不存在。改这个常量会直接移动相关单测的期望值。
+const SKIN: f32 = 1e-3;
+
+/// 一次角色移动意图。
+///
+/// 只带方向与跳：速度、重力、坡度的裁决全在角色控制器（`r3e-character`）里，
+/// 端口层不做任何「这一步该不该走」的业务判断。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MoveIntent {
+    /// 期望移动方向：只取水平分量（`y` 一律忽略），零长度表示原地。
+    pub wish_dir: Vec3,
+    /// 本帧是否请求起跳（是否真能起跳由控制器按 `grounded` 裁决）。
+    pub jump: bool,
+}
+
+/// 一次角色移动的结果。
+///
+/// `position` 是**胶囊中心**的新位置，不是脚底；脚底 = `position.y - (half_height + radius)`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoveOutcome {
+    /// 胶囊中心的新世界坐标。
+    pub position: Vec3,
+    /// 本帧结束后是否踩实。
+    pub grounded: bool,
+    /// 踩实时的表面法线；悬空为 `Vec3::ZERO`。
+    pub ground_normal: Vec3,
+    /// 水平移动是否被挡住（含「起点就重叠」的拒动）。
+    pub blocked: bool,
+    /// 本帧靠台阶抬升吃掉的高度差；没抬过为 `0.0`。
+    pub step_up: f32,
+}
+
+impl MoveOutcome {
+    /// 原地不动：被拒绝 / 无输入时的统一返回值。
+    pub fn idle(position: Vec3) -> Self {
+        Self {
+            position,
+            grounded: false,
+            ground_normal: Vec3::ZERO,
+            blocked: false,
+            step_up: 0.0,
+        }
+    }
+}
+
+/// 角色移动端口：在 [`PhysicsQueryPort`] 之上补两条**移动**语义。
+///
+/// 与查询端口的分工：查询端口回答「这里能不能站」，本 trait 回答「这一步该走到哪」。
+/// 两条都是带默认实现的纯函数，后端**零改动**即可用——这正是 B01 选「端口并列」
+/// 而不是「塞进 [`PhysicsQueryPort`] 超 trait」的原因：超 trait 一改，
+/// 三套后端与全部测试 mock 都要跟着实现，代价与收益不成比例。
+///
+/// 默认实现只依赖 [`CapsulePort::capsule_sweep`] / [`CapsulePort::capsule_overlap`]，
+/// 因此 `Null` 后端天然「全都走不动」：既不 panic，也不假装成功。
+pub trait CharacterPort: PhysicsQueryPort {
+    /// 水平移动：先直扫，被挡住再试一次台阶抬升，都过不去就贴着障碍停下。
+    ///
+    /// 返回 `(新中心, 是否被挡, 台阶抬升量)`。
+    /// * `dir` 的 `y` 分量被忽略；零长度方向直接返回原位置。
+    /// * `distance <= 0` / 非有限：返回原位置（不是错误，是「这一帧没打算动」）。
+    /// * `capsule` 退化（半径非正 / 坐标非有限）：返回原位置并标记被挡。
+    fn move_horizontal(
+        &self,
+        capsule: &Capsule,
+        dir: Vec3,
+        distance: f32,
+        max_step: f32,
+    ) -> (Vec3, bool, f32) {
+        let here = capsule.center;
+        if capsule.is_degenerate() {
+            return (here, true, 0.0);
+        }
+        let dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+        if dir.length_squared() == 0.0 || !distance.is_finite() || distance <= 0.0 {
+            return (here, false, 0.0);
+        }
+
+        if let Some(hit) = self.capsule_sweep(capsule, dir, distance) {
+            if hit.started_inside {
+                // 起点就重叠：一步都不走，交给上层决定「贴脸滑开」还是「原地不动」。
+                return (here, true, 0.0);
+            }
+            // 切向接触不是墙：贴着障碍侧面滑行时照旧走满这一帧。
+            if hit.normal.normalize_or_zero().dot(dir) > -BLOCK_DOT {
+                return (here + dir * distance, false, 0.0);
+            }
+            let step = if max_step.is_finite() {
+                max_step.max(0.0)
+            } else {
+                0.0
+            };
+            if step > SKIN {
+                let lifted =
+                    Capsule::new(here + Vec3::Y * step, capsule.half_height, capsule.radius);
+                if self.capsule_overlap(&lifted).is_empty() {
+                    let advance = self
+                        .capsule_sweep(&lifted, dir, distance)
+                        .map(|h| {
+                            if h.started_inside {
+                                0.0
+                            } else {
+                                h.distance.min(distance)
+                            }
+                        })
+                        .unwrap_or(distance);
+                    // 抬升后必须**真的站上更高的面**才算跨过台阶：
+                    // 落回时若整段高度又掉回去了（`raised == step`），说明前面是墙
+                    // 而不是台阶 —— 墙不能被「抬一下再落回原处」蒙混过去。
+                    if advance > SKIN {
+                        let ahead = lifted.center + dir * advance;
+                        let probe = Capsule::new(ahead, capsule.half_height, capsule.radius);
+                        if let Some(drop) = self.capsule_sweep(&probe, -Vec3::Y, step + SKIN) {
+                            if !drop.started_inside {
+                                let raised = drop.distance.min(step);
+                                if step - raised > SKIN {
+                                    let pos = Vec3::new(ahead.x, ahead.y - raised, ahead.z);
+                                    return (pos, false, step - raised);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let advanced = (hit.distance - SKIN).max(0.0).min(distance);
+            return (here + dir * advanced, true, 0.0);
+        }
+
+        (here + dir * distance, false, 0.0)
+    }
+
+    /// 竖直结算：上升先顶上，下降先按本帧位移扫掠、再按 `snap` 吸附。
+    ///
+    /// 返回 `(新中心, 是否踩实, 表面法线)`。
+    /// * `velocity_y > 0`：向上扫掠，撞到顶就贴住，并恒报「未踩实」。
+    /// * 其余情况先按 `|velocity_y| * dt` 下落；没踩到地面再用 `snap` 向下补一次
+    ///   （下楼梯 / 走下缓坡时不做这一步就会一格一格地弹）。
+    fn settle_vertical(
+        &self,
+        capsule: &Capsule,
+        velocity_y: f32,
+        dt: f32,
+        snap: f32,
+    ) -> (Vec3, bool, Vec3) {
+        let here = capsule.center;
+        if capsule.is_degenerate() {
+            return (here, false, Vec3::ZERO);
+        }
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        let snap = if snap.is_finite() { snap.max(0.0) } else { 0.0 };
+
+        if velocity_y > 0.0 && velocity_y.is_finite() {
+            let rise = velocity_y * dt;
+            let head = match self.capsule_sweep(capsule, Vec3::Y, rise) {
+                Some(hit) if !hit.started_inside => (hit.distance - SKIN).max(0.0).min(rise),
+                Some(_) => 0.0,
+                None => rise,
+            };
+            return (here + Vec3::Y * head, false, Vec3::ZERO);
+        }
+
+        let fall = if velocity_y.is_finite() {
+            (-velocity_y * dt).max(0.0)
+        } else {
+            0.0
+        };
+        if fall > 0.0 {
+            if let Some(hit) = self.capsule_sweep(capsule, -Vec3::Y, fall) {
+                let down = if hit.started_inside {
+                    0.0
+                } else {
+                    hit.distance.min(fall)
+                };
+                return (Vec3::new(here.x, here.y - down, here.z), true, hit.normal);
+            }
+        }
+        let dropped = Vec3::new(here.x, here.y - fall, here.z);
+        if snap > 0.0 {
+            let probe = Capsule::new(dropped, capsule.half_height, capsule.radius);
+            if let Some(hit) = self.capsule_sweep(&probe, -Vec3::Y, snap) {
+                let down = if hit.started_inside {
+                    0.0
+                } else {
+                    hit.distance.min(snap)
+                };
+                return (
+                    Vec3::new(dropped.x, dropped.y - down, dropped.z),
+                    true,
+                    hit.normal,
+                );
+            }
+        }
+        (dropped, false, Vec3::ZERO)
+    }
+}
+
+/// 一切具备查询能力的端口都自动具备移动能力：后端无需为角色控制器多写一行。
+///
+/// `?Sized` 是有意加的：`&dyn PhysicsQueryPort` 也要能直接调这两条默认方法，
+/// 否则控制器签名就得从 `&dyn` 改成泛型，`r3e-character` 会被单态化绑死。
+impl<T: PhysicsQueryPort + ?Sized> CharacterPort for T {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

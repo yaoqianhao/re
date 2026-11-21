@@ -20,6 +20,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("anim_sync", include_str!("../src/api/anim_sync.rs")),
     ("audio", include_str!("../src/api/audio.rs")),
     ("basic", include_str!("../src/api/basic.rs")),
+    ("character", include_str!("../src/api/character.rs")),
     ("env", include_str!("../src/api/env.rs")),
     ("input", include_str!("../src/api/input.rs")),
     ("light", include_str!("../src/api/light.rs")),
@@ -94,13 +95,18 @@ fn 表里的每条脚本命令都真的注册了() {
 fn 统计与测绘口径一致() {
     let counts = source_registrations();
     let total: usize = counts.values().sum();
-    // 测绘结论：16 个域文件共 364 次注册、353 个唯一名字（11 处重载）。
-    // 数字变了说明有人加了命令却没更新 `docs/m0/M0S2_API_SPLIT.md` 的口径表。
-    assert_eq!(counts.len(), 353, "唯一命令数应为 353（M0 测绘口径）");
-    assert_eq!(total, 364, "注册次数应为 364（含 11 处重载）");
+    // 测绘结论：17 个域文件共 370 次注册、359 个唯一名字（11 处重载）。
+    // M2-B01 起 `character` 域并入（+6 唯一名 / +6 次注册），数字变了说明有人加了命令
+    // 却没更新 `docs/m0/M0S2_API_SPLIT.md` 的口径表。
+    assert_eq!(
+        counts.len(),
+        359,
+        "唯一命令数应为 359（M0 测绘口径 + M2-B01 六条）"
+    );
+    assert_eq!(total, 370, "注册次数应为 370（含 11 处重载）");
     assert_eq!(
         cmd_spec::script_names().count(),
-        353,
+        359,
         "命令表脚本条目数应与注册唯一名一致"
     );
 }
