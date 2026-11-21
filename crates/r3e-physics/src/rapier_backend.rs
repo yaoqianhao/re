@@ -699,15 +699,16 @@ impl PhysicsBackend for RapierBackend {
             } else {
                 (hit.time_of_impact * max_distance).max(0.0)
             };
-            let normal = if started_inside {
-                d * -1.0
+            // 起点就重叠时**也要如实给出接触法线**：贴地站立时胶囊底面与地面
+            // 零间隙，parry 的预测距离会把「站在地上」报成 penetrating。若这里
+            // 一律把法线伪造成 `-dir`，那脚下这块支撑面就会被上层当成墙 ——
+            // 角色一落地就再也迈不开腿（B03 在 Rapier 上抓到的缺陷：抬升永远
+            // 不发生、水平移动第 5 帧起全 blocked）。只有拿不到几何时才退回 -dir。
+            let g = to_glam(hit.normal2).normalize_or_zero();
+            let normal = if g.length_squared() > 0.5 {
+                g
             } else {
-                let g = to_glam(hit.normal2).normalize_or_zero();
-                if g.length_squared() > 0.5 {
-                    g
-                } else {
-                    d * -1.0
-                }
+                d * -1.0
             };
             let cand = PortHit {
                 body: handle.0,

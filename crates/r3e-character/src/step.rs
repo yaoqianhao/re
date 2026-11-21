@@ -82,8 +82,13 @@ impl CharacterSolver for KinematicSolver {
         } else {
             0.0
         };
-        let (pos_h, blocked, step_up) =
-            port.move_horizontal(&capsule_before, wish, distance, max_step);
+        let (pos_h, blocked, step_up) = port.move_horizontal(
+            &capsule_before,
+            wish,
+            distance,
+            max_step,
+            config.min_up_dot(),
+        );
 
         // ③ 竖直结算：下落时才吸附，上升中吸附会把角色粘在天花板上。
         let capsule_h = config.capsule(pos_h);

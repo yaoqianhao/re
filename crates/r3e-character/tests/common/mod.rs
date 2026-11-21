@@ -81,9 +81,24 @@ impl World {
     }
 
     /// 地面自身的表面法线。
+    ///
+    /// 符号与真后端的斜坡夹具（[`with_ramp`]）同口径：坡沿 **+X 上升**，
+    /// 所以法线的水平分量指向 `-X`。踏板方向反了，「上坡」会被算成「下坡」，
+    /// 坡度判据会以「角色死活不抬」的形式失败，且失败原因完全看不出来。
     pub fn ground_normal(&self) -> Vec3 {
         let rad = self.slope_deg.to_radians();
-        Vec3::new(rad.sin(), rad.cos(), 0.0).normalize()
+        Vec3::new(-rad.sin(), rad.cos(), 0.0).normalize()
+    }
+
+    /// `(x, z)` 处的坡面高度：过原点、沿 +X 以 `slope_deg` 上升的斜面。
+    ///
+    /// 无限斜面在 `x < 0` 一侧会掉到地面以下，这里用 `ground` 兜底 ——
+    /// 夹具的坡只长在 `x >= 0` 那半边，与真后端那块踏板的位置对齐。
+    pub fn surface_y(&self, x: f32) -> f32 {
+        if self.slope_deg == 0.0 {
+            return self.ground;
+        }
+        self.ground + (x * self.slope_deg.to_radians().tan()).max(0.0)
     }
 
     /// 地面盒：无限宽、顶面在 `ground`。
@@ -160,8 +175,10 @@ impl World {
             }
         }
         // 地面只在向下运动时才支撑：横着走是切向、往上跳时地面在身后。
+        // 斜坡按 `surface_y` 逐点取高度 —— 用固定 `ground` 的话，角色沿坡上行
+        // 之后会被「地面还在脚下」的地面吸回去，永远上不去（B04 实测）。
         if dir.y < -0.1 {
-            let t = (mn.y - self.ground).max(0.0);
+            let t = (mn.y - self.surface_y(capsule.center.x)).max(0.0);
             if t <= maxd && best.map(|(bt, _)| t < bt).unwrap_or(true) {
                 best = Some((t, self.ground_normal()));
             }
@@ -180,8 +197,33 @@ impl World {
 impl RaycastPort for World {}
 
 impl GroundPort for World {
-    fn sample_ground(&self, _x: f32, _z: f32) -> Option<GroundSample> {
-        Some(GroundSample::flat(self.ground))
+    /// 与内置后端口径一致：取「地面（或坡面）与各盒子顶面」里最高的那个。
+    ///
+    /// 只返回地面是不够的 —— 台阶抬升判据靠的就是「脚前缘采到的面比脚下高」，
+    /// 采样看不见盒子，台阶在解析世界里永远迈不上去（`solver_spec::low_ledge_steps_up`
+    /// 会以「0.3 m 台阶被挡」的形式失败）。
+    fn sample_ground(&self, x: f32, z: f32) -> Option<GroundSample> {
+        if !x.is_finite() || !z.is_finite() {
+            return None;
+        }
+        let mut best = GroundSample {
+            height: self.surface_y(x),
+            normal: self.ground_normal(),
+            ..GroundSample::flat(self.ground)
+        };
+        for b in &self.boxes {
+            if x < b.min.x || x > b.max.x || z < b.min.z || z > b.max.z {
+                continue;
+            }
+            if b.max.y > best.height {
+                best = GroundSample {
+                    height: b.max.y,
+                    normal: Vec3::Y,
+                    ..GroundSample::flat(b.max.y)
+                };
+            }
+        }
+        Some(best)
     }
 }
 
@@ -288,6 +330,63 @@ pub fn with_floor(mut physics: Physics, top: f32) -> (Physics, NodeId) {
 /// 某个后端上的「平地世界」：顶面 y=0。
 pub fn floor_world(kind: PhysicsKind) -> Physics {
     with_floor(physics_of(kind), 0.0).0
+}
+
+/// 一级台阶：左立面在 `x = x0`，顶面 `y = top`，向 +X 延伸 3 米、z 方向 8 米。
+///
+/// 只用轴对齐盒子 —— `BuiltinBackend` 的碰撞模型就是 AABB（`builtin_backend.rs`
+/// 开篇写明的边界：无旋转动力学），所以台阶判据能在两个后端上都跑。
+pub fn with_step(mut physics: Physics, x0: f32, top: f32) -> Physics {
+    let mut scene = Scene::new();
+    let id = scene
+        .spawn(ObjectDesc {
+            name: "step".to_string(),
+            ..Default::default()
+        })
+        .expect("spawn");
+    physics.create_body(
+        id,
+        BodyDesc {
+            shape: ColliderShape::Box,
+            half_extents: Vec3::new(1.5, top * 0.5, 4.0),
+            position: Vec3::new(x0 + 1.5, top * 0.5, 0.0),
+            ..Default::default()
+        },
+    );
+    physics
+}
+
+/// 一段斜面：上表面过原点、沿 +X 升高，坡度 `deg`（法线与竖直的夹角）。
+///
+/// **只有 `Rapier` 能表达它**：`BuiltinBackend` 的 `body_aabb` 只看 `position` /
+/// `half_extents`，旋转信息是被忽略的（见 B03 实测），所以斜坡判据在 `Builtin`
+/// 侧改走本模块的解析世界 [`World::slope`]（它直接给出倾斜法线）。
+pub fn with_ramp(mut physics: Physics, deg: f32, half_len: f32) -> Physics {
+    let rad = deg.to_radians();
+    let normal = Vec3::new(-rad.sin(), rad.cos(), 0.0);
+    let half_thick = 0.25;
+    let mut scene = Scene::new();
+    let id = scene
+        .spawn(ObjectDesc {
+            name: "ramp".to_string(),
+            ..Default::default()
+        })
+        .expect("spawn");
+    physics.create_body(
+        id,
+        BodyDesc {
+            shape: ColliderShape::Box,
+            half_extents: Vec3::new(half_len, half_thick, 4.0),
+            // 让**上表面**落在过原点的斜线上：box 中心沿法线负方向退一个厚度即可。
+            // 退错方向或者额外沿 `up` 平移，坡要么浮起来（坡脚凭空多一块立面，
+            // 角色在坡外就被挡住），要么整块沉到地面以下（角色径直走过去，
+            // 判据会以「坡上不去」或「站在坡上却贴地」的形式失败，看不出是夹具的锅）。
+            position: -normal * half_thick,
+            rotation: glam::Quat::from_rotation_z(rad),
+            ..Default::default()
+        },
+    );
+    physics
 }
 
 /// 一堵立在 +X 侧的墙：`x ∈ [0.5, 1.5]`、高 2 米（底面 y=0）。

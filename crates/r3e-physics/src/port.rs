@@ -46,6 +46,8 @@
 use glam::Vec3;
 use r3e_core::NodeId;
 
+use crate::slope::{slope_verdict, SlopeVerdict};
+
 /// 射线查询输入。
 ///
 /// `dir` 允许非单位向量，实现方须先归一化；`max_distance` 是归一化之后的世界距离上限。
@@ -314,7 +316,58 @@ const BLOCK_DOT: f32 = 0.1;
 ///
 /// 取值同时要满足两个约束：大到能让下一次查询不再判定「起点重叠」，
 /// 小到肉眼与断言都当它不存在。改这个常量会直接移动相关单测的期望值。
-const SKIN: f32 = 1e-3;
+pub(crate) const SKIN: f32 = 1e-3;
+
+/// 起点脱开探测的抬升量（米）。
+///
+/// 与 [`SKIN`] 分开是 B03 踩出来的：1 毫米的 `SKIN` 挪不动 `Rapier` 的起点重叠
+/// 判定（parry 的接触预测距离缺省 2 mm，零间隙贴合一律报 penetrating），
+/// 但把 `SKIN` 本身放大又会毒化所有「减去 SKIN」的结算换算（落回高度、贴墙距离
+/// 全跟着漂）。所以脱开归脱开：单独给一个够大的抬升量，探完立刻把高度差减回去。
+const DETACH: f32 = 1e-2;
+
+/// 脱开探测的抬升上限（米）：探到这个高度还重叠，说明是真卡在几何里，不是贴面。
+const DETACH_MAX: f32 = 5e-2;
+
+/// 台阶落面的可站立判据：法线与竖直的夹角不超过 60°（与 `GroundSample::is_walkable`
+/// 的常用口径一致）。斜面太陡不算台阶，省得角色顺着陡坡往上爬。
+const WALKABLE_UP: f32 = 0.5;
+
+/// 胶囊当前是否压在一个**朝上的面**上（贴面接触时用来判「脚下有地面」）。
+///
+/// 返回交集里最朝上的那个法线；没有朝上的面（嵌在墙里、悬在空中）返回 `None`。
+/// 存在的理由：触面接触时向下扫掠一律返回 `started_inside`，没有距离可算，
+/// 而「算不出距离」不等于「脚下没东西」。
+fn support_normal<P: PhysicsQueryPort + ?Sized>(port: &P, capsule: &Capsule) -> Option<Vec3> {
+    let mut best: Option<Vec3> = None;
+    for hit in port.capsule_overlap(capsule) {
+        let n = hit.normal.normalize_or_zero();
+        if n.y >= WALKABLE_UP && best.map_or(true, |b| n.y > b.y) {
+            best = Some(n);
+        }
+    }
+    best
+}
+
+/// 起点脱开量：抬到「与任何几何都不再重叠」为止，抬不动就返回 0。
+///
+/// 只用于查询前把胶囊从贴面接触里挪出来，调用方拿到返回值后必须把这段高度
+/// 从结果里**减回去**（它是查询技巧，不是位移）。
+fn detach_lift<P: PhysicsQueryPort + ?Sized>(port: &P, capsule: &Capsule) -> f32 {
+    let mut lift = DETACH;
+    while lift <= DETACH_MAX {
+        let probe = Capsule::new(
+            capsule.center + Vec3::Y * lift,
+            capsule.half_height,
+            capsule.radius,
+        );
+        if port.capsule_overlap(&probe).is_empty() {
+            return lift;
+        }
+        lift *= 2.0;
+    }
+    0.0
+}
 
 /// 一次角色移动意图。
 ///
@@ -368,18 +421,21 @@ impl MoveOutcome {
 /// 默认实现只依赖 [`CapsulePort::capsule_sweep`] / [`CapsulePort::capsule_overlap`]，
 /// 因此 `Null` 后端天然「全都走不动」：既不 panic，也不假装成功。
 pub trait CharacterPort: PhysicsQueryPort {
-    /// 水平移动：先直扫，被挡住再试一次台阶抬升，都过不去就贴着障碍停下。
+    /// 水平移动：先看脚下前方是不是坡，再直扫，被挡住再试一次台阶抬升，
+    /// 都过不去就贴着障碍停下。
     ///
     /// 返回 `(新中心, 是否被挡, 台阶抬升量)`。
     /// * `dir` 的 `y` 分量被忽略；零长度方向直接返回原位置。
     /// * `distance <= 0` / 非有限：返回原位置（不是错误，是「这一帧没打算动」）。
     /// * `capsule` 退化（半径非正 / 坐标非有限）：返回原位置并标记被挡。
+    /// * `min_up_dot`＝`cos(坡度上限)`：低于它的斜坡不许上行（丢掉上行意图，不报 `blocked`）。
     fn move_horizontal(
         &self,
         capsule: &Capsule,
         dir: Vec3,
         distance: f32,
         max_step: f32,
+        min_up_dot: f32,
     ) -> (Vec3, bool, f32) {
         let here = capsule.center;
         if capsule.is_degenerate() {
@@ -389,36 +445,53 @@ pub trait CharacterPort: PhysicsQueryPort {
         if dir.length_squared() == 0.0 || !distance.is_finite() || distance <= 0.0 {
             return (here, false, 0.0);
         }
+        let step = if max_step.is_finite() {
+            max_step.max(0.0)
+        } else {
+            0.0
+        };
+        let min_up_dot = if min_up_dot.is_finite() {
+            min_up_dot.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        // 坡面贴行：先于扫掠判定。斜坡上「贴着坡往前」会被扫掠报成撞墙，
+        // 走得动走不动全看这里。
+        match slope_verdict(self, capsule, dir, distance, step, min_up_dot) {
+            SlopeVerdict::Climb(pos, rise) => return (pos, false, rise),
+            SlopeVerdict::TooSteep => return (here, false, 0.0),
+            SlopeVerdict::Flat => {}
+        }
 
         // 起点脱开：站稳的瞬间胶囊底面与地面零间隙，扫掠会把「贴着地面站着」
         // 判成 `started_inside`，若照「起点重叠 ⇒ 一步都不走」处理，角色一落地
         // 就再也迈不开腿 —— 这是 B02 在真后端上抓到的缺陷（Rapier / Builtin
         // 都表现为「站稳以后所有水平移动全被 blocked」）。所以先上抬 `SKIN`
         // 让接触让开：抬了仍与几何重叠，才说明真的卡在墙里，那时才拒动。
-        let lifted = Capsule::new(here + Vec3::Y * SKIN, capsule.half_height, capsule.radius);
-        let from = if self.capsule_overlap(&lifted).is_empty() {
-            &lifted
-        } else {
-            capsule
-        };
-        // 结果里的 y 一律以原始中心为基准：抬 `SKIN` 只是查询技巧，
-        // 不该让角色每帧真的抬高 1 毫米（竖直位移只由 `settle_vertical` 决定）。
-        let y_bias = from.center.y - here.y;
+        let lift = detach_lift(self, capsule);
+        let lifted = Capsule::new(here + Vec3::Y * lift, capsule.half_height, capsule.radius);
+        // `lift` 只是查询技巧，不该让角色每帧真的抬高那几毫米：凡是走
+        // 「直接在原高度上结算」的分支，位置一律从 `here` 起算，不从 `from` 起算。
+        let from = &lifted;
 
         if let Some(hit) = self.capsule_sweep(from, dir, distance) {
+            // 切向接触不是墙：贴着障碍侧面滑行时照旧走满这一帧。
+            //
+            // 「起点就重叠」也按同一把尺子量：只有法线**顶着运动方向**的重叠
+            // 才算卡住（人嵌在墙里、确实该原地不动）；法线朝上的支撑面同样
+            // 放过。贴地站立时胶囊底面与地面零间隙，后端很容易把它报成
+            // `started_inside`，若照「重叠 ⇒ 一步不走」处理，角色一落地
+            // 就再也迈不开腿 —— B03 在 `Rapier` 上实测到的正是这一条。
             if hit.started_inside {
-                // 起点就重叠：一步都不走，交给上层决定「贴脸滑开」还是「原地不动」。
+                if hit.normal.normalize_or_zero().dot(dir) > -BLOCK_DOT {
+                    return (here + dir * distance, false, 0.0);
+                }
                 return (here, true, 0.0);
             }
-            // 切向接触不是墙：贴着障碍侧面滑行时照旧走满这一帧。
             if hit.normal.normalize_or_zero().dot(dir) > -BLOCK_DOT {
                 return (here + dir * distance, false, 0.0);
             }
-            let step = if max_step.is_finite() {
-                max_step.max(0.0)
-            } else {
-                0.0
-            };
             if step > SKIN {
                 let lifted = Capsule::new(
                     from.center + Vec3::Y * step,
@@ -436,25 +509,38 @@ pub trait CharacterPort: PhysicsQueryPort {
                             }
                         })
                         .unwrap_or(distance);
-                    // 抬升后必须**真的站上更高的面**才算跨过台阶：
-                    // 落回时若整段高度又掉回去了（`raised == step`），说明前面是墙
-                    // 而不是台阶 —— 墙不能被「抬一下再落回原处」蒙混过去。
+                    // 抬升后必须**真的站上更高的面**才算跨过台阶：原地没抬起来
+                    // （`rise == 0`）说明前面是墙而不是台阶 —— 墙不能被「抬一下
+                    // 再落回原处」蒙混过去。
+                    //
+                    // 落面用「地表采样」而不是从抬升点向下扫掠：胶囊底部是半圆，
+                    // 从高处往下扫时先碰到的是立面的**上棱边**（`Rapier` 实测法线
+                    // (-0.93, 0.37)），不是顶面 —— 于是脚会停在顶面下方半米处
+                    // 悬空，`grounded` 假、角色永远上不去台阶（B03 实测缺陷）。
+                    // 采样返回的就是该 `(x, z)` 处「能站住的最高表面」，正是语义。
                     if advance > SKIN {
                         let ahead = lifted.center + dir * advance;
-                        let probe = Capsule::new(ahead, capsule.half_height, capsule.radius);
-                        if let Some(drop) = self.capsule_sweep(&probe, -Vec3::Y, step + SKIN) {
-                            if !drop.started_inside {
-                                let raised = drop.distance.min(step);
-                                if step - raised > SKIN {
-                                    let pos =
-                                        Vec3::new(ahead.x, ahead.y - raised - y_bias, ahead.z);
-                                    return (pos, false, step - raised);
-                                }
+                        // 采样点探到**脚前缘**：胶囊中心走到台阶跟前时，中心还在
+                        // 台阶外，只看中心会一直采到地面（`rise == 0`），台阶永远
+                        // 迈不上去；脚前缘才是「能不能踩上去」的那个点。
+                        let toe = ahead + dir * capsule.radius.abs();
+                        if let Some(ground) = self.sample_ground(toe.x, toe.z) {
+                            let foot = capsule.half_height.abs() + capsule.radius.abs();
+                            let rise = ground.height - (here.y - foot);
+                            if ground.is_walkable(WALKABLE_UP) && rise > SKIN && rise <= step {
+                                // 位置落到**脚前缘**那一点上：台阶边缘是「脚踩上去、
+                                // 重心还在阶外」的过渡姿态，只抬高度不往前挪，下一帧
+                                // 脚下就是空的 —— 竖直结算判 `grounded = false`，
+                                // 重力把人拽回去，台阶又变成迈不过的墙（B03 实测）。
+                                // 所以这一帧按「迈一步」处理：水平直接进到顶面覆盖区内。
+                                let pos = Vec3::new(toe.x, ground.height + foot, toe.z);
+                                return (pos, false, rise);
                             }
                         }
                     }
                 }
             }
+
             let advanced = (hit.distance - SKIN).max(0.0).min(distance);
             return (here + dir * advanced, true, 0.0);
         }
@@ -484,10 +570,14 @@ pub trait CharacterPort: PhysicsQueryPort {
 
         if velocity_y > 0.0 && velocity_y.is_finite() {
             let rise = velocity_y * dt;
-            let head = match self.capsule_sweep(capsule, Vec3::Y, rise) {
-                Some(hit) if !hit.started_inside => (hit.distance - SKIN).max(0.0).min(rise),
+            // 起跳：站位贴地时脚下那块地面会把「向上扫掠」的起点判成重叠，
+            // 直接扫会得到「头顶立刻撞死」的假结论 —— 先脱开再扫，扫完把脱开量减回去。
+            let lift = detach_lift(self, capsule);
+            let probe = Capsule::new(here + Vec3::Y * lift, capsule.half_height, capsule.radius);
+            let head = match self.capsule_sweep(&probe, Vec3::Y, rise + lift) {
+                Some(hit) if !hit.started_inside => (hit.distance - lift).max(0.0).min(rise),
                 Some(_) => 0.0,
-                None => rise,
+                None => (rise + lift - lift).max(0.0).min(rise),
             };
             return (here + Vec3::Y * head, false, Vec3::ZERO);
         }
@@ -497,26 +587,35 @@ pub trait CharacterPort: PhysicsQueryPort {
         } else {
             0.0
         };
-        // 向下探测一律先把起点上抬 `SKIN`：站在地上时「从接触位置直接下扫」踩在后端的
-        // 预测距离边界上，Rapier 会给出不可靠结论（实测同一点位有时报 0.6 mm、
-        // 有时直接「无命中」，后者让角色按自由落体往下掉，60 帧沉 1.8 厘米）。
-        // 抬 `SKIN` 后扫 `reach + SKIN`，再把结果减掉 `SKIN` —— 与不抬等价，但不踩边界。
+        // 向下探测先把起点脱开：站在地上时「从接触位置直接下扫」踩在后端的预测
+        // 距离边界上，Rapier 会给出不可靠结论（实测同一点位有时报 0.6 mm、有时
+        // 直接「无命中」，后者让角色按自由落体往下掉，60 帧沉 1.8 厘米）。
+        // 抬 `lift` 后扫 `reach + lift`，再把结果减掉 `lift` —— 与不抬等价，但不踩边界。
+        let lift = detach_lift(self, capsule);
         let probe_at = |center: Vec3| {
-            Capsule::new(center + Vec3::Y * SKIN, capsule.half_height, capsule.radius)
+            Capsule::new(center + Vec3::Y * lift, capsule.half_height, capsule.radius)
         };
         if fall > 0.0 {
-            if let Some(hit) = self.capsule_sweep(&probe_at(here), -Vec3::Y, fall + SKIN) {
+            if let Some(hit) = self.capsule_sweep(&probe_at(here), -Vec3::Y, fall + lift) {
                 if !hit.started_inside {
-                    let down = (hit.distance - SKIN).max(0.0).min(fall);
+                    let down = (hit.distance - lift).max(0.0).min(fall);
                     return (Vec3::new(here.x, here.y - down, here.z), true, hit.normal);
+                }
+                // 起点就重叠：胶囊已经贴在（或略微嵌进）支撑面上。向下扫掠问不出
+                // 距离，但这个交集**恰恰说明脚下有东西**。若照「没命中」放行，
+                // 角色会被判悬空、重力逐帧累积，二十帧后沉进坡体并穿过地板 ——
+                // B04 在 40° 坡上贴面行走时实测到的正是这一条。只认朝上的面：
+                // 嵌在墙里不算踩实，那种情况照旧按悬空处理。
+                if let Some(normal) = support_normal(self, &probe_at(here)) {
+                    return (here, true, normal);
                 }
             }
         }
         let dropped = Vec3::new(here.x, here.y - fall, here.z);
         if snap > 0.0 {
-            if let Some(hit) = self.capsule_sweep(&probe_at(dropped), -Vec3::Y, snap + SKIN) {
+            if let Some(hit) = self.capsule_sweep(&probe_at(dropped), -Vec3::Y, snap + lift) {
                 if !hit.started_inside {
-                    let down = (hit.distance - SKIN).max(0.0).min(snap);
+                    let down = (hit.distance - lift).max(0.0).min(snap);
                     return (
                         Vec3::new(dropped.x, dropped.y - down, dropped.z),
                         true,

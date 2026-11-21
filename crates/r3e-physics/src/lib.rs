@@ -45,8 +45,9 @@ pub mod port;
 
 /// 能力面门面（M2-A03b）：把真门面适配成 `r3e_core::host` 契约。
 pub use host_adapter::PhysicsFacade;
-/// 端口适配：把 `PhysicsQueryPort` 三组查询接到门面上（纯字段搬运，无决策逻辑）。
 mod port_impl;
+/// 端口适配：把 `PhysicsQueryPort` 三组查询接到门面上（纯字段搬运，无决策逻辑）。
+mod slope;
 
 #[cfg(feature = "rapier")]
 mod rapier_backend;

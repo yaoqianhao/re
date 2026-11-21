@@ -385,7 +385,7 @@ fn sweep_started_inside_reports_zero_distance() {
 }
 
 #[test]
-fn sweep_started_inside_normal_is_reverse_dir() {
+fn sweep_started_inside_normal_is_unit() {
     for kind in selectable() {
         let (physics, _) = world_shapes(kind, &[cube()]);
         let hit = physics
@@ -395,11 +395,43 @@ fn sweep_started_inside_normal_is_reverse_dir() {
                 10.0,
             )
             .expect("起步即重叠");
+        assert!(hit.started_inside, "{kind:?}");
         assert!(
-            (hit.normal - Vec3::Y).length() < 1e-3,
+            (hit.normal.length() - 1.0).abs() < 1e-2,
             "{kind:?} n={:?}",
             hit.normal
         );
+    }
+}
+
+/// 起点就与支撑面重叠（贴地站立、零间隙）时，法线必须仍是**接触面法线**。
+///
+/// 曾经约定重叠态一律返回 `-dir`，B03 在真后端上直接把这条约定推翻了：站着贴地
+/// 时 parry 的预测距离会把「踩在地上」报成 penetrating，法线若被伪造成 `-dir`，
+/// 脚下这块支撑面就会被上层当成墙 —— 角色一落地就迈不开腿。所以约定改成
+/// 「有几何就用真实法线，拿不到才退回 `-dir`」，这里把它钉死。
+///
+/// 方向斜向下（而不是正下方）是为了区分实现：只做 `-dir` 的实现会给出斜上方，
+/// 真读几何的实现给出 `+Y`，两者不会混淆。
+#[test]
+fn sweep_started_inside_normal_follows_contact_face() {
+    for kind in selectable() {
+        let (physics, _) = world_shapes(kind, &[floor()]);
+        // 胶囊底陷进表面 1 厘米（零间隙在真后端上会被判成「刚好相切」而非重叠），
+        // 再斜向下推进：起步即重叠，且最小平移方向只能是 +Y。
+        let cap = capsule(Vec3::new(0.0, 1.49, 0.0), 1.0, 0.5);
+        let hit = physics
+            .sweep_capsule(cap, Vec3::new(1.0, -1.0, 0.0), 3.0)
+            .expect("起步即重叠");
+        assert!(hit.started_inside, "{kind:?}");
+        // 内置后端的 AABB 模型没有接触面，按契约退回 `-dir`，不参与这条断言。
+        if kind == PhysicsKind::Rapier {
+            assert!(
+                hit.normal.y > 0.9,
+                "{kind:?}：重叠态应给支撑面法线 +Y，实际 n={:?}",
+                hit.normal
+            );
+        }
     }
 }
 
