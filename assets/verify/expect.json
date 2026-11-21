@@ -1,67 +1,76 @@
 {
-  "$comment": "cargo xtask scene-verify 的验收表（M1-S4-F，F-4/F-5）。反向夹具必须报出带坐标的必报码，正向对照必须干净——两者成对，防止「永远报错」的假红。",
-  "cases": [
+ "$comment": "cargo xtask scene-verify 的验收表（M1-S4-F，F-4/F-5）。反向夹具必须报出带坐标的必报码，正向对照必须干净——两者成对，防止「永远报错」的假红。",
+ "cases": [
+  {
+   "scene": "overlap_bad.json",
+   "must": [
+    "overlap.penetration"
+   ],
+   "passed": false,
+   "why": "两个碰撞体沿 x 重叠 0.4 米：物理层须给精确结论 + 坐标"
+  },
+  {
+   "scene": "overlap_ok.json",
+   "must": [],
+   "passed": true,
+   "why": "同一对物件拉开到 1 米间隙：一处不改就该干净"
+  },
+  {
+   "scene": "floating_bad.json",
+   "must": [
+    "support.floating"
+   ],
+   "passed": true,
+   "why": "底面悬在 y=4.5：物理层须报出悬空（warn 级：报出但不拦 passed）"
+  },
+  {
+   "scene": "floating_ok.json",
+   "must": [],
+   "passed": true,
+   "why": "同一物件落到 y=0.5 贴地：悬空结论必须消失"
+  },
+  {
+   "scene": "unreachable_bad.json",
+   "must": [
+    "nav.no_path"
+   ],
+   "passed": false,
+   "why": "东西两岛间隔 10 米虚空：跨岛目标不可达",
+   "targets": [
     {
-      "scene": "overlap_bad.json",
-      "must": [
-        "overlap.penetration"
-      ],
-      "passed": false,
-      "why": "两个碰撞体沿 x 重叠 0.4 米：物理层须给精确结论 + 坐标"
-    },
-    {
-      "scene": "overlap_ok.json",
-      "must": [],
-      "passed": true,
-      "why": "同一对物件拉开到 1 米间隙：一处不改就该干净"
-    },
-    {
-      "scene": "floating_bad.json",
-      "must": [
-        "support.floating"
-      ],
-      "passed": true,
-      "why": "底面悬在 y=4.5：物理层须报出悬空（warn 级：报出但不拦 passed）"
-    },
-    {
-      "scene": "floating_ok.json",
-      "must": [],
-      "passed": true,
-      "why": "同一物件落到 y=0.5 贴地：悬空结论必须消失"
-    },
-    {
-      "scene": "unreachable_bad.json",
-      "must": [
-        "nav.no_path"
-      ],
-      "passed": false,
-      "why": "东西两岛间隔 10 米虚空：跨岛目标不可达",
-      "targets": [
-        {
-          "name": "boss",
-          "at": [
-            25.0,
-            0.0,
-            5.0
-          ]
-        }
-      ]
-    },
-    {
-      "scene": "unreachable_ok.json",
-      "must": [],
-      "passed": true,
-      "why": "目标点落回西岛：可达判定就该放行",
-      "targets": [
-        {
-          "name": "boss",
-          "at": [
-            5.0,
-            0.0,
-            5.0
-          ]
-        }
-      ]
+     "name": "boss",
+     "at": [
+      25.0,
+      0.0,
+      5.0
+     ]
     }
-  ]
+   ]
+  },
+  {
+   "scene": "unreachable_ok.json",
+   "must": [],
+   "passed": true,
+   "why": "目标点落回西岛：可达判定就该放行",
+   "targets": [
+    {
+     "name": "boss",
+     "at": [
+      5.0,
+      0.0,
+      5.0
+     ]
+    }
+   ]
+  },
+  {
+   "scene": "character_ramp.r3e.json",
+   "must": [],
+   "passed": true,
+   "allow_unchecked": [
+    "physics"
+   ],
+   "why": "M2-B05 路线夹具（平地→15°斜坡→三级台阶→平台→1m 超限台阶）：全是合法静态几何，两条 character.* 码都不该出现（反向对照由 r3e-doc/tests/character_issues.rs 钉住）。physics 层声明允许未检查——斜坡必须带旋转，而 BuiltinBackend 的轴对齐解析式对旋转体给不出精确结论，这是夹具的刻意选择；斜坡上的接触判据由 r3e-character 的 Rapier 路点测试负责。"
+  }
+ ]
 }

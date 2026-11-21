@@ -115,11 +115,25 @@ fn check_case(dir: &Path, case: &serde_json::Value, file: &str) -> Vec<String> {
 
     let report = VerifyReport::collect_with_targets(&scene, &physics(), Some(&nav), &targets);
 
-    // 口径 1：门禁条件下不许有「没检查」。
+    // 口径 1：门禁条件下不许有「没检查」——除非夹具显式声明该层「本来就检查不了」。
+    //
+    // `allow_unchecked` 只收层名，不收敛原因：夹具里刻意放了旋转几何（15° 斜坡）时，
+    // `BuiltinBackend` 的轴对齐解析式确实给不出结论，这是**预期**而不是门禁退化。
+    // 风险由两点钉住：① 必须写在该 case 的 `why` 里，评审看得见；② 只放行点名的层，
+    // 其余层漏检照样红。不加这一条，唯一出路是把夹具改成「没有旋转」，那等于为了
+    // 门禁好看而删掉要测的几何。
+    let allowed: Vec<&str> = case["allow_unchecked"]
+        .as_array()
+        .map(|list| list.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
     for u in report.unchecked() {
+        let layer = u.layer().as_str();
+        if allowed.contains(&layer) {
+            println!("      · {layer} 层未检查（夹具已声明）：{}", u.reason());
+            continue;
+        }
         problems.push(format!(
-            "{} 层没检查：{}（scene-verify 条件完备，不该出现）",
-            u.layer().as_str(),
+            "{layer} 层没检查：{}（scene-verify 条件完备，不该出现）",
             u.reason()
         ));
     }

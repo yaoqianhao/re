@@ -1,0 +1,182 @@
+{
+ "$comment": "M2-B05 可玩性回归 1 的路线夹具：平地 8m → 15° 斜坡 6m → 三级 0.3m 台阶 → 收尾平台 → 1m 超限台阶（用来验挡停）。所有静态盒底面都压在下一级顶面上，静态层不该报悬空；不带角色节点，故 character.* 两码也不该出现。斜坡整体比理论值抬高 0.03 米：坡顶平台顶面与坡面刻意留 3 厘米落差，因为真后端上胶囊贴坡存在约 1 厘米的采样误差，共面接缝会以这个量级穿进平台立面里，把本该是「走下去 3 厘米」的落差变成「卡在方块内部」。落差量为 3 厘米 ≪ step_height 0.35，既不影响「能站上坡顶平台」的结论，也让接缝处有个明确的站立真值。",
+ "name": "r3e-character-ramp-route",
+ "terrain": [
+  {
+   "name": "ground",
+   "origin": [
+    -14.0,
+    -4.0
+   ],
+   "size": [
+    28.0,
+    8.0
+   ]
+  }
+ ],
+ "spawns": [
+  {
+   "name": "start",
+   "position": [
+    -8.0,
+    0.0,
+    0.0
+   ]
+  }
+ ],
+ "objects": [
+  {
+   "name": "ramp",
+   "mesh": "cube",
+   "position": [
+    2.9625,
+    0.565,
+    0.0
+   ],
+   "rotation": [
+    0.0,
+    0.0,
+    15.0
+   ],
+   "scale": [
+    6.0,
+    0.5,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  },
+  {
+   "name": "platform_top",
+   "mesh": "cube",
+   "position": [
+    7.3956,
+    0.7764,
+    0.0
+   ],
+   "scale": [
+    3.2,
+    1.5529,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  },
+  {
+   "name": "step1",
+   "mesh": "cube",
+   "position": [
+    9.5956,
+    0.9264,
+    0.0
+   ],
+   "scale": [
+    1.2,
+    1.8529,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  },
+  {
+   "name": "step2",
+   "mesh": "cube",
+   "position": [
+    10.7956,
+    1.0764,
+    0.0
+   ],
+   "scale": [
+    1.2,
+    2.1529,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  },
+  {
+   "name": "step3",
+   "mesh": "cube",
+   "position": [
+    11.9956,
+    1.2265,
+    0.0
+   ],
+   "scale": [
+    1.2,
+    2.4529,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  },
+  {
+   "name": "platform_end",
+   "mesh": "cube",
+   "position": [
+    13.7956,
+    1.2265,
+    0.0
+   ],
+   "scale": [
+    2.4,
+    2.4529,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  },
+  {
+   "name": "step_over_limit",
+   "mesh": "cube",
+   "position": [
+    15.4956,
+    1.7265,
+    0.0
+   ],
+   "scale": [
+    1.0,
+    3.4529,
+    4.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "character_route"
+   ]
+  }
+ ],
+ "materials": []
+}

@@ -525,6 +525,39 @@ r3e-cli --addr <endpoint> rpc character.state   '["ramp_walker"]'               
 
 真窗口下「肉眼看着不下沉、不抖、贴地自然」属主观项，按 M1 惯例记入 `docs/m2/M2_BASELINE.md` 的人工验证栏，不写成自动断言（写不出来的东西不装成判据）。
 
+### 8.5 B05 实到（2026-11-21）
+
+**落点**：`crates/r3e-character/tests/route_spec.rs`（12 条，含路点日志留证）、
+`assets/verify/character_ramp.r3e.json`（路线夹具，测试与 `scene-verify` 共用同一份）+
+`assets/verify/expect.json` 增一条 case（期望 `passed = true` 且无 `character.*` 码，反向对照仍由
+`r3e-doc/tests/character_issues.rs` 钉住）；
+`xtask/src/scene_verify.rs` 的 case 说明补一条「斜坡带旋转，`BuiltinBackend` 的轴对齐解析式给不出精确结论，
+故夹具声明 physics 层允许未检查」——不是放水，是把「哪个后端负责哪段判据」写在纸面上。
+
+**基线演进（实测）**：`r3e-character` 70 → **82**，合计 2129 → **2141**（`tests_baseline` 已同步）。
+`commands` 398 / `rpc` 68 / `script_only` 330 / `invariants` 40 / `domains` 17 五项不动；
+回放金标 `385482eb033d2964` 不变。`cargo xtask verify` 11 项全绿。
+
+**路线判据实到的数字**（Rapier 全程 360 帧）：末点 `x=14.64`（前进 22.5m）→ 顶部 `y=2.4529`（与夹具平台顶面一致），
+`grounded` 帧占比 **1.0000**，台阶段 `step_up > 0` 出现 **3** 帧，超限台阶处 3 帧 `blocked=1` 且坐标冻结（不挪位）。
+
+**判据跑出来的四处真实缺陷（阈值一条没放宽）**：
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 坡末接平台时角色从坡上「掉」到平台高度以下 | `n.y ≥ SLOPE_FLAT` 分支把「比脚下高的平面」当平地直接放行，不校验高度差 | 平坦分支加高度差判定，超出即按台阶抬升处理 |
+| 2 | 台阶前永久卡死（`blocked` 不消失，Rapier 稳定复现） | 胶囊在台阶棱同时重叠两级盒子（`started_inside`），`settle_vertical` 用「抬起后的姿态」求支撑法线必然拿不到 | `support_normal` 改用真实未抬姿态；`started_inside` 时兜底按已落地处理 |
+| 3 | 台阶落面误判悬空 | 交集法线在某些姿态下不可靠（退化为水平） | 新增 `support_under`：交集失败则回退 `sample_ground` 采脚下，高度差在 `DETACH_MAX` 内且可站即算踩实 |
+| 4 | 台阶抬升只推中心、脚前缘没跟上，下一帧再判一次坡/沿 | 落位目标点取的是胶囊中心而非脚前缘 | 平坦分支落点改到 `toe`（脚前缘）水平位置 |
+
+**留证**：`assets/verify/evidence/character_walk.log`（364 行：头 3 行路线与帧数，逐帧
+`frame / x / y / z / grounded / step_up / blocked`，末行 summary）。该文件被根 `.gitignore` 的
+`*.log` 规则挡住，**当前不入版本库**——需要在「放开 `!assets/verify/evidence/*.log`」与
+「留证只留本地、由用例随时重跑生成」之间选一条，待老板定；两种都不影响门禁。
+
+**人工验证栏**：`M2_BASELINE.md §7.1` 三行仍是「待 B05 填」——真窗口肉眼项（下沉/抖动/台阶观感/坡上抖动）
+属主观判读，自动门禁写不出来，需老板在真窗口走一遍后填结论。在此之前 B05 只算**自动判据收口**。
+
 ---
 
 ## 9. 决策清单（**2026-11-20 老板已拍板：全选推荐档**）

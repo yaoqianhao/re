@@ -67,7 +67,32 @@ pub(crate) fn slope_verdict<P: PhysicsQueryPort + ?Sized>(
         return SlopeVerdict::Flat;
     };
     let n = ground.normal.normalize_or_zero();
-    if n.length_squared() == 0.0 || n.y <= SLOPE_VERTICAL || n.y >= SLOPE_FLAT {
+    if n.length_squared() == 0.0 || n.y <= SLOPE_VERTICAL {
+        return SlopeVerdict::Flat;
+    }
+    let foot = capsule.half_height.abs() + capsule.radius.abs();
+    let feet = center.y - foot;
+    if n.y >= SLOPE_FLAT {
+        // 脚前缘踩在**平面**上：可能是同高度的平地（交给扫掠即可），也可能是一块
+        // 比脚下更高的平面 —— 台阶顶面、坡末端的平台。后者若不在这一步抬上去，
+        // 抬升量就会被扫掠的「起点重叠按支撑面放过」吞掉：本帧满格前进却一毫米
+        // 不升，脚当场埋进下面的面，竖直结算判悬空，角色从坡上穿下去
+        // （M2 · B05 可玩性回归在「斜坡 → 平台」接缝上实测到的坠落）。
+        // 判据只用高度差，与台阶同一把尺子（`max_step`）。
+        let rise = ground.height - feet;
+        if rise > SKIN && rise <= max_step + SKIN {
+            // 落位口径与台阶抬升一致：**脚前缘**进到顶面覆盖区，而不是只把中心
+            // 往前推满这一帧的距离。只推中心的话，中心仍停在坎外、脚底悬在台阶
+            // 顶上方半臂高，竖直结算在下方找不到顶面（先碰到的是立面上棱，法线
+            // (-0.77, 0.63)），角色停在半空、`grounded` 假、之后每帧 `max_step`
+            // 归零，一步也迈不动（B05 三级台阶实测：x=8.72 处脚底 1.8629，
+            // 悬在平台顶上方 0.31 米）。
+            let target = Vec3::new(toe.x, ground.height + foot + SLOPE_LIFT, toe.z);
+            let probe = Capsule::new(target, capsule.half_height, capsule.radius);
+            if port.capsule_overlap(&probe).is_empty() {
+                return SlopeVerdict::Climb(target, rise);
+            }
+        }
         return SlopeVerdict::Flat;
     }
     if n.y < min_up_dot {
@@ -90,7 +115,6 @@ pub(crate) fn slope_verdict<P: PhysicsQueryPort + ?Sized>(
     // 之后每帧都差同一截，永远追不回来 —— 落点一帧比一帧埋得深，最后被下面的
     // 重叠闸整体拒掉，角色表现为「上坡三步后失速、重力接管、穿地」（B04 实测）。
     // 前缘高度直接对齐坡面，误差不跨帧累积。
-    let foot = capsule.half_height.abs() + capsule.radius.abs();
     let radius = capsule.radius.abs();
     // 竖直胶囊贴斜面时，圆心到斜面的距离是 `radius`，投影到竖直方向就多出
     // `radius / n.y`；脚底因此比「平面接触」高 `radius * (1 / n.y - 1)`。
