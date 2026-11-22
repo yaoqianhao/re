@@ -15,6 +15,7 @@ M2 全部规划文档集中在 `docs/m2/`，一文件一职责，避免计划、
 | `M2_A04_SCENE_PLAN.md` | A04 `scene.rs` 拆域解债规划稿：现状六块实测、私有字段决定「必须落 `scene/` 子树」的论证、129 方法归属全表、12 文件行数预算、37 测试的切分与 `use super::*` 处置、6 批执行与 11 条判据、`≤800` vs `≤1200` 口径冲突（A04-D1） | **已实施**：§12 为实施记录（`scene.rs` 3935 → 601 行、13 个新文件全部 ≤800、`size_debt` 23 → 22、tests 2025 零删减；3 处偏离见 §12.3） | 实施 A04 前必读；G02 `app.rs` 拆域复用 §3.1 / §3.4 |
 | `M2_A05_SIZE_PLAN.md` | A05 `size_debt` 收紧方案：原口径三处数字全部过时（1929/1405/3040 → 实测 1542/1125/3032）的对账、三项实测块结构、档 A/B/C 三档取舍、`r3e-physics` 的 `types.rs`/`backend.rs` 横切与 re-export 表、可见性处置矩阵、6 批执行与 11 条判据、`A05-D1` 待拍板 | **已实施**（A05-D1 = 档 B，记录见 §12） | 实施 A05 前必读；B 阶段新增物理能力/插件工具时必读 §9 禁区 |
 | `M2_A03B_HOST_PLAN.md` | A03b `script` 绑定端口化设计稿：为何 script 不能依赖 physics、script/runtime 职责边界、**trait 默认方法 + 函数式适配器**的 `PhysReq`/`PhysicsHost` 设计、69 个绑定与 `+56` 测试落点 | **设计草案**（A03 收口后进本卡前确认 §4.2 取舍） | 做 A03b 前必读；追问「script 为何不能依赖 physics」时读 §1–§4 |
+| `M2_C_PLAN.md` | C 阶段（C01–C07，C03 拆 a/b = **8 卡**）详细方案：逐卡文件落点与行数预算、`r3e-terrain` 纯派生层设计、8 条 `terrain.*` 命令面与七处硬数字、地形场碰撞双后端、门禁配平（tests +108 / rpc +8 / domains +1）、13 步执行顺序、8 条风险回滚、**§12 CD-1~CD-7 已全部拍板**（2026-11-22 全选推荐档） | **已拍板** | 做 C01–C07 前必读；改 rpc 预算或地形碰撞落点前读 §12 / §8 |
 | `M2_PROPOSAL_CAPABILITY_SLOTS.md` | 插件写侧能力槽位提案，提交给 `D:\ai_ide` 宿主 | 对外提案 | **不在 M2 执行链路内**，与计划无依赖，可独立推进 |
 
 ## 当前状态
@@ -24,7 +25,8 @@ M2 全部规划文档集中在 `docs/m2/`，一文件一职责，避免计划、
 - 4 项选了非建议项（D1/D2/D12/D13 均 B），连锁影响见 `M2_DECISIONS.md`「非建议项影响总览」。
 - **A05 已完成**（2026-11-20，档 B）：`physics/lib.rs` 1542 → **461**、`plugin/tools.rs` 1125 → **715**、`runtime/app.rs` 3032 → **2848**，`size_debt` 债务 **22 → 20**，tests 2025 持平，verify 11 步全绿。
 - **B 阶段已拍板**（2026-11-20）：BD-1~BD-5 全选推荐档 → `rpc` 预算 `+2` → **`+6`**（全局 76 → **80**）、`CharacterPort` 落 `port.rs` 且不并超 trait、新增 `Category::Character`（连带 `layer_of`）、`TX_ONLY_METHODS` 补 3 条、规则 8 取档 A。详见 `M2_B_PLAN.md` §9。
-- **A 阶段 6 卡（A01 / A02 / A03 / A03b / A04 / A05）全部完成**，下一张卡 = **B01**（建 `r3e-character` crate + 控制器契约 + 命令注册）。
+- **A 阶段 6 卡 + B 阶段 5 卡全部完成**（B 末实测：tests **2150** / commands **398** / rpc **68** / invariants **40** / domains 17 / 成员 **18** / `size_debt` 20 / `dep_debt` 0 / 回放金标 `385482eb033d2964` 未漂），下一张卡 = **C01**。
+- **C 阶段已拍板**（2026-11-22，CD-1~CD-7 **全选推荐档**）：`rpc` 预算 `+3` → **`+8`**（全局 80 → **85**）、C03 拆 `C03a`/`C03b`（C 阶段 8 卡、总卡数 **46**）、`r3e-terrain` 纯派生层、地形碰撞走独立地形场通道、`terrain.gen` 走 `r3e-cli rpc` 通道。详见 `M2_C_PLAN.md` §12 与 `M2_DECISIONS.md` D14–D16。
 - **A03 落点调整已确认**（2026-11-20）：端口代码改放 `crates/r3e-physics`（老板指令），四项待定全部拍板——① 改 D1 第 2 条；② `r3e-character` 白名单加 physics；③ A03b 改「trait 默认方法 + 函数式适配器」；④ 默认后端改 rapier。已回写 `M2_DECISIONS.md`（D1/D2/D13 + 补充决定）、`M2_PLAN.md`（A03/A03b/B01 判据）与 `M2_A03_PORT_PLAN.md` §15。**代码尚未动手**，`r3e-core/src/physics_port.rs` 草稿待按 §9 回滚。
 
 ## 与其他文档的关系

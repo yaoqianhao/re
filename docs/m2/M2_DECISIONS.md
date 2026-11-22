@@ -260,3 +260,31 @@ A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/
 2. `r3e-character` 的「物理无关」从编译期保证降为约定 + `doc-gate` 守卫，这是选 B 换来的隔离性下降，如实记档。
 3. A03b 的「零行为变化」判据不变（1817 基线零删减、回放金标不漂移），但**接受一处 import 变更**：30 处 `ScriptHost::new` 调用点由 `r3e_script` 改为 `r3e_runtime` 同名再导出 —— 这是把 `RhaiPhysicsHost` 搬出 `r3e-script` 才可能真正删边的前提，二者不可兼得（详见 `M2_A03B_HOST_PLAN.md` §4.2）。
 4. 默认 rapier 后，`--no-default-features` 回落 builtin 的两轮验证从 A03 起成为固定动作，A03b / B02 / B03 / C04 / D01 全部沿用。
+
+---
+
+## C 阶段拍板（2026-11-22，CD-1~CD-7 全选推荐档）
+
+老板 2026-11-22 指令「全选推荐，开工」。七项决策全部取推荐档，结论如下，**后续卡不得再改**，除非老板另下指令。方案全文见 `docs/m2/M2_C_PLAN.md`。
+
+| # | 事项 | 结论 | 理由（一句话） | 回写位置 |
+|---|---|---|---|---|
+| **D14** | C 阶段 `rpc` 预算 | `+3` → **`+8`**；全局目标 `80` → **`85**`（+18 → +23） | 卡表要 `commands +8`、守恒规则 4 要 `script_only` 不增，而「不带 rpc 的新命令必然涨 `script_only`」——三者不能同时成立，只能放宽 rpc 预算 | `M2_PLAN.md` §2 / §3 / §4；本文 D14 |
+| **D15** | 地形数据的权威源 + 块划分 | `r3e-terrain` 为**纯派生层**（输入 `&[TerrainPatch]`、输出裸 `Vec`），`core::TerrainPatch` 仍是唯一进场景/存档/哈希的类型；块默认 **50 米**可配（`(0,1000]`，非法即拒） | 派生层让 `state_hash` / 存档 / 撤销栈 / 校验器**零改动**；否则 `r3e-core` 要反向依赖 terrain（`core.allow` 为空，撞 `dep-check` 红线） | `M2_PLAN.md` §3.2 C01；本文 D15 |
+| **D16** | 地形碰撞的实现层 | 物理侧新增**独立地形场通道**（`HeightField` + `HeightFieldPort` + builtin/rapier 双实现），**不给 `ColliderShape` 加变体** | 加 `HeightField` 变体会牵动 `types.rs` 解析与两后端全部 shape 匹配分支（接触/射线/扫掠），且三处文件在 `size_debt` 内；独立通道不动既有形状语义，注入方是 `r3e-runtime::terrain_scene`，物理仍只依赖 `r3e-core` | `M2_PLAN.md` §3.2 C04；本文 D16 |
+
+### 另外四项（不新增 D 编号，属执行口径）
+
+| # | 事项 | 结论 |
+|---|---|---|
+| CD-3 | 采样实现重复 | 单块采样上移 `core::TerrainPatch::sample_height`；`r3e-nav/src/bake.rs` 的私有 `patch_height` **本轮不动**（D 阶段独占文件），用 C01 的 20 点交叉断言锁住两者逐位等价，保证 D 阶段收口时不改行为 |
+| CD-4 | C03 拆卡 | 拆 `C03a`（网格 + 4 层权重，headless 全可判）/ `C03b`（独立渲染管线 + 混合着色，GPU 观感走 C07 人工截图）；C 阶段 7 卡 → **8 卡**，总卡数 45 → **46** |
+| CD-6 | 确定性哈希口径 | 复用 `r3e-doc::state_hash`（已含 `mix_terrain` 逐点），命令返回其 16 位十六进制；不新建哈希函数、不新增依赖 |
+| CD-7 | `terrain.gen` 的 CLI 形态 | 走 `r3e-cli rpc --method terrain.gen --args '{...}'`，`args.rs` **零改动**（实测 703/800，余量 97 行留给 D 阶段）；卡表原文的 `--size 200x200 --seed 42` 按「能力形态」理解，判据以「同 seed 两次逐字节一致 + 返回哈希」为准 |
+
+### D14 的连锁后果（已记账，不需再决策）
+
+1. `M2_PLAN.md` §2 基线表 `rpc` 目标 `≥80` → **`≥85`**；§3 阶段总览 C 行 `rpc +3` → **`+8`**、合计行 `+18` → **`+23**`；§4 累加表同步。
+2. C 阶段需同步的七处硬数字（`EXPECTED_COMMANDS` 398→406、`RPC_METHODS` 68→76、`EngineApi` 68→76、`cmd_spec/mod.rs` 的 `rpc == rpc_only + N` 由 `+29` 改 `+36`、三处 `cmd_spec_contract.rs`）全部集中在 **C06** 一卡，机械改动，清单见 `M2_C_PLAN.md` §10.3。漏一处 `cargo test` 即红。
+3. `script_only` 保持 **330** 不变（8 条命令全带 rpc），守恒规则 4 满足。
+4. C 阶段八卡 tests 分配与 `tests_baseline` 演进（2150 → 2166 → 2180 → 2194 → 2206 → 2226 → 2236 → 2248 → 2258）见 `M2_C_PLAN.md` §13.1。
