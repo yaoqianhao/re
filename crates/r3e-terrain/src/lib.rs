@@ -4,6 +4,9 @@
 //! **块划分 → 多分辨率 LOD → 高度/法线采样 → （C03a）三角网**。全部是**纯函数**：
 //! 输入 `&[TerrainPatch]`，输出裸数组，不留任何自有状态。
 //!
+//! 采样有两档口径：全分辨率用 [`sample_height_at`]，按 LOD 降精度用
+//! [`sample_height_lod`]（块内跳采、块边界带强制全采样，接缝两侧逐点相等）。
+//!
 //! ## 为什么是派生层（CD-2）
 //!
 //! 场景文件、存档、`state_hash`、撤销栈、校验器认的**唯一真值**始终是
@@ -48,10 +51,12 @@
 
 mod block;
 mod lod;
+mod lod_sample;
 mod sample;
 
 pub use block::{Block, BlockGrid};
 pub use lod::{lod_for, Lod, LodConfig, LOD_DISTANCES};
+pub use lod_sample::sample_height_lod;
 pub use sample::{sample_height_at, sample_normal};
 
 /// 默认块边长（米）：200 × 200 米的地形按 50 米切 → 4 × 4 = 16 块，
