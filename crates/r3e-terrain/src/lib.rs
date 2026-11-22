@@ -52,12 +52,17 @@
 #![forbid(unsafe_code)]
 
 mod block;
+mod generate;
 mod lod;
 mod lod_sample;
 mod mesh;
 mod sample;
 
 pub use block::{Block, BlockGrid};
+pub use generate::{
+    generate, GENERATE_JITTER, GENERATE_MAX_HEIGHT, GENERATE_MIN_HEIGHT, GENERATE_RESOLUTION,
+    GENERATE_SAMPLES_PER_BLOCK, MAX_GENERATE_SIZE,
+};
 pub use lod::{lod_for, Lod, LodConfig, LOD_DISTANCES};
 pub use lod_sample::sample_height_lod;
 pub use mesh::{block_mesh, TerrainLayerConfig, TerrainMesh};

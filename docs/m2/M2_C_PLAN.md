@@ -545,6 +545,37 @@ r3e-cli rpc --method terrain.gen --args '{"size_x":200,"size_z":200,"seed":42}'
 | 9 | 生成后既有非地形节点不变（只动 `terrain` 表） |
 | 10 | `terrain.gen` 在 `TX_ONLY_METHODS` 中（防未来被 `rpc` 绕过事务） |
 
+### 9.4 实施记录（2026-11-22 完成）
+
+**落地文件**
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-terrain/src/generate.rs`（新） | 156 | `generate(size_x, size_z, seed) -> Option<Vec<TerrainPatch>>`：`BlockGrid` 切块 → 逐块按**整张地形统一网格**填样本 → 块名 `terrain_<列>_<行>`、`resolution = [64, 64]`。公开 `GENERATE_RESOLUTION` / `GENERATE_SAMPLES_PER_BLOCK` / `GENERATE_MIN_HEIGHT` / `GENERATE_MAX_HEIGHT` / `GENERATE_JITTER` / `MAX_GENERATE_SIZE` |
+| `crates/r3e-terrain/src/lib.rs` | +6 | `mod generate;` + `pub use generate::{...}`（门面导出，模块私有） |
+| `crates/r3e-terrain/tests/generate.rs`（新） | 333 | 10 条用例 |
+
+**生成口径（两个「只看」）**
+
+1. **基高度只看世界坐标**：三层正弦叠加（~200 / ~90 / ~33 米周期）。同一点必同值，与块划分无关。
+2. **微扰只看全局样本索引**：`SplitMix64(seed ^ SplitMix64(gx<<32 \| gz))`，取高 53 位除 `2^53` 映射到 `[0,1)`，幅度 ±0.05 米。**不拿世界坐标喂噪声**——接缝两侧的 `x` 由两条不同浮点表达式算出，可能差 1 ulp，一旦进噪声就是两个不相干的高度，地面会裂出一条可走的缝。
+
+采样点按 `gx / 总段数` 定位、`f64` 算完落 `f32`（`f32` 下大尺寸会出现「相邻两点算出同一坐标」，白丢一个采样点）；段数 = 采样点数 − 1，相邻块共享边界那一列样本，故接缝逐位相等。代价：整张尺寸非 `block_size` 整数倍时，末块内采样间距与「均匀分布」有极小偏差（裁掉的那一小段摊到 63 个间隔里），换绝对无缝，值这个价。
+
+**10 条测试**
+
+- 可复现 4 条：同 seed 两次生成块名/矩形/分辨率/全部高度 `to_bits` 逐位相同；换 seed 至少改一个采样点且整张指纹不同；`seed = 0` 与 `u64::MAX` 均可复现且互不相同（覆盖 `SplitMix64` 回绕）；整张 FNV-1a 指纹覆盖「块名 + origin + size + resolution + 逐样本位模式」，同输入恒等、异尺寸必不同。
+- 覆盖与预算 3 条：200×200 / 50 米必为 4×4 = 16 块、块数不超 `MAX_BLOCKS` 与 `TERRAIN_MAX_PATCHES`、`resolution` 全 64 且样本数与 `resolution` 自洽；块面积和 == 40000 且逐块 `origin`/`size` 与 `BlockGrid` 裁定逐位一致；175 米非整除尺寸仍 16 块、面积和严丝合缝、接缝逐位相等。
+- 口径与拒错 3 条：生成物 `sanitized()` 后逐位不变（不靠 sanitize 兜脏数据）；全部样本有限且在 `[-20, 120]` 内，且左右/上下相邻块共享边界样本列逐位相等；非法尺寸 0 / 负 / `NaN` / `±inf` / 超 `MAX_GENERATE_SIZE` 一律 `None` 不返回半张地形（1024×1024 因块数超限被拒，150×150 可生成）。
+
+**一处方案调整：第 10 条挪到 C06**
+
+方案 §9.3 第 10 条写「`terrain.gen` 在 `TX_ONLY_METHODS` 中」，实测做不到单卡闭环：`crates/r3e-cli/src/args/tests.rs::tx_only_tables_are_consistent` 要求护栏表里的每个名字**必须是已知协议方法**。C05 只加护栏而不动 `RPC_METHODS`，该测试当场变红；反过来先动 `RPC_METHODS` 又必须同卡改 `dispatch` 臂、宿主实现与 cmd_spec 表，那是 C06 的整块工作。
+
+结论：**护栏与整条协议链路一起并入 C06**，C05 交付生成器本体（纯函数）+ 确定性口径，第 10 条替换为「175 米非整除尺寸仍无缝铺满」（价值不低于护栏：护栏迟早要加，接缝错位则是一张永久裂开的地形）。测试总数不变（方案 10 条 = 实际 10 条）。
+
+**门禁数字**：`r3e-terrain` 44 → **54**，全局 2233 → **2243**（`check-tests` 全绿）；`size_debt` 20 项不变（新文件 156 / 333 行，均远离 800）；`dep_rules` 19 crate / `dep_debt` 0（`r3e-terrain` 仍只依赖 `r3e-core`）；能力面零变化（不动 commands/rpc/domains/invariants）；回放金标 `385482eb033d2964` 未漂移；`cargo xtask verify` 11 步全绿。
+
 ---
 
 ## 10. C06：判据测试与域登记（tests **+12** / invariants **+2** / domains **+1**）
