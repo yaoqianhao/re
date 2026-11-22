@@ -319,6 +319,54 @@ pub struct TerrainMesh {
 | 13 | 空地形 → `mesh()` 返回 `None` |
 | 14 | 同输入两次生成，`positions/indices/weights` 逐位相同（确定性） |
 
+### 6.4 实施记录（2026-11-22 完成，提交 `01fea8b`）
+
+**落地形态**（`crates/r3e-terrain/src/mesh.rs`，公开导出 `block_mesh` / `TerrainMesh` / `TerrainLayerConfig`）
+
+```rust
+pub fn block_mesh(
+    patches: &[TerrainPatch], grid: &BlockGrid, index: [u32; 2],
+    lod: Lod, cfg: &TerrainLayerConfig,
+) -> Option<TerrainMesh>
+
+pub struct TerrainMesh { positions, normals, uvs, weights, indices, lod, segments }
+```
+
+`segments: [u32; 2]` 是方案 §6.1 之外的**新增字段**：它把「列数 × 行数」这个本来只能
+从顶点数反推的量显式带出来。测试 1/2/3/11 都要用它核对形状，外部调用方（C03b 建索引缓冲、
+C04 场地查询）也不必再自己反推。
+
+**段数规则**（方案只说「取整规则明确」，这里定死）：`cols = ceil(块宽 / (patch 采样步长 × lod.step()))`，
+行同理。于是 50 米块 + 1.5625 米步长时 `L0/L1/L2` = 32/16/8 段，三角数比正好 1:4:16，**不需要接缝修正**——
+方案 §6.3 第 3 条给的「±4 接缝修正」容差实测只用于尾块（非整除块边长）取整差，不是 LOD 本身要修的。
+
+**角度侧一个方案外的取舍**：法线不走 `sample_normal`，改为网格自身中心差分（边缘用单侧顶替）。
+`sample_normal` 在块边界处会跨块取样，粗档段边缘的法线就与相邻细档块的法线对不上——
+这正是「网格法线要跟本块顶点密度一致」的由来。代价是法线精度等于当前档位精度，符合 LOD 本意。
+
+**权重口径**（§6.2 的「原始分」在这里落地成带过渡带的线性分）：
+
+```
+ramp(v) = clamp(v / fade, 0, 1)
+草 = ramp(grass_slope_max - 坡度) × ramp(grass_height_max - 高度)
+岩 = ramp(坡度 - rock_slope_min)
+沙 = ramp(sand_height_max - 高度)
+雪 = ramp(高度 - snow_height_min)
+weights = 四个分 / 其和；和 <= 0 或非有限 → [1,0,0,0]
+```
+
+`fade` 默认 6（坡度用度、高度用米共用一个数值窗口，够用且只有一个旋钮）。默认配置下
+平地（高度 0、坡度 0）落在草沙混合（约 0.55 / 0.45）而非纯沙——这是刻意的：低地本来就该是
+「沙往草地过渡」的样子，测试 5 用反向对照钉住它（平地不得掺岩掺雪、但草沙都在）。
+
+**测试 11 的夹具偏差**：方案写 `block_size = 33.3`，实测 `BlockGrid::new` 直接返回 `None`——
+200 / 33.3 向上取整是 7，7×7 = 49 > `MAX_BLOCKS`(32)，块数上限先拒了。改用 **40.4 米**
+（5×5 = 25 块，仍不整除 3.125），断言「顶点铺满整块」比原方案更实。
+
+**门禁数字**：`r3e-terrain` 30 → **44**（`tests/mesh.rs` 14 条），全局 2180 → **2194**；
+`size_debt` 20 不变（`mesh.rs` 约 300 行、测试约 300 行）；`dep_rules` 仍 19 个 crate、`dep_debt` 0；
+能力面零变化；回放金标 `385482eb033d2964` 未漂移。
+
 ---
 
 ## 7. C03b：渲染通道 + 4 层混合着色（tests **+12**）
