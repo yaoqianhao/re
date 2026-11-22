@@ -409,6 +409,31 @@ weights = 四个分 / 其和；和 <= 0 或非有限 → [1,0,0,0]
 
 真实观感走 C07 的人工截图（`evidence/`）。
 
+### 7.4 实施记录（2026-11-22 完成）
+
+**落地文件**（全部新增，既有 PBR 管线零改动）
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-render/src/terrain.rs` | 473 | `TERRAIN_LAYER_COUNT` / `TERRAIN_VERTEX_STRIDE=48` / `TerrainVertex` + `TERRAIN_ATTRIBUTES`(location 0..=3) / `terrain_vertex_layout` / `normalise_weights` / `pack_vertices` / `needs_u32_indices` / `mix_layers` / `TerrainLayersUniform` + `layer_index` / `TerrainDrawItem` / `TerrainPass` |
+| `crates/r3e-render/src/terrain.wgsl` | 86 | 顶点（pos/normal/uv/weights 四入口）+ 片元 4 层按权重混合 lambert |
+| `crates/r3e-runtime/src/terrain_scene.rs` | 293 | 装配层：`TerrainScene` / `TerrainSceneConfig`(D10) / `TerrainBlock` / `TerrainPlan` / `TerrainSceneEvent` |
+| `crates/r3e-render/src/lib.rs` | 65 → 71 | `pub mod terrain;` + 6 个再导出 |
+| `crates/r3e-runtime/Cargo.toml` | +1 | `r3e-terrain`（allow 表已有该边，`dep_debt` 不动） |
+
+**测试 13 条**（方案 12 条 + 装配侧多 1 条）
+
+`tests/terrain_pass.rs`（8）：location 集合与实例布局不相交 / stride==48 且与 `wgpu::VertexFormat` 累加一致 / 权重归一化纠偏（含全零→层 0）/ 顶点与索引数守恒 / `needs_u32_indices` 在 65536 边界翻转 / 缺省材质名回落常量色不 panic / `TERRAIN_WGSL` 过 naga 解析 / `mix_layers` 在 `[1,0,0,0]` 输出层 0 基色。
+
+`tests/terrain_scene.rs`（5）：空地形 → `plan` 为空且不建管线 / 块无 patch → 跳过该块 / LOD 变化才重建（重建计数）/ D10 非法 `block_size` → 空计划 + 1 条 warn 事件 / 装配结果自洽（块数 4×4=16、顶点数与 `block_mesh` 一致）。
+
+**两处方案外取舍**
+
+1. **帧序列接线推迟到 C07**。`Renderer` 的入口签名改动量（`frame()` 要新增地形切片参数并波及所有调用点）远超 §7.2 给的「app.rs ≈ 2 行」预算，且在无 GPU 的 CI 上无法验，硬接只会把 C03b 的判定面搅浑。本卡交付「通道可用 + 装配纯数据可判」，`TerrainPass::draw` 由宿主在 C07 的 `terrain_roam` 里持有并调用——C07 的截图回归才是接线的真判据。
+2. **LOD 重建口径**（测试 9 原本写「far.rebuilds == 16」）。实测 16 块里最远的 3 块首帧就已是 L2（块中心距 > 200m），相机拉到 5000 米外时档位不变、不该计重建，实际是 13。改成 `rebuilds == 块数 − 首帧已是 L2 的块数`——这比写死 16 更贴 LOD 语义，也防未来改阈值时测试假通过。
+
+**门禁数字**：`r3e-render` 316 → **324**、`r3e-runtime` 14 → **19**，全局 2194 → **2207**（`check-tests` 全绿）；`size_debt` 20 不变（三个新文件分别为 473/86/293 行，均低于 800 阈值）；`dep_rules` 19 个 crate、`dep_debt` 0；能力面零变化（不进 commands/rpc）；回放金标 `385482eb033d2964` 未漂移；`cargo xtask verify` 11 步全绿。
+
 ---
 
 ## 8. C04：地形碰撞（双后端各验，tests **+20**）
