@@ -2449,6 +2449,7 @@ dependencies = [
  "r3e-physics",
  "r3e-render",
  "r3e-script",
+ "r3e-terrain",
  "rhai",
  "serde_json",
  "wgpu",

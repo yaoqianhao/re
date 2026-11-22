@@ -13,6 +13,7 @@ pub mod pbr;
 pub mod postfx;
 pub mod renderer;
 pub mod ssao;
+pub mod terrain;
 pub mod text;
 pub mod transparency;
 pub mod ui;
@@ -47,6 +48,12 @@ pub use renderer::{
     MSAA_SAMPLE_COUNT,
 };
 pub use ssao::{SsaoPass, SsaoStats, AO_FORMAT, AO_PASSES_PER_FRAME};
+pub use terrain::{
+    layer_index, mix_layers, needs_u32_indices, normalise_weights, pack_vertices,
+    terrain_vertex_layout, TerrainDrawItem, TerrainLayersUniform, TerrainPass, TerrainVertex,
+    CAMERA_UNIFORM_BYTES, TERRAIN_ATTRIBUTES, TERRAIN_LAYER_COUNT, TERRAIN_VERTEX_STRIDE,
+    TERRAIN_WGSL,
+};
 pub use text::{GlyphUpload, TextBuild, TextInstance, TextPass, TextStats};
 pub use ui::{
     images_to_load, plan_ui, plan_ui_limited, UiBatch, UiBuild, UiImageProvider, UiInstance,

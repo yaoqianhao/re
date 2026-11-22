@@ -15,6 +15,7 @@ mod physics_bind;
 mod physics_sync;
 pub mod port;
 mod scene_material_import;
+pub mod terrain_scene;
 pub mod time;
 
 pub use app::{CliOptions, EngineApp, HeadlessReport, HEADLESS_FIXED_DT};
