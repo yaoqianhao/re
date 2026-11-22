@@ -471,6 +471,40 @@ weights = 四个分 / 其和；和 <= 0 或非有限 → [1,0,0,0]
 
 两个后端同一断言失败即红；若 rapier 与 builtin 差 >1e-3，视为后端语义分叉（§15 R-3），必须在卡内解决并记录实测差。
 
+### 8.3 实施记录（2026-11-22 完成）
+
+**落地文件**
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-physics/src/heightfield.rs`（新） | 286 | `HeightField { origin, cell, cols, rows, heights }`：`new` 逐项校验（尺寸为 0 / 非有限 / `cols*rows != heights.len()` 一律 `Err`，非法构造不覆盖旧场）、`height_at` 双线性、`normal_at` 中心差分、`peak_over`、`aabb`、`covers`（边界算场内） |
+| `crates/r3e-physics/src/terrain_query.rs`（新） | 212 | 与后端无关的解析查询：`raycast`（按格子步进，起点在表下报重叠）、`capsule_overlap`（地表穿胶囊）、`capsule_sweep`（最短落地距离）、`merge_ground`（地形 / 后端样本取更高者） |
+| `crates/r3e-physics/src/port_terrain.rs`（新） | 109 | 端口层合成：`nearer`（重叠优先 → 距离 → `node` 升序）、`port_hit`、`cast_ray` / `capsule_overlap` / `capsule_sweep` 的择一 |
+| `crates/r3e-physics/src/backend.rs` | +17 | `PhysicsBackend` 两个**可选默认方法** `set_heightfield` / `heightfield`（默认什么都不做 / `None`，`Null` 后端据此天然拒绝） |
+| `crates/r3e-physics/src/builtin_backend.rs` | +14 | `heightfield: Option<HeightField>` 字段；只存数据，查询侧统一由 `terrain_query` 合并 |
+| `crates/r3e-physics/src/rapier_backend.rs` | +67 | `TerrainField { body, field }`：装场建一块**静态 `HeightField3d` 碰撞体**（`scale.y` 固定 1.0、`x/z` 取网格跨度、刚体平移到网格中心），卸场整块移除。它**不进 `records`**，所以不影响 `body_count()`、不参与「脚本建的刚体」遍历 |
+| `crates/r3e-physics/src/lib.rs` | +40 | `pub mod heightfield` / `mod terrain_query` / `mod port_terrain` / `pub use HeightField`；门面 `set_heightfield` / `heightfield`；`sample_ground` 合成；`rebuild_backend` 切后端时把场原样搬过去 |
+| `crates/r3e-physics/src/port_impl.rs` | 826 → 768 | 端口适配只留转发，合成下沉到 `port_terrain.rs`（见取舍 4） |
+| `crates/r3e-physics/tests/terrain_field.rs`（新） | 442 | 26 条用例，双后端由 `selectable()` 循环覆盖 |
+
+**测试 26 条**（方案 20 条 + 6 条；断言合并成一份、对后端循环）
+
+- 数据契约 6 条：非法尺寸 / 非有限高度 / 格数与样本数不符全拒且不覆盖旧场；`covers` 与 `peak_over`/`aabb` 含边界；同高度场两次构造逐位相等；平地表插值精确且法线朝上；斜坡法线与解析斜率一致；场外采样返回空。
+- 装卸与切后端 4 条：装场不动刚体表与能力位；装场后切 builtin/rapier 场不丢；`Null` 后端装不上；清空后回落到地面平面。
+- 双后端一致 1 条（内含 8 组断言）：常数场 / 斜坡解析解 / 接缝两侧 / 竖直射线命中点 / 天空无命中 / 胶囊扫掠落点不穿透 / 陡坡法线倾角 / 地形与刚体共存时射线取更近者，全部逐后端断言且互差 <1e-3。
+- 地面采样 3 条：地形高于地面取地形、低于地面取地面、远离地形回落平面。
+- 射线 / 胶囊 7 条：向下命中、起点在地表下报重叠、距离不足不命中、斜射进场命中、刚体近选刚体、地形近选地形、地表穿胶囊、悬空无重叠、向下扫掠给出落地距离、向上扫掠碰不到脚下地表、贴地扫掠报重叠、场外拿不到地形候选。
+- 总闸 2 条：物理关闭时地形查询一律为空；未被地形覆盖时端口能力位不变。
+
+**四处方案外取舍**
+
+1. **不新建 `port/heightfield.rs` 与 `HeightFieldPort`**：改成在既有 `PhysicsBackend` 上加两个默认方法，与 `set_ground` / `set_ccd_default` 同款扩展方式。少一个 trait、少一套 DTO，门面 API 与 §8.1 写的完全一致，`Null` 后端的「不支持」也由默认实现自然给出。
+2. **测试合并成单文件 + `selectable()` 循环**，而非 `heightfield_builtin.rs` / `heightfield_rapier.rs` 两文件各写一遍：同一份断言跑两遍才不会「改一边忘一边」——两套拷贝迟早正文漂移，而双后端分叉恰恰是本卡唯一想抓的东西（差 >1e-3 即红）。
+3. **方案 #8 / #9（0.3m 台阶可跨、60° 陡坡 `grounded = false`）不在本卡判**：那是 `r3e-character` 的 `max_step` / `max_slope_deg` 判据，属于 B03 已验收的行为；物理侧本卡只保证「给出地表高度与法线」。已在 26 条里用「陡坡法线倾角」「胶囊贴地扫掠」占位，真正的行走判据留给 C07 的 `terrain_roam` 路点回归。
+4. **`port_impl.rs` 一度顶穿 `lint-size`（826 > 800）**：`cargo xtask lint-size` 当场拦下，于是把「刚体候选 vs 地形候选择优」整块抽成 `port_terrain.rs`（109 行），`port_impl.rs` 回到 768 行、`size_debt` 白名单仍是 20 项且全部未上涨。同时把**地面合成从端口移到门面** `sample_ground`：否则「直接拿 `&Physics` 调」与「拿 `&dyn GroundPort` 调」两条路径会各算一遍，日后改一边漏一边的症状是「角色调用比端口调用低一截」。
+
+**门禁数字**：`r3e-physics` 239 → **265**，全局 2207 → **2233**（`check-tests` 全绿）；`size_debt` 20 项不变；`dep_rules` 19 crate / `dep_debt` 0；能力面零变化（不动 commands/rpc/domains/invariants）；回放金标 `385482eb033d2964` 未漂移；`cargo xtask verify` 11 步全绿。
+
 ---
 
 ## 9. C05：CLI 生成与确定性哈希（tests **+10**）
