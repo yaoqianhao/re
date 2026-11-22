@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
 use r3e_core::{NodeId, Scene};
 use rapier3d::na::Unit;
 use rapier3d::parry::query::{
@@ -37,13 +37,14 @@ use rapier3d::parry::shape::{Ball, Capsule as ParryCapsule, Cuboid};
 use rapier3d::prelude::*;
 
 use crate::port::{Capsule, GroundSample, PortHit};
-use crate::{
-    cast_candidate_better, BackendCaps, BodyDesc, BodyHandle, BodyKind, CastShape, ColliderShape,
-    OverlapHit, PhysicsBackend, PhysicsEvent, PhysicsEventKind, Ray, RayHit, ShapeCastHit,
+use crate::rapier_glue::{
+    collider_for, quat_to_glam, quat_to_rapier, to_glam, to_rapier, EventCollector,
+    GROUND_USER_DATA,
 };
-
-/// 地面半空间的 `user_data` 标记：它不是场景节点，事件里应报 `None`。
-const GROUND_USER_DATA: u128 = u128::MAX;
+use crate::{
+    cast_candidate_better, BackendCaps, BodyDesc, BodyHandle, BodyKind, CastShape, OverlapHit,
+    PhysicsBackend, PhysicsEvent, Ray, RayHit, ShapeCastHit,
+};
 
 /// 判定「脚本挪了节点」的位置阈值（米）。低于它认为节点没被动过。
 const TELEPORT_EPS: f32 = 1e-4;
@@ -51,98 +52,18 @@ const TELEPORT_EPS: f32 = 1e-4;
 /// 单帧最多切几个子步，与内置后端保持同一节奏（避免大 dt 一帧穿透）。
 const MAX_SUBSTEPS: usize = 6;
 
-fn to_rapier(v: Vec3) -> Vector {
-    Vector::new(v.x, v.y, v.z)
-}
+/// 地表采样时「这个面算不算地上」的法线下限（`normal.y`）。
+///
+/// 取 0.5（约 60°）：比角色 45° 的爬坡上限宽松，只用来排除**明显是障碍侧面**的
+/// 命中（斜置箱体的端面、台阶/高台的立面）。门槛卡在 45° 会把角色能走的陡坡
+/// 也当成障碍；卡得太低（如 0.2）又会放过 75° 的楔形棱面 —— 那正是 B05 接缝
+/// 卡死的元凶。
+const GROUND_STEEP_MIN: f32 = 0.5;
 
-fn to_glam(v: Vector) -> Vec3 {
-    Vec3::new(v.x, v.y, v.z)
-}
-
-fn quat_to_rapier(q: Quat) -> Rotation {
-    Rotation::from_xyzw(q.x, q.y, q.z, q.w)
-}
-
-fn quat_to_glam(q: &Rotation) -> Quat {
-    Quat::from_xyzw(q.x, q.y, q.z, q.w)
-}
-
-/// 把 `ColliderShape` + 半尺寸 + 材质翻译成 Rapier 碰撞体。
-fn collider_for(desc: &BodyDesc) -> ColliderBuilder {
-    let h = desc.half_extents.abs().max(Vec3::splat(1e-3));
-    let builder = match desc.shape {
-        ColliderShape::Box => ColliderBuilder::cuboid(h.x, h.y, h.z),
-        ColliderShape::Sphere => ColliderBuilder::ball(h.x),
-        // 胶囊：内置后端把 h.y 当「半径 + 圆柱半高」，换算成 rapier 的 (圆柱半高, 半径)
-        ColliderShape::Capsule => ColliderBuilder::capsule_y((h.y - h.x).max(0.0), h.x),
-        ColliderShape::Cylinder => ColliderBuilder::cylinder(h.y, h.x),
-    };
-    let builder = builder
-        .friction(desc.friction.clamp(0.0, 2.0))
-        .restitution(desc.restitution.clamp(0.0, 1.0))
-        .active_events(ActiveEvents::COLLISION_EVENTS);
-    if matches!(desc.kind, BodyKind::Dynamic) && desc.mass > 1e-4 {
-        builder.mass(desc.mass)
-    } else {
-        builder
-    }
-}
-
-/// Rapier 事件回调：把 `ColliderHandle` 对翻译回 `NodeId` 对。
-struct EventCollector {
-    sink: Arc<Mutex<Vec<PhysicsEvent>>>,
-}
-
-/// 碰撞体 → 所属节点（地面标记为 `None`）。
-fn node_of(
-    bodies: &RigidBodySet,
-    colliders: &ColliderSet,
-    handle: ColliderHandle,
-) -> Option<NodeId> {
-    let parent = colliders.get(handle)?.parent()?;
-    let data = bodies.get(parent)?.user_data;
-    if data == GROUND_USER_DATA {
-        None
-    } else {
-        Some(data as NodeId)
-    }
-}
-
-impl EventHandler for EventCollector {
-    fn handle_collision_event(
-        &self,
-        bodies: &RigidBodySet,
-        colliders: &ColliderSet,
-        event: CollisionEvent,
-        _contact_pair: Option<&ContactPair>,
-    ) {
-        let (kind, a, b) = match event {
-            CollisionEvent::Started(a, b, _) => (PhysicsEventKind::Started, a, b),
-            CollisionEvent::Stopped(a, b, _) => (PhysicsEventKind::Stopped, a, b),
-        };
-        let ev = PhysicsEvent {
-            kind,
-            a: node_of(bodies, colliders, a),
-            b: node_of(bodies, colliders, b),
-        };
-        if let Ok(mut sink) = self.sink.lock() {
-            sink.push(ev);
-        }
-    }
-
-    fn handle_contact_force_event(
-        &self,
-        _dt: Real,
-        _bodies: &RigidBodySet,
-        _colliders: &ColliderSet,
-        _contact_pair: &ContactPair,
-        _total_force_magnitude: Real,
-    ) {
-        // 力事件目前不暴露给脚本；需要时在这里转成 PhysicsEvent 的新 kind。
-    }
-
-    fn handle_soft_body_tear_event(&self, _bodies: &SoftBodySet, _event: &SoftBodyTearEvent) {}
-}
+/// 地表采样遇到陡面时，最多再往下探几段。
+///
+/// 正常场地一两段就够（棱面 → 顶面）；给个上限只是防止病态几何把查询拖成死循环。
+const GROUND_PROBE_STEPS: usize = 4;
 
 /// 一条刚体记录：句柄 ↔ Rapier 实体 ↔ 场景节点。
 struct Record {
@@ -741,29 +662,48 @@ impl PhysicsBackend for RapierBackend {
             }
         }
         let origin = Vec3::new(x, top + 1.0, z);
-        let parry_ray = ParryRay::new(to_rapier(origin), to_rapier(Vec3::NEG_Y));
-        let max_distance = (origin.y - self.ground) + 1.0;
         let mut best = GroundSample::flat(self.ground);
         for (handle, rec) in self.records.iter() {
             let Some(collider) = self.colliders.get(rec.collider) else {
                 continue;
             };
-            let Some(hit) = collider.shape().cast_ray_and_get_normal(
-                collider.position(),
-                &parry_ray,
-                max_distance,
-                true,
-            ) else {
-                continue;
-            };
-            let height = origin.y - hit.time_of_impact;
-            if height > best.height {
-                best = GroundSample {
-                    height,
-                    normal: to_glam(hit.normal).normalize_or_zero(),
-                    body: Some(handle.0),
-                    node: Some(rec.node),
+            // 沿 -Y 逐段下探，**只认站得住的面**。
+            //
+            // 第一个命中的未必是地面：斜置箱体的端面、高台的侧壁都会先挡住射线。
+            // M2-B05 在「斜坡 → 平台」接缝上实测到的就是坡体端面 —— 法线
+            // `(0.966, 0.259, 0)`，`n.y` 只有 0.259，上层按坡度判 `TooSteep` 后
+            // 整帧原地冻结、还不报 `blocked`（角色卡在 x=5.5 一动不动）。把障碍
+            // 的侧面当地表，会把能走的路判成走不了。所以命中的面太陡就继续往下
+            // 打，取下面第一个立得住的面；一路打不到就退回家自带的地面平面。
+            let mut from_y = origin.y;
+            for _ in 0..GROUND_PROBE_STEPS {
+                let probe_origin = Vec3::new(x, from_y, z);
+                let parry_ray = ParryRay::new(to_rapier(probe_origin), to_rapier(Vec3::NEG_Y));
+                let max_distance = (probe_origin.y - self.ground) + 1.0;
+                // `solid = false`：下探起点就贴着上一层表面，不能一出发就自撞。
+                let Some(hit) = collider.shape().cast_ray_and_get_normal(
+                    collider.position(),
+                    &parry_ray,
+                    max_distance,
+                    false,
+                ) else {
+                    break;
                 };
+                let height = probe_origin.y - hit.time_of_impact;
+                let normal = to_glam(hit.normal).normalize_or_zero();
+                if normal.y >= GROUND_STEEP_MIN {
+                    if height > best.height {
+                        best = GroundSample {
+                            height,
+                            normal,
+                            body: Some(handle.0),
+                            node: Some(rec.node),
+                        };
+                    }
+                    break;
+                }
+                // 陡面：从它下方一点点接着探，别被同一个面反复挡住。
+                from_y = height - 1e-3;
             }
         }
         Some(best)

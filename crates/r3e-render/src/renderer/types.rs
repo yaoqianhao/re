@@ -32,6 +32,24 @@ pub(crate) type DrawGroup = (
     Option<crate::pbr::SceneMaterialKey>,
 );
 
+/// 一个绘制批次的实例区间 → `draw_indexed` 的实例范围长度（真窗口回归）。
+///
+/// `set_vertex_buffer(1, ..)` 绑的是 `range` 切出来的**整段**实例，因此
+/// `draw_indexed` 的实例范围必须是同一段长度。一旦写成恒 `0..1`：
+///
+/// * 统计口径看不出来 —— `RenderStats` 的实例数按 `range` 长度累加，
+///   探针照样报「绘制实例 8」；
+/// * 画面只画每批第一个实例，而运行时 `scene.spawn` 的新节点永远排在批尾，
+///   于是症状是「新加的物件不显示、角色可视体看不见」，而既有节点改变换
+///   仍然生效（它是批首），很容易被误判成物理或场景装配问题；
+/// * 阴影通道同一条规则，漏改则影子也只投第一个实例。
+///
+/// 区间反了（`start > end`，不该发生）按 0 处理：`0..0` 是合法的空绘制，
+/// 比让 wgpu 在 `slice()` 处 panic 更好定位。
+pub(crate) fn instance_count(range: &std::ops::Range<u32>) -> u32 {
+    range.end.saturating_sub(range.start)
+}
+
 /// `prepare_instances` 的返回值。
 ///
 /// 分组键是 `(网格, 物件级 PBR 材质)`：同一网格的物件若 metallic / roughness

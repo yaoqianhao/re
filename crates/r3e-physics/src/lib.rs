@@ -51,6 +51,8 @@ mod slope;
 
 #[cfg(feature = "rapier")]
 mod rapier_backend;
+#[cfg(feature = "rapier")]
+mod rapier_glue;
 
 /// 刚体句柄，由后端分配。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

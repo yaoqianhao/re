@@ -12,6 +12,7 @@ mod asset_scene;
 pub mod capture;
 pub mod cli;
 mod physics_bind;
+mod physics_sync;
 pub mod port;
 mod scene_material_import;
 pub mod time;

@@ -1,0 +1,1214 @@
+{
+ "$comment": "楼梯/斜坡走廊实验室：9 条并行赛道（5 组楼梯 级高 0.10/0.18/0.25/0.32/0.50，4 组斜坡 12/25/40/60 度），每条地形末端带 2m 平台。玩家圆柱为脚本运动学驱动（walk.rhai），不使用 character_* 控制器，因此不依赖 runtime 的角色宿主接线；地形全部静态 box collider，供物理射线贴地与坡度/台阶判定使用。 地面由 ground_plane 静态盒承担碰撞（terrain 段仅渲染，物理射线打不到它）。",
+ "name": "r3e-character-stairs-lab",
+ "terrain": [
+  {
+   "name": "ground",
+   "origin": [
+    -22.0,
+    -22.0
+   ],
+   "size": [
+    44.0,
+    32.0
+   ]
+  }
+ ],
+ "spawns": [
+  {
+   "name": "start",
+   "position": [
+    -16.0,
+    0.9,
+    6.0
+   ]
+  }
+ ],
+ "objects": [
+  {
+   "name": "ground_plane",
+   "mesh": "cube",
+   "position": [
+    0.0,
+    -0.25,
+    -6.0
+   ],
+   "scale": [
+    44.0,
+    0.5,
+    32.0
+   ],
+   "color": [
+    0.22,
+    0.24,
+    0.27,
+    1.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain",
+    "ground"
+   ]
+  },
+  {
+   "name": "stairs_h10_s1",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.05,
+    -2.275
+   ],
+   "scale": [
+    2.6,
+    0.1,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s2",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.1,
+    -2.825
+   ],
+   "scale": [
+    2.6,
+    0.2,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s3",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.15,
+    -3.375
+   ],
+   "scale": [
+    2.6,
+    0.3,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s4",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.2,
+    -3.925
+   ],
+   "scale": [
+    2.6,
+    0.4,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s5",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.25,
+    -4.475
+   ],
+   "scale": [
+    2.6,
+    0.5,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s6",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.3,
+    -5.025
+   ],
+   "scale": [
+    2.6,
+    0.6,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s7",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.35,
+    -5.575
+   ],
+   "scale": [
+    2.6,
+    0.7,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s8",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.4,
+    -6.125
+   ],
+   "scale": [
+    2.6,
+    0.8,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s9",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.45,
+    -6.675
+   ],
+   "scale": [
+    2.6,
+    0.9,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s10",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.5,
+    -7.225
+   ],
+   "scale": [
+    2.6,
+    1.0,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s11",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.55,
+    -7.775
+   ],
+   "scale": [
+    2.6,
+    1.1,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_s12",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.6,
+    -8.325
+   ],
+   "scale": [
+    2.6,
+    1.2,
+    0.55
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h10_top",
+   "mesh": "cube",
+   "position": [
+    -16.0,
+    0.6,
+    -9.6
+   ],
+   "scale": [
+    2.6,
+    1.2,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s1",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.09,
+    -2.3
+   ],
+   "scale": [
+    2.6,
+    0.18,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s2",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.18,
+    -2.9
+   ],
+   "scale": [
+    2.6,
+    0.36,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s3",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.27,
+    -3.5
+   ],
+   "scale": [
+    2.6,
+    0.54,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s4",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.36,
+    -4.1
+   ],
+   "scale": [
+    2.6,
+    0.72,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s5",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.45,
+    -4.7
+   ],
+   "scale": [
+    2.6,
+    0.9,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s6",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.54,
+    -5.3
+   ],
+   "scale": [
+    2.6,
+    1.08,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s7",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.63,
+    -5.9
+   ],
+   "scale": [
+    2.6,
+    1.26,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s8",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.72,
+    -6.5
+   ],
+   "scale": [
+    2.6,
+    1.44,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s9",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.81,
+    -7.1
+   ],
+   "scale": [
+    2.6,
+    1.62,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_s10",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.9,
+    -7.7
+   ],
+   "scale": [
+    2.6,
+    1.8,
+    0.6
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h18_top",
+   "mesh": "cube",
+   "position": [
+    -12.0,
+    0.9,
+    -9.0
+   ],
+   "scale": [
+    2.6,
+    1.8,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s1",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.125,
+    -2.35
+   ],
+   "scale": [
+    2.6,
+    0.25,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s2",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.25,
+    -3.05
+   ],
+   "scale": [
+    2.6,
+    0.5,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s3",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.375,
+    -3.75
+   ],
+   "scale": [
+    2.6,
+    0.75,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s4",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.5,
+    -4.45
+   ],
+   "scale": [
+    2.6,
+    1.0,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s5",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.625,
+    -5.15
+   ],
+   "scale": [
+    2.6,
+    1.25,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s6",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.75,
+    -5.85
+   ],
+   "scale": [
+    2.6,
+    1.5,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s7",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    0.875,
+    -6.55
+   ],
+   "scale": [
+    2.6,
+    1.75,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_s8",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    1.0,
+    -7.25
+   ],
+   "scale": [
+    2.6,
+    2.0,
+    0.7
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h25_top",
+   "mesh": "cube",
+   "position": [
+    -8.0,
+    1.0,
+    -8.6
+   ],
+   "scale": [
+    2.6,
+    2.0,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_s1",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.16,
+    -2.4
+   ],
+   "scale": [
+    2.6,
+    0.32,
+    0.8
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_s2",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.32,
+    -3.2
+   ],
+   "scale": [
+    2.6,
+    0.64,
+    0.8
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_s3",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.48,
+    -4.0
+   ],
+   "scale": [
+    2.6,
+    0.96,
+    0.8
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_s4",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.64,
+    -4.8
+   ],
+   "scale": [
+    2.6,
+    1.28,
+    0.8
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_s5",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.8,
+    -5.6
+   ],
+   "scale": [
+    2.6,
+    1.6,
+    0.8
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_s6",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.96,
+    -6.4
+   ],
+   "scale": [
+    2.6,
+    1.92,
+    0.8
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h32_top",
+   "mesh": "cube",
+   "position": [
+    -4.0,
+    0.96,
+    -7.8
+   ],
+   "scale": [
+    2.6,
+    1.92,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h50_s1",
+   "mesh": "cube",
+   "position": [
+    0.0,
+    0.25,
+    -2.5
+   ],
+   "scale": [
+    2.6,
+    0.5,
+    1.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h50_s2",
+   "mesh": "cube",
+   "position": [
+    0.0,
+    0.5,
+    -3.5
+   ],
+   "scale": [
+    2.6,
+    1.0,
+    1.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h50_s3",
+   "mesh": "cube",
+   "position": [
+    0.0,
+    0.75,
+    -4.5
+   ],
+   "scale": [
+    2.6,
+    1.5,
+    1.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h50_s4",
+   "mesh": "cube",
+   "position": [
+    0.0,
+    1.0,
+    -5.5
+   ],
+   "scale": [
+    2.6,
+    2.0,
+    1.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "stairs_h50_top",
+   "mesh": "cube",
+   "position": [
+    0.0,
+    1.0,
+    -7.0
+   ],
+   "scale": [
+    2.6,
+    2.0,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "ramp_d12_slope",
+   "mesh": "cube",
+   "position": [
+    4.0,
+    0.6037,
+    -4.9344
+   ],
+   "scale": [
+    2.6,
+    0.3,
+    6.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ],
+   "rotation": [
+    12,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "ramp_d12_top",
+   "mesh": "cube",
+   "position": [
+    4.0,
+    0.6237,
+    -8.8689
+   ],
+   "scale": [
+    2.6,
+    1.2475,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "ramp_d25_slope",
+   "mesh": "cube",
+   "position": [
+    8.0,
+    1.2479,
+    -4.7189
+   ],
+   "scale": [
+    2.6,
+    0.3,
+    6.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ],
+   "rotation": [
+    25,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "ramp_d25_top",
+   "mesh": "cube",
+   "position": [
+    8.0,
+    1.2679,
+    -8.4378
+   ],
+   "scale": [
+    2.6,
+    2.5357,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "ramp_d40_slope",
+   "mesh": "cube",
+   "position": [
+    12.0,
+    1.9084,
+    -4.2981
+   ],
+   "scale": [
+    2.6,
+    0.3,
+    6.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ],
+   "rotation": [
+    40,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "ramp_d40_top",
+   "mesh": "cube",
+   "position": [
+    12.0,
+    1.9284,
+    -7.5963
+   ],
+   "scale": [
+    2.6,
+    3.8567,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "ramp_d60_slope",
+   "mesh": "cube",
+   "position": [
+    16.0,
+    2.5781,
+    -3.5
+   ],
+   "scale": [
+    2.6,
+    0.3,
+    6.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ],
+   "rotation": [
+    60,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "ramp_d60_top",
+   "mesh": "cube",
+   "position": [
+    16.0,
+    2.5981,
+    -6.0
+   ],
+   "scale": [
+    2.6,
+    5.1962,
+    2.0
+   ],
+   "physics": {
+    "body": "static",
+    "collider": "box"
+   },
+   "tags": [
+    "terrain"
+   ]
+  },
+  {
+   "name": "player",
+   "mesh": "cylinder",
+   "position": [
+    -16.0,
+    0.9,
+    6.0
+   ],
+   "scale": [
+    0.8,
+    1.8,
+    0.8
+   ],
+   "color": [
+    0.95,
+    0.55,
+    0.2,
+    1.0
+   ],
+   "tags": [
+    "player"
+   ]
+  }
+ ],
+ "materials": []
+}

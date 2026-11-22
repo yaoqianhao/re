@@ -192,6 +192,25 @@ impl CharacterRuntime {
                 jump,
             };
             let port: &dyn PhysicsQueryPort = &*self.physics;
+            // TEMP-DIAG（定位真窗口不贴地，定位后删除）
+            {
+                use std::cell::Cell;
+                thread_local!(static N: Cell<u32> = const { Cell::new(0) });
+                N.with(|n| {
+                    let i = n.get();
+                    if i < 5 {
+                        n.set(i + 1);
+                        let f = ctrl.state.feet;
+                        let g = r3e_physics::port::GroundPort::sample_ground(port, f.x, f.z);
+                        eprintln!(
+                            "[diag] i={i} feet={:?} vy={} ground_some={}",
+                            f,
+                            ctrl.state.velocity_y,
+                            g.is_some()
+                        );
+                    }
+                });
+            }
             let outcome = self
                 .solver
                 .step(&ctrl.config, &mut ctrl.state, intent, dt as f32, port);

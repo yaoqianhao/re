@@ -186,7 +186,26 @@ pub trait CharacterPort: PhysicsQueryPort {
 
         // 坡面贴行：先于扫掠判定。斜坡上「贴着坡往前」会被扫掠报成撞墙，
         // 走得动走不动全看这里。
-        match slope_verdict(self, capsule, dir, distance, step, min_up_dot) {
+        let verdict = slope_verdict(self, capsule, dir, distance, step, min_up_dot);
+        if diag_here(here) {
+            let toe = here + dir * capsule.radius.abs().max(SKIN);
+            let g = self.sample_ground(toe.x, toe.z);
+            eprintln!(
+                "[d] verdict={} here={:?} dist={:.4} step={:.3} toe=({:.3},{:.3}) ground={:?}",
+                match &verdict {
+                    SlopeVerdict::Climb(..) => "Climb",
+                    SlopeVerdict::TooSteep => "TooSteep",
+                    SlopeVerdict::Flat => "Flat",
+                },
+                here,
+                distance,
+                step,
+                toe.x,
+                toe.z,
+                g.map(|g| (g.height, g.normal))
+            );
+        }
+        match verdict {
             SlopeVerdict::Climb(pos, rise) => return (pos, false, rise),
             SlopeVerdict::TooSteep => return (here, false, 0.0),
             SlopeVerdict::Flat => {}
@@ -204,6 +223,12 @@ pub trait CharacterPort: PhysicsQueryPort {
         let from = &lifted;
 
         if let Some(hit) = self.capsule_sweep(from, dir, distance) {
+            if diag_here(here) {
+                eprintln!(
+                    "[d] sweep hit dist={:.4} n={:?} inside={}",
+                    hit.distance, hit.normal, hit.started_inside
+                );
+            }
             // 切向接触不是墙：贴着障碍侧面滑行时照旧走满这一帧。
             //
             // 「起点就重叠」也按同一把尺子量：只有法线**顶着运动方向**的重叠
@@ -402,6 +427,13 @@ pub trait CharacterPort: PhysicsQueryPort {
 /// `?Sized` 是有意加的：`&dyn PhysicsQueryPort` 也要能直接调这两条默认方法，
 /// 否则控制器签名就得从 `&dyn` 改成泛型，`r3e-character` 会被单态化绑死。
 impl<T: PhysicsQueryPort + ?Sized> CharacterPort for T {}
+
+/// 临时诊断开关（M2-B05 接缝排查用）：只对斜坡末端那一段打印，避免刷屏。
+///
+/// 定位完成后删掉本函数与两处 `diag_here` 调用。
+fn diag_here(here: Vec3) -> bool {
+    std::env::var_os("R3E_CHAR_DIAG").is_some() && here.x > 5.3 && here.x < 5.7
+}
 
 #[cfg(test)]
 mod tests {

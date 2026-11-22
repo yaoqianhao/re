@@ -35,6 +35,9 @@ impl Renderer {
             let Some(gpu) = self.mesh_cache.get(*key) else {
                 continue;
             };
+            // 本批要画的实例数：与下面 `set_vertex_buffer(1, ..)` 绑定的切片同长，
+            // 单一真源在 `instance_count`（统计口径也用它，避免两处各算一遍）。
+            let batch = instance_count(range);
             pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
             pass.set_vertex_buffer(
                 1,
@@ -58,14 +61,17 @@ impl Renderer {
                     continue;
                 };
                 pass.set_bind_group(1, &material.bind_group, &[]);
+                // 实例区间必须与 `set_vertex_buffer(1, ..range..)` 的区间一致：
+                // 写成 `0..1` 会把"一个批次多个实例"退化成一个实例 —— 统计上的
+                // `instances` 仍按区间长度累加（探针看不出来），但画面只画每批第一个。
                 pass.draw_indexed(
                     part.first_index..part.first_index + part.index_count,
                     0,
-                    0..1,
+                    0..batch,
                 );
                 draw_calls += 1;
             }
-            instances += range.end - range.start;
+            instances += batch;
         }
         (draw_calls, instances)
     }

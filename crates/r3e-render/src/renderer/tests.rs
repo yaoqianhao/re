@@ -448,3 +448,52 @@ mod morph_upload_tests {
         assert_eq!(normalized.weight_of(0), Some(0.5), "场景原值不动");
     }
 }
+
+/// 真窗口回归：一个批次里有多少实例，`draw_indexed` 就必须画多少个。
+///
+/// 这条不变量曾被打成恒 `0..1`：统计口径（`RenderStats` 的实例数按区间长度累加）
+/// 完全看不出问题，但 GPU 每批只画批首一个实例 —— 运行时 `scene.spawn` 的新节点
+/// 永远排在批尾，于是「新加的物件不显示、角色可视体看不见」，而既有节点改变换
+/// 仍然生效（它是批首），很容易被误判成物理或场景装配问题。
+#[cfg(test)]
+mod draw_instance_count_tests {
+    use super::*;
+
+    /// 批内 8 个实例、从第 3 个开始（半透明段常见）：长度仍是 5。
+    #[test]
+    pub(crate) fn whole_batch_is_drawn() {
+        assert_eq!(instance_count(&(3..8)), 5, "3..8 是 5 个实例");
+    }
+
+    /// 单实例批次仍是 1（被误写成 0 会整体不画）。
+    #[test]
+    pub(crate) fn single_instance_batch_is_one() {
+        assert_eq!(instance_count(&(7..8)), 1);
+    }
+
+    /// 空批次（被剔除干净的桶）画 0 个，不 panic。
+    #[test]
+    pub(crate) fn empty_batch_draws_nothing() {
+        assert_eq!(instance_count(&(5..5)), 0);
+    }
+
+    /// 反向区间按 0 处理：`0..0` 是合法空绘制，比在 `slice()` 处 panic 更好定位。
+    ///
+    /// 区间用变量拼：`reversed_empty_ranges` 对字面量 `8..3` 直接 deny，而这里
+    /// 要验的恰恰是「上游一旦算出反区间，绘制侧不许 panic」的防御分支。
+    #[test]
+    pub(crate) fn reversed_range_is_clamped_to_zero() {
+        let start = 8u32;
+        let end = 3u32;
+        assert_eq!(instance_count(&(start..end)), 0);
+    }
+
+    /// 批首偏移与批长解耦：批次从第 100 个实例起、长度 7 时，`draw_indexed`
+    /// 拿到的仍是 `0..7`（实例缓冲已按区间切片，绘制下标从 0 起）。
+    #[test]
+    pub(crate) fn batch_offset_does_not_leak_into_draw_range() {
+        let count = instance_count(&(100..107));
+        assert_eq!(count, 7);
+        assert_eq!(0..count, 0..7, "绘制范围的起点恒为 0");
+    }
+}

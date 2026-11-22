@@ -31,6 +31,7 @@ use r3e_render::Renderer;
 use r3e_script::ScriptHost;
 
 use crate::capture::{absolute_path, capture_to_file};
+use crate::physics_sync::PhysicsSync;
 use crate::port::{EditorService, EngineAccess};
 use crate::scene_material_import;
 use crate::time::{FrameTimeWindow, FRAME_TIME_WINDOW};
@@ -307,8 +308,8 @@ pub struct EngineApp {
     frame_times: FrameTimeWindow,
     console: mpsc::Receiver<String>,
     scene_mtime: Option<SystemTime>,
-    /// 上次完成「场景声明刚体」绑定的物理世代号。
-    physics_gen: u64,
+    /// 场景刚体重绑的判重状态（世代号 + 结构摘要）；规则见 [`crate::physics_sync`]。
+    physics_sync: PhysicsSync,
     /// 已导入的外部资产（渲染层通过 `Renderer::set_asset_library` 取得只读引用）。
     ///
     /// 用 `Rc<RefCell<_>>` 而非裸 `Arc`：场景热重载可能改 `assets` 段，需要就地换库，
@@ -645,7 +646,7 @@ impl EngineApp {
             frame_times: FrameTimeWindow::new(FRAME_TIME_WINDOW),
             console: spawn_console(),
             scene_mtime,
-            physics_gen: 0,
+            physics_sync: PhysicsSync::new(),
             assets,
             asset_specs,
             cli_assets: cli.assets.clone(),
@@ -1516,41 +1517,13 @@ impl EngineApp {
         }
     }
 
-    /// 把场景里声明了 `physics` 段的物件绑成刚体。
+    /// 把场景里声明了 `physics` 段的物件绑成刚体（世代或结构变化时才真绑）。
     ///
-    /// 物理开关 / 后端切换 / 刚体表清空都会让世代号自增，这里只在世代变化时重绑一次，
-    /// 因此脚本用 `attach_body` 手动绑的刚体不会被覆盖。
-    ///
-    /// 装配逻辑本身在 [`r3e_physics::Physics::bind_scene`]——运行时只做三件本地事：
-    /// 判世代、递网格来源、把报告写进日志。编辑器与内容验证器走同一个入口，
-    /// 「运行时撞到的东西」与「校验器认为该有的东西」才不会各说各话。
+    /// 判重规则（为什么光看世代号不够）与装配调用都在 [`crate::physics_sync`]，
+    /// 这里只把三个句柄递过去。
     fn sync_physics_bindings(&mut self) {
-        let (gen, enabled) = {
-            let p = self.physics.borrow();
-            (p.generation(), p.enabled())
-        };
-        if !enabled || gen == self.physics_gen {
-            return;
-        }
-        self.physics_gen = gen;
-
-        let scene_rc = Rc::clone(&self.scene);
-        let physics_rc = Rc::clone(&self.physics);
-        let assets: Arc<AssetLibrary> = Arc::clone(&self.assets.borrow());
-        let mut physics = physics_rc.borrow_mut();
-        let report = crate::physics_bind::rebind(&mut physics, &scene_rc, &assets);
-
-        if report.bound() > 0 {
-            log::info!("物理已绑定 {} 个场景刚体", report.bound());
-        }
-        // 有节点推不出刚体参数时不静默：这类场景能跑起来但物件不会动，
-        // 事后排查只看「没报错」是找不出原因的。
-        if report.skipped > 0 {
-            log::warn!("{}", report.summary());
-        }
-        if report.bound() > 0 && !report.simulated() {
-            log::warn!("{}", report.summary());
-        }
+        self.physics_sync
+            .sync(&self.physics, &self.scene, &self.assets);
     }
 
     /// 每帧把「世界」翻译成「耳朵」：听者 ← 活动相机，声源 ← 绑定节点，然后结算一次。

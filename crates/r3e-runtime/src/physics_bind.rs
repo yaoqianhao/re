@@ -52,6 +52,14 @@ pub(crate) fn rebind(
 ) -> BindReport {
     let meshes = SceneMeshProvider::new(Arc::clone(assets));
     scene.borrow_mut().write(|scene| {
+        // 装配读的是**世界变换**（`BodyDesc::from_node_with` 走 `node.world_position()`），
+        // 而世界矩阵是缓存：`Scene::spawn` 只写本地 `transform`，`world` 要等本帧
+        // `update_world_transforms` 才刷新。脚本刚 spawn 的物件若在这里被装配，
+        // 缓存还是 `IDENTITY`，刚体一律建在原点——随后 `sync_to_scene` 又把原点写回
+        // 节点，等于把节点自己摆好的位置抹成 `(0,0,0)`，角色于是永远踩不到刚铺的地板。
+        // 编辑器侧（`api/physics.rs` 的 `physics_bind`）已经在副本上先刷一遍，运行时
+        // 这一侧漏了同一步，补在这里：刷一次是 O(n)，装配本身是低频动作。
+        scene.update_world_transforms();
         let report = physics.bind_scene(scene, &meshes);
         for &(id, handle) in &report.bindings {
             if let Some(node) = scene.get_mut(id) {

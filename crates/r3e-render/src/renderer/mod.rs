@@ -55,8 +55,8 @@ pub(crate) use mesh_cache::{GpuMesh, GpuPart, MeshMorph, MAX_MORPH_TABLE_FLOATS}
 pub(crate) use staging::{staging_enabled_from_env, StagingTarget, UploadStaging};
 pub(crate) use stats::StagingStats;
 pub(crate) use types::{
-    morph_upload, shadow_runs, DrawGroup, EnvProbeGpu, InstancePlan, MorphUpload, ShadowPlan,
-    ShadowSubmit,
+    instance_count, morph_upload, shadow_runs, DrawGroup, EnvProbeGpu, InstancePlan, MorphUpload,
+    ShadowPlan, ShadowSubmit,
 };
 pub(crate) use uniforms::{
     max_axis_scale, CameraUniform, MaterialKey, ShadowPassUniform, ShadowUniform,

@@ -398,11 +398,14 @@ impl Renderer {
                     .slice(range.start as u64 * stride..range.end as u64 * stride),
             );
             pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            // 与主通道同一条不变量：实例数取该 run 的区间长度，不是恒 1。
+            // 漏改的症状是「主通道画全了，但影子只投每批第一个实例」。
+            let batch = instance_count(range);
             for part in &gpu.parts {
                 pass.draw_indexed(
                     part.first_index..part.first_index + part.index_count,
                     0,
-                    0..1,
+                    0..batch,
                 );
                 draws += 1;
             }
