@@ -2470,6 +2470,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "r3e-terrain"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "r3e-core",
+ "r3e-nav",
+]
+
+[[package]]
 name = "range-alloc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

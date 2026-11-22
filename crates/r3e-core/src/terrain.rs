@@ -104,6 +104,50 @@ impl TerrainPatch {
         self.heights.get(idx).copied().unwrap_or(0.0)
     }
 
+    /// 块内双线性采样：世界坐标 `(x, z)` → 高度；点落在块外返回 `None`。
+    ///
+    /// 这条口径是 **M2-C01 从 `r3e-nav` 烘焙期上移上来的**（CD-3）：边界取整、
+    /// 双线性权重顺序都与那边的私有实现逐位相同，所以 D 阶段删掉旧实现、
+    /// 改成调这里时不会改变任何行为。`r3e-terrain` 的 `tests/sample.rs` 用
+    /// 20 个点的交叉断言锁住这件事。
+    ///
+    /// 退化输入一律按「平坦地面」处理而不是报错：`heights` 空数组（合法表示）、
+    /// 分辨率单轴 < 2（无法插值）、样本数与分辨率不符（数据已坏）都返回 `0.0`。
+    /// 坐标非有限值返回 `None`——不 panic，也让「算不出高度」与「高度为 0」可区分。
+    pub fn sample_height(&self, x: f32, z: f32) -> Option<f32> {
+        let (w, d) = (self.size[0], self.size[1]);
+        if !(w > 0.0 && d > 0.0) || !x.is_finite() || !z.is_finite() {
+            return None;
+        }
+        let u = (x - self.origin[0]) / w;
+        let v = (z - self.origin[1]) / d;
+        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+            return None;
+        }
+        let [rx, ry] = self.resolution;
+        if self.heights.is_empty() || rx < 2 || ry < 2 {
+            return Some(0.0);
+        }
+        if self.heights.len() != (rx * ry) as usize {
+            return Some(0.0);
+        }
+        let fx = u * (rx - 1) as f32;
+        let fz = v * (ry - 1) as f32;
+        let x0 = fx.floor() as u32;
+        let z0 = fz.floor() as u32;
+        let x1 = (x0 + 1).min(rx - 1);
+        let z1 = (z0 + 1).min(ry - 1);
+        let tx = fx - x0 as f32;
+        let tz = fz - z0 as f32;
+        let h00 = self.height_at(x0, z0);
+        let h10 = self.height_at(x1, z0);
+        let h01 = self.height_at(x0, z1);
+        let h11 = self.height_at(x1, z1);
+        let a = h00 + (h10 - h00) * tx;
+        let b = h01 + (h11 - h01) * tx;
+        Some(a + (b - a) * tz)
+    }
+
     /// 是否等于「新建一块平坦地表」的缺省形态（序列化时用来省掉冗余字段判断）。
     pub fn is_default_shape(&self) -> bool {
         self.size == default_size()

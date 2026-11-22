@@ -1,0 +1,14 @@
+[package]
+name = "r3e-terrain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "r3e 地形派生层：块划分（默认 50 米）/ 多分辨率 LOD / 跨块高度与法线采样；只吃 core 的 TerrainPatch、只吐裸数据"
+
+[dependencies]
+r3e-core.workspace = true
+glam.workspace = true
+
+[dev-dependencies]
+r3e-nav.workspace = true
