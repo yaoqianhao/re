@@ -49,6 +49,14 @@ mod port_impl;
 /// 端口适配：把 `PhysicsQueryPort` 三组查询接到门面上（纯字段搬运，无决策逻辑）。
 mod slope;
 
+/// 地形高度场：物理侧的**独立碰撞通道**（M2 · C04 / D13），不进 `ColliderShape`。
+pub mod heightfield;
+/// 端口层的地形合成（刚体候选 vs 地形候选择优）。
+mod port_terrain;
+/// 地形的解析查询（两套后端共用一份，换后端不换数值）。
+mod terrain_query;
+pub use heightfield::HeightField;
+
 #[cfg(feature = "rapier")]
 mod rapier_backend;
 #[cfg(feature = "rapier")]
@@ -284,6 +292,7 @@ impl Physics {
     }
 
     fn rebuild_backend(&mut self) {
+        let terrain = self.backend.heightfield().cloned();
         self.backend = match self.kind {
             PhysicsKind::Builtin => Box::new(BuiltinBackend::new(self.gravity, self.ground)),
             PhysicsKind::Rapier => Self::external_backend(self.gravity, self.ground),
@@ -292,6 +301,11 @@ impl Physics {
         self.backend.set_gravity(self.gravity);
         self.backend.set_ground(self.ground);
         self.backend.set_ccd_default(self.ccd_default);
+        // 地形场是纯数据（`r3e-terrain` 派生物），切后端只需搬到新后端，
+        // 不参与「旧句柄失效」那套：搬不动就退化成没有地形，不会留死句柄。
+        if let Some(field) = terrain {
+            self.backend.set_heightfield(Some(field));
+        }
         // 切后端后旧句柄在后端里全部失效，缓存必须跟着清，
         // 否则下一次装配会拿一批死句柄去「复用」。
         self.last_bindings.clear();
@@ -309,6 +323,23 @@ impl Physics {
     #[cfg(not(feature = "rapier"))]
     fn external_backend(_gravity: Vec3, _ground: f32) -> Box<dyn PhysicsBackend> {
         Box::new(NullBackend::new())
+    }
+
+    /// 装 / 卸地形高度场（M2 · C04 / D13）。
+    ///
+    /// 地形是**附加查询层**：不占 `capabilities()` 的任何一位，不进 `ColliderShape`，
+    /// 所以装上去前后 `body_count()` / 能力位都不变。物理关闭时也可以先装好，
+    /// 等 `set_enabled(true)` 后查询与模拟一起生效（配置先装配、后开闸的常态）。
+    ///
+    /// 换后端（`set_kind`）会把场原样搬到新后端；`Null` 后端装不上，
+    /// 此时 [`Physics::heightfield`] 如实返回 `None`。
+    pub fn set_heightfield(&mut self, field: Option<HeightField>) {
+        self.backend.set_heightfield(field);
+    }
+
+    /// 当前装着的地形场（没装或后端不支持时返回 `None`）。
+    pub fn heightfield(&self) -> Option<&HeightField> {
+        self.backend.heightfield()
     }
 
     /// 当前后端的能力位。上层按能力分支，别按后端名分支。
@@ -400,11 +431,20 @@ impl Physics {
     /// 地表采样（[`port::GroundPort`] 的门面版）：物理关闭时返回 `None`。
     ///
     /// 与端口契约一致：开启时只要后端自带地面，正常情况下总能拿到样本。
+    /// 地面采样：地形是附加通道（D13），装上后与后端样本取**更高**的那层地。
+    ///
+    /// 合成刻意放在门面而不是端口层：否则「直接拿 `&Physics` 调」走固有方法、
+    /// 「拿 `&dyn GroundPort` 调」走端口实现，同一个问题会给出两个答案。
+    /// 两种拿法现在都落到这里，端口只做转发。
     pub fn sample_ground(&self, x: f32, z: f32) -> Option<GroundSample> {
         if !self.enabled {
             return None;
         }
-        self.backend.sample_ground(x, z)
+        let backend = self.backend.sample_ground(x, z);
+        match self.backend.heightfield() {
+            Some(field) => terrain_query::merge_ground(field, backend, x, z),
+            None => backend,
+        }
     }
 
     /// 创建刚体；物理关闭时返回 `None`，由调用方决定如何提示。

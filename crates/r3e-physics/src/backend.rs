@@ -4,6 +4,8 @@
 
 use super::*;
 
+use crate::heightfield::HeightField;
+
 impl BackendCaps {
     /// 什么都不做（`null` 后端）。
     pub const NONE: Self = Self {
@@ -261,6 +263,21 @@ pub trait PhysicsBackend {
     /// 起点已重叠时返回 `distance == 0` 且 `started_inside == true` 的命中。
     /// 默认实现返回 `None`。
     fn sweep_capsule(&self, _capsule: Capsule, _dir: Vec3, _max_distance: f32) -> Option<PortHit> {
+        None
+    }
+
+    /// 可选：装 / 卸地形高度场（M2 · C04 / D13）。
+    ///
+    /// 地形是**独立通道**：它不是刚体，不进 `BodyDesc`、不进 `ColliderShape`，
+    /// 也不占 `capabilities()` 的任何一位。装卸一次只换一块数据，
+    /// 不重建任何刚体、不改变 `body_count()`。
+    ///
+    /// 默认实现什么都不做（`Null` 后端与将来「不支持地形」的后端据此天然拒绝），
+    /// 门面用 [`PhysicsBackend::heightfield`] 的返回值如实回报是否装上。
+    fn set_heightfield(&mut self, _field: Option<HeightField>) {}
+
+    /// 可选：当前装着的地形场。默认 `None`。
+    fn heightfield(&self) -> Option<&HeightField> {
         None
     }
 

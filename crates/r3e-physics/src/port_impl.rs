@@ -24,38 +24,34 @@ use crate::port::{
     Capsule, CapsulePort, CastRay, GroundPort, GroundSample, PhysicsQueryPort, PortCaps, PortHit,
     RaycastPort,
 };
-use crate::{Physics, Ray};
+use crate::{port_terrain, Physics};
 
 impl RaycastPort for Physics {
     /// 射线查询：物理关闭时门面已返回 `None`，这里不再重复判断。
+    ///
+    /// 刚体 / 地形的合成在 [`port_terrain::cast_ray`]：这里只转发。
     fn cast_ray(&self, ray: &CastRay) -> Option<PortHit> {
-        if ray.is_degenerate() {
-            return None;
-        }
-        let hit = self.raycast(Ray::new(ray.origin, ray.dir), ray.max_distance)?;
-        let started_inside = hit.distance <= 0.0;
-        Some(PortHit {
-            body: hit.handle.0,
-            node: hit.node,
-            distance: hit.distance,
-            point: ray.point_at(hit.distance),
-            normal: hit.normal,
-            started_inside,
-        })
+        port_terrain::cast_ray(self, ray)
     }
 }
 
 impl CapsulePort for Physics {
     fn capsule_overlap(&self, capsule: &Capsule) -> Vec<PortHit> {
-        Physics::overlap_capsule(self, *capsule)
+        port_terrain::capsule_overlap(self, capsule)
     }
 
     fn capsule_sweep(&self, capsule: &Capsule, dir: Vec3, max_distance: f32) -> Option<PortHit> {
-        Physics::sweep_capsule(self, *capsule, dir, max_distance)
+        port_terrain::capsule_sweep(self, capsule, dir, max_distance)
     }
 }
 
 impl GroundPort for Physics {
+    /// 地面采样：地形 / 地面平面的择优（取更高者）已经在门面
+    /// [`Physics::sample_ground`] 里做完，端口只做转发。
+    ///
+    /// 这里故意不重复合成：一旦端口自己再合一次，`&Physics` 与 `&dyn GroundPort`
+    /// 两条调用路径就会各自算一遍，日后改一边漏一边，症状是「角色直接调用比
+    /// 端口调用低一截」这种极难定位的偏差。
     fn sample_ground(&self, x: f32, z: f32) -> Option<GroundSample> {
         Physics::sample_ground(self, x, z)
     }

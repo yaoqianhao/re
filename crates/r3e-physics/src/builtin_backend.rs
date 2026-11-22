@@ -18,6 +18,7 @@
 use glam::Vec3;
 use r3e_core::{NodeId, Scene};
 
+use crate::heightfield::HeightField;
 use crate::port::{Capsule, GroundSample, PortHit};
 use crate::{
     cast_candidate_better, BackendCaps, BodyDesc, BodyHandle, BodyKind, CastShape, ColliderShape,
@@ -129,6 +130,8 @@ pub struct BuiltinBackend {
     gravity: Vec3,
     ground: f32,
     bodies: Vec<RigidBody>,
+    /// 地形高度场（M2 · C04）：只存数据，查询侧由 `terrain_query` 合并。
+    heightfield: Option<HeightField>,
 }
 
 impl BuiltinBackend {
@@ -138,6 +141,7 @@ impl BuiltinBackend {
             gravity,
             ground,
             bodies: Vec::new(),
+            heightfield: None,
         }
     }
 
@@ -256,6 +260,16 @@ impl PhysicsBackend for BuiltinBackend {
 
     fn set_ground(&mut self, ground: f32) {
         self.ground = ground;
+    }
+
+    /// 装卸地形场：内置后端不做三角形碰撞，地形只作为查询面存在
+    /// （与它「AABB 解析近似 + 地面平面」的既有定位一致）。
+    fn set_heightfield(&mut self, field: Option<HeightField>) {
+        self.heightfield = field;
+    }
+
+    fn heightfield(&self) -> Option<&HeightField> {
+        self.heightfield.as_ref()
     }
 
     fn step(&mut self, dt: f32) {

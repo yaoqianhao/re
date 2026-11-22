@@ -36,6 +36,7 @@ use rapier3d::parry::query::{
 use rapier3d::parry::shape::{Ball, Capsule as ParryCapsule, Cuboid};
 use rapier3d::prelude::*;
 
+use crate::heightfield::HeightField;
 use crate::port::{Capsule, GroundSample, PortHit};
 use crate::rapier_glue::{
     collider_for, quat_to_glam, quat_to_rapier, to_glam, to_rapier, EventCollector,
@@ -76,6 +77,19 @@ struct Record {
     continuous: bool,
 }
 
+/// 地形场的 Rapier 实体：一块静态 `HeightField3d` 碰撞体。
+///
+/// 它**不进 `records`**：`records` 是「脚本建的刚体」表，射线 / 重叠 / 扫掠都按它遍历。
+/// 地形查询走 `terrain_query` 的解析合成（两套后端共用同一份代码，换后端不换数值），
+/// 所以这里建刚体不是为了查询，而是为了让 `pipeline.step` 里动态刚体能真的落在地形上 ——
+/// 查询与模拟两条路各管一头，互不覆盖、也互不重复计数。
+struct TerrainField {
+    /// 静态刚体句柄；卸地形时整块移除（碰撞体随刚体级联删除）。
+    body: RigidBodyHandle,
+    /// 装上去的那份场，`heightfield()` 原样返回。
+    field: HeightField,
+}
+
 /// Rapier 后端。所有 Rapier 状态集中在这里，不向上层泄漏。
 pub struct RapierBackend {
     next: u64,
@@ -98,6 +112,8 @@ pub struct RapierBackend {
     records: HashMap<BodyHandle, Record>,
     /// 刚体未显式指定 CCD 时的缺省值（`Physics::ccd_default` 推下来）。
     ccd_default: bool,
+    /// 地形场（M2 · C04）：`None` 表示没装。
+    terrain: Option<TerrainField>,
 }
 
 impl RapierBackend {
@@ -146,6 +162,7 @@ impl RapierBackend {
             records: HashMap::new(),
             // 与 `Physics::ccd_default` 的缺省保持一致：开
             ccd_default: true,
+            terrain: None,
         }
     }
 
@@ -260,6 +277,56 @@ impl PhysicsBackend for RapierBackend {
         if let Some(body) = self.bodies.get_mut(self.ground_body) {
             body.set_translation(Vector::new(0.0, ground, 0.0), true);
         }
+    }
+
+    /// 装卸地形场：旧场整块移除（刚体 + 级联碰撞体），新场建一块静态 `HeightField3d`。
+    ///
+    /// `scale.y` 固定 1.0 —— `HeightField::heights` 存的就是世界 Y，
+    /// 再乘一个系数会让「高度场里写多少」与「物理里多高」不一致。
+    /// `scale.x` / `scale.z` 取网格跨度，于是碰撞体的局部 `[-0.5, 0.5]` 被拉伸到
+    /// 真实尺寸，配合把刚体平移到网格中心，采样点与解析查询逐点对齐。
+    fn set_heightfield(&mut self, field: Option<HeightField>) {
+        if let Some(old) = self.terrain.take() {
+            self.bodies.remove(
+                old.body,
+                &mut self.islands,
+                &mut self.colliders,
+                &mut self.impulse_joints,
+                &mut self.multibody_joints,
+                &mut self.soft_bodies,
+                true,
+            );
+        }
+        let Some(field) = field else {
+            return;
+        };
+        // parry 的 `Array2` 是**列主序**、且约定「行 = Z、列 = X」；本引擎的
+        // `HeightField::heights` 是行主序 `heights[j * cols + i]`（i 沿 X、j 沿 Z）。
+        // 用 `from_fn` 显式搬运，别指望两者内存布局碰巧一致。
+        let matrix = rapier3d::geometry::Array2::from_fn(field.rows(), field.cols(), |i, j| {
+            field.heights()[j * field.cols() + i]
+        });
+        let scale = Vector::new(field.width().max(1e-3), 1.0, field.depth().max(1e-3));
+        let center = Vector::new(
+            field.origin().x + field.width() * 0.5,
+            0.0,
+            field.origin().z + field.depth() * 0.5,
+        );
+        let body = self.bodies.insert(
+            RigidBodyBuilder::fixed()
+                .translation(center)
+                .user_data(u128::MAX),
+        );
+        self.colliders.insert_with_parent(
+            ColliderBuilder::heightfield(matrix, scale).friction(0.8),
+            body,
+            &mut self.bodies,
+        );
+        self.terrain = Some(TerrainField { body, field });
+    }
+
+    fn heightfield(&self) -> Option<&HeightField> {
+        self.terrain.as_ref().map(|t| &t.field)
     }
 
     fn set_ccd(&mut self, handle: BodyHandle, on: bool) -> bool {
