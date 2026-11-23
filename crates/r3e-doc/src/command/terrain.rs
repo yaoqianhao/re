@@ -41,4 +41,14 @@ impl CommandKind {
         let old = s.terrain.iter().find(|p| p.name == name).cloned();
         Self::UpsertTerrainPatch { next, old }
     }
+
+    /// 删地形块命令（前像即被删的整块；块不存在返回 `None`）。
+    ///
+    /// 返回 `None` 而不是造一条必然失败的命令：调用方（`terrain.remove` 的宿主实现）
+    /// 要把「找不到这块地」与「删成功了」区分开，才能给出 `TERRAIN_PATCH_MISSING`。
+    pub fn remove_terrain_patch(s: &Scene, name: &str) -> Option<Self> {
+        let key = name.trim();
+        let old = s.terrain.iter().find(|p| p.name == key).cloned()?;
+        Some(Self::RemoveTerrainPatch { old })
+    }
 }

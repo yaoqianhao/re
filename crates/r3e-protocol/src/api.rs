@@ -15,6 +15,10 @@ use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
 use crate::patch::*;
 use crate::probe::{CastQuery, OverlapQuery, RayQuery};
 use crate::query::QuerySpec;
+use crate::terrain::{
+    TerrainBlocksQuery, TerrainCreateQuery, TerrainGenQuery, TerrainMeshQuery, TerrainNameQuery,
+    TerrainResampleQuery, TerrainSampleQuery,
+};
 use crate::verify::VerifyQuery;
 
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
@@ -690,5 +694,106 @@ pub trait EngineApi {
     /// 「我要用 rapier 复现」变成「你其实用的是内置后端」，结论全错且无人察觉。
     fn physics_simulate(&mut self, _query: SimulateQuery) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("physics.simulate"))
+    }
+
+    // ── 地形命令面（M2-C06）───────────────────────────────────────────────
+    //
+    // 八条命令的共同边界，先读这三条再看各方法：
+    //
+    // 1. **真值只有 `Scene::terrain`**。地形网格是算出来的视图（CD-2），
+    //    所以 `resample` 改的是高度样本、`mesh` 算的是临时网格，没有任何一条命令
+    //    把网格写进场景。写进去就等于给了两套真相。
+    // 2. **「没有这块地形」和「这块地形是平的」必须分开**：前者回
+    //    `TERRAIN_PATCH_MISSING`，后者回 `height: 0`。
+    // 3. **写场景的命令走 `CommandKind`**（可撤销、进 `state_hash`、走事务），
+    //    只读的命令不碰撤销栈。
+
+    /// 建 / 改一块地形（M2-C06）：同名 = 整体覆盖，超上限只拦新增。
+    ///
+    /// 回包契约：`{ "name": String, "created": bool, "patch": { "name", "origin",
+    /// "size", "resolution", "albedo", "roughness", "samples": usize }, "stateHash": String }`。
+    ///
+    /// `patch.samples` 是高度样本数（`resolution.0 * resolution.1`），不是样本本身——
+    /// 128 × 128 的块有 16384 个浮点，回包里搬它没有意义，调用方要的是「写进去了几个」。
+    fn terrain_create(&mut self, _q: TerrainCreateQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.create"))
+    }
+
+    /// 删一块地形（M2-C06）：按名字删，删不掉说明名字不对。
+    ///
+    /// 回包契约：`{ "name": String, "removed": bool, "remaining": usize,
+    /// "stateHash": String }`。名字不存在**不报错**而是 `removed: false`——
+    /// 删除天然幂等，脚本重跑一遍不该红。
+    fn terrain_remove(&mut self, _q: TerrainNameQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.remove"))
+    }
+
+    /// 采样某个世界点的高度（M2-C06，只读）。
+    ///
+    /// 回包契约：`{ "name": String, "x": f32, "z": f32, "height": f32,
+    /// "normal": [f32;3], "inside": bool }`。
+    ///
+    /// 给了 `name` 只算那一块（点落在块外回 `inside: false` + `TERRAIN_PATCH_MISSING`）；
+    /// 不给 `name` 则跨全部块取最高层（多块重叠时的既定裁决）。
+    fn terrain_sample(&mut self, _q: TerrainSampleQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.sample"))
+    }
+
+    /// 分块视图（M2-C06，只读）：按 `blockSize` 把地形矩形切成块，回块清单与块数。
+    ///
+    /// 回包契约：`{ "rect": [f32;4], "blockSize": f32, "dims": [u32;2],
+    /// "count": u32, "covered": u32, "blocks": [{ "index": [u32;2], "rect": [f32;4],
+    /// "patches": [String] }...] }`。
+    ///
+    /// `covered` 是有地形覆盖的块数（`count` 含空白块）。两个数都给，是因为
+    /// 「地形 4×4 块、只铺了 9 块」和「4×4 块、铺满 16 块」在后续装配里差别很大。
+    fn terrain_blocks(&mut self, _q: TerrainBlocksQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.blocks"))
+    }
+
+    /// 按新档位重采样高度网格并写回（M2-C06，写场景、可撤销）。
+    ///
+    /// 回包契约：`{ "name": String, "from": [u32;2], "to": [u32;2],
+    /// "samples": usize, "maxError": f32, "stateHash": String }`。
+    ///
+    /// `maxError` 是重采样前后在同一批世界点上取样的最大高度差（米）。带上它是因为
+    /// 「降到 1/4 分辨率」听起来无损、实际会有肉眼可见的地形走形，不给这个数就没人
+    /// 知道代价是多少。`to` 可能小于请求值——那是被 `maxResolution` / 后端的硬上限夹过。
+    fn terrain_resample(&mut self, _q: TerrainResampleQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.resample"))
+    }
+
+    /// 程序化生成一整片地形（M2-C06，写场景、可撤销）。
+    ///
+    /// 回包契约：`{ "seed": u64, "created": usize, "names": [String],
+    /// "stateHash": String }`。
+    ///
+    /// 生成是**确定性的**：同一个 `seed` 与尺寸必须产出逐位相同的样本，
+    /// 否则回放金标与 `state_hash` 全部失效。
+    fn terrain_gen(&mut self, _q: TerrainGenQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.gen"))
+    }
+
+    /// 地形汇总（M2-C06，只读）：`{ "patches": usize, "samples": usize,
+    /// "blocks": u32, "covered": u32, "triangles": usize, "vertices": usize,
+    /// "lod": u32, "blockSize": f32 }`。
+    ///
+    /// `triangles` / `vertices` 与 `terrain.mesh` 同口径（全块、`lod` 缺省 1），
+    /// 这样「逐块取网格再求和」必须等于这里的数——两处算法一旦分叉，求和就对不上，
+    /// 测试会立刻红。
+    fn terrain_stats(&mut self) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.stats"))
+    }
+
+    /// 取某一块（或缺省全部块）的派生网格统计（M2-C06，只读）。
+    ///
+    /// 回包契约：`{ "lod": u32, "block": [u32;2]|null, "blocks": u32,
+    /// "vertices": usize, "triangles": usize, "bounds": [f32;6]|null }`。
+    ///
+    /// 只回**统计**不回顶点数组：一块 128 × 128 的网格有十几万浮点，搬过来对
+    /// 调用方（多半是想确认「这块地形到底有没有生成出来」）没有用处，还会把 RPC
+    /// 回包撑爆。真要顶点应该走渲染侧，不该走协议。
+    fn terrain_mesh(&mut self, _q: TerrainMeshQuery) -> Result<Value, RpcFailure> {
+        Err(RpcFailure::unsupported("terrain.mesh"))
     }
 }

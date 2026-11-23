@@ -221,6 +221,9 @@ fn layer_of(category: Category) -> Layer {
         Category::Reference | Category::Bounds | Category::Material | Category::Character => {
             Layer::Static
         }
+        // 地形判据（M2-C06）同样只吃 core 数据：样本数与分辨率、块覆盖都是场景内真值，
+        // 物理层拿地形场复核的是「碰撞形状对不对」，不是「块划分自相矛盾」，两码事。
+        Category::Terrain => Layer::Static,
         Category::Support | Category::Overlap => Layer::Physics,
         Category::Reachability => Layer::Nav,
     }

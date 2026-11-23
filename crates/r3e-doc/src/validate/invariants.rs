@@ -235,6 +235,17 @@ pub const ISSUE_CODES: &[IssueCode] = &[
         layer: "character",
         severity: Severity::Error,
     },
+    // ----------------------------------------------------- terrain.rs（静态确定结论）
+    IssueCode {
+        code: "terrain.weight_not_normalized",
+        layer: "terrain",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "terrain.block_gap",
+        layer: "terrain",
+        severity: Severity::Warn,
+    },
 ];
 
 /// 按 `code` 查表。查不到返回 `None`（代表上报了一个没登记的字面量，属于缺陷）。
@@ -282,6 +293,7 @@ mod tests {
                         | "physics"
                         | "nav"
                         | "character"
+                        | "terrain"
                 ),
                 "未知校验层 {}（新增校验模块须同步本表）",
                 ic.layer
@@ -311,6 +323,8 @@ mod tests {
                     | "support.floating"
                     // 连通块分裂本身不等于关卡走不通（多区域内传送是合法玩法）
                     | "nav.region_split"
+                    // 空洞可以是设计（天坑 / 井口），只提示不判死
+                    | "terrain.block_gap"
             );
             assert_eq!(
                 ic.severity == Severity::Warn,

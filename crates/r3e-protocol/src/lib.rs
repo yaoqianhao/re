@@ -33,6 +33,7 @@
 //! | `nav.rs` | `nav.*` 参数 DTO（`NavConfig` 字段平铺成 `Option`） |
 //! | `inspect.rs` | 只读检视参数 DTO（M1-S1-D：场景来源 / 网格形状 / 模拟参数） |
 //! | `material.rs` | `scene.material.upsert` 参数 DTO（整行声明，不是补丁） |
+//! | `terrain.rs` | `terrain.*` 参数 DTO（M2-C06：扁平数值，不认 `TerrainPatch`） |
 
 pub mod api;
 pub mod caps;
@@ -46,11 +47,13 @@ pub mod nav;
 pub mod patch;
 pub mod probe;
 pub mod query;
+pub mod terrain;
 pub mod verify;
 
 pub use self::character::*;
 pub use self::client::*;
 pub use self::dispatch::{canonical_method, dispatch};
+pub use self::terrain::*;
 pub use api::EngineApi;
 pub use inspect::*;
 pub use material::*;
@@ -121,6 +124,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 能不能走」从编辑器内部能力变成协议面可驱动，B05 的可玩性回归才不必依赖 GUI。
 /// 六条全部挂 `Domain::Physics`（吃的是物理查询），故本表增员而 `domains` 不变。
 ///
+/// M2-C06 增 8 条（68 → 76）：地形命令面。`terrain.*` 覆盖「造 / 删 / 采样 / 分块 /
+/// 重采样 / 生成 / 汇总 / 取网格」全链，**八条全带 RPC**（CD-1 档 A 的直接后果：
+/// 卡表要 rpc+8，而守恒规则 4 禁 `script_only` 增，故全局 80 → 85）。
+/// 七条挂 `Domain::Terrain`（新域，域数 17 → 18），`terrain.mesh` 挂 `Domain::Meta`
+/// ——它只读不写、给的是派生几何统计，跟 `mesh.stats` / `scene.snapshot` 同一族，
+/// 若另开一个「地形渲染」域，域表就会为一张只读卡多开一栏。
+///
 /// 命名铁律：本表里的名字必须是 `dispatch::canonical_method()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
@@ -185,6 +195,14 @@ pub const RPC_METHODS: &[&str] = &[
     "scene.verify",
     "script.eval",
     "script.reload",
+    "terrain.blocks",
+    "terrain.create",
+    "terrain.gen",
+    "terrain.mesh",
+    "terrain.remove",
+    "terrain.resample",
+    "terrain.sample",
+    "terrain.stats",
     "tx.apply",
     "tx.begin",
     "tx.commit",
@@ -251,6 +269,14 @@ pub const MESH_SOURCE_UNAVAILABLE: i32 = -32023;
 /// 与 `NAV_NOT_BAKED` 同一教训：**绝不回全零运行态**。`position: [0,0,0]` 会被读成
 /// 「角色在世界原点站着」，然后据此去调地形、判定掉落，越查越偏。
 pub const CHARACTER_NOT_READY: i32 = -32030;
+/// 地形块名不存在（`terrain.remove` / `terrain.sample` / `terrain.resample` 找不到同名块）。
+///
+/// 与 `CHARACTER_NOT_READY` 同一教训的另一种形态：**「没有这块地形」必须能跟
+/// 「这块地形高度是 0」分开**。平坦地面合法地返回 `height: 0`，若「查不到」也回 0，
+/// 调用方就会把「拼错名字」当成「这片地是平的」，然后据此把角色放到半空。
+pub const TERRAIN_PATCH_MISSING: i32 = -32040;
+/// 块索引越界，或该块没有任何地形覆盖（`terrain.mesh`）。
+pub const TERRAIN_BLOCK_MISSING: i32 = -32041;
 /// 节点上的角色配置非法（半径 <= 0、坡度越界、身高小于半径等），控制器不会建立。
 ///
 /// 判据来自 `CharacterSpec::validate`，回包 `message` 直接带它的原文——不在宿主另写

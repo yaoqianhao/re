@@ -703,6 +703,7 @@ fn collect_dispatch_arms() -> Vec<String> {
         include_str!("../src/dispatch/physics.rs"),
         include_str!("../src/dispatch/nav.rs"),
         include_str!("../src/dispatch/character.rs"),
+        include_str!("../src/dispatch/terrain.rs"),
         include_str!("../src/dispatch/inspect.rs"),
     ];
 

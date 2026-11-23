@@ -260,6 +260,10 @@ const TX_ONLY_METHODS: &[&str] = &[
     "character.create",
     "character.config",
     "character.teleport",
+    "terrain.create",
+    "terrain.remove",
+    "terrain.resample",
+    "terrain.gen",
 ];
 
 /// 只被 `tx intent` 接受的高层意图名（不在 [`RPC_METHODS`] 里）。

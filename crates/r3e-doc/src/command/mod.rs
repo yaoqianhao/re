@@ -14,7 +14,7 @@
 //! | 节点 | `SpawnNode` `SetTransform` `SetVisible` `SetNodeColor` `SetNodeMaterial` |
 //! | 环境 | `SetCamera` `SetEnvironment` `SetPostFx` |
 //! | 灯光 | `UpsertLocalLight` `RemoveLocalLight` |
-//! | 地形 | `UpsertTerrainPatch` |
+//! | 地形 | `UpsertTerrainPatch` `RemoveTerrainPatch` |
 //! | 材质 | `UpsertMaterial` `RemoveMaterial` `SetNodeMaterialRef` |
 //! | UI / 文本 | `UpsertUi` `RemoveUi` `UpsertText` `RemoveText` |
 //!
@@ -174,6 +174,16 @@ pub enum CommandKind {
         /// 前像；`None` 表示此前没有这块地形，撤销即删除。
         old: Option<TerrainPatch>,
     },
+    /// 按 name 删地形块（M2-C06）。
+    ///
+    /// 为什么 M1 只有 `UpsertTerrainPatch` 也要补这条：`terrain.remove` 是一条独立
+    /// 命令，「删」不能靠 upsert 表达（apply 只会写回同名块）。撤销要能把那一块**原样
+    /// 写回**，所以前像必须整块存下来，而不是只存名字——地形块的高度样本改一个点
+    /// 就是另一块地。
+    RemoveTerrainPatch {
+        /// 被删的地形块（撤销即原样写回）。
+        old: TerrainPatch,
+    },
     /// 按 name 写场景材质（同名覆盖，M1-S4-A）。
     UpsertMaterial {
         /// 新材质。
@@ -229,6 +239,7 @@ impl CommandKind {
             Self::UpsertText { .. } => "写文本",
             Self::RemoveText { .. } => "删文本",
             Self::UpsertTerrainPatch { .. } => "写地形",
+            Self::RemoveTerrainPatch { .. } => "删地形",
             Self::UpsertMaterial { .. } => "写材质",
             Self::RemoveMaterial { .. } => "删材质",
             Self::SetNodeMaterialRef { .. } => "改材质引用",
@@ -254,6 +265,7 @@ impl CommandKind {
             Self::UpsertText { next, .. } => ui::write_text(s, next),
             Self::RemoveText { old } => ui::remove_text(s, &old.key),
             Self::UpsertTerrainPatch { next, .. } => terrain::write_patch(s, next),
+            Self::RemoveTerrainPatch { old } => terrain::remove_patch(s, &old.name),
             Self::UpsertMaterial { next, .. } => material::write_material(s, next),
             Self::RemoveMaterial { old } => material::remove_material(s, &old.name),
             Self::SetNodeMaterialRef { name, new, .. } => {
@@ -293,6 +305,7 @@ impl CommandKind {
                 Some(old) => terrain::write_patch(s, old),
                 None => terrain::remove_patch(s, &next.name),
             },
+            Self::RemoveTerrainPatch { old } => terrain::write_patch(s, old),
             Self::UpsertMaterial { next, old } => match old {
                 Some(old) => material::write_material(s, old),
                 None => material::remove_material(s, &next.name),
@@ -317,6 +330,7 @@ impl CommandKind {
             Self::UpsertText { next, .. } => Some(&next.key),
             Self::RemoveText { old } => Some(&old.key),
             Self::UpsertTerrainPatch { next, .. } => Some(&next.name),
+            Self::RemoveTerrainPatch { old } => Some(&old.name),
             Self::UpsertMaterial { next, .. } => Some(&next.name),
             Self::RemoveMaterial { old } => Some(&old.name),
             Self::SetNodeMaterialRef { name, .. } => Some(name),

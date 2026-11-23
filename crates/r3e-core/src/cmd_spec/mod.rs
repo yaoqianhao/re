@@ -22,6 +22,7 @@ mod meta;
 mod render;
 mod scene;
 mod sim;
+mod terrain;
 mod ui;
 
 /// 命令所属能力域。
@@ -62,6 +63,8 @@ pub enum Domain {
     Query,
     /// 拾取与屏幕尺寸（原 `api/pick.rs`）。
     Pick,
+    /// 地形：建块 / 采样 / 块划分 / 网格统计（M2-C06，原 `api/terrain.rs`）。
+    Terrain,
     /// 只有 RPC、没有脚本函数：引擎信息 / 截图 / 脚本执行 / 只读装配。
     Meta,
 }
@@ -131,6 +134,7 @@ pub fn all() -> impl Iterator<Item = &'static CommandSpec> {
         render::ALL,
         scene::ALL,
         sim::ALL,
+        terrain::ALL,
         ui::ALL,
     ]
     .into_iter()
@@ -191,8 +195,8 @@ mod tests {
         );
         assert_eq!(
             rpc,
-            rpc_only + 29,
-            "68 个 RPC 方法里 29 个能对到脚本命令（含 M2-B01 的 character 六条），其余 39 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* / material / verify / M1-S1-D 四条）"
+            rpc_only + 36,
+            "76 个 RPC 方法里 36 个能对到脚本命令（含 M2-B01 的 character 六条、M2-C06 的 terrain 七条），其余 40 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* / material / verify / M1-S1-D 四条 / M2-C06 的 terrain.mesh）"
         );
     }
 

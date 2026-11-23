@@ -639,6 +639,50 @@ r3e-cli rpc --method terrain.gen --args '{"size_x":200,"size_z":200,"seed":42}'
 | 11 | `domains` 列表含 `terrain`，且总数为 18 |
 | 12 | `terrain.block_gap` 反例：删块后校验报 1 条 `terrain.block_gap` |
 
+### 10.5 实施记录（2026-11-23 完成）
+
+**落地文件**
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-core/src/cmd_spec/terrain.rs`（新） | 105 | 8 条 `CommandSpec`：全部带 rpc（CD-1 档 A），`terrain.mesh` 挂 `Domain::Meta`（脚本侧碰不到 `r3e-terrain`） |
+| `crates/r3e-core/src/host/terrain.rs`（新） | 371 | `TerrainHost` trait + DTO + 空实现（后端不支持时天然回 `none` / 0，不 panic） |
+| `crates/r3e-protocol/src/terrain.rs`（新） | 104 | 8 个方法的请求/响应 DTO |
+| `crates/r3e-protocol/src/dispatch/terrain.rs`（新） | 245 | 8 个 dispatch 臂，插入 `character → terrain → nav` 回落链（`character.rs` 尾部改指向 `terrain`） |
+| `crates/r3e-runtime/src/terrain_ops/mod.rs`（新） | 593 | 引擎侧实现主体 + `TerrainOpError` + `mesh_totals`（`stats` 与 `mesh` 共用的唯一算法） |
+| `crates/r3e-runtime/src/terrain_ops/read.rs`（新） | 200 | 只读四法：`sample` / `blocks` / `stats` / `mesh`，一个字节都不写 |
+| `crates/r3e-runtime/src/terrain_ops/write.rs`（新） | 227 | 写四法：`create` / `remove` / `resample` / `gen`，一律经 `CommandKind` 进撤销栈与 `state_hash` |
+| `crates/r3e-runtime/src/terrain_host.rs`（新） | 321 | 真 `TerrainHost` 适配器；`app.rs` 只调用（见下文取舍 4） |
+| `crates/r3e-editor-host/src/api/terrain.rs`（新） | 229 | 宿主层：参数整形 → 调 `terrain_ops` → 拼 JSON / 映射错误码（`TERRAIN_PATCH_MISSING` / `-32602` / `tx_rejected`） |
+| `crates/r3e-script/src/api/terrain.rs`（新） | 312 | 脚本 7 条函数（`terrain.mesh` 不绑定） |
+| `crates/r3e-doc/src/validate/terrain.rs`（新） | 151 | 2 条判据：`weight_not_normalized`（判根因：样本数与分辨率不符 / 含非有限值）、`block_gap`（格级空洞判 `Warn`，`COVER_STEP = 8m` 采样口径） |
+| `crates/r3e-doc/tests/terrain_issues.rs`（新） | 110 | 5 条判据测试 |
+| `crates/r3e-editor-host/src/api/tests/terrain.rs`（新） | 362 | 12 条宿主测试 |
+| `crates/r3e-script/tests/terrain_api.rs`（新） | 419 | 12 条脚本绑定测试 |
+
+同步修改：`cmd_spec/mod.rs`（`Domain::Terrain` + `terrain::ALL` + 断言 29→36）、`doc/validate/mod.rs`（三入口都调 + `Category::Terrain` 前后缀映射）、`editor-host/verify/mod.rs`（`layer_of` 归 `Static`，理由写进注释）、`protocol/lib.rs` `RPC_METHODS` 68→76、`protocol/api.rs` 68→76、`cli/args.rs` `TX_ONLY_METHODS` +4（`terrain.create` / `remove` / `resample` / `gen`）、`gen_capabilities.rs` 398→406 + `DOMAIN_ORDER` / `domain_name`、四个契约测试（`editor-host` 62/68→76、`editor` 68→76、`script` 359/370→366/377 与域文件 17→18、`core` rpc_only 断言 29→36）。
+
+**测试 57 条**（方案 +12，实到 +57——偏差见取舍 1）
+
+| crate | 条数 | 内容 |
+|---|---|---|
+| `r3e-runtime` | +25 | `terrain_ops/mod.rs` 16：建后采样为平地、同名覆盖且回报「非新建」、非法分辨率/零尺寸拒、第 33 块拒但覆盖允许、删块可撤销、块外采样**不是**零高度、`blocks` 报尺寸与覆盖率、空地形是空视图不是错误、`gen` 确定性并落场景、`gen` 拒非法尺寸、`resample` 减半并回报误差、平坦块重采样不写场景、`stats` 三角数 == 逐块网格之和、粗档顶点更少、LOD 就近取合法档、网格包围盒覆盖块矩形；`terrain_host.rs` 9：后端名非 `none`、平坦采样命中且权重归一、块外回「没命中」而非零高度地形、空地形统计全零、块划分覆盖数不超总数、同种子块名可复用、尺寸非法回 `none`、平坦块重采样不算改动、空实现与真实现可区分 |
+| `r3e-editor-host` | +12 | 8 条命令各 1 条（`create` 回带哈希、`remove` 存在 `true` / 不存在 `false`、`sample` 含高度法线权重三键、空名跨块命中最高层、`blocks` 按块边长切 16 块、`stats` 三角数 == 逐块和、`mesh` 含三角/顶点/档位、`gen` 同种子一致）＋ 非法分辨率报参数错误且场景不变 ＋ 超上限报错不静默覆盖 ＋ 事务未决回 `tx_rejected` |
+| `r3e-script` | +12 | `create` 写入且同名覆盖、`create` 拒非法参数、`remove` 幂等、`sample` 透传并回 JSON、空名请求「任意块」、未知块回空样本、`blocks`+`stats` 委托、`gen` 全成或全不成、后端拒绝时回 0 块、`resample` 只在真变时写、`resample` 拒未知块与非法上限、`NullBackend` 下建删仍可用 |
+| `r3e-doc` | +5 | 样本数与分辨率不符报 error、非有限高度报 error、块间空洞报 warn、干净地形静默、空地形静默 |
+| `r3e-core` | +3 | `TerrainHost` 契约：空实现一律回空且不 panic、空实现可 downcast、闭包即适配器 |
+
+**四处方案外取舍**
+
+1. **tests 实到 +57，超卡片预算 +12**。§10.4 那 12 条是站在「命令面 + 域登记」视角写的，实际每条命令要穿过五层（core 命令表 / protocol 方法表 + dispatch + DTO / runtime `terrain_ops` / 编辑器宿主 / 脚本绑定），任何一层没有独立测试，改一层就会在别处静默错位——八条命令 × 五层已是 40 条打底，再加 2 条 invariant 反例与 3 条 `TerrainHost` 契约。C 阶段 tests 因此变成 2150 → **2300**（+150，预算 +108）；卡表判据写的是「≥」，未失守，但**后续 D 阶段排预算时应按「命令数 × 层数」估，而不是按卡表给的 +N**。
+2. **`terrain_ops` 落 `r3e-runtime` 而非 `r3e-editor-host`**。`editor-host` 的 allow 表不含 `r3e-terrain`（CD-2 红线），而八条命令里一半要碰块划分 / LOD / 三角网。放 runtime 后，编辑器宿主与脚本宿主共用同一份翻译；`terrain.stats` 与 `terrain.mesh` 也因此被强制走同一个 `mesh_totals`（两处算法分叉测试立刻红）。
+3. **`M0S5_PROTOCOL.md` §3 没有逐条命令表**。该节是 `capabilities.json` 的格式规格 + counts 演进注记，逐条清单本就由生成器落 `docs/capabilities.json`。故本卡只在那段注记后追加一条 C06 的 counts 演进（406 / 76 / 330 / 18 / 42），**不手抄八条命令表**——会和生成器打架的表是负资产。
+4. **`app.rs` 2821 → 2816（顺带还了 5 行债）**。装配调用改由 `crate::terrain_host::script_host` 提供后，`app.rs` 只剩一次调用 + 两行注释；`size_debt` 中该文件基线据实下修为 2816（原稿写 2813，是我第一次压行后的值，`cargo fmt` 又把四参数折回多行、实测 2816）。教训记一笔：**在 `size_debt` 文件里做「压行」型优化，必须以 fmt 后的行数记账**，否则 `lint-size` 会误报「上涨」并浪费一轮 `verify`（本轮实测 `verify` 单次 435s）。
+
+**另两处台账同步**：`docs/m1/M1_PLAN.md` 的 `r3e-script` 写点数 138 → **140**（`api/terrain.rs` 的 `terrain_create` / `terrain_remove` 经 `ctx.write` 直写场景——脚本侧没有撤销栈，这几条命令 `reversible=false`，只能直写，与 `physics` / `character` 域同口径，M1-S3 收口时一并归并）；`docs/m0/M0S2_API_SPLIT.md` 保持 M0 拆分期实测原貌不动（它是历史快照，不是口径表）。
+
+**门禁数字**：`r3e-core` 643 → **646**、`r3e-doc` 164 → **169**、`r3e-editor-host` 134 → **146**、`r3e-runtime` 19 → **44**、`r3e-script` 132 → **144**，全局 2243 → **2300**（`check-tests` 全绿）；`gen-capabilities` commands 398 → **406**、rpc 68 → **76**、`script_only` **330 不变**、domains 17 → **18**、invariants 40 → **42**（登记表 / 反例测试 / 能力清单三源一致）；`size_debt` 20 项不变、`dep_debt` 0、`dep_rules` 19 crate；回放金标 `385482eb033d2964` 未漂移；`cargo xtask verify` 11 步全绿。
+
 ---
 
 ## 11. C07：可玩性回归 2（tests **+10**）

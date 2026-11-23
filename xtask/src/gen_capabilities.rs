@@ -12,7 +12,7 @@
 //!
 //! - 命令总数 == [`EXPECTED_COMMANDS`]、RPC 数 == [`r3e_protocol::RPC_METHODS`]`.len()`
 //! - 命令表 `rpc` 集合与 `RPC_METHODS` 完全相等（多一条 / 少一条都红）
-//! - 能力域集合与声明序一致（17 域，顺序即 `Domain` 枚举序）
+//! - 能力域集合与声明序一致（18 域，顺序即 `Domain` 枚举序）
 //! - 不变量条数 == `ISSUE_CODES.len()`
 //!
 //! `--check` 模式：重新在内存里生成，与仓库内文件逐字节比对；不一致打印首个差异位置并非 0。
@@ -38,7 +38,9 @@ use r3e_protocol::{PROTOCOL_VERSION, RPC_METHODS};
 /// M1-S1-D：388 → 392（`scene.snapshot` / `mesh.stats` / `scene.validate` /
 /// `physics.simulate` 四条纯 RPC，插件离线工具搬上引擎）。
 /// M2-B01：392 → 398（`character.*` 六条纯 RPC + 六条脚本绑定，RPC 62 → 68）。
-const EXPECTED_COMMANDS: usize = 398;
+/// M2-C06：398 → 406（`terrain.*` 八条，七条脚本可见 + `terrain.mesh` 挂 `Meta`，
+/// RPC 68 → 76，域数 17 → 18）。
+const EXPECTED_COMMANDS: usize = 406;
 
 /// 能力域声明序（与 [`Domain`] 枚举序一致，也是清单 `domains` 数组的顺序）。
 const DOMAIN_ORDER: &[&str] = &[
@@ -58,6 +60,7 @@ const DOMAIN_ORDER: &[&str] = &[
     "input",
     "query",
     "pick",
+    "terrain",
     "meta",
 ];
 
@@ -265,6 +268,7 @@ fn domain_name(domain: Domain) -> &'static str {
         Domain::Input => "input",
         Domain::Query => "query",
         Domain::Pick => "pick",
+        Domain::Terrain => "terrain",
         Domain::Meta => "meta",
     }
 }

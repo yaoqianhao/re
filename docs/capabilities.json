@@ -4,11 +4,11 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 398,
-    "rpc": 68,
+    "commands": 406,
+    "rpc": 76,
     "script_only": 330,
-    "domains": 17,
-    "invariants": 40
+    "domains": 18,
+    "invariants": 42
   },
   "domains": [
     "scene",
@@ -27,6 +27,7 @@
     "input",
     "query",
     "pick",
+    "terrain",
     "meta"
   ],
   "commands": [
@@ -4151,6 +4152,107 @@
       "since": "M0-backfill"
     },
     {
+      "name": "terrain.mesh",
+      "domain": "meta",
+      "rpc": "terrain.mesh",
+      "params": [],
+      "returns": "&str",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_blocks",
+      "domain": "terrain",
+      "rpc": "terrain.blocks",
+      "params": [],
+      "returns": "&str",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_create",
+      "domain": "terrain",
+      "rpc": "terrain.create",
+      "params": [
+        "&str",
+        "f64",
+        "f64",
+        "f64",
+        "f64",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_gen",
+      "domain": "terrain",
+      "rpc": "terrain.gen",
+      "params": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "returns": "&str",
+      "reversible": false,
+      "cost": "heavy",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_remove",
+      "domain": "terrain",
+      "rpc": "terrain.remove",
+      "params": [
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "cheap",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_resample",
+      "domain": "terrain",
+      "rpc": "terrain.resample",
+      "params": [
+        "&str",
+        "f64",
+        "i64"
+      ],
+      "returns": "bool",
+      "reversible": false,
+      "cost": "linear",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_sample",
+      "domain": "terrain",
+      "rpc": "terrain.sample",
+      "params": [
+        "&str",
+        "f64",
+        "f64"
+      ],
+      "returns": "&str",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M2-C06"
+    },
+    {
+      "name": "terrain_stats",
+      "domain": "terrain",
+      "rpc": "terrain.stats",
+      "params": [],
+      "returns": "&str",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-C06"
+    },
+    {
       "name": "text_add",
       "domain": "text",
       "rpc": null,
@@ -5108,6 +5210,16 @@
       "code": "support.suspect",
       "layer": "support",
       "severity": "warn"
+    },
+    {
+      "code": "terrain.block_gap",
+      "layer": "terrain",
+      "severity": "warn"
+    },
+    {
+      "code": "terrain.weight_not_normalized",
+      "layer": "terrain",
+      "severity": "error"
     },
     {
       "code": "text.key.duplicate",

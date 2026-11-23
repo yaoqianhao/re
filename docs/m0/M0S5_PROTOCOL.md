@@ -257,7 +257,7 @@ C = docs/capabilities.json 的 invariants[].code 集合
 }
 ```
 
-> **counts 随里程碑递增**：M0-S5 建表时 `369 命令 / 39 RPC / 24 不变量`，M1-S4-D 后为 `386 命令 / 56 RPC / 30 不变量`（16 条不变量随 S4-A 材质六码等新增，`xtask invariants` 三源一致），M1-S1-D 后为 `392 命令 / 62 RPC / 38 不变量`（`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条纯 RPC 承接插件离线工具）。数字以 `cargo xtask gen-capabilities` 生成值为准，本文档只做格式示例。
+> **counts 随里程碑递增**：M0-S5 建表时 `369 命令 / 39 RPC / 24 不变量`，M1-S4-D 后为 `386 命令 / 56 RPC / 30 不变量`（16 条不变量随 S4-A 材质六码等新增，`xtask invariants` 三源一致），M1-S1-D 后为 `392 命令 / 62 RPC / 38 不变量`（`scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 四条纯 RPC 承接插件离线工具）。M2-C06 后为 `406 命令 / 76 RPC / 330 仅脚本 / 18 域 / 42 不变量`（`terrain.*` 八条全部带 RPC，其中 `terrain.mesh` 挂 `meta` 域、脚本侧无绑定，故仅脚本数不变）。数字以 `cargo xtask gen-capabilities` 生成值为准，本文档只做格式示例。
 
 > **实测字段形态（D2 生成后回填，原示例已按真实数据改正）**：
 > - `params` 存的是 **Rust 参数类型**（`&str` / `f64` / `Option<&str>` …），不是参数名——`CommandSpec.params` 目前只有类型；参数名（脚本帮助里那套）待 M1 从注册点补结构化字段。

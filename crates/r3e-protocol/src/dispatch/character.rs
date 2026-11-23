@@ -117,7 +117,7 @@ pub(super) fn dispatch_character(
             Ok(r) => Response::ok(id, r),
             Err(f) => Response::fail(id, f),
         },
-        _ => nav::dispatch_nav(api, id, params, method, raw),
+        _ => terrain::dispatch_terrain(api, id, params, method, raw),
     }
 }
 

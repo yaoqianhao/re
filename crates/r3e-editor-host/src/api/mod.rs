@@ -36,7 +36,9 @@ use r3e_editor::{
     EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, MeshStatsQuery,
     NavBakeOptions, NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch,
     QuerySpec, RayQuery, RpcFailure, ShadowPatch, SimulateQuery, SnapshotQuery, SsaoPatch,
-    TransformPatch, UiPatch, ValidateQuery, VerifyQuery, PROTOCOL_VERSION, SERVER_BUSY,
+    TerrainBlocksQuery, TerrainCreateQuery, TerrainGenQuery, TerrainMeshQuery, TerrainNameQuery,
+    TerrainResampleQuery, TerrainSampleQuery, TransformPatch, UiPatch, ValidateQuery, VerifyQuery,
+    PROTOCOL_VERSION, SERVER_BUSY,
 };
 use r3e_nav::Nav;
 use r3e_physics::Physics;
@@ -118,6 +120,7 @@ mod scene_flow;
 mod script;
 mod shadow;
 mod support;
+mod terrain;
 mod tx;
 mod tx_violations;
 mod ui_rpc;
@@ -365,6 +368,43 @@ impl EngineApi for LocalEngineApi<'_> {
 
     fn physics_simulate(&mut self, query: SimulateQuery) -> Result<Value, RpcFailure> {
         inspect::physics_simulate(self, query)
+    }
+
+    // ---- M2-C06：地形命令面（八条） ----
+    //
+    // 实现在 `terrain.rs`，重活在 `r3e_runtime::terrain_ops`（它才依赖 `r3e-terrain`）。
+    // 四条写、四条读，写的那四条在 `terrain.rs` 里统一挡事务未决。
+
+    fn terrain_create(&mut self, query: TerrainCreateQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_create(self, query)
+    }
+
+    fn terrain_remove(&mut self, query: TerrainNameQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_remove(self, query)
+    }
+
+    fn terrain_sample(&mut self, query: TerrainSampleQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_sample(self, query)
+    }
+
+    fn terrain_blocks(&mut self, query: TerrainBlocksQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_blocks(self, query)
+    }
+
+    fn terrain_resample(&mut self, query: TerrainResampleQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_resample(self, query)
+    }
+
+    fn terrain_gen(&mut self, query: TerrainGenQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_gen(self, query)
+    }
+
+    fn terrain_stats(&mut self) -> Result<Value, RpcFailure> {
+        terrain::terrain_stats(self)
+    }
+
+    fn terrain_mesh(&mut self, query: TerrainMeshQuery) -> Result<Value, RpcFailure> {
+        terrain::terrain_mesh(self, query)
     }
 }
 

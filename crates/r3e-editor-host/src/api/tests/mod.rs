@@ -217,6 +217,7 @@ mod physics_bind;
 mod physics_nav;
 mod query;
 mod route;
+mod terrain;
 mod tx;
 mod tx_violations;
 mod ui_light;

@@ -53,12 +53,38 @@ impl ScriptHost {
     /// `character` 用 [`host::NullCharacterHost`](crate::host::NullCharacterHost) 兜底时，
     /// 脚本里 `character_*` 全部返回「没有控制器」，但**不 panic、不中断脚本**——
     /// 与音频的静默后端同一口径：没接能力不该让整段脚本挂掉。
+    ///
+    /// 地形能力面（M2-C06）在本入口里是 `NullTerrainHost`：要真地形请走
+    /// [`Self::new_with_full`]，否则 `terrain_sample` / `terrain_gen` 一律回空。
     pub fn new_with_capabilities(
         doc: Rc<RefCell<Document>>,
         physics: Rc<dyn PhysicsHost>,
         input: Rc<RefCell<InputState>>,
         audio: Rc<dyn AudioHost>,
         character: Rc<dyn CharacterHost>,
+    ) -> Self {
+        Self::new_with_full(
+            doc,
+            physics,
+            input,
+            audio,
+            character,
+            Rc::new(host::NullTerrainHost),
+        )
+    }
+
+    /// 底层构造：四个能力面都显式给出（M2-C06 起，地形也走注入）。
+    ///
+    /// `terrain` 用 [`host::NullTerrainHost`](crate::host::NullTerrainHost) 时，
+    /// `terrain_create` / `terrain_remove` **仍然可用**（只碰场景表），
+    /// `sample` / `blocks` / `stats` 回空、`gen` / `resample` 回 `false`。
+    pub fn new_with_full(
+        doc: Rc<RefCell<Document>>,
+        physics: Rc<dyn PhysicsHost>,
+        input: Rc<RefCell<InputState>>,
+        audio: Rc<dyn AudioHost>,
+        character: Rc<dyn CharacterHost>,
+        terrain: Rc<dyn crate::host::TerrainHost>,
     ) -> Self {
         let clock = Rc::new(RefCell::new(Clock::default()));
         let ui_interaction = Rc::new(RefCell::new(UiInteraction::new()));
@@ -74,6 +100,7 @@ impl ScriptHost {
             input: input.clone(),
             audio: audio.clone(),
             character: character.clone(),
+            terrain: terrain.clone(),
             clock: clock.clone(),
             rng: Rc::new(std::cell::Cell::new(0x2545F4914F6CDD1D)),
             ui_log: Rc::new(RefCell::new(api::UiWriteLog::default())),

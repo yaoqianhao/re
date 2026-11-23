@@ -17,12 +17,17 @@
 mod audio;
 mod character;
 mod physics;
+mod terrain;
 
 pub use audio::{AudioHost, AudioReq, AudioRsp, NullAudioHost, SilentAudioHost};
 pub use character::{
     CharReq, CharRsp, CharacterHost, CharacterStateDto, CharacterStatsDto, NullCharacterHost,
 };
 pub use physics::{HitDto, NullPhysicsHost, PhysReq, PhysRsp, PhysicsHost};
+pub use terrain::{
+    NullTerrainHost, TerrainBlockDto, TerrainBlocksDto, TerrainHost, TerrainReq,
+    TerrainResampleDto, TerrainRsp, TerrainSampleDto, TerrainStatsDto,
+};
 
 #[cfg(test)]
 mod tests {

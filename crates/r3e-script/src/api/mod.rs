@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::host::{AudioHost, CharacterHost, CharacterStateDto, HitDto, PhysicsHost};
+use crate::host::{AudioHost, CharacterHost, CharacterStateDto, HitDto, PhysicsHost, TerrainHost};
 
 use glam::{Vec3, Vec4};
 use r3e_core::input::{parse_key, parse_mouse_button, parse_pad_axis, parse_pad_button};
@@ -62,6 +62,11 @@ pub struct ScriptContext {
     /// 真实现由装配层注入（`ScriptHost::new_with_character` / 编辑器宿主）。
     /// 未注入时是 [`NullCharacterHost`](crate::host::NullCharacterHost)。
     pub character: Rc<dyn CharacterHost>,
+    /// 地形派生几何能力面（M2-C06）：块划分 / 采样 / 重采样 / 生成都只在这里要结果，
+    /// 算法本体在 `r3e-terrain`（`r3e-script` 的 allow 里没有它）。
+    /// 未注入时是 [`NullTerrainHost`](crate::host::NullTerrainHost)——脚本拿不到数，
+    /// 但 `terrain_create` / `terrain_remove` 仍然能用（那两条只碰场景表）。
+    pub terrain: Rc<dyn TerrainHost>,
     pub input: Rc<RefCell<InputState>>,
     /// 音频能力面（M2-A03b）：同上。
     pub audio: Rc<dyn AudioHost>,
@@ -300,6 +305,7 @@ mod postfx;
 mod query;
 mod scene_flow;
 mod shadow;
+mod terrain;
 mod text;
 mod ui;
 
@@ -318,6 +324,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     input::register(engine, ctx);
     physics::register(engine, ctx);
     character::register(engine, ctx);
+    terrain::register(engine, ctx);
     text::register(engine, ctx);
     ui::register(engine, ctx);
     light::register(engine, ctx);

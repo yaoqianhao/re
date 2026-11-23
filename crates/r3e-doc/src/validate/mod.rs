@@ -21,6 +21,7 @@ mod material;
 mod overlap;
 mod refs;
 mod support;
+mod terrain;
 
 pub use invariants::{by_code as issue_code_by_code, IssueCode, ISSUE_CODES};
 
@@ -64,6 +65,8 @@ pub enum Category {
     Reachability,
     /// 角色控制器（配置越界 / 埋进支撑面）
     Character,
+    /// 地形（样本不可归一 / 地表空洞）
+    Terrain,
 }
 
 impl Category {
@@ -77,6 +80,7 @@ impl Category {
             Self::Overlap => "overlap",
             Self::Reachability => "reachability",
             Self::Character => "character",
+            Self::Terrain => "terrain",
         }
     }
 
@@ -93,6 +97,7 @@ impl Category {
             "overlap" => Self::Overlap,
             "nav" => Self::Reachability,
             "character" => Self::Character,
+            "terrain" => Self::Terrain,
             _ => Self::Bounds,
         }
     }
@@ -222,6 +227,10 @@ pub fn validate(scene: &Scene) -> Vec<Issue> {
     bounds::check(scene, &mut out);
     material::check(scene, &mut out);
     character::check(scene, &mut out);
+    // 地形族（M2-C06）：同为**确定**结论——样本数与分辨率、格覆盖都由场景内真值
+    // 算得出，物理层没有更准的第二份口径去复核。三个入口（加载期 / 验证期 / 带目录）
+    // 必须一致，所以三处都调。
+    terrain::check(scene, &mut out);
     sort_issues(&mut out);
     out
 }
@@ -247,6 +256,10 @@ pub fn validate_geometry(scene: &Scene) -> Vec<Issue> {
     // 只挂 `validate` 的话，加载期看得到、验证期反而看不到，同一份场景给两个结论。
     // 它们是精确条目（`approximate = false`），不会参与「近似被覆盖」那条规则。
     character::check(scene, &mut out);
+    // 地形族（M2-C06）：同为**确定**结论——样本数与分辨率、格覆盖都由场景内真值
+    // 算得出，物理层没有更准的第二份口径去复核。三个入口（加载期 / 验证期 / 带目录）
+    // 必须一致，所以三处都调。
+    terrain::check(scene, &mut out);
     sort_issues(&mut out);
     dedup_superseded(out)
 }
@@ -357,6 +370,10 @@ pub fn validate_in_dir(scene: &Scene, dir: &std::path::Path) -> Vec<Issue> {
     bounds::check(scene, &mut out);
     material::check_in_dir(scene, dir, &mut out);
     character::check(scene, &mut out);
+    // 地形族（M2-C06）：同为**确定**结论——样本数与分辨率、格覆盖都由场景内真值
+    // 算得出，物理层没有更准的第二份口径去复核。三个入口（加载期 / 验证期 / 带目录）
+    // 必须一致，所以三处都调。
+    terrain::check(scene, &mut out);
     sort_issues(&mut out);
     out
 }

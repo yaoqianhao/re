@@ -8,10 +8,11 @@
 //!                  └─ media::dispatch_media ui.* / light.* / audio.*
 //!                       └─ physics::dispatch_physics physics.*（M1-S4-D，只读）
 //!                            └─ character::dispatch_character character.*（M2-B01）
-//!                                 └─ nav::dispatch_nav nav.*（M1-S4-D）
-//!                                 └─ inspect::dispatch_inspect scene.snapshot / mesh.stats
-//!                                      / scene.validate / physics.simulate（M1-S1-D）
-//!                                      └─ 未知方法 → METHOD_NOT_FOUND
+//!                                 └─ terrain::dispatch_terrain terrain.*（M2-C06）
+//!                                      └─ nav::dispatch_nav nav.*（M1-S4-D）
+//!                                           └─ inspect::dispatch_inspect scene.snapshot / mesh.stats
+//!                                                / scene.validate / physics.simulate（M1-S1-D）
+//!                                                └─ 未知方法 → METHOD_NOT_FOUND
 //! ```
 //!
 //! 参数解码辅助（`param` / `opt_f32*` / `with_node` …）也在这里，子模块通过
@@ -34,6 +35,7 @@ mod nav;
 mod physics;
 mod query;
 mod scene;
+mod terrain;
 mod tx;
 
 /// 方法名归一化：忽略大小写与下划线，`scene.setTransform` 与 `scene.set_transform` 等价。
