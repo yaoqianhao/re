@@ -617,6 +617,9 @@ impl Renderer {
             cull_node_bounds: Vec::new(),
             cull_node_casts: Vec::new(),
             cull_tree_builds: 0,
+            terrain: None,
+            terrain_dirty: None,
+            terrain_layers: crate::terrain::TerrainLayersUniform::default(),
             stats: RenderStats::default(),
         })
     }

@@ -29,3 +29,8 @@ pollster.workspace = true
 glam.workspace = true
 log.workspace = true
 anyhow.workspace = true
+
+# 仅供 `tests/terrain_roam.rs`（C07）驱动角色：dev-dependencies 里的引擎 crate
+# 不计入生产依赖图（见 xtask `main.rs` 的依赖规则扫描），运行时本体不依赖 character。
+[dev-dependencies]
+r3e-character.workspace = true

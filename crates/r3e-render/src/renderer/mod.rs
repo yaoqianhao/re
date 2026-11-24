@@ -15,6 +15,7 @@ mod shadow;
 mod staging;
 mod state;
 mod stats;
+mod terrain_pass;
 mod types;
 mod uniforms;
 mod upload;

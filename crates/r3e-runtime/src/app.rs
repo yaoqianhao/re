@@ -32,6 +32,7 @@ use crate::capture::{absolute_path, capture_to_file};
 use crate::physics_sync::PhysicsSync;
 use crate::port::{EditorService, EngineAccess};
 use crate::scene_material_import;
+use crate::terrain_draw::{sync as sync_terrain, TerrainDrawer};
 use crate::time::{FrameTimeWindow, FRAME_TIME_WINDOW};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -73,10 +74,8 @@ const MOVE_SPEED: f32 = 6.0;
 const MOUSE_ORBIT_SENS: f32 = 0.28;
 /// 鼠标右键拖拽平移的灵敏度系数（随相机距离缩放）。
 const MOUSE_PAN_SENS: f32 = 0.0016;
-/// 一帧内与相机移动相关的按键快照。
-///
-/// 键盘状态存在 `InputState::keyboard` 里（脚本与主循环共享同一份真源），
-/// 这里只在一帧开头取一次快照，避免相机计算过程中反复 borrow。
+/// 一帧内与相机移动相关的按键快照：键盘真源在 `InputState::keyboard`（脚本共享），
+/// 这里只在一帧开头取一次，避免相机计算过程中反复 borrow。
 #[derive(Debug, Clone, Copy, Default)]
 struct MoveKeys {
     forward: bool,
@@ -279,21 +278,15 @@ pub struct EngineApp {
     gilrs: Option<gilrs::Gilrs>,
     /// 光标是否已有有效位置（首个 CursorMoved 之前不算位移）。
     cursor_valid: bool,
-    /// UI 指针交互状态（与脚本宿主共享同一份 `Rc`）。
-    ///
-    /// 主循环每帧推进它，脚本侧 `ui_events()` / `ui_hover()` / `ui_hit()` 读的就是这份；
-    /// 相机拖动也靠它判断「这一下点的是 UI 还是场景」。
+    /// UI 指针交互状态（与脚本宿主共享同一份 `Rc`）：主循环每帧推进它，
+    /// 脚本侧 `ui_events()` / `ui_hover()` / `ui_hit()` 读这份，相机拖动也靠它判「点的是 UI 还是场景」。
     ui_interaction: Rc<RefCell<UiInteraction>>,
     /// 场景栈（扩展十八 B）：与脚本宿主共享同一份 `Rc`。
-    ///
-    /// 归属很明确——**宿主独占写**：压栈 / 回退 / 读档都由 [`EngineApp::apply_scene_command`]
-    /// 在帧首做，脚本与 RPC 只能往命令槽里放一条意图。栈里每层存"离开时的样子"
-    /// （源文本 + 运行时快照），所以切走再切回来不必重跑整局。
+    /// **宿主独占写**（压栈 / 回退 / 读档都在 [`EngineApp::apply_scene_command`] 里帧首做），
+    /// 每层存"离开时的样子"（源文本 + 运行时快照），切走再切回不必重跑整局。
     scene_stack: Rc<RefCell<SceneStack>>,
-    /// 网格包围盒表（扩展三十四）：与脚本宿主共享同一份 `Rc`。
-    ///
-    /// 同样是**宿主独占写**：每帧把场景里实际引用到的网格登记进来，脚本的 `pick_at`
-    /// 只读。渲染层的盒子有缓存，所以「登记」这一步是查表而不是扫顶点。
+    /// 网格包围盒表（扩展三十四）：同样是**宿主独占写**——每帧把场景实际引用到的网格
+    /// 登记进来，脚本的 `pick_at` 只读；盒子走渲染层缓存，所以是查表不是扫顶点。
     pick_bounds: Rc<RefCell<MeshAabbCache>>,
 
     last_frame: Instant,
@@ -361,6 +354,8 @@ pub struct EngineApp {
     /// 上次**加载失败**的探针配置。用同一份配置再试只会再失败一次，
     /// 记在这里就能保证坏图只在切换时刷一条日志，而不是每帧一条。
     env_map_error: Option<r3e_core::envmap::EnvironmentMapSettings>,
+    /// 地形上 GPU 的接线器（M2-C03b）：装配与判重都在 `terrain_draw`。
+    terrain_draw: TerrainDrawer,
 }
 
 impl EngineApp {
@@ -563,7 +558,7 @@ impl EngineApp {
             let library = assets.borrow().clone();
             let bound = scene
                 .borrow_mut()
-                .write(|scene| attach_morph_bindings(scene, &library));
+                .write(|s| attach_morph_bindings(s, &library));
             if bound > 0 {
                 log::info!("形变绑定已登记: {bound} 个网格");
             }
@@ -589,6 +584,8 @@ impl EngineApp {
                 attach_morph_bindings(scene, &library);
             });
         }
+
+        let physics_sync = crate::physics_sync::prebound(&physics, &scene, &assets);
 
         // 脚本必须在资产（含动画实例）就绪之后再跑：`on_start` 里常要枚举 `anims()`
         if script_path.exists() {
@@ -641,7 +638,7 @@ impl EngineApp {
             frame_times: FrameTimeWindow::new(FRAME_TIME_WINDOW),
             console: spawn_console(),
             scene_mtime,
-            physics_sync: PhysicsSync::new(),
+            physics_sync,
             assets,
             asset_specs,
             cli_assets: cli.assets.clone(),
@@ -663,6 +660,7 @@ impl EngineApp {
             capture_done: false,
             applied_env_map: None,
             env_map_error: None,
+            terrain_draw: TerrainDrawer::default(),
         }
     }
 
@@ -924,6 +922,7 @@ impl EngineApp {
         // 反射探针（扩展二十三）：必须在 render 之前同步。配置没变就什么都不做，
         // 因此未配置探针的场景这一步恒为空转，画面与扩展十二逐像素一致。
         self.sync_env_probe();
+        self.sync_terrain_draw();
 
         if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
             renderer.render(&self.scene.borrow());
@@ -999,15 +998,25 @@ impl EngineApp {
         self.input.borrow_mut().end_frame();
     }
 
+    /// 地形上 GPU（M2-C03b）：相机 XZ 决定 LOD，判重与装配全在 `terrain_draw`。
+    fn sync_terrain_draw(&mut self) {
+        let (Some(renderer), scene) = (self.renderer.as_mut(), self.scene.borrow()) else {
+            return;
+        };
+        let eye = scene.camera.position;
+        sync_terrain(
+            renderer,
+            &mut self.terrain_draw,
+            [eye.x, eye.z],
+            &scene.terrain,
+        );
+    }
+
     /// 反射探针（扩展二十三）：把场景的 `environment_map` 段同步到渲染器。
     ///
-    /// 三条判定，顺序即优先级：
-    /// 1. 段缺失 / 未启用 → `clear_env_probe()`，镜面退回解析 IBL（与扩展十二一致）；
-    /// 2. 与已上传配置相等 → 直接返回，不碰 GPU（也就不用重建材质 bind group）；
-    /// 3. 与上次失败的配置相等 → 也返回，坏图只在切换那一次刷日志。
-    ///
-    /// 真正的解码 + 预滤波是 CPU 上的一次性重活（默认 128 面 × 6 × 6 层），
-    /// 所以这里唯一的性能红线就是「别在没变化时重算」。
+    /// 三条判定按优先级：段缺失 / 未启用 → `clear_env_probe()`（镜面退回解析 IBL）；
+    /// 与已上传配置相等 → 返回；与上次失败配置相等 → 返回。解码 + 六面预滤波是
+    /// 几百毫秒的一次性重活，所以唯一的性能红线就是「没变化时绝不重算」。
     fn sync_env_probe(&mut self) {
         let settings = self
             .scene
@@ -1513,9 +1522,7 @@ impl EngineApp {
     }
 
     /// 把场景里声明了 `physics` 段的物件绑成刚体（世代或结构变化时才真绑）。
-    ///
-    /// 判重规则（为什么光看世代号不够）与装配调用都在 [`crate::physics_sync`]，
-    /// 这里只把三个句柄递过去。
+    /// 判重规则与装配都在 [`crate::physics_sync`]，这里只把三个句柄递过去。
     fn sync_physics_bindings(&mut self) {
         self.physics_sync
             .sync(&self.physics, &self.scene, &self.assets);
@@ -1523,13 +1530,9 @@ impl EngineApp {
 
     /// 每帧把「世界」翻译成「耳朵」：听者 ← 活动相机，声源 ← 绑定节点，然后结算一次。
     ///
-    /// 三条约束决定了这个函数必须长这样：
-    /// * **听者只跟随活动相机**：相机是 `Scene::camera` 里那台（视角输入改的就是它），
-    ///   不额外维护一份，避免手柄 / 脚本各自推一个位置对不上；
-    /// * **节点位置先于结算**：先把所有绑定节点的世界坐标写进声源，再 `tick_spatial`，
-    ///   这样多普勒用的速度是本帧的真实位移，而不是「位置落后一帧」的假速度；
-    /// * **暂停时 `dt == 0`**：`tick_spatial` 对 `0` / `NaN` / 负数一律按 0 处理，
-    ///   速度归零 → 倍速回到 1，不会在暂停期间把声调拖偏。
+    /// 三条约束：听者只跟随 `Scene::camera`（不另维护一份，免得手柄 / 脚本推的位置对不上）；
+    /// 节点位置先于 `tick_spatial`（多普勒用的是本帧真实位移）；暂停时 `dt == 0`
+    /// 被 `tick_spatial` 当 0 处理，速度归零、倍速回 1，不会拖偏声调。
     fn drive_spatial_audio(&mut self, dt: f32) {
         // 听者：位置直接取相机，朝向取 `target - position`（与 view 矩阵同一套语义）
         {
@@ -1919,11 +1922,8 @@ impl EngineApp {
     }
 
     /// 把内存里的场景写回磁盘（`None` = 写回本场景文件，即编辑器里「保存」的语义）。
-    ///
-    /// 保存的同时刷新 `scene_mtime`：写回被监视的场景文件时，`watch_files` 会把它
-    /// 当成外部改动去做一次热重载（场景回放到刚写的那份 JSON、脚本重跑、动画重置）。
-    /// 内容确实等价，但副作用没有必要，所以这里直接把 mtime 记成新值。
-    ///
+    /// 保存的同时把 `scene_mtime` 刷新成新值：否则 `watch_files` 会把这次写回当成外部
+    /// 改动做一次热重载（场景回放、脚本重跑、动画重置），内容等价但副作用没必要。
     /// 返回值：实际写入的绝对路径（规范化失败时退回原路径）。
     pub fn save_scene(&mut self, path: Option<&Path>) -> Result<PathBuf, String> {
         let target = path

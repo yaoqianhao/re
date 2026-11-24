@@ -12,7 +12,7 @@ mod common;
 
 use common::*;
 use r3e_physics::heightfield::TERRAIN_NODE;
-use r3e_physics::{HeightField, PhysicsBackend};
+use r3e_physics::{HeightField, PhysicsBackend, Ray};
 
 /// 平地场：20x20 格、边长 1、覆盖 x/z ∈ [-10, 10]，全部高度 `h`。
 fn flat(h: f32) -> HeightField {
@@ -437,6 +437,81 @@ fn 未被地形覆盖的端口能力位不变() {
             physics.port_caps(),
             caps,
             "{kind:?} 端口能力位不该因地形变动"
+        );
+    }
+}
+
+// ------------------------------------------------- 门面入口（不经端口 trait）
+
+/// 门面 `Physics::raycast` 是脚本 `physics_raycast` 的真实入口（`host_adapter` 直连），
+/// 它必须和端口 `cast_ray` 一样打得到地形。
+///
+/// 这两条入口曾经给出不同答案：端口层合并了地形、门面没有，于是 `terrain_roam` 的
+/// `roam.rhai` 贴地射线永远读不到地面，角色浮在原地（渲染正常、碰撞正常、就是不走）。
+#[test]
+fn 门面射线_与端口一样打得到地形() {
+    for kind in selectable() {
+        let mut physics = empty(kind);
+        physics.set_heightfield(Some(flat(0.5)));
+        let hit = physics
+            .raycast(Ray::new(Vec3::new(0.0, 10.0, 0.0), Vec3::NEG_Y), 20.0)
+            .unwrap_or_else(|| panic!("{kind:?} 门面射线应打到地形"));
+        assert_eq!(hit.node, TERRAIN_NODE, "{kind:?} 应报地形哨兵节点");
+        assert!(
+            near(hit.distance, 9.5),
+            "{kind:?} 命中距离 {} 应 ≈ 9.5",
+            hit.distance
+        );
+        assert!(near(hit.point.y, 0.5), "命中点 y={} 应 ≈ 0.5", hit.point.y);
+        assert!(near(hit.normal.y, 1.0), "平地表法线应朝上");
+    }
+}
+
+/// 门面射线的择优与端口同一套规则：上方的刚体比地形近，就该报刚体。
+#[test]
+fn 门面射线_刚体更近时仍取刚体() {
+    for kind in selectable() {
+        let (mut physics, ids) = world_shapes(
+            kind,
+            &[(
+                ColliderShape::Box,
+                Vec3::new(0.0, 3.0, 0.0),
+                Vec3::splat(0.5),
+            )],
+        );
+        physics.set_heightfield(Some(flat(0.0)));
+        let hit = physics
+            .raycast(Ray::new(Vec3::new(0.0, 10.0, 0.0), Vec3::NEG_Y), 20.0)
+            .expect("应命中刚体");
+        assert_eq!(
+            hit.node, ids[0],
+            "{kind:?} 刚体在上，不该换成本不该挡路的地面"
+        );
+        assert!(near(hit.distance, 6.5), "距离 {} 应 ≈ 6.5", hit.distance);
+    }
+}
+
+/// 门面扫掠 / 重叠同样含地形候选：胶囊自上空落地的距离按地表算，重叠报地形哨兵。
+#[test]
+fn 门面扫掠与重叠_都含地形候选() {
+    for kind in selectable() {
+        let mut physics = empty(kind);
+        physics.set_heightfield(Some(flat(0.0)));
+        // 中心 y=5、半高 0.5、半径 0.4 → 脚底 4.1，落到 y=0 需走 4.1
+        let hit = physics
+            .sweep_capsule(
+                capsule(Vec3::new(0.0, 5.0, 0.0), 0.5, 0.4),
+                Vec3::NEG_Y,
+                10.0,
+            )
+            .expect("应落到地形上");
+        assert_eq!(hit.node, TERRAIN_NODE, "{kind:?} 扫掠应报地形");
+        assert!(near(hit.distance, 4.1), "落距 {} 应 ≈ 4.1", hit.distance);
+        // 中心 y=0.4、脚底 -0.5、头顶 1.3：地表从胶囊中间穿过
+        let hits = physics.overlap_capsule(capsule(Vec3::new(0.0, 0.4, 0.0), 0.5, 0.4));
+        assert!(
+            hits.iter().any(|h| h.node == TERRAIN_NODE),
+            "{kind:?} 重叠应报地形，实际 {hits:?}"
         );
     }
 }

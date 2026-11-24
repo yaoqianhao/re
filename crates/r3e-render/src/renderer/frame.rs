@@ -67,6 +67,8 @@ impl Renderer {
         // 扩展四十：掩码摘掉形变的实例数，与因此省下的非零权重槽数
         let (morph_masked, morph_masked_shapes) = (plan.morph_masked, plan.morph_masked_shapes);
         self.prepare_materials(&groups);
+        // M2-C03b：地形通道的上传与 uniform。没有地形时这一步零动作。
+        self.prepare_terrain(scene);
         // 阶段 D：先把本帧的阴影贴图渲好，主通道再采样它
         // 扩展二十四：多带一份「每级保留哪些实例」的掩码
         let shadow_plan = self.prepare_shadow(
@@ -203,6 +205,11 @@ impl Renderer {
             let (opaque_draws, opaque_instances) =
                 self.draw_group_range(&mut pass, &groups[..transparent_start]);
 
+            // M2-C03b：地形是不透明几何，插在不透明段之后、半透明段之前。
+            // 独立管线而不是折进 PBR 批次：地形顶点只带 position/normal/uv/4 层权重，
+            // 硬塞进 PBR 布局要动每一个既有着色器入口（`mesh.rs` 的顶点槽已用满 15）。
+            let terrain_draws = self.draw_terrain(&mut pass);
+
             // 扩展十九：半透明段。绘制顺序已在 `prepare_instances` 里排成
             // 「由远及近」，这里换成不写深度的管线按同一顺序提交，混合才正确。
             pass.set_pipeline(&self.transparent_pipeline);
@@ -210,7 +217,7 @@ impl Renderer {
             transparent_draws = transparent.0;
             transparent_instances = transparent.1;
 
-            let draw_calls = opaque_draws + transparent_draws;
+            let draw_calls = opaque_draws + transparent_draws + terrain_draws;
             let instances = opaque_instances + transparent_instances;
 
             self.stats = RenderStats {

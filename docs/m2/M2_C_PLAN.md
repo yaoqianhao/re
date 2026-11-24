@@ -716,6 +716,48 @@ assets/labs/terrain_roam/
 
 人工栏（回填 `M2_BASELINE.md` §7.2）：截图 3 张 + 一句主观结论（观感/手感是否可接受）。
 
+### 11.3 实施记录（2026-11-24 完成）
+
+**落地文件**
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-runtime/tests/terrain_roam.rs`（新） | 388 | 10 条行走回归（`parse_scene` 载夹具 → 双后端各跑一遍轨迹） |
+| `crates/r3e-runtime/src/terrain_draw.rs`（新） | 460 | 地形绘制组帧：把 `r3e-terrain` 的块 / LOD / 权重翻译成 `TerrainDrawItem` 并按相机裁块，含 11 条测试 |
+| `crates/r3e-runtime/src/terrain_field.rs`（新） | 181 | 地形→物理场地绑定（高度场采样面即碰撞源），含 5 条测试 |
+| `crates/r3e-render/src/renderer/terrain_pass.rs`（新） | 98 | 地形通道装配（独立管线 + 每帧提交），从 `renderer/` 里拆出以免碰 800 行线 |
+| `crates/r3e-render/src/terrain.rs` | 494 | 新增 `pack_camera` / `CAMERA_UNIFORM_FLOATS`：uniform 打包与缓冲分配共用同一常量（见取舍 3） |
+| `crates/r3e-render/tests/terrain_pass.rs` | 279 | 8 → **9** 条：新增「相机 uniform 打包长度等于缓冲字节数」 |
+| `crates/r3e-physics/src/port_terrain.rs` / `tests/terrain_field.rs` | 65 / 518 | 地形场地查询（raycast / sweep / overlap 走高度场），+3 条测试 |
+| `assets/labs/terrain_roam/`（新） | — | 自包含夹具：`terrain_roam.r3e.json`（200×200 m、11×11 顶点、cell 20 m）+ `scripts/roam.rhai`（键盘版）+ `scripts/auto_roam.rhai`（自动巡检版）+ `tools/drive_roam.py` / `drive_roam_auto.py` + `evidence/`（11 张截图） |
+
+同步修改：`r3e-render/src/renderer/{mod,init,state,frame}.rs`（通道注册与每帧提交）、`r3e-runtime/src/{lib,app,physics_bind,physics_sync}.rs` + `Cargo.toml`（装配改调 `terrain_field` / `terrain_draw`）、`r3e-physics/src/lib.rs`（门面转发地形端口）。
+
+**测试 30 条**（方案 +10，实到 +30——偏差见取舍 1）
+
+| crate | +条数 | 内容 |
+|---|---|---|
+| `r3e-runtime` | +26 | `tests/terrain_roam.rs` 10：夹具出 16 块且角色初始贴地、平地段位移、15° 缓坡全程 `grounded`、50° 陡坡推不上去、跨块接缝不卡顿、坡顶高度 == `terrain.sample`（<1 cm）、全程无 NaN、双后端终点差 <0.5 m、同种子两次 `state_hash` 相同、夹具不改变金标场景；`terrain_draw.rs` 11：块裁剪、LOD 档位选择、权重打包、材质层数、空地形不产 draw item、相机换位后裁剪面变化等；`terrain_field.rs` 5：场地采样面与渲染同源、后端不支持时回 `none`、射线命中高度场、扫掠/重叠含地形候选、场地换块后不再命中旧块 |
+| `r3e-physics` | +3 | `Physics` 门面三个查询在地形高度场上各 1 条（打得到地形 / 刚体更近时仍取刚体 / 扫掠与重叠都含地形） |
+| `r3e-render` | +1 | `相机_uniform_打包长度等于缓冲字节数`：钉住「打包长度 × 4 == `CAMERA_UNIFORM_BYTES`」 |
+
+**五处方案外取舍与一次判据偏差**
+
+1. **tests 实到 +30，超卡片预算 +10**。§11.2 那 10 条是站在「行走回归」视角写的，实测发现要真跑起来必须先补两处缺口：①无 `terrain_draw` 时绘制组帧无产（画面里根本没有地形，截图证据拿不到）；②无 `terrain_field` 时物理层拿不到高度场（角色直接穿地，回归全红）。故本卡实为「补缺口 + 回归」两件事，与 C06 的教训一致：**可玩性回归的报价必须先算清「让它跑起来」的成本**。
+2. **判据 #4 口径变更（方案 → 实测）**。原写「走到陡坡 50° 中途 `grounded` 出现 false（角色滑下）」，实测该坡的表现是**推进失败**（位置几乎不动、HUD 报「阻挡 <- 坡度超限 36.6°」），**不存在滑落帧**。改为断言「推不上去（终点距起点 <0.3 m）且全程无 panic / 无 NaN / 不下沉」。理由：滑落与否是物理后端实现细节，B05 的 60° 坡同样是「阻挡<-坡度超限」而非滑落，C07 与 B05 保持同口径。
+3. **顺手修掉一处真机崩溃（C03b 遗留接缝）**。`r3e-render/src/terrain.rs::update_uniforms` 用 `[f32; 32]`（128 字节）打包 camera，而 `camera_buffer` 按 `CAMERA_UNIFORM_BYTES = 112` 分配——真窗口**首帧** `write_buffer` 越界 panic；headless 测试覆盖不到（不写 GPU 缓冲）。抽出 `pack_camera()` 与 `CAMERA_UNIFORM_FLOATS` 常量，并加 1 条测试钉住两者相等。**教训：uniform 的打包与分配必须共用同一常量，任何一处写死字面量都会在真机上炸，而 headless 永远绿。**
+4. **人工证据的抓帧方式重做**。原 `drive_roam.py` 按「相对启动的秒数」截图，首轮产出的四张「关键帧」里三张 MD5 完全相同（`8D354808`）——抓的是同一帧的重复，且是**整屏桌面**（含任务栏与桌面图标），不是游戏画面。改为按**状态标记**抓（`auto_roam.rhai` 每帧打轨迹行 + HUD 文案，驱动脚本判定「到路点 / 被挡 / 到顶」后才抓），6 张全部互异且只含游戏窗口。**教训：截图证据必须由「被验证的状态」触发，不能由时钟触发。**
+5. **键盘注入路径降级为「手动实验场」**。`drive_roam.py`（真 `key_down`）依赖 `SetForegroundWindow`，实测被前台锁定拒绝（`foreground ok: False`），窗口不抢前台时引擎一帧不动、截图全停在出生点，证据不可复用。故：判读一律以 `auto_roam_*` 为准；`roam.rhai` + `drive_roam.py` + 5 张 `roam_0*.png` 保留给人手动玩，**不作判读依据**（其中与 `roam_02` 内容重复的 `roam_01_slope15.png` 已删，`_tmp_probe.rhai` 临时脚本已删）。
+
+**门禁数字**：`r3e-physics` 265 → **268**、`r3e-render` 324 → **325**、`r3e-runtime` 44 → **70**，全局 2300 → **2330**（`check-tests` 全绿）；`commands` **406** / `rpc` **76** / `domains` **18** / `invariants` **42** / `script_only` **330** 全部持平；`size_debt` 20 项不变、`dep_debt` 0；回放金标 `385482eb033d2964` 未漂移；`cargo xtask verify` 11 步全绿。
+
+**收口三事**
+
+- `doc-gate` **规则 4** 首轮实跑红：`tests/terrain_roam.rs:65` 直接 `Scene::from_json_str`（`rule4_scope` 含 `crates/r3e-runtime/`，tests 目录同样在扫描范围，不能靠白名单绕）。改走 `r3e_doc::parse_scene` 并留注释说明，与上层其它调用方同口径。
+- **`verify` 时长重标定**：`AI_ROADMAP §0.2` 记的「冷态 255.6s」是 M2-A01 时的规模，C 阶段收口实测冷态 **≥600s**（600 s 观察窗内未跑完）、暖态 **208s**。旧口径「热态 <120s」在 M2 规模下已失效，详见 `AI_ROADMAP §0.2` 该行注记。
+- 仓库根 **14 个 `.log`** 临时文件（未入版本库）已清空；`temp_check/temp_clippy/...` 等本轮排查遗留一并删除。
+- **文档与人工栏回填**：`M2_BASELINE.md` 新增 §7.2（5 项人工判读 + 6 张证据清单与 MD5，写明键盘注入路径不作判据、首帧 HUD 说明）；`M2_PLAN.md` 首行进度串补 C07 条目并推进到「C 阶段 8 卡全部完成 / 下一张卡 D01」；`tests_baseline.json` 落 2330 与差额说明。
+
 ---
 
 ## 12. 决策清单（**7 条，CD-1 必须先拍**）

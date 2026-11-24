@@ -2444,6 +2444,7 @@ dependencies = [
  "pollster",
  "r3e-asset",
  "r3e-audio",
+ "r3e-character",
  "r3e-core",
  "r3e-doc",
  "r3e-physics",

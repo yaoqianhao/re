@@ -22,7 +22,7 @@
 use glam::Vec3;
 use r3e_core::{Aabb, MeshData, Node, NodeId, PhysicsSceneDesc, Scene};
 
-use crate::port::{Capsule, GroundSample, PortHit};
+use crate::port::{Capsule, CastRay, GroundSample, PortHit};
 /// 契约类型（能力位、描述、事件、查询结果）。
 mod types;
 pub use types::*;
@@ -352,14 +352,32 @@ impl Physics {
         self.backend.drain_events()
     }
 
-    /// 射线查询：物理关闭或后端不申报 `raycast` 时返回 `None`。
+    /// 射线查询：物理关闭时返回 `None`；后端不申报 `raycast` 时仍可打到地形。
     ///
     /// `max_distance` 用世界单位；`handle` / `node` 可直接用来做拾取后的操作。
+    /// 地形（装了的话）在这里与刚体候选**合并择优**，理由同 `sample_ground`：
+    /// 合成只写在门面，否则「拿 `&Physics` 调」和「拿端口调」会给出两个答案。
     pub fn raycast(&self, ray: Ray, max_distance: f32) -> Option<RayHit> {
-        if !self.enabled || !self.backend.capabilities().raycast {
+        if !self.enabled {
             return None;
         }
-        self.backend.raycast(ray, max_distance)
+        let solid = if self.backend.capabilities().raycast {
+            self.backend.raycast(ray, max_distance)
+        } else {
+            None
+        };
+        let Some(field) = self.backend.heightfield() else {
+            return solid;
+        };
+        let cast = CastRay::new(ray.origin, ray.dir, max_distance);
+        let terrain = terrain_query::raycast(field, &cast).map(|h| RayHit {
+            handle: BodyHandle(h.body),
+            node: h.node,
+            distance: h.distance,
+            point: h.point,
+            normal: h.normal,
+        });
+        nearer_hit(solid, terrain)
     }
 
     /// 球体重叠查询：物理关闭或后端不申报 `overlap` 时返回空表。
@@ -413,19 +431,32 @@ impl Physics {
     ///
     /// 走的是后端的 `overlap_capsule`，结果已按 `node` 升序；后端不支持时由
     /// 后端默认实现返回空表 —— 门面不额外造一套「不支持」的错误语义。
+    /// 装了地形时在**末尾**追加最多一条地表命中（地形没有体积，只可能是地表
+    /// 从胶囊中间穿过）：刚体在前是稳定顺序，调用方挑第一条不会换人。
     pub fn overlap_capsule(&self, capsule: Capsule) -> Vec<PortHit> {
         if !self.enabled {
             return Vec::new();
         }
-        self.backend.overlap_capsule(capsule)
+        let mut hits = self.backend.overlap_capsule(capsule);
+        if let Some(field) = self.backend.heightfield() {
+            hits.extend(terrain_query::capsule_overlap(field, &capsule));
+        }
+        hits
     }
 
     /// 胶囊扫掠查询（[`port::CapsulePort`] 的门面版）：物理关闭时返回 `None`。
+    ///
+    /// 与 `raycast` 同口径：地形候选在门面合并，取更近的那个。
     pub fn sweep_capsule(&self, capsule: Capsule, dir: Vec3, max_distance: f32) -> Option<PortHit> {
         if !self.enabled {
             return None;
         }
-        self.backend.sweep_capsule(capsule, dir, max_distance)
+        let solid = self.backend.sweep_capsule(capsule, dir, max_distance);
+        let Some(field) = self.backend.heightfield() else {
+            return solid;
+        };
+        let terrain = terrain_query::capsule_sweep(field, &capsule, dir, max_distance);
+        nearer_port(solid, terrain)
     }
 
     /// 地表采样（[`port::GroundPort`] 的门面版）：物理关闭时返回 `None`。
@@ -497,6 +528,52 @@ impl Physics {
     pub fn set_gravity(&mut self, gravity: Vec3) {
         self.gravity = gravity;
         self.backend.set_gravity(gravity);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 地形候选与刚体候选的择优（门面内部用）
+//
+// 规则从 `port_terrain` 迁来（合成收进门的必然结果）：**已重叠**（`started_inside`，
+// 即 `distance <= 0`）优先于「远处才撞上」；其次比距离，1e-4 以内视为同一次接触；
+// 同距按 `node` 升序取小，让两次相同查询拿到稳定结果（否则合并顺序一变，上层看到的目标就跳）。
+// 刚体恒作 `a`、地形恒作 `b`，所以「恰好同距」时不会把原来打到的刚体换成地面。
+// ---------------------------------------------------------------------------
+
+/// 「起点就嵌在里面」：两个命中类型都靠 `distance <= 0` 表达这件事。
+fn inside(distance: f32) -> bool {
+    distance <= 0.0
+}
+
+/// 两个 `RayHit` 候选择优。
+fn nearer_hit(a: Option<RayHit>, b: Option<RayHit>) -> Option<RayHit> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if inside(a.distance) != inside(b.distance) {
+                return Some(if inside(a.distance) { a } else { b });
+            }
+            if (a.distance - b.distance).abs() <= 1e-4 {
+                return Some(if a.node <= b.node { a } else { b });
+            }
+            Some(if a.distance < b.distance { a } else { b })
+        }
+        (a, b) => a.or(b),
+    }
+}
+
+/// 两个 `PortHit` 候选择优（规则同 [`nearer_hit`]）。
+fn nearer_port(a: Option<PortHit>, b: Option<PortHit>) -> Option<PortHit> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if a.started_inside != b.started_inside {
+                return Some(if a.started_inside { a } else { b });
+            }
+            if (a.distance - b.distance).abs() <= 1e-4 {
+                return Some(if a.node <= b.node { a } else { b });
+            }
+            Some(if a.distance < b.distance { a } else { b })
+        }
+        (a, b) => a.or(b),
     }
 }
 

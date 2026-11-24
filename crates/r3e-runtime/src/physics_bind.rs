@@ -50,6 +50,16 @@ pub(crate) fn rebind(
     scene: &Rc<RefCell<Document>>,
     assets: &Arc<AssetLibrary>,
 ) -> BindReport {
+    // M2-C07：地形是**可走的面**，不是画上去的贴图。
+    //
+    // `bind_scene` 只把节点上的 `BodyDesc` 变成刚体，`terrain` 段不产生任何刚体 ——
+    // 场景里那张 200×200 的地形在物理侧本来是空的，角色会一路掉下去。
+    // 所以这里单独把 `terrain` 铺成高度场：采样走 `r3e_terrain::sample_height_at`，
+    // 与渲染侧同一个函数，「脚底踩到的面」与「眼睛看到的面」才是同一张双线性高度面。
+    // 装配在每次 `rebind` 里做（低频动作），地形块随场景热重载一起换，不会留旧场。
+    let field = crate::terrain_field::heightfield_of(&scene.borrow().terrain);
+    physics.set_heightfield(field);
+
     let meshes = SceneMeshProvider::new(Arc::clone(assets));
     scene.borrow_mut().write(|scene| {
         // 装配读的是**世界变换**（`BodyDesc::from_node_with` 走 `node.world_position()`），

@@ -29,6 +29,24 @@ pub(crate) struct PhysicsSync {
     structure: Vec<(u64, bool)>,
 }
 
+/// 首帧之前先装配一次，返回可继续复用的判重状态（M2-C07）。
+///
+/// 装配平时由首帧 `update` 里的 [`PhysicsSync::sync`] 触发，而脚本 `on_start` 在
+/// **脚本载入那一刻**就跑：脚本第一次 `physics_raycast` 打下去时地形高度场还没进
+/// 物理世界，回答是「脚下没有地面」，靠射线贴地的角色于是被当成悬空、原地卡死
+/// （真窗口实测症状）。提前走同一入口装一次，脚本看到的世界与第一帧看到的是同一个。
+///
+/// 放在这里而不是 `app.rs`：`app.rs` 在 `size_debt` 白名单里，只许减不许增。
+pub(crate) fn prebound(
+    physics: &Rc<RefCell<Physics>>,
+    scene: &Rc<RefCell<Document>>,
+    assets: &Rc<RefCell<Arc<AssetLibrary>>>,
+) -> PhysicsSync {
+    let mut sync = PhysicsSync::new();
+    sync.sync(physics, scene, assets);
+    sync
+}
+
 impl PhysicsSync {
     pub(crate) fn new() -> Self {
         Self {

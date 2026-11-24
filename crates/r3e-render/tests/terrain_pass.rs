@@ -6,9 +6,10 @@
 
 use r3e_render::mesh::{vertex_layout, InstanceRaw, MORPH_SLOT_LOCATION_BASE};
 use r3e_render::terrain::{
-    layer_index, mix_layers, needs_u32_indices, normalise_weights, pack_vertices,
+    layer_index, mix_layers, needs_u32_indices, normalise_weights, pack_camera, pack_vertices,
     terrain_vertex_layout, TerrainDrawItem, TerrainLayersUniform, TerrainVertex,
-    TERRAIN_ATTRIBUTES, TERRAIN_LAYER_COUNT, TERRAIN_VERTEX_STRIDE, TERRAIN_WGSL,
+    CAMERA_UNIFORM_BYTES, CAMERA_UNIFORM_FLOATS, TERRAIN_ATTRIBUTES, TERRAIN_LAYER_COUNT,
+    TERRAIN_VERTEX_STRIDE, TERRAIN_WGSL,
 };
 
 /// 测试 1：地形布局是独立的一份，不复用 PBR/实例布局的任何一步。
@@ -244,4 +245,34 @@ fn 混合函数在单层权重下等于该层颜色() {
     }
     // 权重全 0 → 全黑（这里刻意不归一化：口径与 wgsl 的 mix_layers 一致）
     assert_eq!(mix_layers([0.0; 4], &base), [0.0, 0.0, 0.0]);
+}
+
+/// 测试 13：相机 uniform 的打包长度必须等于缓冲字节数。
+///
+/// 这条钉的是一个**只在真机第一帧才炸**的接缝：打包数组原来按 `[f32; 32]`（128 字节）
+/// 开，而缓冲按 `CAMERA_UNIFORM_BYTES`（112 字节）开，headless 测试全绿，
+/// `cargo run` 直接撞 `Queue::write_buffer` 的「128 字节写进 112 字节缓冲」校验并 panic
+/// （C07 收口跑真窗口驱动时才暴露）。此处断言「打包长度 × 4 == 缓冲长度」并逐字段核对落位。
+#[test]
+fn 相机_uniform_打包长度等于缓冲字节数() {
+    let vp: [[f32; 4]; 4] = [
+        [1.0, 2.0, 3.0, 4.0],
+        [5.0, 6.0, 7.0, 8.0],
+        [9.0, 10.0, 11.0, 12.0],
+        [13.0, 14.0, 15.0, 16.0],
+    ];
+    let packed = pack_camera(&vp, [0.5, 1.5, -2.5], [0.0, -1.0, 0.0], [0.8, 0.3]);
+    assert_eq!(packed.len() * 4, CAMERA_UNIFORM_BYTES as usize);
+    assert_eq!(packed.len(), CAMERA_UNIFORM_FLOATS);
+    for (row, values) in vp.iter().enumerate() {
+        assert_eq!(&packed[row * 4..row * 4 + 4], values.as_slice());
+    }
+    assert_eq!(&packed[16..19], &[0.5, 1.5, -2.5]);
+    assert_eq!(packed[20], 0.8);
+    assert_eq!(packed[21], 0.3);
+    assert_eq!(&packed[24..27], &[0.0, -1.0, 0.0]);
+    // eye.w / light.zw / sun_dir.w 是保留位，必须为 0，否则着色器读到脏值
+    for idx in [19usize, 22, 23, 27] {
+        assert_eq!(packed[idx], 0.0, "保留位 {idx} 不是 0");
+    }
 }

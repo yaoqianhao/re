@@ -174,6 +174,15 @@ pub struct Renderer {
     pub(crate) cull_node_casts: Vec<u32>,
     /// 累计重建主通道视锥树的次数。
     pub(crate) cull_tree_builds: u64,
+    /// M2-C03b 地形通道：场景有地形时由运行时把「本帧该画什么」递进来，这里只负责
+    /// 上传缓冲与往主通道提交。`None` = 场景没有地形，此时**连管线都不建** ——
+    /// 地形是可选内容，不该让不用它的场景多付一份常驻成本。
+    pub(crate) terrain: Option<crate::terrain::TerrainPass>,
+    /// 待上传的地形几何。`Some` = 有脏数据（首帧 / LOD 变化 / 换场景），
+    /// `None` = 缓冲已是最新。逐帧比对上万顶点去判等是白费，判重交给装配层。
+    pub(crate) terrain_dirty: Option<crate::terrain::TerrainDrawItem>,
+    /// 地形材质层参数（4 层基色 + shaping）。每帧随相机一起重传，代价是一次 96 字节写。
+    pub(crate) terrain_layers: crate::terrain::TerrainLayersUniform,
     pub(crate) stats: RenderStats,
 }
 

@@ -35,6 +35,11 @@ pub const TERRAIN_VERTEX_STRIDE: u32 = 48;
 /// struct 涨了而 buffer 没涨」这种漂移在代码评审里看得见。
 pub const CAMERA_UNIFORM_BYTES: u32 = 112;
 
+/// 相机 uniform 的 `f32` 个数（`112 / 4 = 28`）。打包数组必须按这个长度开：
+/// 曾经按 `[f32; 32]` 打包、缓冲却按 [`CAMERA_UNIFORM_BYTES`] 开，headless 测试全绿，
+/// 真机第一帧就撞 `Queue::write_buffer` 的「128 字节写进 112 字节缓冲」校验并 panic。
+pub const CAMERA_UNIFORM_FLOATS: usize = (CAMERA_UNIFORM_BYTES / 4) as usize;
+
 /// 地形顶点：`#[repr(C)]` 且全 `f32` 数组，故与 WGSL 的 4 属性布局逐字节一致。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Pod, Zeroable)]
@@ -226,6 +231,28 @@ pub fn layer_index(name: &str) -> Option<usize> {
     }
 }
 
+/// 把相机参数打包成与 `terrain.wgsl::Camera` 逐字节一致的 28 个 `f32`（112 字节）。
+///
+/// 单独成函数而不是内联在 `update_uniforms` 里，是为了让「打包长度 == 缓冲长度」
+/// 在无 GPU 的环境里可判：`write_buffer` 的越界校验只在真机跑第一帧时才报，
+/// headless 测试根本碰不到。
+pub fn pack_camera(
+    view_proj: &[[f32; 4]; 4],
+    eye: [f32; 3],
+    sun_dir: [f32; 3],
+    light: [f32; 2],
+) -> [f32; CAMERA_UNIFORM_FLOATS] {
+    let mut camera = [0.0f32; CAMERA_UNIFORM_FLOATS];
+    for (row, values) in view_proj.iter().enumerate() {
+        camera[row * 4..row * 4 + 4].copy_from_slice(values);
+    }
+    camera[16..19].copy_from_slice(&eye);
+    camera[20] = light[0];
+    camera[21] = light[1];
+    camera[24..27].copy_from_slice(&sun_dir);
+    camera
+}
+
 /// 着色函数的 CPU 等价实现：按权重混合 4 层颜色。
 ///
 /// 存在的唯一目的是让「混合口径」在不碰 GPU 的环境里可判（测试 12）。它必须与
@@ -372,14 +399,7 @@ impl TerrainPass {
         light: [f32; 2],
         layers: &TerrainLayersUniform,
     ) {
-        let mut camera = [0.0f32; 32];
-        for (row, values) in view_proj.iter().enumerate() {
-            camera[row * 4..row * 4 + 4].copy_from_slice(values);
-        }
-        camera[16..19].copy_from_slice(&eye);
-        camera[20] = light[0];
-        camera[21] = light[1];
-        camera[24..27].copy_from_slice(&sun_dir);
+        let camera = pack_camera(view_proj, eye, sun_dir, light);
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&camera));
         queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(layers));
     }
