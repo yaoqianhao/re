@@ -391,8 +391,10 @@ mod tests {
         // 索引全部落在顶点范围内（平移没错位）
         let max_index = item.indices.iter().copied().max().unwrap_or(0) as usize;
         assert!(max_index < item.vertices.len(), "索引越界：{max_index}");
-        // 绕序：三角形法线一律朝上（否则地形背面剔除后看不见）
+        // 绕序：本体三角面一律朝上（否则地形背面剔除后看不见）；
+        // 裙边是竖直的挡板，横向分量为 0，单独计数。
         let mut up = 0;
+        let mut vertical = 0;
         for tri in item.indices.chunks_exact(3) {
             let a = item.vertices[tri[0] as usize].position;
             let b = item.vertices[tri[1] as usize].position;
@@ -400,16 +402,35 @@ mod tests {
             let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
             let ny = u[2] * v[0] - u[0] * v[2];
-            if ny > 0.0 {
+            let scale = ((u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt()
+                * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+            .max(1e-12);
+            if ny > 1e-6 * scale {
                 up += 1;
+            } else if ny.abs() <= 1e-6 * scale {
+                vertical += 1;
             }
         }
         assert!(up > 0, "至少要有一个朝上的三角面");
         assert_eq!(
-            up,
+            up + vertical,
             item.indices.len() / 3,
-            "全部三角面一律朝上（背面剔除后地形不能消失）"
+            "不许出现朝下的三角面（背面剔除后地形不能消失）"
         );
+        // 裙边数按块守恒：每块四条边共 2 × (cols + rows) 个四边形
+        let grid = r3e_terrain::BlockGrid::new([-100.0, -100.0, 100.0, 100.0], 50.0).unwrap();
+        let cfg = r3e_terrain::TerrainLayerConfig::default();
+        let mut skirt = 0usize;
+        let mut body = 0usize;
+        for block in grid.blocks() {
+            if let Some(m) = r3e_terrain::block_mesh(&patches, &grid, block.index, Lod::L0, &cfg) {
+                skirt += m.skirt_triangles();
+                body += m.body_triangles();
+            }
+        }
+        assert_eq!(up, body, "朝上的三角面数必须等于各块本体三角之和");
+        assert_eq!(vertical, skirt, "竖直三角面数必须等于各块裙边三角之和");
+        assert!(skirt > 0, "合并几何里必须有裙边");
     }
 
     #[test]
