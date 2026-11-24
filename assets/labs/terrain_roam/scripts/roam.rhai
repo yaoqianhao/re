@@ -79,14 +79,28 @@ fn on_start() {
 }
 
 fn on_update(dt) {
-    let p = get_pos("player");
-    let fy = p[1] - 0.9;
-
+    // 传送必须发生在**读位置之前**：R/T 的 `set_pos` 写的是新坐标，而本帧末尾的静止贴地
+    // 校正会拿帧首缓存的旧坐标再写一次 —— 谁先读 `get_pos` 决定了传送活不活得下来。
+    let teleported = false;
     if key_down("r") {
         set_pos("player", -90.0, 0.9, 20.0);
+        teleported = true;
     }
     if key_down("t") {
         set_pos("player", 50.0, 29.193 + 0.9, 20.0);
+        teleported = true;
+    }
+
+    let p = get_pos("player");
+    let fy = p[1] - 0.9;
+
+    // 传送当帧立刻按新坐标贴一次地：硬编码的落点高度只在射线打不中时兜底
+    // （首帧物理未装配，`ground_at` 返回 -999）。
+    if teleported {
+        let tg = ground_at(p[0], p[2], fy);
+        if tg > -500.0 {
+            set_pos("player", p[0], tg + 0.9, p[2]);
+        }
     }
 
     let ix = 0.0;
@@ -106,7 +120,8 @@ fn on_update(dt) {
     let blocked = false;
     let note = "-";
     let slope = 0.0;
-    if ix != 0.0 || iz != 0.0 {
+    // 传送当帧不做位移求解：`walk_step` 的前瞻起点是帧首的 p，刚传送过就作废了
+    if (ix != 0.0 || iz != 0.0) && teleported == false {
         let r = walk_step(p[0], p[2], fy, ix, iz, sp * dt);
         blocked = r[0];
         slope = r[4];
@@ -118,8 +133,9 @@ fn on_update(dt) {
 
     // 第一帧物理还没装配完，射线全落空（-999），此时只记录不写位，避免把角色按进地下
     let g_now = ground_at(p[0], p[2], fy);
-    if g_now > -500.0 && blocked == false && ix == 0.0 && iz == 0.0 {
+    if g_now > -500.0 && blocked == false && ix == 0.0 && iz == 0.0 && teleported == false {
         // 静止时也做一次贴地校正：坡面上按住不动不会缓慢下沉
+        // （传送帧跳过：落点高度已在上面的传送分支里按新坐标贴过，再贴一次没有意义）
         set_pos("player", p[0], g_now + 0.9, p[2]);
     }
 
