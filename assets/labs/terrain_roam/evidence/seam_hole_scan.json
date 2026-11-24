@@ -1,0 +1,223 @@
+[
+  {
+    "file": "probe_00_magenta_x-25_cross_L0L1.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      255,
+      0,
+      255
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 388963,
+    "bg_visible_ratio": 0.4221,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "probe_01_magenta_x-50_corner.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      255,
+      0,
+      255
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 255864,
+    "bg_visible_ratio": 0.2776,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_00_x-25_close_L0L0.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 166107,
+    "bg_visible_ratio": 0.1802,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_01_x-25_mid_L0L0.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 298685,
+    "bg_visible_ratio": 0.3241,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_02_x-50_corner_L0L1.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 254985,
+    "bg_visible_ratio": 0.2767,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_03_x-25_cross_L0L1.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 388963,
+    "bg_visible_ratio": 0.4221,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_04_x-25_L1L1.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 584948,
+    "bg_visible_ratio": 0.6347,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_05_x-25_L2L2.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 664377,
+    "bg_visible_ratio": 0.7209,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_06_x-25_cross_L2L1_north.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 465627,
+    "bg_visible_ratio": 0.5052,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_07_plateau_x25_control_L2L1.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 450884,
+    "bg_visible_ratio": 0.4892,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_08_grazing_x-25.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 335367,
+    "bg_visible_ratio": 0.3639,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_09_grazing_x-50_corner.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 290929,
+    "bg_visible_ratio": 0.3157,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  },
+  {
+    "file": "seam_10_overview_200m.png",
+    "size": [
+      1280,
+      720
+    ],
+    "bg": [
+      63,
+      69,
+      80
+    ],
+    "hud_masked_rows": 40,
+    "bg_visible_px": 705751,
+    "bg_visible_ratio": 0.7658,
+    "enclosed_bg_pixels": 0,
+    "islands": []
+  }
+]

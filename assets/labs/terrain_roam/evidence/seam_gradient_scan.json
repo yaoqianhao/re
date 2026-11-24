@@ -1,0 +1,233 @@
+[
+  {
+    "file": "seam_00_x-25_close_L0L0.png",
+    "seam_points": 9,
+    "cols_used": 9,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      57.6,
+      717.9
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.0,
+    "peak_max": 0.0,
+    "ref_median": 0.11,
+    "diff_median": -0.11,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.043,
+    "m_per_px_range": [
+      0.014,
+      0.094
+    ]
+  },
+  {
+    "file": "seam_01_x-25_mid_L0L0.png",
+    "seam_points": 35,
+    "cols_used": 35,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      163.4,
+      696.8
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.39,
+    "peak_max": 0.59,
+    "ref_median": 0.0,
+    "diff_median": 0.0,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.066,
+    "m_per_px_range": [
+      0.036,
+      0.131
+    ]
+  },
+  {
+    "file": "seam_02_x-50_corner_L0L1.png",
+    "seam_points": 46,
+    "cols_used": 46,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      33.2,
+      436.9
+    ],
+    "peak_median": 0.11,
+    "peak_p95": 0.89,
+    "peak_max": 1.0,
+    "ref_median": 0.59,
+    "diff_median": -0.06,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.068,
+    "m_per_px_range": [
+      0.041,
+      0.158
+    ]
+  },
+  {
+    "file": "seam_03_x-25_cross_L0L1.png",
+    "seam_points": 82,
+    "cols_used": 82,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      249.5,
+      690.5
+    ],
+    "peak_median": 0.47,
+    "peak_p95": 0.89,
+    "peak_max": 1.0,
+    "ref_median": 0.59,
+    "diff_median": -0.06,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.085,
+    "m_per_px_range": [
+      0.063,
+      0.141
+    ]
+  },
+  {
+    "file": "seam_04_x-25_L1L1.png",
+    "seam_points": 129,
+    "cols_used": 129,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      300.6,
+      585.8
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.59,
+    "peak_max": 1.0,
+    "ref_median": 0.89,
+    "diff_median": -0.89,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.11,
+    "m_per_px_range": [
+      0.1,
+      0.141
+    ]
+  },
+  {
+    "file": "seam_05_x-25_L2L2.png",
+    "seam_points": 155,
+    "cols_used": 154,
+    "cols_skipped_silhouette": 1,
+    "seam_row_range": [
+      312.3,
+      544.1
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.59,
+    "peak_max": 0.89,
+    "ref_median": 62.88,
+    "diff_median": -62.29,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.128,
+    "m_per_px_range": [
+      0.124,
+      0.142
+    ]
+  },
+  {
+    "file": "seam_06_x-25_cross_L2L1_north.png",
+    "seam_points": 142,
+    "cols_used": 142,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      288.6,
+      547.5
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.59,
+    "peak_max": 0.89,
+    "ref_median": 0.59,
+    "diff_median": -0.06,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.116,
+    "m_per_px_range": [
+      0.111,
+      0.135
+    ]
+  },
+  {
+    "file": "seam_07_plateau_x25_control_L2L1.png",
+    "seam_points": 156,
+    "cols_used": 152,
+    "cols_skipped_silhouette": 4,
+    "seam_row_range": [
+      360.0,
+      578.7
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.59,
+    "peak_max": 37.85,
+    "ref_median": 0.0,
+    "diff_median": 0.0,
+    "flat_col_ratio": 0.993,
+    "m_per_px_median": 0.13,
+    "m_per_px_range": [
+      0.125,
+      0.155
+    ]
+  },
+  {
+    "file": "seam_08_grazing_x-25.png",
+    "seam_points": 16,
+    "cols_used": 15,
+    "cols_skipped_silhouette": 1,
+    "seam_row_range": [
+      43.4,
+      704.6
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.26,
+    "peak_max": 0.59,
+    "ref_median": 0.3,
+    "diff_median": -0.3,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.096,
+    "m_per_px_range": [
+      0.018,
+      0.222
+    ]
+  },
+  {
+    "file": "seam_09_grazing_x-50_corner.png",
+    "seam_points": 23,
+    "cols_used": 23,
+    "cols_skipped_silhouette": 0,
+    "seam_row_range": [
+      171.4,
+      539.4
+    ],
+    "peak_median": 0.59,
+    "peak_p95": 0.7,
+    "peak_max": 0.89,
+    "ref_median": 0.59,
+    "diff_median": -0.29,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.101,
+    "m_per_px_range": [
+      0.018,
+      0.27
+    ]
+  },
+  {
+    "file": "seam_10_overview_200m.png",
+    "seam_points": 201,
+    "cols_used": 199,
+    "cols_skipped_silhouette": 2,
+    "seam_row_range": [
+      370.9,
+      553.0
+    ],
+    "peak_median": 0.0,
+    "peak_p95": 0.59,
+    "peak_max": 0.89,
+    "ref_median": 0.0,
+    "diff_median": 0.0,
+    "flat_col_ratio": 1.0,
+    "m_per_px_median": 0.383,
+    "m_per_px_range": [
+      0.349,
+      0.421
+    ]
+  }
+]

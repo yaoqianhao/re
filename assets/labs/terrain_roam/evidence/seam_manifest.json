@@ -1,0 +1,349 @@
+{
+  "generated_at": "2026-11-24 19:00:53",
+  "exe": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe",
+  "scene": "D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json",
+  "size": "1280x720",
+  "frames": 90,
+  "lod_thresholds": {
+    "L0": "<= 64.0m",
+    "L1": "<= 200.0m",
+    "L2": "> 200.0m"
+  },
+  "station_count": 13,
+  "failures": 0,
+  "stations": [
+    {
+      "name": "seam_00_x-25_close_L0L0",
+      "memo": "坡面近距正对 z=-50（x=-25，历史错位 7.30m 处），两侧 L0",
+      "eye": [
+        -25.0,
+        27.234250000000003,
+        -68.0
+      ],
+      "target": [
+        -25.0,
+        22.734250000000003,
+        -50.0
+      ],
+      "fov": 30.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L0@d7.0m / (1,1)=L0@d43.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_00_x-25_close_L0L0.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_00_x-25_close_L0L0.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.6,
+      "shot_at": "2026-11-24 19:00:15",
+      "file": "seam_00_x-25_close_L0L0.png",
+      "bytes": 118503,
+      "md5": "b5cd202d12a203fe67aa8325db7a4902"
+    },
+    {
+      "name": "seam_01_x-25_mid_L0L0",
+      "memo": "坡面中距正对 z=-50（x=-25），两侧 L0",
+      "eye": [
+        -25.0,
+        29.234250000000003,
+        -85.0
+      ],
+      "target": [
+        -25.0,
+        22.234250000000003,
+        -50.0
+      ],
+      "fov": 40.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L0@d10.0m / (1,1)=L0@d60.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_01_x-25_mid_L0L0.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_01_x-25_mid_L0L0.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.5,
+      "shot_at": "2026-11-24 19:00:19",
+      "file": "seam_01_x-25_mid_L0L0.png",
+      "bytes": 113372,
+      "md5": "8ed5ed6169749cf716c0f2f1a5e621d4"
+    },
+    {
+      "name": "seam_02_x-50_corner_L0L1",
+      "memo": "四块交汇角（x=-50, z=-50）：南侧 L0 / 北侧 L1",
+      "eye": [
+        -50.0,
+        7.679,
+        -90.0
+      ],
+      "target": [
+        -50.0,
+        3.179,
+        -50.0
+      ],
+      "fov": 40.0,
+      "background_override": null,
+      "seam_x": -50.0,
+      "lod": "(1,0)=L0@d29.2m / (1,1)=L1@d69.6m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_02_x-50_corner_L0L1.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_02_x-50_corner_L0L1.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.1,
+      "shot_at": "2026-11-24 19:00:22",
+      "file": "seam_02_x-50_corner_L0L1.png",
+      "bytes": 115902,
+      "md5": "78e202be8a309357592a950c78651536"
+    },
+    {
+      "name": "seam_03_x-25_cross_L0L1",
+      "memo": "中距正对 z=-50（x=-25）：南侧 L0 / 北侧 L1",
+      "eye": [
+        -25.0,
+        31.234250000000003,
+        -112.0
+      ],
+      "target": [
+        -25.0,
+        22.234250000000003,
+        -50.0
+      ],
+      "fov": 40.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L0@d37.0m / (1,1)=L1@d87.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_03_x-25_cross_L0L1.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_03_x-25_cross_L0L1.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.1,
+      "shot_at": "2026-11-24 19:00:25",
+      "file": "seam_03_x-25_cross_L0L1.png",
+      "bytes": 114159,
+      "md5": "20b5e0a8645acd247f617e303dcd63ff"
+    },
+    {
+      "name": "seam_04_x-25_L1L1",
+      "memo": "远距正对 z=-50（x=-25）：两侧 L1",
+      "eye": [
+        -25.0,
+        37.23425,
+        -175.0
+      ],
+      "target": [
+        -25.0,
+        23.234250000000003,
+        -50.0
+      ],
+      "fov": 32.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L1@d100.0m / (1,1)=L1@d150.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_04_x-25_L1L1.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_04_x-25_L1L1.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.1,
+      "shot_at": "2026-11-24 19:00:28",
+      "file": "seam_04_x-25_L1L1.png",
+      "bytes": 101695,
+      "md5": "efd08b70185cff157cbabd9c1b7a3ee6"
+    },
+    {
+      "name": "seam_05_x-25_L2L2",
+      "memo": "超远距正对 z=-50（x=-25）：两侧 L2",
+      "eye": [
+        -25.0,
+        43.23425,
+        -280.0
+      ],
+      "target": [
+        -25.0,
+        23.234250000000003,
+        -50.0
+      ],
+      "fov": 22.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L2@d205.0m / (1,1)=L2@d255.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_05_x-25_L2L2.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_05_x-25_L2L2.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.3,
+      "shot_at": "2026-11-24 19:00:31",
+      "file": "seam_05_x-25_L2L2.png",
+      "bytes": 83976,
+      "md5": "1a19860e0f4c7d7d95fdae20b911a9ae"
+    },
+    {
+      "name": "seam_06_x-25_cross_L2L1_north",
+      "memo": "自北向南正对 z=-50（x=-25）：北侧 L1 / 南侧 L2（历史失败组合的镜像）",
+      "eye": [
+        -25.0,
+        39.23425,
+        130.0
+      ],
+      "target": [
+        -25.0,
+        21.234250000000003,
+        -50.0
+      ],
+      "fov": 25.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L2@d205.0m / (1,1)=L1@d155.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_06_x-25_cross_L2L1_north.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_06_x-25_cross_L2L1_north.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.3,
+      "shot_at": "2026-11-24 19:00:35",
+      "file": "seam_06_x-25_cross_L2L1_north.png",
+      "bytes": 121805,
+      "md5": "370ae004fd1014c152285f96b256b462"
+    },
+    {
+      "name": "seam_07_plateau_x25_control_L2L1",
+      "memo": "台地负对照（x=25 平坦段）：南侧 L2 / 北侧 L1，本应只剩着色差",
+      "eye": [
+        25.0,
+        45.193,
+        130.0
+      ],
+      "target": [
+        25.0,
+        29.193,
+        -50.0
+      ],
+      "fov": 28.0,
+      "background_override": null,
+      "seam_x": 25.0,
+      "lod": "(2,0)=L2@d205.0m / (2,1)=L1@d155.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_07_plateau_x25_control_L2L1.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_07_plateau_x25_control_L2L1.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.1,
+      "shot_at": "2026-11-24 19:00:38",
+      "file": "seam_07_plateau_x25_control_L2L1.png",
+      "bytes": 64068,
+      "md5": "3189fca4b1ecaf38782e74e2158f86d4"
+    },
+    {
+      "name": "seam_08_grazing_x-25",
+      "memo": "掠射视角：相机在 50° 坡面上方 1.6m，正对 z=-50（缝被放大到近景）",
+      "eye": [
+        -25.0,
+        24.834250000000004,
+        -60.0
+      ],
+      "target": [
+        -25.0,
+        23.834250000000004,
+        -50.0
+      ],
+      "fov": 65.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L0@d15.0m / (1,1)=L0@d35.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_08_grazing_x-25.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_08_grazing_x-25.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.1,
+      "shot_at": "2026-11-24 19:00:41",
+      "file": "seam_08_grazing_x-25.png",
+      "bytes": 103383,
+      "md5": "9bcaf0596c65bf3302698c926be63f6e"
+    },
+    {
+      "name": "seam_09_grazing_x-50_corner",
+      "memo": "掠射视角：相机在 15° 坡面上方 1.4m，正对四块交汇角",
+      "eye": [
+        -50.0,
+        4.079,
+        -60.0
+      ],
+      "target": [
+        -50.0,
+        3.279,
+        -50.0
+      ],
+      "fov": 65.0,
+      "background_override": null,
+      "seam_x": -50.0,
+      "lod": "(1,0)=L0@d29.2m / (1,1)=L0@d43.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_09_grazing_x-50_corner.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_09_grazing_x-50_corner.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.1,
+      "shot_at": "2026-11-24 19:00:44",
+      "file": "seam_09_grazing_x-50_corner.png",
+      "bytes": 109397,
+      "md5": "52d2b1888ec82e3ad0630dd602ddf6ab"
+    },
+    {
+      "name": "seam_10_overview_200m",
+      "memo": "整张 200×200 收尾俯视：z=-50 接缝线横贯全场",
+      "eye": [
+        -50.0,
+        220.0,
+        -150.0
+      ],
+      "target": [
+        0.0,
+        0.0,
+        10.0
+      ],
+      "fov": 60.0,
+      "background_override": null,
+      "seam_x": -25.0,
+      "lod": "(1,0)=L1@d79.1m / (1,1)=L1@d127.5m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\seam_10_overview_200m.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\seam_10_overview_200m.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.2,
+      "shot_at": "2026-11-24 19:00:47",
+      "file": "seam_10_overview_200m.png",
+      "bytes": 84094,
+      "md5": "4aee37a75874ccebf01be414c9da9434"
+    },
+    {
+      "name": "probe_00_magenta_x-25_cross_L0L1",
+      "memo": "透光探针：同 seam_03 机位，清屏底色改洋红（1,0,1），缝里若透背景必为洋红",
+      "eye": [
+        -25.0,
+        31.234250000000003,
+        -112.0
+      ],
+      "target": [
+        -25.0,
+        22.234250000000003,
+        -50.0
+      ],
+      "fov": 40.0,
+      "background_override": [
+        1.0,
+        0.0,
+        1.0
+      ],
+      "seam_x": -25.0,
+      "lod": "(1,0)=L0@d37.0m / (1,1)=L1@d87.0m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\probe_00_magenta_x-25_cross_L0L1.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\probe_00_magenta_x-25_cross_L0L1.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 2.6,
+      "shot_at": "2026-11-24 19:00:50",
+      "file": "probe_00_magenta_x-25_cross_L0L1.png",
+      "bytes": 113278,
+      "md5": "48935920aec515e9cde2b5b3897bcaec"
+    },
+    {
+      "name": "probe_01_magenta_x-50_corner",
+      "memo": "透光探针：同 seam_02 机位，清屏底色改洋红（1,0,1）",
+      "eye": [
+        -50.0,
+        7.679,
+        -90.0
+      ],
+      "target": [
+        -50.0,
+        3.179,
+        -50.0
+      ],
+      "fov": 40.0,
+      "background_override": [
+        1.0,
+        0.0,
+        1.0
+      ],
+      "seam_x": -50.0,
+      "lod": "(1,0)=L0@d29.2m / (1,1)=L1@d69.6m",
+      "cli": "D:\\rust3d-engine\\target\\x86_64-pc-windows-gnu\\debug\\r3e.exe D:\\rust3d-engine\\assets\\labs\\terrain_roam\\terrain_roam.r3e.json C:\\Users\\neroy\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2dpCCuZq-FgvYnflZ6SBnQA\\workspace\\conv_c926c3346a6941588ad2212f0f6a9e30\\temp\\probe_01_magenta_x-50_corner.rhai --physics on --physics-backend rapier --window-size 1280x720 --capture-frame D:\\rust3d-engine\\assets\\labs\\terrain_roam\\evidence\\probe_01_magenta_x-50_corner.png --capture-after 90",
+      "returncode": 0,
+      "elapsed_s": 3.2,
+      "shot_at": "2026-11-24 19:00:53",
+      "file": "probe_01_magenta_x-50_corner.png",
+      "bytes": 115163,
+      "md5": "e934867307a382077257f7c647547b2b"
+    }
+  ]
+}
