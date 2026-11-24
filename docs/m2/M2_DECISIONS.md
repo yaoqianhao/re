@@ -1,8 +1,8 @@
-# M2 决策清单（A02）：D1–D13 待拍板
+# M2 决策清单：D1–D19（已全部拍板）
 
-- 用途：M2 全部 **45 卡**中，13 项条件**无法由代码实测决定**，必须由老板拍板后才能顺序开工
-- 状态：**已全部拍板（A02 完成）**。13 项结论见下表与各条正文；拍板人：老板；日期：2026-11-20
-- 阻塞关系：A02 曾是整条链唯一外部阻塞点，**现已解除**，A03 可开工
+- 用途：M2 全部 **46 卡**中，A02 段 13 项 + C 阶段 3 项 + D 阶段 3 项条件**无法由代码实测决定**，必须由老板拍板后才能顺序开工
+- 状态：**已全部拍板**。D1–D13（A02，2026-11-20）/ D14–D16（C 阶段，2026-11-22）/ D17–D19（D 阶段，2026-11-24，`DD-1`～`DD-6` 全选 A 档）；拍板人：老板
+- 阻塞关系：A02 曾是整条链唯一外部阻塞点，**现已解除**；C / D 阶段拍板项均已在开工前落盘，当前无外部阻塞
 - 后果说明：13 项中 **4 项选了非建议项（D1 / D2 / D12 / D13 全部选 B）**，四项互相咬合——建两个新 crate 必须先还债，故卡数 44 → **45**、`tests` 预算 +546 → **+750**。联动影响见文末「非建议项影响总览」
 - 基线依据：`docs/m2/M2_BASELINE.md`；卡序依据：`docs/m2/M2_PLAN.md`
 - 日期：2026-11-20
@@ -269,7 +269,7 @@ A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/
 
 | # | 事项 | 结论 | 理由（一句话） | 回写位置 |
 |---|---|---|---|---|
-| **D14** | C 阶段 `rpc` 预算 | `+3` → **`+8`**；全局目标 `80` → **`85**`（+18 → +23） | 卡表要 `commands +8`、守恒规则 4 要 `script_only` 不增，而「不带 rpc 的新命令必然涨 `script_only`」——三者不能同时成立，只能放宽 rpc 预算 | `M2_PLAN.md` §2 / §3 / §4；本文 D14 |
+| **D14** | C 阶段 `rpc` 预算 | `+3` → **`+8`**；全局目标 `80` → **`85`**（+18 → +23） | 卡表要 `commands +8`、守恒规则 4 要 `script_only` 不增，而「不带 rpc 的新命令必然涨 `script_only`」——三者不能同时成立，只能放宽 rpc 预算 | `M2_PLAN.md` §2 / §3 / §4；本文 D14 |
 | **D15** | 地形数据的权威源 + 块划分 | `r3e-terrain` 为**纯派生层**（输入 `&[TerrainPatch]`、输出裸 `Vec`），`core::TerrainPatch` 仍是唯一进场景/存档/哈希的类型；块默认 **50 米**可配（`(0,1000]`，非法即拒） | 派生层让 `state_hash` / 存档 / 撤销栈 / 校验器**零改动**；否则 `r3e-core` 要反向依赖 terrain（`core.allow` 为空，撞 `dep-check` 红线） | `M2_PLAN.md` §3.2 C01；本文 D15 |
 | **D16** | 地形碰撞的实现层 | 物理侧新增**独立地形场通道**（`HeightField` + `HeightFieldPort` + builtin/rapier 双实现），**不给 `ColliderShape` 加变体** | 加 `HeightField` 变体会牵动 `types.rs` 解析与两后端全部 shape 匹配分支（接触/射线/扫掠），且三处文件在 `size_debt` 内；独立通道不动既有形状语义，注入方是 `r3e-runtime::terrain_scene`，物理仍只依赖 `r3e-core` | `M2_PLAN.md` §3.2 C04；本文 D16 |
 
@@ -284,7 +284,63 @@ A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/
 
 ### D14 的连锁后果（已记账，不需再决策）
 
-1. `M2_PLAN.md` §2 基线表 `rpc` 目标 `≥80` → **`≥85`**；§3 阶段总览 C 行 `rpc +3` → **`+8`**、合计行 `+18` → **`+23**`；§4 累加表同步。
+1. `M2_PLAN.md` §2 基线表 `rpc` 目标 `≥80` → **`≥85`**；§3 阶段总览 C 行 `rpc +3` → **`+8`**、合计行 `+18` → **`+23`**；§4 累加表同步。
 2. C 阶段需同步的七处硬数字（`EXPECTED_COMMANDS` 398→406、`RPC_METHODS` 68→76、`EngineApi` 68→76、`cmd_spec/mod.rs` 的 `rpc == rpc_only + N` 由 `+29` 改 `+36`、三处 `cmd_spec_contract.rs`）全部集中在 **C06** 一卡，机械改动，清单见 `M2_C_PLAN.md` §10.3。漏一处 `cargo test` 即红。
 3. `script_only` 保持 **330** 不变（8 条命令全带 rpc），守恒规则 4 满足。
 4. C 阶段八卡 tests 分配与 `tests_baseline` 演进（2150 → 2166 → 2180 → 2194 → 2206 → 2226 → 2236 → 2248 → 2258）见 `M2_C_PLAN.md` §13.1。
+5. **D 阶段拍板（2026-11-24，DD-4 = A）后再次抬升**：`rpc` 全局目标 `85` → **`90`**（合计 `+23` → **`+28`**），D 行预算 `+2` → **`+7`**；C 阶段已实现的 `rpc 76` / `script_only 330` 不变，本轮不改代码。见下文 **D19**。
+
+---
+
+## D 阶段拍板（2026-11-24，DD-1~DD-6 全选 A 档）
+
+老板 2026-11-24 指令「`DD-1`～`DD-6` 全选 A 档」。六项决策全部取推荐档，结论如下，**后续卡不得再改**，除非老板另下指令。方案与逐项论证见 `docs/m2/M2_D_PLAN.md`（§10 含拍板结论表、两处表述订正、耦合矩阵）。本轮**只回写文档，不动引擎代码**，`commands` / `rpc` 实测仍为 **406 / 76**。
+
+| # | 事项 | 结论 | 理由（一句话） | 回写位置 |
+|---|---|---|---|---|
+| **D17** | 导航形态 + 双后端一致性 | **位图 `NavGrid` + string-pulling**（不做真多边形与严格漏斗）；双后端走**构造性一致 + 回归锁**，判据是 `product_hash` 与逐格高度**位相等** | 位图与 `product_hash` 位稳定相容，多边形化会让哈希随浮点漂移、`nav.backend.mismatch` 变成噪音；一致性由「唯一入口吃 `HeightField`」的构造保证，比「两套实现比容差」少一个永久维护面（`R7` 不在导航层复刻） | `M2_PLAN.md` §3.4 D01/D03、§7 `R7` 与「M2 不做」；本文 D17 |
+| **D18** | 导航产物载体与哈希算法 | **二进制 `.navmesh`**（magic + 头 JSON + 四段定长体部）；`product_hash` 作缓存键，逐字节可复现 | 16 万格约 **1.5 MB**，体积一眼可算、加载快；JSON 化 6–8 MB 且有浮点文本化精度争议，「文件哈希 = 缓存键」将不可用 | `M2_PLAN.md` §3.4 D04；本文 D18 |
+| **D19** | 命令面 / rpc 预算 + 不变量选题 + 回归形态 | 7 条 `nav.*` **全带 rpc**（D 行 `rpc +2` → **`+7`**，全局目标 `85` → **`90`**）；两条不变量取 **`nav.bake.empty`** + **`nav.backend.mismatch`**；D06 走 **headless + CLI 一键复现** | 全命令面可脚本化才能让 `D06` 的「CLI 一键复现」成立（档 C 会断在 `export`/`stats`）；两条不变量分别对应「产物不可信」与「后端污染」，互不重叠、反例廉价；R6 六卡不可省，headless 是唯一可进 CI 的形态 | `M2_PLAN.md` §2 / §3 / §4 / §3.4；`docs/AI_ROADMAP.md` §0.2；`docs/m2/README.md`；本文 D14 注记 + D19 |
+
+### D17 导航形态与双后端一致性（`DD-1 = A` + `DD-2 = A`）
+
+**结论**：
+
+1. 产物形态 = **格级位图 `NavGrid` + 逐格分类**（`Flat` / `Ramp` / `Step` / `Blocked` + 边界 / 退化），**不做**轮廓提取、多边形化、真多边形 NavMesh。
+2. 平滑 = **string-pulling**（视线剪枝 + 拐角内缩），**不做**严格漏斗算法。
+3. 双后端一致性 = **构造性保证 + 回归锁**：唯一烘焙入口 `bake_with_field(scene, &HeightField, cfg)`，builtin / rapier 只负责 `set_heightfield` 与取回；判据是两后端产物的 `product_hash` **位相等** 与 `heights` **逐格位相等**，不等即本卡红并 dump 首个差异格（坐标 / 两后端值 / field 摘要）。
+
+**为什么不是 B / C**：多边形顶点合并受浮点影响，位相等判据大概率天天红（`DD-1=B + DD-2=A` 已被判定冲突）；两套采样语义永久并存，就是 `R7`「不糊」原则在导航层的复刻。档 C 不给位相等判据，`DD-5` 的 `nav.backend.mismatch` 无法成立。
+
+**落地约束**：
+
+- `r3e-nav/Cargo.toml` 已有 `r3e-physics` 依赖但**源码零调用**；D01 是第一次真正用这条边，须一并删除 `bake.rs::patch_height` 私有实现（`CD-3` 的到期项），改走 `core::TerrainPatch::sample_height`，并用 C01 的 20 点交叉断言 + 新增 32 点断言证明等价。
+- `product_hash` 必须**位稳定**（否则 D18 的缓存键失去意义），故摘要只折叠内存值，不折叠序列化字节。
+
+### D18 产物载体与哈希算法（`DD-3 = A`）
+
+**结论**：`.navmesh` 二进制格式 = `magic`（8 B）+ 头 JSON（含 `version` / `cells` / `cfg_digest` / `input_digest`）+ 四段定长体部（`heights` 4 B/格、`class` 1 B/格、`walkable` 1 bit/格、`region` 4 B/格）。`product_hash` = SplitMix64 两级摘要；`input_digest` / `cfg_digest` / `product_hash` 三者共同承担缓存命中校验。
+
+**落地约束**：
+
+- D04 的 `nav.export` 出参为 `bytes` + `productHash`，`nav.import` 为 `loaded` + `productHash` + `cells`，`nav.hash` 为 `productHash` / `inputDigest` / `cfgDigest` / `cells`；格式与出参口径必须一致，避免「文件哈希」与「内存哈希」两套说法。
+- `nav` 产物**不进** `state_hash`（沿用 `CD-6`：只有场景数据进场景哈希），`D4=A` 的「编辑期预烘焙 + 运行期只加载」由此第一次有真实载体。
+- 反序列化必须校验 magic / version / `cells` 与体部长度自洽，畸形文件返回明确错误码而非 panic。
+
+### D19 命令面 / rpc 预算 + 不变量选题 + 回归形态（`DD-4 = A` + `DD-5 = A` + `DD-6 = A`）
+
+**结论**：
+
+1. D04 新增 7 条命令（`nav.smooth` / `nav.probe` / `nav.nearest` / `nav.hash` / `nav.export` / `nav.import` / `nav.stats`）**全部带 rpc**；`nav.bake` / `nav.path` 只扩出参、不算新增。
+2. D 行预算 `rpc +2` → **`+7`**；全局 `rpc` 目标 `85` → **`90`**（合计 `+23` → **`+28`**）；`commands 406 → 413`、`script_only` 保持 **330**、`invariants 42 → 44`。
+3. 两条不变量 = `nav.bake.empty`（`walkable_ratio == 0`，Error）+ `nav.backend.mismatch`（两后端 `product_hash` 不等，Error），不进 B 档的 `nav.grid.degenerate` / `nav.path.too_long`（后者与 D05 判据重复）。
+4. D06 = headless 集成测试（代理跟航点 / 双后端终点差 / 全程约束）+ **CLI 一键复现**；真机截图只作留证，不承担判据。
+
+**为什么不是档 B / 档 C（口径订正后）**：`M2_PLAN.md` §4 的**原计划（7 条中 2 条带 rpc）本身自洽**，`commands 433` / `rpc 85` 恰好达成——档 A **不是唯一解**，而是「用多 5 条 rpc 换全命令面可脚本化」的**更优解**，代价是目标 `85 → 90` 与文档回写。档 C **不违反守恒规则 4**（走命令表入口的命令不进 `script_only`），账目完全自洽，真实代价是那 5 条 CLI / 脚本不可直调、`D06` 的一键复现链断在 `export` / `stats` 上；档 B 则让 `commands 433` 落空为 428，需在后续四阶段加塞 5 条命令。
+
+**落地约束**：
+
+- 命令面实现落 `r3e-runtime/src/nav_ops.rs`（约 360 行，7 个 `pub(crate) fn`），`editor-host/api/nav.rs` 做薄转发；`TX_ONLY_METHODS` **不动**（7 条全带 rpc）。
+- 不建 `Domain::Nav`（`domains` 预算 0，全局 19 留给 `H01` 的 `game`），10 条 `nav.*` 继续挂 `Meta` 并加分组注释。
+- 不改 `args.rs`（余量 17 行），新增命令只走 `rpc --method`；`capabilities.json` 由 `gen-capabilities` 重生成，禁手改。
+- 七处硬数字（`EXPECTED_COMMANDS` 406→413、`RPC_METHODS` 76→83、`EngineApi` 76→83、`cmd_spec/mod.rs` 的 `rpc == rpc_only + N` 由 `+36` 改 `+43`、三处 `cmd_spec_contract.rs`、`invariants` 42→44 的三源登记）全部集中在 **D04** 一卡，漏一处 `cargo test` 即红。

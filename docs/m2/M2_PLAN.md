@@ -3,7 +3,7 @@
 - 阶段定位：`AI_ROADMAP §3.3` M2，结构期，原估 6–8 周
 - 计划形态：**严格串行**，一卡一提交，前卡 verify 全 11 步绿方可开下一卡
 - 基线口径：全部数字取自 `docs/m2/M2_BASELINE.md`（M2-A01 实测，2026-11-20）
-- 当前进度：**A01 已完成**（提交 `6876995`）；**A02 已完成**（提交 `810d5ce`，D1–D13 结论见 `docs/m2/M2_DECISIONS.md`）；**A03 已完成**（物理查询端口 trait 化 + `rapier` 转默认后端，实施记录见 `M2_A03_PORT_PLAN.md` §16：tests 1817 → **2017**、`r3e-physics/lib.rs` 1929 → **1542** 行（净减 387，判据 ≤0 满足）、`r3e-core` 零改动、verify 11 步全绿）；**A03b 已完成**（`script` 绑定端口化，能力面落 `r3e-core::host`、适配器落 physics/audio 各自 `host_adapter.rs`，实施记录见 `M2_A03B_HOST_PLAN.md` §9：tests 2017 → **2025**、`dep_debt` 清空且 `limit = 0`、`r3e-script/lib.rs` 2018 → **1979** 行、回放金标未漂移、verify 11 步全绿）；**A04 已完成**（`scene.rs` 拆域解债，实施记录见 `M2_A04_SCENE_PLAN.md` §12：`r3e-core/src/scene.rs` 3935 → **601** 行、`scene/` 子树 13 个文件全部 ≤800（最大 `tests_anim_b.rs` 577）、`size_debt` 债务 **23 → 22**、tests 2025 → **2025** 零删减、回放金标未漂移、verify 11 步全绿）；**A05 已完成**（`size_debt` 收紧，A05-D1 取**档 B**，实施记录见 `M2_A05_SIZE_PLAN.md` §12：`r3e-physics/lib.rs` 1542 → **461**（切出 `types.rs` 438 / `backend.rs` 289 / `tests.rs` 372）、`r3e-plugin/tools.rs` 1125 → **715**（测试切 `tools/tests.rs` 411）、`r3e-runtime/app.rs` 3032 → **2848** 留 base（测试切 `app/morph_bind_tests.rs` 82 + `app/key_event_tests.rs` 98），`size_debt` 债务 **22 → 20**、tests 2025 → **2025** 零删减、回放金标未漂移、verify 11 步全绿）；**B01–B05 已完成**（角色控制器，提交 `e131eab`/`c138058`/`afd4e00`/`c936a23`/`bb40589` + 收尾 `712824a`：tests 2025 → **2150**、commands 392 → **398**、rpc 62 → **68**、invariants 38 → **40**、workspace 成员 17 → **18**、`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移；B05 人工栏已由老板真窗口回填）；**C 阶段已拍板**（2026-11-22，CD-1~CD-7 **全选推荐档**，方案见 `docs/m2/M2_C_PLAN.md`：CD-1 档 A → C 阶段 `rpc` 预算 `+3` → **`+8`**，全局 `80` → **`85`**；CD-4 → C03 拆 `C03a`/`C03b`，C 阶段 ​7 卡 → **8 卡**，总卡数 45 → **46**）；**C01 已完成**（提交 `5f94d59`：新 crate `crates/r3e-terrain` 入 workspace（成员 18 → **19**），同卡登记 `dep_rules`（19 个 crate，`allow` 仅 `r3e-core`；`r3e-runtime` / `r3e-editor-host` 加许可）与 `tests_baseline`（2150 → **2166**）；`r3e-core` 追加 `TerrainPatch::sample_height`（从 nav 私有 `patch_height` 逐位上移，nav 实现不动，以 20 点交叉断言锁等价）；tests **+16**（块划分 6 / 采样 7 含与 nav 逐位等价 1 / LOD 枚举 3）；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C02 已完成**（提交 `c2d533b`：新增 `sample_height_lod(patches, grid, x, z, lod)` —— 块内按 `Lod::step` 跳采顶点后双线性、块边界带（= 粗档一个顶点跨度）强制回步长 1，接缝两侧逐点 `to_bits` 相等；`step == 1` 直接复用 `TerrainPatch::sample_height`；tests **+14**（`tests/lod_sample.rs`：块内误差 3 / 接缝 3 / 确定性与参数面 4 / 退化与重叠 4），r3e-terrain 16 → **30**，全局 2166 → **2180**；方案偏差：签名多收一个 `&BlockGrid`（见 `M2_C_PLAN.md` §5.4）；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C03a 已完成**（提交 `01fea8b`：新增 `block_mesh(patches, grid, index, lod, cfg) -> Option<TerrainMesh>` —— 顶点高度一律取 `sample_height_lod`、法线走网格中心差分、4 层权重按高度+坡度带 `fade` 过渡带归一化（四层全压掉时退化为层 0 = 1）；顶点密度 = patch 采样步长 × LOD 步长向上取整，三角数 L2:L1:L0 = 1:4:16；tests **+14**，r3e-terrain 30 → **44**，全局 2180 → **2194**；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C03b 已完成**（新增独立地形渲染管线，与 PBR 管线零交集：`r3e-render/src/terrain.rs`（473 行，`TerrainVertex` location 0..=3 / stride 48 / `TerrainPass` / `mix_layers` / `TerrainLayersUniform`）+ `terrain.wgsl`（4 层权重混合 lambert），装配层 `r3e-runtime/src/terrain_scene.rs`（293 行，D10 配置面 + 块计划 + LOD 重建计数）；tests **+13**（render 8 / runtime 5），`r3e-render` 316 → **324**、`r3e-runtime` 14 → **19**，全局 2194 → **2207**；方案偏差：帧序列接线推迟到 C07（`Renderer::frame` 签名改动超 `app.rs ≈ 2 行` 预算且无 GPU 不可验），LOD 重建口径改为「档位真变的块」（见 `M2_C_PLAN.md` §7.4）；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C04 已完成**（提交 `81a8889`：地形碰撞走独立通道、不进 `ColliderShape` —— `physics/heightfield.rs` 构造即校验 + `height_at` 双线性 / `normal_at` 中心差分 / `aabb` / `covers`，`terrain_query.rs` 射线按格子步进（起点在地表下报重叠）+ 胶囊重叠 + 扫掠 + `merge_ground`，`port_terrain.rs` 端口层「刚体候选 vs 地形候选」择优（已重叠优先、1e-4 内视为一次接触、同距按 node 升序保证稳定），`PhysicsBackend` 加 `set_heightfield` / `heightfield` 两个默认方法（Null 后端据此天然拒绝），builtin 只存数据、rapier 建静态 `HeightField3d`（不进 `records`，`body_count` 与能力位不变）；`sample_ground` 的地形合成放门面不放端口，否则两条路径各算一遍、日后漏改的症状是「角色调用比端口调用低一截」；tests **+26**（数据契约 6 / 装卸与切后端 4 / 双后端一致 8 组 / 地面采样 3 / 射线与胶囊 7 / 总闸 2），`r3e-physics` 239 → **265**，全局 2207 → **2233**；方案偏差：`port_impl` 一度顶穿 `lint-size`（826 > 800），把合成抽成 `port_terrain.rs` 后回到 768；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C05 已完成**（提交 `84f8b92`：生成器是纯函数，尺寸 + seed → `Vec<TerrainPatch>`，不读时钟/随机源；接缝靠「两个只看」——基高度只看世界坐标、微扰只看全局样本索引（`SplitMix64(seed ^ SplitMix64(gx<<32|gz))`，不拿坐标浮点喂噪声，否则接缝两侧 x 差 1 ulp 就裂出一条可走的缝）；采样点按整张地形统一网格定位、f64 算完落 f32，相邻块共享边界那一列样本；tests **+10**，`r3e-terrain` 44 → **54**，全局 2233 → **2243**；方案偏差：§9.3 第 10 条（`terrain.gen` 进 `TX_ONLY_METHODS`）并入 C06，因为 `args/tests.rs::tx_only_tables_are_consistent` 要求护栏名必须是已知协议方法，单卡加护栏当场变红，改为「175 米非整除尺寸仍无缝铺满」；`size_debt` 20 持平、金标未漂移、verify 11 步全绿）；**C06 已完成**（8 条 `terrain.*` 全部带 rpc（CD-1 档 A）、`Domain::Terrain`、`terrain.mesh` 挂 `Meta`；两条 invariant `weight_not_normalized`（判根因，不逐个顶点比 1）与 `block_gap`（只看格级覆盖、判 `Warn`）+ `Category::Terrain` 前后缀映射 + `layer_of` 归 `Static`；`TX_ONLY_METHODS` +4；命令面实现在 `r3e-runtime::terrain_ops`（`editor-host` allow 表不含 `r3e-terrain`），编辑器宿主与脚本宿主共用，`stats` 与 `mesh` 共用 `mesh_totals`；`app.rs` 装配改调 `crate::terrain_host`，2821 → **2816**（顺带还 5 行债）；tests **+57**（runtime 25 / editor-host 12 / script 12 / doc 5 / core 3），全局 2243 → **2300**；门禁 commands 398 → **406**、rpc 68 → **76**、`script_only` **330 不变**、domains 17 → **18**、invariants 40 → **42**；`size_debt` 20 持平、`dep_debt` 0、金标未漂移、verify 11 步全绿；偏差与取舍见 `M2_C_PLAN.md` §10.5）；**C07 已完成**（可玩性回归 2 收口——补 `terrain_draw`（绘制组帧 + 按相机裁块，11 测）/ `terrain_field`（地形→物理场地绑定，5 测）两处缺口、独立地形通道装配 `renderer/terrain_pass.rs` 落位、`tests/terrain_roam.rs` 10 条行走回归（缓坡 `grounded` 全程真、50° 陡坡推不上去、跨块不卡、坡顶高度 == `terrain.sample` <1 cm、双后端终点差 <0.5 m、同种子 `state_hash` 同）、真机首帧 uniform 越界 panic 修复（`pack_camera` 与 `CAMERA_UNIFORM_BYTES` 共用常量）、`doc-gate` 规则 4 改走 `r3e_doc::parse_scene`；tests **+30**（runtime 26 / physics 3 / render 1），`r3e-physics` 265 → **268**、`r3e-render` 324 → **325**、`r3e-runtime` 44 → **70**，全局 2300 → **2330**；命令面 406 / rpc 76 / domains 18 / invariants 42 / script_only 330 全部持平；`size_debt` 20 持平、`dep_debt` 0、金标未漂移、verify 11 步全绿；方案偏差 5 处 + 判据 #4 口径变更见 `M2_C_PLAN.md` §11.3）；**C 阶段累计：tests 2150 → 2330（+180，卡表预算 +108）**；**C 阶段 8 卡（C01 / C02 / C03a / C03b / C04 / C05 / C06 / C07）全部完成**；**下一张卡：D01（导航网格烘焙，D4=A 编辑期预烘焙，tests 预算见 §卡表）**
+- 当前进度：**A01 已完成**（提交 `6876995`）；**A02 已完成**（提交 `810d5ce`，D1–D13 结论见 `docs/m2/M2_DECISIONS.md`）；**A03 已完成**（物理查询端口 trait 化 + `rapier` 转默认后端，实施记录见 `M2_A03_PORT_PLAN.md` §16：tests 1817 → **2017**、`r3e-physics/lib.rs` 1929 → **1542** 行（净减 387，判据 ≤0 满足）、`r3e-core` 零改动、verify 11 步全绿）；**A03b 已完成**（`script` 绑定端口化，能力面落 `r3e-core::host`、适配器落 physics/audio 各自 `host_adapter.rs`，实施记录见 `M2_A03B_HOST_PLAN.md` §9：tests 2017 → **2025**、`dep_debt` 清空且 `limit = 0`、`r3e-script/lib.rs` 2018 → **1979** 行、回放金标未漂移、verify 11 步全绿）；**A04 已完成**（`scene.rs` 拆域解债，实施记录见 `M2_A04_SCENE_PLAN.md` §12：`r3e-core/src/scene.rs` 3935 → **601** 行、`scene/` 子树 13 个文件全部 ≤800（最大 `tests_anim_b.rs` 577）、`size_debt` 债务 **23 → 22**、tests 2025 → **2025** 零删减、回放金标未漂移、verify 11 步全绿）；**A05 已完成**（`size_debt` 收紧，A05-D1 取**档 B**，实施记录见 `M2_A05_SIZE_PLAN.md` §12：`r3e-physics/lib.rs` 1542 → **461**（切出 `types.rs` 438 / `backend.rs` 289 / `tests.rs` 372）、`r3e-plugin/tools.rs` 1125 → **715**（测试切 `tools/tests.rs` 411）、`r3e-runtime/app.rs` 3032 → **2848** 留 base（测试切 `app/morph_bind_tests.rs` 82 + `app/key_event_tests.rs` 98），`size_debt` 债务 **22 → 20**、tests 2025 → **2025** 零删减、回放金标未漂移、verify 11 步全绿）；**B01–B05 已完成**（角色控制器，提交 `e131eab`/`c138058`/`afd4e00`/`c936a23`/`bb40589` + 收尾 `712824a`：tests 2025 → **2150**、commands 392 → **398**、rpc 62 → **68**、invariants 38 → **40**、workspace 成员 17 → **18**、`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移；B05 人工栏已由老板真窗口回填）；**C 阶段已拍板**（2026-11-22，CD-1~CD-7 **全选推荐档**，方案见 `docs/m2/M2_C_PLAN.md`：CD-1 档 A → C 阶段 `rpc` 预算 `+3` → **`+8`**，全局 `80` → **`85`**；CD-4 → C03 拆 `C03a`/`C03b`，C 阶段 ​7 卡 → **8 卡**，总卡数 45 → **46**）；**C01 已完成**（提交 `5f94d59`：新 crate `crates/r3e-terrain` 入 workspace（成员 18 → **19**），同卡登记 `dep_rules`（19 个 crate，`allow` 仅 `r3e-core`；`r3e-runtime` / `r3e-editor-host` 加许可）与 `tests_baseline`（2150 → **2166**）；`r3e-core` 追加 `TerrainPatch::sample_height`（从 nav 私有 `patch_height` 逐位上移，nav 实现不动，以 20 点交叉断言锁等价）；tests **+16**（块划分 6 / 采样 7 含与 nav 逐位等价 1 / LOD 枚举 3）；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C02 已完成**（提交 `c2d533b`：新增 `sample_height_lod(patches, grid, x, z, lod)` —— 块内按 `Lod::step` 跳采顶点后双线性、块边界带（= 粗档一个顶点跨度）强制回步长 1，接缝两侧逐点 `to_bits` 相等；`step == 1` 直接复用 `TerrainPatch::sample_height`；tests **+14**（`tests/lod_sample.rs`：块内误差 3 / 接缝 3 / 确定性与参数面 4 / 退化与重叠 4），r3e-terrain 16 → **30**，全局 2166 → **2180**；方案偏差：签名多收一个 `&BlockGrid`（见 `M2_C_PLAN.md` §5.4）；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C03a 已完成**（提交 `01fea8b`：新增 `block_mesh(patches, grid, index, lod, cfg) -> Option<TerrainMesh>` —— 顶点高度一律取 `sample_height_lod`、法线走网格中心差分、4 层权重按高度+坡度带 `fade` 过渡带归一化（四层全压掉时退化为层 0 = 1）；顶点密度 = patch 采样步长 × LOD 步长向上取整，三角数 L2:L1:L0 = 1:4:16；tests **+14**，r3e-terrain 30 → **44**，全局 2180 → **2194**；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C03b 已完成**（新增独立地形渲染管线，与 PBR 管线零交集：`r3e-render/src/terrain.rs`（473 行，`TerrainVertex` location 0..=3 / stride 48 / `TerrainPass` / `mix_layers` / `TerrainLayersUniform`）+ `terrain.wgsl`（4 层权重混合 lambert），装配层 `r3e-runtime/src/terrain_scene.rs`（293 行，D10 配置面 + 块计划 + LOD 重建计数）；tests **+13**（render 8 / runtime 5），`r3e-render` 316 → **324**、`r3e-runtime` 14 → **19**，全局 2194 → **2207**；方案偏差：帧序列接线推迟到 C07（`Renderer::frame` 签名改动超 `app.rs ≈ 2 行` 预算且无 GPU 不可验），LOD 重建口径改为「档位真变的块」（见 `M2_C_PLAN.md` §7.4）；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C04 已完成**（提交 `81a8889`：地形碰撞走独立通道、不进 `ColliderShape` —— `physics/heightfield.rs` 构造即校验 + `height_at` 双线性 / `normal_at` 中心差分 / `aabb` / `covers`，`terrain_query.rs` 射线按格子步进（起点在地表下报重叠）+ 胶囊重叠 + 扫掠 + `merge_ground`，`port_terrain.rs` 端口层「刚体候选 vs 地形候选」择优（已重叠优先、1e-4 内视为一次接触、同距按 node 升序保证稳定），`PhysicsBackend` 加 `set_heightfield` / `heightfield` 两个默认方法（Null 后端据此天然拒绝），builtin 只存数据、rapier 建静态 `HeightField3d`（不进 `records`，`body_count` 与能力位不变）；`sample_ground` 的地形合成放门面不放端口，否则两条路径各算一遍、日后漏改的症状是「角色调用比端口调用低一截」；tests **+26**（数据契约 6 / 装卸与切后端 4 / 双后端一致 8 组 / 地面采样 3 / 射线与胶囊 7 / 总闸 2），`r3e-physics` 239 → **265**，全局 2207 → **2233**；方案偏差：`port_impl` 一度顶穿 `lint-size`（826 > 800），把合成抽成 `port_terrain.rs` 后回到 768；`size_debt` 20 持平、回放金标 `385482eb033d2964` 未漂移、verify 11 步全绿）；**C05 已完成**（提交 `84f8b92`：生成器是纯函数，尺寸 + seed → `Vec<TerrainPatch>`，不读时钟/随机源；接缝靠「两个只看」——基高度只看世界坐标、微扰只看全局样本索引（`SplitMix64(seed ^ SplitMix64(gx<<32|gz))`，不拿坐标浮点喂噪声，否则接缝两侧 x 差 1 ulp 就裂出一条可走的缝）；采样点按整张地形统一网格定位、f64 算完落 f32，相邻块共享边界那一列样本；tests **+10**，`r3e-terrain` 44 → **54**，全局 2233 → **2243**；方案偏差：§9.3 第 10 条（`terrain.gen` 进 `TX_ONLY_METHODS`）并入 C06，因为 `args/tests.rs::tx_only_tables_are_consistent` 要求护栏名必须是已知协议方法，单卡加护栏当场变红，改为「175 米非整除尺寸仍无缝铺满」；`size_debt` 20 持平、金标未漂移、verify 11 步全绿）；**C06 已完成**（8 条 `terrain.*` 全部带 rpc（CD-1 档 A）、`Domain::Terrain`、`terrain.mesh` 挂 `Meta`；两条 invariant `weight_not_normalized`（判根因，不逐个顶点比 1）与 `block_gap`（只看格级覆盖、判 `Warn`）+ `Category::Terrain` 前后缀映射 + `layer_of` 归 `Static`；`TX_ONLY_METHODS` +4；命令面实现在 `r3e-runtime::terrain_ops`（`editor-host` allow 表不含 `r3e-terrain`），编辑器宿主与脚本宿主共用，`stats` 与 `mesh` 共用 `mesh_totals`；`app.rs` 装配改调 `crate::terrain_host`，2821 → **2816**（顺带还 5 行债）；tests **+57**（runtime 25 / editor-host 12 / script 12 / doc 5 / core 3），全局 2243 → **2300**；门禁 commands 398 → **406**、rpc 68 → **76**、`script_only` **330 不变**、domains 17 → **18**、invariants 40 → **42**；`size_debt` 20 持平、`dep_debt` 0、金标未漂移、verify 11 步全绿；偏差与取舍见 `M2_C_PLAN.md` §10.5）；**C07 已完成**（可玩性回归 2 收口——补 `terrain_draw`（绘制组帧 + 按相机裁块，11 测）/ `terrain_field`（地形→物理场地绑定，5 测）两处缺口、独立地形通道装配 `renderer/terrain_pass.rs` 落位、`tests/terrain_roam.rs` 10 条行走回归（缓坡 `grounded` 全程真、50° 陡坡推不上去、跨块不卡、坡顶高度 == `terrain.sample` <1 cm、双后端终点差 <0.5 m、同种子 `state_hash` 同）、真机首帧 uniform 越界 panic 修复（`pack_camera` 与 `CAMERA_UNIFORM_BYTES` 共用常量）、`doc-gate` 规则 4 改走 `r3e_doc::parse_scene`；tests **+30**（runtime 26 / physics 3 / render 1），`r3e-physics` 265 → **268**、`r3e-render` 324 → **325**、`r3e-runtime` 44 → **70**，全局 2300 → **2330**；命令面 406 / rpc 76 / domains 18 / invariants 42 / script_only 330 全部持平；`size_debt` 20 持平、`dep_debt` 0、金标未漂移、verify 11 步全绿；方案偏差 5 处 + 判据 #4 口径变更见 `M2_C_PLAN.md` §11.3）；**C 阶段累计：tests 2150 → 2330（+180，卡表预算 +108）**；**C 阶段 8 卡（C01 / C02 / C03a / C03b / C04 / C05 / C06 / C07）全部完成**；**D 阶段已拍板**（2026-11-24，`DD-1`~`DD-6` **全选 A 档**：格级位图 + string-pulling / 构造性一致 + 回归锁 / 二进制 `.navmesh` / 7 条命令全带 rpc（全局 `rpc` 目标 `85` → **`90`**）/ `nav.bake.empty` + `nav.backend.mismatch` / D06 headless + CLI 一键复现，结论见 `M2_DECISIONS.md` D17–D19）；**下一张卡：D01（导航网格烘焙，D4=A 编辑期预烘焙，tests 预算见 §卡表）**
 - 拍板后果（已计入本文件全部数字）：D1/D2/D12/D13 四项选 B → 卡数 44 → **45**、tests 目标 +546 → **+750**、引擎 crate 16 → **19**、`dep_debt` 2 → **0**
 - 日期：2026-11-20
 
@@ -15,7 +15,7 @@
 |---|---|---|
 | `M2_BASELINE.md` | M2-A01 基线对账、verify 11 步留证、债务台账现状 | 已完成（实测值，唯一权威口径） |
 | `M2_PLAN.md` | 本文件：目标、46 卡串行计划、门禁预算、执行规程 | 生效中 |
-| `M2_DECISIONS.md` | A02 决策清单 D1–D13，已拍板（含 4 项非建议项的落地约定） | **已拍板**（A02 完成，不再阻塞） |
+| `M2_DECISIONS.md` | 决策清单 D1–D19，已全部拍板（A02 D1–D13 含 4 项非建议项落地约定；C 阶段 D14–D16；D 阶段 D17–D19） | **已拍板**（无外部阻塞） |
 | `M2_PERF_PLAN.md` | 性能验收口径与跨硬件测试计划（D11 附加要求），H05 按此出结论 | 生效中，M2 全程参考 |
 | `M2_A03_PORT_PLAN.md` | A03 物理查询端口实施规划（落点改 `crates/r3e-physics`，2026-11-20 老板指令） | **已确认**（四项决定拍板），A03 可开工 |
 | `M2_A03B_HOST_PLAN.md` | A03b `script` 绑定端口化设计稿（trait 默认方法 + 函数式适配器） | **已实施**：§9 为实施记录（5 处偏离：trait 落 `r3e-core`、适配器落各域 crate、`new` 签名改 trait 对象、match 内嵌、tests +8 而非 +56）|
@@ -51,7 +51,7 @@
 |---|---|---|
 | `#[test]` 总数 | 1817 | ≥ 2567（+750） |
 | commands | 392 | ≥ 433（+41） |
-| rpc | 62 | ≥ 85（+23） |
+| rpc | 62 | ≥ 90（+28；D 阶段拍板 DD-4 档 A 后由 ≥85 抬至 ≥90） |
 | script_only | 330 | ≤ 330（不新增仅脚本命令） |
 | domains | 17 | 19（+2：terrain、game） |
 | invariants | 38 | ≥ 48（+10） |
@@ -78,24 +78,26 @@
 | A 清障与准备 | A01–A05 + **A03b** | 前置 | **6** | **+256** / 0 / 0 / 0 / 0 |
 | B 角色控制器 | B01–B05 | 项 1 | 5 | **+82** / +6 / +6 / +2 / 0 |
 | C 地形 | C01–C03b + C04–C07 | 项 2 | **8** | **+108** / +8 / **+8** / +2 / +1 |
-| D 导航 | D01–D06 | 项 3 | 6 | **+82** / +7 / +2 / +2 / 0 |
+| D 导航 | D01–D06 | 项 3 | 6 | **+82** / +7 / **+7** / +2 / 0 |
 | E Prefab | E01–E05 | 项 4 | 5 | +58 / +6 / +2 / +1 / 0 |
 | F 动画 | F01–F06 | 项 5 | 6 | +62 / +6 / +2 / +1 / 0 |
 | G 流式 | G01–G05 | 项 6 | 5 | **+58** / +5 / +2 / +1 / 0 |
 | H 垂直切片 | H01–H05 | 项 7 | 5 | **+44** / +3 / +1 / +1 / +1 |
-| **合计** | 46 卡 | 7 项 | **46** | **+750 / +41 / +23 / +10 / +2** |
+| **合计** | 46 卡 | 7 项 | **46** | **+750 / +41 / +28 / +10 / +2** |
 
 > **卡数演进**（四次变化，逐次留痕）：
 > 1. 草案 42 卡 → **44 卡**：新增 `A05`（`size_debt` 收紧，来自 A01 发现）与 `G02`（`app.rs` 拆域提前）。草案引用 `scene.rs 3947` / crate 16 旧口径按 A01 实测修正为 `3935` / `16 个 r3e-* + xtask = 17 个成员`。
 > 2. 44 卡 → **45 卡**（A02 拍板后）：D13=B 偿还 `dep_debt`，新插 `A03b`。
 > 3. 预算 `+546` → **`+750`**：来自 4 项非建议项的连锁后果（D1 双后端、D2 新 crate、D12 新 crate、D13 偿债卡，以及 D5/D10 可配置、D11 采样脚本）。逐项差额见 `M2_DECISIONS.md`「非建议项影响总览」。
 >
-> 门禁目标值随之为 `tests ≥2567 / commands ≥433 / rpc ≥80 / invariants ≥48 / domains 19 / 债务 0 / crate 19`。
+> 门禁目标值随之为 `tests ≥2567 / commands ≥433 / rpc ≥90（D 阶段 DD-4 档 A 后由 ≥80 经 ≥85 抬至 ≥90）/ invariants ≥48 / domains 19 / 债务 0 / crate 19`。
 >
 > **2026-11-20 修订（B 阶段拍板 BD-1 档 A）**：B 阶段 `rpc` 预算由 `+2` 改为 **`+6`**——6 条 `character.*` 命令全部带 rpc 才不破坏守恒规则 4（`script_only` 不增）。全局目标随之 `76` → **`80`**（+14 → +18）。理由与三档取舍见 `M2_B_PLAN.md` §9 BD-1。
 > 4. 45 卡 → **46 卡**（C 阶段拍板后，2026-11-22）：C03 拆为 `C03a`（网格与 4 层权重，headless 全可判）/ `C03b`（独立渲染管线与混合着色，GPU 观感走人工）——两卡的失败原因性质不同，合成一卡会让「网格算错」与「着色错」表现相同、无法分离定位。先例为 A03 → A03b 的插入方式。
 >
 > **2026-11-22 修订（C 阶段拍板 CD-1 档 A）**：C 阶段 `rpc` 预算由 `+3` 改为 **`+8`**——8 条 `terrain.*` / `terrain.mesh` 命令中 7 条脚本可见、1 条入 `Meta`（共 8 条带 rpc）才不破坏守恒规则 4（`script_only` 330 不增）；若只给 3 条 rpc，`script_only` 会涨到 335，与「三者同时成立」矛盾。全局目标随之 `80` → **`85`**（+18 → +23）。理由与三档取舍见 `M2_C_PLAN.md` §12 CD-1。
+>
+> **2026-11-24 修订（D 阶段拍板 DD-4 档 A）**：D 阶段 `rpc` 预算由 `+2` 改为 **`+7`**——7 条 `nav.*` 命令全部带 rpc，`nav.export` / `nav.import` / `nav.stats` 才能被 `r3e-cli` 与脚本直调（`DD-6` 的「CLI 一键复现」正依赖这条；只留 2 条 rpc 时复现链断在 `export` / `stats`）。`script_only` 保持 **330**。全局目标随之 `85` → **`90`**（+23 → +28）。注意：`M2_PLAN` §4 原计划（7 条中 2 条带 rpc）本身自洽可达 433/85，档 A 是以多 5 条 rpc 换取「全命令面可脚本化」的更优解，不是唯一解——口径详见 `M2_D_PLAN.md` §10 DD-4 与 `M2_DECISIONS.md` D19。
 
 ### 3.1 A 阶段：清障与准备（6 卡）
 
@@ -137,12 +139,12 @@
 
 | ID | 任务 | 依赖 | 主文件 | 完成判据 |
 |---|---|---|---|---|
-| D01 | 导航网格烘焙（**D4=A** 编辑期预烘焙） | C07 | `r3e-nav` | 由地形与碰撞几何烘焙出可行走多边形；斜坡/台阶按坡度与高度分类；**双后端**（builtin / rapier）各烘一次，产物哈希须一致——不一致则本卡红并记录差异 |
+| D01 | 导航网格烘焙（**D4=A** 编辑期预烘焙；**DD-1=A** 位图形态） | C07 | `r3e-nav` | 由地形与碰撞几何烘焙出**可行走区域（格级位图 `NavGrid`）**，不做轮廓提取与多边形化；斜坡/台阶按坡度与高度分类；**双后端**（builtin / rapier）各烘一次，`product_hash` 与逐格高度**位相等**（**DD-2=A**：一致由构造保证——唯一烘焙入口吃 `HeightField`，两后端只负责 `set_heightfield` 与取回，测试锁的是「切后端不改 field + 烘焙确定」），不一致则本卡红并 dump 首个差异格 |
 | D02 | A\* 寻路 | D01 | 同上 | 给定起终点返回可通行路径；不可达返回明确失败码而非空路径 |
-| D03 | 路径平滑与代理移动 | D02 | 同上 | 路径经过漏斗算法平滑；代理沿路径行走不切角穿墙 |
-| D04 | 命令与能力登记 | D03 | `cmd_spec`、`capabilities.json` | `nav.*` 命令 + rpc 入口；`unsupported` 不残留旧条目 |
+| D03 | 路径平滑与代理移动 | D02 | 同上 | 路径经 **string-pulling（视线剪枝 + 拐角内缩）** 平滑，**不做严格漏斗**（**DD-1=A** 的直接后果，已登记 §7 不做清单）；代理沿路径行走不切角穿墙 |
+| D04 | 命令与能力登记 | D03 | `cmd_spec`、`capabilities.json` | `nav.*` 命令 **7 条全部带 rpc**（**DD-4=A**，全局 rpc 目标 85 → 90）、产物载体为二进制 `.navmesh`（**DD-3=A**）；`unsupported` 不残留旧条目 |
 | D05 | 判据测试（**D5 默认 + 可配置**） | D04 | `r3e-nav/tests` | **路径长度 ≤ 直线 1.6 倍**自动断言（默认 20 组起终点 / seed 42）；组数、seed、阈值比例抽为可覆盖参数，覆盖后仍按同方向断言；非法配置（0 组 / 阈值 ≤0）必须被拒；不可达场景有反例测试 |
-| D06 | 可玩性回归 3 | D05 | 回归脚本 | 地形上放一个跟随目标，代理自行绕障抵达 |
+| D06 | 可玩性回归 3 | D05 | 回归脚本 | 地形上放一个跟随目标，代理自行绕障抵达；验收形态为 **headless 集成测试 + CLI 一键复现**（**DD-6=A**），真机仅留证不判据 |
 
 ### 3.5 E 阶段：Prefab（项 4，5 卡）
 
@@ -197,14 +199,16 @@
 | A（A03 / A03b / A04 / A05） | **+256** | 0 | 0 | 0 | 0 |
 | B | **+82** | +6 | **+6** | +2 | 0 |
 | C | **+108** | +8 | **+8** | +2 | +1（terrain） |
-| D | **+82** | +7 | +2 | +2 | 0 |
+| D | **+82** | +7 | **+7**（DD-4=A） | +2 | 0 |
 | E | +58 | +6 | +2 | +1 | 0 |
 | F | +62 | +6 | +2 | +1 | 0 |
 | G | **+58** | +5 | +2 | +1 | 0 |
 | H | **+44** | +3 | +1 | +1 | +1（game） |
-| **目标** | **2567** | **433** | **85** | **48** | **19** |
+| **目标** | **2567** | **433** | **90** | **48** | **19** |
 
 C 阶段 +108 的构成（供核对，见 `M2_C_PLAN.md` §13.1）：C01 **+16**（块划分 6 / 采样 5 / 与 `r3e-nav` 逐位等价 1 / 法线 1 / LOD 枚举 3）、C02 **+14**、C03a **+14**、C03b **+12**、C04 **+20**（10 断言 × builtin/rapier 双后端）、C05 **+10**、C06 **+12**、C07 **+10**=+108（C03b 实测 +13 而非 +12：装配侧多 1 条「LOD 变化才重建」，故阶段实际合计 **+109**）。
+
+D 阶段 +82 的构成（供核对，见 `M2_D_PLAN.md` §11.1）：D01 **+26**（分类 6 / 摘要与哈希 6 / 双后端 4 / 地形真值 6 / 块边界 4）、D02 **+16**、D03 **+16**、D04 **+8**（命令与清单 3 / 导出导入往返 3 / 两条不变量反例 2）、D05 **+10**、D06 **+6**；`tests` 落点 **2338 + 82 = 2420**（`M2_PLAN` 计划口径 2330 + 82 = 2412，差 8 来自 C 阶段实超，按「预算为下限」2412 是下限不是目标值）。
 
 A 阶段 +256 的构成（供核对，不能只写总数）：A03 双后端 **+200**（原 +130，D1=B 增 +70）、A03b 端口化偿还 **+56**（D13=B）、A04/A05 各 0（零行为变化 / 纯台账收紧）。
 > **实测（2026-11-20）**：A03 落 +200（1817 → 2017）与预算一致；A03b 落 **+8**（2017 → 2025）而非 +56 —— 端口化按「零行为变化」处理，69 个既有绑定测试原样保留（它们现在跑过 Facade，等于顺带覆盖适配器），新增的 8 条只测契约本身。差额不是漏做测试，而是「不重写已有断言」这一判据的必然结果，见 `M2_A03B_HOST_PLAN.md` §9.1 第 5 条。
@@ -241,7 +245,7 @@ A 阶段 +256 的构成（供核对，不能只写总数）：A03 双后端 **+2
 | `r3e-physics/src/*` | A03 | 只加 trait 与 builtin 实现，不改既有检测语义 |
 | `crates/r3e-character/*` | B | 新建 crate（D2=B）；`allow` 仅 `r3e-core`；控制器 trait 契约在 core、实现在本 crate；不得依赖 `r3e-physics` |
 | `crates/r3e-terrain/*` | C | 新建 crate（D12=B）；`allow` 仅 `r3e-core`；只产出 core 类型，不得依赖 render/asset/physics |
-| `r3e-nav/src/*` | D | D 阶段专属 |
+| `r3e-nav/src/*` | D | D 阶段专属；命令面实现落 `r3e-runtime/src/nav_ops.rs`（D 阶段例外，理由同 C06 的 `terrain_ops`——`editor-host` 的 `dep_rules` allow 表不含 `r3e-nav`） |
 | `r3e-core/src/prefab/` | E | E 阶段专属 |
 | 动画模块（片段/事件/IK） | F | F 阶段专属 |
 | `r3e-core/src/streaming/`、`r3e-runtime/src/app.rs` → `app/` | G | app.rs 拆域在 G02 一次完成 |
@@ -261,12 +265,12 @@ A 阶段 +256 的构成（供核对，不能只写总数）：A03 双后端 **+2
 | R4 | 串行被打破导致后期返工 | 有人并行开两项 | 前卡 verify 未绿不得开下一卡，计划层面不排并行 |
 | R5 | 回放金标漂移被误判为失败 | 判据含确定性 | 金标允许随卡推进，但必须两次运行同哈希；不追旧值 |
 | R6 | 回归卡被跳过 | 赶进度 | 六张回归卡（B05/C07/D06/F06/G05/H05）不可省，不做则 M2 不算完成 |
-| **R7** | **双后端工作量翻倍被低估**（D1=B） | A03 超出 3 天、或 B02/B03/C04/D01 任一卡双后端结论不一致 | 双后端不一致**不糊**：先判定是 builtin 语义缺陷还是 rapier 参数不当，结论写入卡备注；A03 若显著超期，**不得**改用「先缓存 builtin 结果」之类的折中，宁可拉长 A 阶段 |
+| **R7** | **双后端工作量翻倍被低估**（D1=B） | A03 超出 3 天、或 B02/B03/C04/D01 任一卡双后端结论不一致 | 双后端不一致**不糊**：先判定是 builtin 语义缺陷还是 rapier 参数不当，结论写入卡备注；A03 若显著超期，**不得**改用「先缓存 builtin 结果」之类的折中，宁可拉长 A 阶段。**D 阶段口径（DD-2=A）**：D01 的一致性由构造保证（唯一入口吃 `HeightField`），`R7` 在导航层不以「两套采样实现」形态出现；一旦 `D01` 报哈希位差，按 D-R2 处理——dump 首个差异格，八成是后端污染了 field，**不得**改判据放宽 |
 | **R8** | **新 crate 边界漂移**（D2=B / D12=B） | `r3e-character` 想依赖 `r3e-physics`、`r3e-terrain` 想依赖 `r3e-render`、或 `r3e-script` allow 表被加上新 crate | 一律红线：改走 core 契约/端口注入，或把共享数据结构下沉 core；确需新边必须先改 `dep_rules.json` 并在本计划登记理由，不得在实现里偷渡 |
 | **R9** | **A03b 端口化引入行为变更**（D13=B） | 1817 基线测试掉数、回放金标漂移 | 端口化按「零行为变化」重构处理：分批搬移 + 每批 verify；金标漂移必须定位到具体行为差异，不得直接改金标 |
 | **R10** | 编译时间上涨影响开发节奏 | `rapier` 默认化后 `cargo test` 明显变慢 | 允许开发期用 `--no-default-features` 跑快速循环，但**提交前与 CI 必须跑默认（rapier）配置全绿** |
 
-**M2 不做**（明确排除，避免范围蔓延）：`r3e-audio` 接 rodio、网络同步、TAA/运动模糊、编辑器 UI、`r3e-flow` 与内容管线（M3）、dedicated server / 多人联机、地形无缝 LOD 裂缝消除（只保证切换无空洞）。
+**M2 不做**（明确排除，避免范围蔓延）：`r3e-audio` 接 rodio、网络同步、TAA/运动模糊、编辑器 UI、`r3e-flow` 与内容管线（M3）、dedicated server / 多人联机、地形无缝 LOD 裂缝消除（只保证切换无空洞）、**真多边形 NavMesh 与严格漏斗**（`DD-1=A` 已拍板：导航形态固定为格级位图 + string-pulling，多边形化不在 M2 内）。
 
 > 已从「不做」中移出的三项（A02 拍板后改为要做）：`rapier` 转默认 feature → **D1=B 在 A03 做**；`r3e-terrain` 独立 crate → **D12=B 在 C01 建**；`dep_debt` 偿还 → **D13=B 在 A03b 做**。
 
@@ -276,5 +280,7 @@ A 阶段 +256 的构成（供核对，不能只写总数）：A03 双后端 **+2
 
 1. ~~老板拍板 `M2_DECISIONS.md` D1–D13~~ ✅ 已完成（2026-11-20，13 项全定，4 项非建议项）。
 2. ~~A02 落盘拍板结论 → 提交~~ ✅ 已完成（决策落盘 + 计划与预算重算 + `M2_PERF_PLAN.md` 落盘）。
-3. **下一张卡：A03 物理端口 trait 化**。开工前必读 D1 的 6 条落地约定（trait 落 core / builtin 保留 / `lib.rs` 净增 ≤0 / 双后端契约测试 / 判据卡双验 / 接受编译时间上涨）。
-4. A03 收口后直接进 **A03b**（端口化偿还，`dep_debt` 2 → 0），再 A04 拆域。
+3. ~~A 阶段 6 卡 / B 阶段 5 卡 / C 阶段 8 卡~~ ✅ 已完成（C07 收口 `eacf45c`，之后 H-01B 五提交至 `4ea213d`；C 末实测 tests **2338** / commands **406** / rpc **76** / `script_only` **330** / invariants **42** / domains **18**）。
+4. ~~老板拍板 `DD-1`~`DD-6`~~ ✅ 已完成（2026-11-24，**六项全选 A 档**），结论落 `M2_DECISIONS.md` D17–D19；计划与预算已按拍板重算——D 行 `rpc` `+2` → **`+7`**、全局目标 `85` → **`90`**、D 阶段 `tests +82` 构成已补入 §4。
+5. **下一张卡：D01 导航网格烘焙**。开工前必读：`M2_D_PLAN.md` §3.3（双后端一致性的真实含义：构造性一致 + 回归锁）、§10 的 `DD` 结论、`M2_DECISIONS.md` D4 / D5 与 D17–D19，以及 `CD-3` 里「`bake.rs::patch_height` 本轮不动」的到期约定——D01 须接 `physics` 查询并改吃 `TerrainPatch::sample_height`，同卡删掉 nav 私有 `patch_height`。
+6. D 阶段按 `M2_D_PLAN.md` §12 顺序串行 D01 → D06，每卡一提交，收口后进 `E01`。
