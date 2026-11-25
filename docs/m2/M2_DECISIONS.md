@@ -299,7 +299,7 @@ A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/
 | # | 事项 | 结论 | 理由（一句话） | 回写位置 |
 |---|---|---|---|---|
 | **D17** | 导航形态 + 双后端一致性 | **位图 `NavGrid` + string-pulling**（不做真多边形与严格漏斗）；双后端走**构造性一致 + 回归锁**，判据是 `product_hash` 与逐格高度**位相等** | 位图与 `product_hash` 位稳定相容，多边形化会让哈希随浮点漂移、`nav.backend.mismatch` 变成噪音；一致性由「唯一入口吃 `HeightField`」的构造保证，比「两套实现比容差」少一个永久维护面（`R7` 不在导航层复刻） | `M2_PLAN.md` §3.4 D01/D03、§7 `R7` 与「M2 不做」；本文 D17 |
-| **D18** | 导航产物载体与哈希算法 | **二进制 `.navmesh`**（magic + 头 JSON + 四段定长体部）；`product_hash` 作缓存键，逐字节可复现 | 16 万格约 **1.5 MB**，体积一眼可算、加载快；JSON 化 6–8 MB 且有浮点文本化精度争议，「文件哈希 = 缓存键」将不可用 | `M2_PLAN.md` §3.4 D04；本文 D18 |
+| **D18** | 导航产物载体与哈希算法 | **二进制 `.navmesh`**（`"R3NV"` 4 B 魔数 + `u16` 版本 + 定长二进制头 + `heights` / `class` / `region` 定长体部 + `u64` 位打包可走位图）；`product_hash` 作缓存键，逐字节可复现 | 16 万格约 **1.5 MB**，体积一眼可算、加载快；JSON 化 6–8 MB 且有浮点文本化精度争议，「文件哈希 = 缓存键」将不可用 | `M2_PLAN.md` §3.4 D04；本文 D18 |
 | **D19** | 命令面 / rpc 预算 + 不变量选题 + 回归形态 | 7 条 `nav.*` **全带 rpc**（D 行 `rpc +2` → **`+7`**，全局目标 `85` → **`90`**）；两条不变量取 **`nav.bake.empty`** + **`nav.backend.mismatch`**；D06 走 **headless + CLI 一键复现** | 全命令面可脚本化才能让 `D06` 的「CLI 一键复现」成立（档 C 会断在 `export`/`stats`）；两条不变量分别对应「产物不可信」与「后端污染」，互不重叠、反例廉价；R6 六卡不可省，headless 是唯一可进 CI 的形态 | `M2_PLAN.md` §2 / §3 / §4 / §3.4；`docs/AI_ROADMAP.md` §0.2；`docs/m2/README.md`；本文 D14 注记 + D19 |
 
 ### D17 导航形态与双后端一致性（`DD-1 = A` + `DD-2 = A`）
@@ -319,13 +319,39 @@ A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/
 
 ### D18 产物载体与哈希算法（`DD-3 = A`）
 
-**结论**：`.navmesh` 二进制格式 = `magic`（8 B）+ 头 JSON（含 `version` / `cells` / `cfg_digest` / `input_digest`）+ 四段定长体部（`heights` 4 B/格、`class` 1 B/格、`walkable` 1 bit/格、`region` 4 B/格）。`product_hash` = SplitMix64 两级摘要；`input_digest` / `cfg_digest` / `product_hash` 三者共同承担缓存命中校验。
+**结论**：`.navmesh` 二进制格式（`NAV_FORMAT = 1`，全部小端）= **`"R3NV"` 4 B 魔数 → `u16` 版本 → 定长二进制头 → 四段定长体部 → 可走位图**，逐字段如下：
+
+| # | 段 | 编码 | 字节数 |
+|---|---|---|---|
+| 1 | 魔数 `R3NV` | `[u8; 4]` | 4 |
+| 2 | 版本 | `u16` = `1` | 2 |
+| 3 | 维度 (`cols`, `rows`) | `u32` ×2 | 8 |
+| 4 | 原点 (`min_x`, `min_z`) | `f32` ×2 | 8 |
+| 5 | 格长 | `f32` | 4 |
+| 6 | `cfg_digest` / `input_digest` | `u64` ×2 | 16 |
+| 7 | 格数 `cells` | `u32`（须 = `cols*rows`） | 4 |
+| 8 | `heights` | `f32` / 格 | `4·cells` |
+| 9 | `class` | `u8` / 格（`CellClass::code`） | `cells` |
+| 10 | `region` | `u32` / 格 | `4·cells` |
+| 11 | 位图字数 | `u32`（须 = `⌈cells/64⌉`） | 4 |
+| 12 | `walkable` | `u64` / 字，1 bit/格，行主序 | `8·⌈cells/64⌉` |
+
+**头不是 JSON，是定长二进制**（字段与 JSON 头一一对应，信息量不减；`f32` 不走十进制文本往返，故 `product_hash` 位稳定不受解析器影响）。**`walkable` 在 `region` 之后**，且是 `u32` 字数 + `u64` 位打包，不是紧凑的 1 bit/格 字节流（语义仍是 1 bit/格）。
+
+**拒绝口径**：反序列化四类硬拒绝——① 外来魔数（`魔数不匹配：这不是导航产物文件`）；② 版本漂移（版本 ≠ `NAV_FORMAT`）；③ 截断（任一段不足即报「某某字段/数组被截断」）；④ 尾部多余字节（`pos != bytes.len()` → `字节流尾部有多余数据`）。另有三条自洽校验：`cells` 必须等于 `cols*rows`、位图字数必须等于 `⌈cells/64⌉`、`class` 码必须落在已知的 `CellClass` 编码内。以上一律返回 `NavError::ProductMismatch`，不 panic、不半懂读一半。
+
+**尾部校验是长度校验，不是校验和**：格式里没有 CRC / 汇总哈希字段，完整性由「长度严格自洽 + `product_hash`」共同表达；单字节篡改只要不破坏长度就不会被 `from_bytes` 发现（保护强度到 D04 落真文件 IO 时再定是否升级）。
+
+`product_hash` = SplitMix64 两级摘要（折叠 `NAV_FORMAT` + 两级摘要 + `dims`/`min`/`cell_size` + 全部 `heights`/`walkable`/`class`/`region`，只折内存值、不折序列化字节）；`input_digest` / `cfg_digest` / `product_hash` 三者共同承担缓存命中校验。
+
+> **订正记录（2026-11-25，按 A 档）**：D01 实施时本节原文写的是「`magic`（8 B）+ 头 JSON（`version` / `cells` / `cfg_digest` / `input_digest`）+ 四段定长体部（`heights` / `class` / `walkable` 1 bit/格 / `region`）」，与 `product.rs` 的实测布局有四处差异（魔数 4 B 而非 8 B、头是定长二进制而非 JSON、位图是 `u64` 字数组带前置长度、`region` 与 `walkable` 顺序互换）。老板拍 **A 档：订正本节文面，代码布局即准则**——`to_bytes` / `from_bytes` 一行未改，序列化字节断言一条未动。理由见 `M2_D_PLAN.md` §4.1 三.3：语义等价，且定长二进制头恰好保住了「`product_hash` 位稳定」这条 D18 自身的前提。
 
 **落地约束**：
 
-- D04 的 `nav.export` 出参为 `bytes` + `productHash`，`nav.import` 为 `loaded` + `productHash` + `cells`，`nav.hash` 为 `productHash` / `inputDigest` / `cfgDigest` / `cells`；格式与出参口径必须一致，避免「文件哈希」与「内存哈希」两套说法。
+- D04 的 `nav.export` 出参为 `bytes` + `productHash`，`nav.import` 为 `loaded` + `productHash` + `cells`，`nav.hash` 为 `productHash` / `inputDigest` / `cfgDigest` / `cells`；格式与出参口径必须一致，避免「文件哈希」与「内存哈希」两套说法。**D04 落盘一律以上表布局为准**，不要再回到「头 JSON」的旧字面。
 - `nav` 产物**不进** `state_hash`（沿用 `CD-6`：只有场景数据进场景哈希），`D4=A` 的「编辑期预烘焙 + 运行期只加载」由此第一次有真实载体。
-- 反序列化必须校验 magic / version / `cells` 与体部长度自洽，畸形文件返回明确错误码而非 panic。
+- 反序列化必须校验 magic / version / `cells` 与体部长度自洽，畸形文件返回明确错误码而非 panic（已落地，见上文拒绝口径）。
+- 改字段顺序或语义必须递增 `NAV_FORMAT`，老产物不得被误读；若 D04 需要抗截断的强校验，另升版本号并在本节补登，不许悄悄改语义。
 
 ### D19 命令面 / rpc 预算 + 不变量选题 + 回归形态（`DD-4 = A` + `DD-5 = A` + `DD-6 = A`）
 

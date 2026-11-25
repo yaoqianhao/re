@@ -261,17 +261,17 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 
 ## 4. D01 导航网格烘焙
 
-> **状态：已完成**（2026-11-25，本地提交未 push）。实测 `tests` 2338 → **2364**（`r3e-nav` 37 → **63**，**+26**，与 §11.1 预算一致），`verify` 11 步全绿；其余门禁全部持平——`commands` 406 / `rpc` 76 / `script_only` 330 / `domains` 18 / `invariants` 42 / `size_debt` 20 / `dep_debt` 0 / 回放金标 `385482eb033d2964` 未漂移。落地口径、容差与两处判据订正见 **§4.1**。
+> **状态：已完成**（2026-11-25，本地提交未 push；遗留收口同轮补齐）。实测 `tests` 2338 → **2370**（`r3e-nav` 37 → **69**，**+32**＝原预算 26 + 接缝夹具收口 6），`verify` 11 步全绿；其余门禁全部持平——`commands` 406 / `rpc` 76 / `script_only` 330 / `domains` 18 / `invariants` 42 / `size_debt` 20 / `dep_debt` 0 / 回放金标 `385482eb033d2964` 未漂移。落地口径、容差与两处判据订正见 **§4.1**；两项遗留（`D18` 文面、12 块接缝夹具）已在同卡内销项闭合，见 §4.1 三.3 / 四.1。
 
 - **目标**：一次烘焙产出**自描述**的 `NavProduct`——格高、可走位图、逐格分类、连通块、两级输入摘要与产物哈希；地形高度不再由 nav 自造。
 - **判据**（全部可自动断言）：
   1. 同一场景烘两次 → `product_hash` 相同（确定性）。
   2. 改动地形任一样本或任一 `NavConfig` 字段 → `input_digest` / `cfg_digest` 变化，`product_hash` 随之变化（摘要确实覆盖了输入）。
-  3. 45° 缓坡逐格 `class == Ramp`；50° 陡坡逐格 `class == Blocked`；0.3 m 台阶 `class == Step`、0.5 m 台阶 `Blocked`（默认 `step_height = 0.4`）。
+  3. 45° 缓坡逐格 `class == Ramp`；50° 陡坡逐格 `class == Blocked`；0.3 m 台阶 `class == Step`、0.5 m 台阶 `Blocked`（默认 `step_height = 0.4`）。**口径已订正，见 §4.1 三.1**：`Ramp` 统一为 `Slope`；陡坡与超高台阶不再记 `Blocked`（改由 `can_step` / 可走位图区分，`Blocked` 只留给障碍与地形外）。
   4. **双后端各烘一次 → `product_hash` 位相等**，且 `heights` 逐格位相等、`class` 逐格相等（`DD-2` 档 A）。
   5. 删除 `bake.rs::patch_height` 后，C01 的 20 点交叉断言 + 新增 32 点断言全绿（含块边界两侧各 16 点）。
-  6. 块边界处相邻格高差不产生「假台阶」：12 块拼接场景下，跨块接缝处 `Blocked` 格数为 0。
-- **涉及文件**：`bake.rs`、`grid.rs`、`lib.rs`、新增 `product.rs`、`tests/bake.rs`、`tests/product.rs`、`xtask/tests_baseline.json`。
+  6. 块边界处相邻格高差不产生「假台阶」：12 块拼接场景下，跨块接缝处 `Blocked` 格数为 0。**✅ 已落地**：`crates/r3e-nav/tests/seams.rs` 6 条（平地 / 缓坡 / 矮坎 / 超高台阶 / 逐格对账 / 确定性），见 §4.1 四.1。
+- **涉及文件**：`bake.rs`、`grid.rs`、`lib.rs`、新增 `product.rs`、`tests/bake.rs`、`tests/product.rs`、**新增 `tests/seams.rs`**、`xtask/tests_baseline.json`。
 - **依赖前置**：C07 完成（已满足，`4ea213d` 之后）；`core::TerrainPatch::sample_height` 可用（已满足）；`physics::{HeightField, Backend::set_heightfield}` 可用（C04 已满足）。
 - **风险与回退**：最大风险是「删私有插值 → 行为微变」导致 C 阶段既有断言红。处置：先加 32 点断言**证明新旧等价**（红则说明旧实现有 bug，按 R7「不糊」原则记录进卡备注），再删；仍不绿则 `git checkout -- .` 回滚本卡重来，不带红进 D02。
 
@@ -298,15 +298,24 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 **三、口径订正三处（前两条针对 §4 判据，第三条针对 `D18` 拍板结论，逐条照实记录）**
 
 1. **判据 3 的分类名与「陡坡 = `Blocked`」改了口径**。原判据写「45° 缓坡 `class == Ramp`；50° 陡坡 `class == Blocked`；0.3 m 台阶 `Step`、0.5 m 台阶 `Blocked`」。实施后 `CellClass` 取 `Flat / Slope / Step / Blocked`（`Ramp` 改名 `Slope`），并锁定 **`Blocked` ⟺ 「这一格站不住」**（`class_blocked_iff_not_walkable` 逐格断言等价，且 `Blocked` 格不许还能跨向四邻）。陡坡与超高台阶**不再**记 `Blocked`：它们站得住，只是那条边迈不过去，这件事由 `can_step` 与连通块表达（`too_steep_edge_does_not_mark_cell_blocked`：3 m 断崖两侧都是 `Flat`、`can_step` 为假、`regions == 2`；`curb_above_slope_limit_classifies_step`：0.6 m 坎记 `Step` 且跨得过去）。**这是对旧实现的修正**——旧实现把 `StepVerdict::TooSteep` 记成 `Blocked`，会让「站得住」出现两种互斥说法，报告里的分类直方图也从关卡体检指标退化成噪声。
-2. **判据 5 的「32 点等价」用更强的全格对账替代**。`nav_heights_match_terrain_sample_at_cell_centers` 对**每一格**（`dims` 全量）用 `TerrainPatch::sample_height` 在格心重采一次并比 `to_bits`，覆盖比原计划的 32 点（块边界两侧各 16 点）更全；但**多块拼接随附的专项夹具没有落地**，见四.1。
-3. **`.navmesh` 字节布局与 `D18` 的字面描述不一致（语义等价，布局不同）**。`D18` 写的是「`magic`（8 B）+ **头 JSON**（`version` / `cells` / `cfg_digest` / `input_digest`）+ 四段定长体部（`heights` / `class` / `walkable` 1 bit/格 / `region`）」，本卡实际落成「**`"R3NV"`（4 B）+ `u16` 版本 + 定长二进制头**（`dims` / `min` / `cell_size` / `cfg_digest` / `input_digest` / `cells`）+ 体部 `heights:f32` → `class:u8` → `region:u32` → `walkable`（`u32` 字数 + `u64` 位打包）」。四处差异：① magic 4 B 非 8 B；② **头不是 JSON 而是定长二进制**；③ 位图是 `u64` 字数组 + 前置长度，不是紧凑 1 bit/格的字节流（语义仍是 1 bit/格）；④ `region` 与 `walkable` 两段顺序互换。理由：`D18` 自己要求 `product_hash` 位稳定，而 JSON 头会把 `f32` 的十进制往返引入解析漂移风险，且多一个 serde 依赖；定长二进制头字段与 JSON 头一一对应，信息量不减。**这是偏离拍板字面、未偏离拍板意图的改动**，按 `R7`「不糊」先在卡里露出来，由老板在 D04 前定夺是「订正 `D18` 文面」还是「改回 `D18` 布局」（见四.2）。
+2. **判据 5 的「32 点等价」用更强的全格对账替代**。`nav_heights_match_terrain_sample_at_cell_centers` 对**每一格**（`dims` 全量）用 `TerrainPatch::sample_height` 在格心重采一次并比 `to_bits`，覆盖比原计划的 32 点（块边界两侧各 16 点）更全。**原先随附缺位的「多块拼接随附专项夹具」已于同轮补齐并销项，见四.1**。
+3. **`.navmesh` 字节布局与 `D18` 的原字面不同（语义等价，布局不同）——已拍板 A 档并销项（2026-11-25）**。`D18` 原写的是「`magic`（8 B）+ **头 JSON**（`version` / `cells` / `cfg_digest` / `input_digest`）+ 四段定长体部（`heights` / `class` / `walkable` 1 bit/格 / `region`）」，本卡实际落成「**`"R3NV"`（4 B）+ `u16` 版本 + 定长二进制头**（`dims` / `min` / `cell_size` / `cfg_digest` / `input_digest` / `cells`）+ 体部 `heights:f32` → `class:u8` → `region:u32` → `walkable`（`u32` 字数 + `u64` 位打包）」。四处差异：① magic 4 B 非 8 B；② **头不是 JSON 而是定长二进制**；③ 位图是 `u64` 字数组 + 前置长度，不是紧凑 1 bit/格的字节流（语义仍是 1 bit/格）；④ `region` 与 `walkable` 两段顺序互换。理由：`D18` 自己要求 `product_hash` 位稳定，而 JSON 头会把 `f32` 的十进制往返引入解析漂移风险，且多一个 serde 依赖；定长二进制头字段与 JSON 头一一对应，信息量不减。
+
+   **裁决（老板，2026-11-25）：选 A 档——订正 `D18` 文面，代码布局即准则**。`to_bytes` / `from_bytes` 一行未改，`NAV_FORMAT` 仍为 `1`，序列化 6 条测试的字节断言一条未动。`docs/m2/M2_DECISIONS.md` D18 已改写为逐字段布局表（12 段 + 四类硬拒绝 + 三条自洽校验 + 「尾部是长度校验非校验和」的明示），并在该节留下订正记录。**本节不再挂任何前置，D04 直接按新文面落盘**。
 
 **四、遗留项（不影响 D01 验收；D02 起要记账）**
 
-1. **「12 块拼接场景跨块接缝 `Blocked` 数 = 0」专项断言未落地**（原判据 6，以及 §11.1 里「块边界 4」那一组同属此列）。当前 nav 侧只验到「单块平地 / 极小范围补边诚实 / 断崖不误标」，没有多块拼接夹具。**对 D02 的影响**：A\* 的邻接与分类代价在接缝处没有回归锁，若接缝出现假台阶（根因在 `sample_height` 的块内/块外衔接，不是 nav 的分类逻辑），症状是「明明平地却绕路或判不可达」，会被 D05 的「路径长度 ≤ 直线 1.6 倍」先撞出来，而那时已经难定位到是多块接缝。**建议**：D02 同提交补一条 `12 块拼接 + 接缝 Blocked = 0`（夹具可复用 C05 的 `terrain.gen`，块数 12 与 `M2_C_PLAN` §9 一致），不要等 D05。
-2. **`.navmesh` 文件层读写与错误码落位留给 D04**。本卡只保证 `to_bytes` / `from_bytes` 的字节流自洽，**没有任何文件 IO**，也没有新错误码——`nav.backend.mismatch` / `NAV_NOT_BAKED` 的落盘路径与触发点在 D04 重新定，届时 `NavProduct` 的版本号（当前 `NAV_FORMAT = 1`）与尾部校验要不要升级成带校验和的形态，一起拍。**外加一条硬前置**：`D18` 的字面布局（8 B magic + 头 JSON + `walkable` 排在 `region` 之前）与本卡实测布局不一致（见三.3），D04 落 `nav.export` / `nav.import` 之前必须先拍「订正 `D18` 文面」（推荐，只改文档）还是「改回 `D18` 布局」（重排 `to_bytes` / `from_bytes` 并同步 6 条序列化测试的字节断言）。**未拍之前不要把 `.navmesh` 对外称为「稳定格式」**，也不要在 E 阶段文档里引用具体字节偏移。
+1. **「12 块拼接场景跨块接缝 `Blocked` 数 = 0」专项断言 —— ✅ 已闭合（2026-11-25，同卡收口提交）**。（原判据 6，以及 §11.1 里「块边界 4」那一组同属此列。）
+   - **落点**：新增 `crates/r3e-nav/tests/seams.rs`（606 行，**6 条**），**未动 `grid.rs`**（688 行原样，不顶穿 800 行债务线），只用公开面 `Nav::bake_with` / `NavGrid::{dims, cell_center, ground, class_of, is_walkable_cell, can_step, region_at, region_count}` / `CellClass`。
+   - **夹具形态**：12 块 = **4 列 × 3 行**，每块 4 m × 4 m、`resolution = [9, 9]`、格长 0.5 m（每块 8 格），块间**零间隙**（后块左边界 = 前块右边界），高度按「块局部坐标」给函数，避免整块常数地形在块边界上出现第二种解释。四类接缝：连续平地（高差 0）/ 连续缓坡（沿 +X 每米 0.25 m，跨块全局线性）/ 矮坎（每块抬 0.3 m，配 `max_slope_deg = 10°` + `step_height = 0.5`，让「矮坎」与「缓坡」在判据上真正可区分）/ 超高坎（每块抬 1.5 m）。
+   - **可核对计数（非空断言）**：跨块接缝邻边**动态算得并钉死 136 条**（竖接缝 `(4-1) × 24` + 横接缝 `(3-1) × 32`，外扩 padding 圈不计）；矮坎场景沿 +X 的**内侧接缝边逐条核对 69 条**（`3 × 23`），并断言「跳过数 = 外沿边数」，不许悄悄少核；逐格对账场景遍历 **4 种接缝 × 每张全网格**（`checked == cols * rows`，明令禁止抽样）。
+   - **断言内容**：接缝两侧格 `Blocked = 0`（`blocked_cells` 去重集合为空）+ 接缝每条边双向 `can_step` 为真（计数等于接缝边数）+ 两侧 `CellClass` 与**独立复算的 `step_verdict` 同口径**（坡度上限 `cell_size·tan(max_slope)`、步高、`FLAT_EPS = 1e-3`、比较余量 `1e-5`，测试内各写一遍，容差被改动即红）+ 缓坡接缝不得退化成 `Step`（沿坡高差 = 块内步进 0.125 m，横坡高差 = 0）+ 矮坎低侧 `Step` / 高侧 `Flat` + 平地与可跨坎 `regions == 1`、超高坎 `regions == 4` + 同场景烘两次 `product_hash` 逐位相同且接缝边数/可跨数/Blocked 数三次量一致（确定性）。
+   - **夹具不是空壳（变异已验证）**：对一块抬高 0.05 m、缓坡偏移 0.1 m、台阶偏移 0.05 m、块间距 +0.5 m 四种注入均使对应测试失败（`rc = 101`），证明接缝错位一出现就会红。
+   - **观察项（不改判据，登记备查）**：`grid.rs::classify` 只看 +X / +Z 正邻边且不看邻格可走性，故**地形最外沿那一格**的正邻落在地形外空白（高度 0）时会被记成 `Step`。这是「地形边界 vs 虚空」的断面，**不是块拼接问题**；本夹具逐格 class 的强断言只做在「两侧正邻均在地形内」的内侧接缝段上，外沿段仍断言 `Blocked = 0` 与可跨性。**未为此放宽任何判据**。若 D05/D06 需要在最外圈也做分类断言，应单独拍「边界格分类口径」，不要顺手改 `classify`。
+   - **接缝处未发现真实缺陷**：四类接缝全部按预期通过，`sample_height` 在块与块之间连续（缓坡跨块高差与块内步进一致到 1e-4，即 12 块拼出来是一块连续地形，没有拼缝台阶）。原担心的「假台阶来自 `sample_height` 块内/块外衔接」在零间隙拼接下不成立；**残留风险**是「块之间有间隙或重叠」（本夹具是零间隙紧贴，未覆盖），该情形属于编辑器侧的摆位校验，留给 D03 场景编排放行校验，不在 nav 判据内。
+2. **`.navmesh` 文件层读写与错误码落位留给 D04**。本卡只保证 `to_bytes` / `from_bytes` 的字节流自洽，**没有任何文件 IO**，也没有新错误码——`nav.backend.mismatch` / `NAV_NOT_BAKED` 的落盘路径与触发点在 D04 重新定，届时 `NavProduct` 的版本号（当前 `NAV_FORMAT = 1`）与尾部校验要不要升级成带校验和的形态，一起拍。~~**外加一条硬前置**：`D18` 字面布局与本卡实测不一致，D04 落 `nav.export` / `nav.import` 之前必须先拍方向。~~ **该硬前置已销项（2026-11-25，老板拍 A 档）**：`D18` 文面已订正为实测布局（见 `M2_DECISIONS.md` D18 逐字段表），代码侧零改动（`to_bytes` / `from_bytes` 与 6 条字节断言原样）。**因此 `.navmesh` 自本条起可按「`NAV_FORMAT = 1` 稳定格式」对外表述，D04 可直接落盘，不必等新裁决**；仍保留一条纪律：只要改字段顺序/语义就必须递增 `NAV_FORMAT`，不许拿旧版本号装新布局。
 3. **命令面零增量**：本卡没加 `nav.*` 命令，`commands` 406 / `rpc` 76 / `domains` 18 / `invariants` 42 / `script_only` 330 全部持平，`docs/capabilities.json` 未变；`rpc` 的 `+7` 预算整块留给 D04。
-4. **记账已复位**：`xtask/tests_baseline.json` 同卡更新为 `r3e-nav = 63` / 合计 `2364`（本卡之前是 37 / 2338）。`check-tests` 只判「低于基线即红」，复位到实测值后 D02 的增量从 63 / 2364 起算。
+4. **记账已复位**：`xtask/tests_baseline.json` 同卡更新为 `r3e-nav = 69` / 合计 `2370`（本卡之前是 37 / 2338；首轮收口后为 63 / 2364，接缝夹具补齐 +6 后复位到 69 / 2370）。`check-tests` 只判「低于基线即红」，复位到实测值后 D02 的增量从 69 / 2370 起算。
 
 **五、本卡文件清单（行数为落盘实测）**
 
@@ -314,6 +323,7 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 |---|---|---|---|
 | `crates/r3e-nav/src/product.rs` | 新增 | 534 | `NavProduct` / `CellClass` / `cfg_digest` / `input_digest` / `to_bytes` / `from_bytes` |
 | `crates/r3e-nav/tests/product.rs` | 新增 | 660 | 26 条（真值链 5 / 双后端 4 / 确定性与两级摘要 6 / 序列化 6 / 分类与位图同源 5） |
+| `crates/r3e-nav/tests/seams.rs` | 新增（收口补） | 606 | 6 条：12 块（4×3）拼接接缝 —— 平地 / 缓坡 / 矮坎 / 超高坎 / 逐格对账 / 确定性；不动 `grid.rs` |
 | `crates/r3e-nav/src/bake.rs` | 修改 | 419 | 删私有 `patch_height`，新增 `field_of` / `bake_with_field` / 后端取场路径 |
 | `crates/r3e-nav/src/grid.rs` | 修改 | 688 | 新增 `classify` / `class_of` / `class_at` / `class_histogram` / `step_verdict` |
 | `crates/r3e-nav/src/lib.rs` | 修改 | 503 | 新入口 `bake_with_field` / `bake_with_backend` 与 `product` / `product_hash` / `product_hex` 投影 |
@@ -358,7 +368,7 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
   5. `nav.export` → `nav.import` 往返后 `product_hash` 不变、逐格 `heights` 位相等（`.navmesh` 格式自洽）。
   6. `args.rs` 行数不变（783），CLI 走 `rpc nav.export --path ...` 可用。
 - **涉及文件**：`cmd_spec/meta.rs`、`runtime/src/nav_ops.rs`（新）、`editor-host/src/api/nav.rs`、`doc/src/validate/invariants.rs`、`capabilities.json`（生成）、`tests_baseline.json`。
-- **依赖前置**：D03。
+- **依赖前置**：D03。**`D18` 布局裁决已销项（2026-11-25，A 档）**：`.navmesh` 文面与实现已一致（`R3NV` 4 B + `u16` 版本 + 定长二进制头 + `heights`/`class`/`region` + `u64` 位打包 `walkable`，尾部粗粒度长度校验 + 四类硬拒绝），**D04 可直接按 `NAV_FORMAT = 1` 落 `nav.export` / `nav.import`，不需要任何新裁决**；纪律：改字段顺序或语义必须递增 `NAV_FORMAT`。
 - **风险与回退**：`nav.export/import` 涉及文件 IO，是**新增对外副作用面**——写盘路径必须来自调用方显式参数，禁止默认落到工程目录；若 io 权限模型在 headless 与编辑器不一致，则 `nav.export` 降级为「返回字节、由宿主落盘」，保持 nav 侧零 IO（回退档写进卡备注）。
 
 ## 8. D05 判据测试（D5 默认 + 可配置）
@@ -480,11 +490,11 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 | D04 | **+8** | 命令与清单 3（计数 / 无 `nav.*` 进 TX_ONLY / `NAV_NOT_BAKED`）、导出导入往返 3、两条不变量反例 2 |
 | D05 | **+10** | 默认 20 组 2、参数覆盖 3、非法配置 3、不可达反例 1、绕行 1 |
 | D06 | **+6** | 航点抵达 2、全程约束 2、双后端 1、CLI 复现 1 |
-| 合计 | **+82** | |
+| 合计 | **+88** | 原预算 +82；D01 收口补 6（12 块接缝夹具），故 D 阶段终值再抬高 6 |
 
-> **D01 实测（2026-11-25）**：**+26** 按预算落满，但构成与上表细目不同——实际为「真值链 5 / 双后端 4 / 确定性与两级摘要 6 / 序列化 6 / 分类与位图同源 5」。原细目里「地形真值 6（32 点等价…）」由**全格对账**替代（更强），「块边界 4」那组多块拼接夹具未落地、顺延到 D02（见 §4.1 四.1）。总数不变：`r3e-nav` 37 → **63**，全局 2338 → **2364**，D02 从这里起算。
+> **D01 实测（2026-11-25）**：**+32**（原预算 +26，收口补 6）——实际构成为「真值链 5 / 双后端 4 / 确定性与两级摘要 6 / 序列化 6 / 分类与位图同源 5 / **12 块拼接接缝 6**」。原细目里「地形真值 6（32 点等价…）」由**全格对账**替代（更强）；「块边界 4」那组多块拼接夹具首轮未落地，**已于同轮收口补齐 6 条销项**（`tests/seams.rs`，覆盖比「块边界 4」更宽：四类接缝 × 双向可跨 × 逐格口径对账 × 确定性，见 §4.1 四.1）。总数：`r3e-nav` 37 → **69**，全局 2338 → **2370**，**D02 从这里起算**。
 
-`tests` 落点：**2338 + 82 = 2420**。注意 `M2_PLAN §4` 的计划口径是 2330 + 82 = 2412，差 **8** 来自 C 阶段实超（C 预算 +108，实际 +180 中 nav 之外的部分已含在 2338 里）——按「预算为下限、只增不减」，2412 是下限不是目标值，D 阶段落 2420 属正常。
+`tests` 落点：**2338 + 88 = 2426**（原预算口径 +82 = 2420，D01 收口补 6 后抬到 2426）。注意 `M2_PLAN §4` 的计划口径是 2330 + 82 = 2412，差 **8** 来自 C 阶段实超（C 预算 +108，实际 +180 中 nav 之外的部分已含在 2338 里）——按「预算为下限、只增不减」，2412 是下限不是目标值，D 阶段落 2426 属正常。
 
 ### 11.2 其他门禁
 
@@ -522,12 +532,12 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 |---|---|---|
 | 1 | ~~老板拍板 `DD-1`～`DD-6`~~ ✅ 已完成（2026-11-24，六项**全选 A 档**） | 决策结论落 `M2_DECISIONS.md`（D17–D19） |
 | 2 | ~~回写计划与索引（§11.3 全表）~~ ✅ 已完成（单提交 `docs(m2): D 阶段拍板结论落盘…`，`doc_gate` 等文档类门禁绿） | 计划与索引数字自洽，`gen-capabilities --check` 通过 |
-| 3 | ~~**D01** 分类 + 摘要 + 双后端入口 + 删 `patch_height`~~ ✅ 已完成（2026-11-25 单提交，未 push） | `tests 2338 → 2364` 已达成（`r3e-nav` 37 → 63，+26 与预算一致）；`size_debt 20` / `dep_debt 0`；双后端 `product_hash` 位相等已留证（4 条）；落地口径五条、容差披露、三处口径订正与 3 条遗留项见 §4.1 |
-| 4 | **D02** 分类代价 + 失败码细分 + tie-break | `2364 → 2380`；`nav.path` 兼容性不破 |
-| 5 | **D03** 平滑 + `NavAgent` | `2380 → 2396`；不切角断言绿 |
-| 6 | **D04** 7 命令 + 2 不变量 + 清单重生成 | `2396 → 2404`；`commands 413 / rpc 83 / invariants 44`；`gen-capabilities --check` 通过 |
-| 7 | **D05** 1.6× 判据 + 可配置 | `2404 → 2414`；非法配置被拒 |
-| 8 | **D06** headless 跟随回归 | `2414 → 2420`；双后端 `state_hash` 同 |
+| 3 | ~~**D01** 分类 + 摘要 + 双后端入口 + 删 `patch_height`~~ ✅ 已完成（2026-11-25 单提交，未 push；遗留收口同轮补齐） | `tests 2338 → 2370` 已达成（`r3e-nav` 37 → 69，**+32**＝预算 26 + 接缝夹具收口 6）；`size_debt 20` / `dep_debt 0`；双后端 `product_hash` 位相等已留证（4 条）；落地口径五条、容差披露、三处口径订正；**两项遗留（`D18` 文面、12 块接缝夹具）均已销项闭合**，仅余 D04 文件层读写 1 条顺延 |
+| 4 | **D02** 分类代价 + 失败码细分 + tie-break | `2370 → 2386`；`nav.path` 兼容性不破 |
+| 5 | **D03** 平滑 + `NavAgent` | `2386 → 2402`；不切角断言绿 |
+| 6 | **D04** 7 命令 + 2 不变量 + 清单重生成 | `2402 → 2410`；`commands 413 / rpc 83 / invariants 44`；`gen-capabilities --check` 通过 |
+| 7 | **D05** 1.6× 判据 + 可配置 | `2410 → 2420`；非法配置被拒 |
+| 8 | **D06** headless 跟随回归 | `2420 → 2426`；双后端 `state_hash` 同 |
 | 9 | D 阶段收口 | `cargo xtask verify` 11 步全绿；`size_debt 20` / `dep_debt 0`；回放金标未漂；下一张卡改 `E01` |
 
 每卡仍是「一卡一提交」（`feat(m2-dXX): …`），`fmt`/`clippy` 修正在同提交内；判据先行（先写红再实现）。
