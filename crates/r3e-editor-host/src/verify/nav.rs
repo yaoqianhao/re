@@ -8,6 +8,13 @@
 //! 2. 所有出生点在同一块连通区域里吗（`nav.region_split`）；
 //! 3. 从出生点能走到要去的目标点吗（`nav.target_offmesh` / `nav.no_path`）。
 //!
+//! 另加两条**产物可信度**不变量（M2 · D04，`DD-5` 档 A）：
+//!
+//! 4. 烘出来的网格是不是一张空网格（`nav.bake.empty`）——`walkable == 0` 时
+//!    上限不是「场景走不通」，而是「这份产物根本不能用」，必须比可达性先报；
+//! 5. 这份网格是不是**当前后端**烘的（`nav.backend.mismatch`）——烘焙后端与校验
+//!    后端不是同一个时，几何判定与导航判定描述了两个世界，产物不可信。
+//!
 //! **不可用就说不清**：宿主没接导航槽位、导航没烘焙、或烘焙出来一个可走格都没有时，
 //! 本层一条结论都不下，只在 `unchecked` 里记原因。返回「全部通过」和「没法检查」
 //! 是两件事，混在一起会让门禁变成绿灯装饰。
@@ -25,6 +32,7 @@ const SNAP_RADIUS: f32 = 4.0;
 pub(super) fn check(
     scene: &Scene,
     nav: Option<&Nav>,
+    backend: Option<&str>,
     targets: &[(String, Vec3)],
     out: &mut Vec<Issue>,
     unchecked: &mut Vec<Unchecked>,
@@ -36,7 +44,23 @@ pub(super) fn check(
         ));
         return;
     };
+    // 产物可信度先于可达性：一份空网格 / 换了后端的网格，后面每一条结论都建立在不成立的
+    // 前提上，先报「产物不可信」再记「后续跳过」。
+    backend_mismatch(nav, backend, out);
     if nav.report().walkable == 0 {
+        out.push(
+            Issue::error(
+                "nav.bake.empty",
+                "nav".to_string(),
+                format!(
+                    "导航网格 {}×{} 格（格长 {:.2} 米）里没有一个可走格：这份烘焙产物不可用",
+                    nav.report().dims[0], nav.report().dims[1], nav.report().cell_size
+                ),
+            )
+            .with_hint(
+                "空网格多半来自盲目烘焙：先查那块地面有没有碰撞体、坡度是否超过上限、障碍是否铺满整片范围",
+            ),
+        );
         unchecked.push(Unchecked::new(
             Layer::Nav,
             "导航网格没有一个可走格：可达性类结论全部跳过（先查 bake 输入的碰撞体与坡度上限）",
@@ -65,6 +89,35 @@ pub(super) fn check(
             unreachable(nav, spawn, *from, name, *point, out);
         }
     }
+}
+
+/// 这份网格是不是当前后端烘的（`nav.backend.mismatch`，M2 · D04）。
+///
+/// 判据落地口径见 `docs/m2/M2_D_PLAN.md` §3.8：`Nav` 在 `nav.bake` 成功时被宿主贴上
+/// 当次物理后端名，这里拿它和**校验时**的后端名对账。名字对不上，说明这份产物出自
+/// 另一套采样实现——几何层说「这块地站得住」，导航层说的却是另一个世界的地面。
+///
+/// `backend = None`（宿主没跑物理层）或 `nav.backend() = None`（`nav.import` 读回的
+/// 产物、按场直接烘的产物）时**不下结论**：不知道来源不等于来源不一致，报红只会制造噪音。
+fn backend_mismatch(nav: &Nav, backend: Option<&str>, out: &mut Vec<Issue>) {
+    let (Some(baked), Some(current)) = (nav.backend(), backend) else {
+        return;
+    };
+    if baked == current {
+        return;
+    }
+    out.push(
+        Issue::error(
+            "nav.backend.mismatch",
+            "nav".to_string(),
+            format!(
+                "这份导航网格由 `{baked}` 后端烘焙，当前校验用的是 `{current}` 后端：两侧的高度采样与形状判定不是同一套实现，逐格分类与可走性都不可比"
+            ),
+        )
+        .with_hint(format!(
+            "换用 `{baked}` 后端重跑校验，或在本后端下重新 `nav.bake` 再验"
+        )),
+    );
 }
 
 /// 出生点清单：优先场景声明的出生点；一个都没有时退到默认出生点（运行时实际用的那个）。

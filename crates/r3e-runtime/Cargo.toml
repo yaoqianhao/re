@@ -20,6 +20,9 @@ r3e-render.workspace = true
 r3e-terrain.workspace = true
 r3e-physics.workspace = true
 r3e-script.workspace = true
+# M2·D04：`nav.*` 的 smooth / stats / export / import 落在 runtime 的 `nav_ops`
+# （与 terrain_ops 同口径：结构化结果、不碰协议 JSON）。dep_rules 已放行本边。
+r3e-nav.workspace = true
 rhai.workspace = true
 serde_json.workspace = true
 winit.workspace = true

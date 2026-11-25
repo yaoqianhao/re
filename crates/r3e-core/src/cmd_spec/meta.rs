@@ -357,6 +357,50 @@ pub(super) static ALL: &[CommandSpec] = &[
         since: "M1-S4-D",
     },
     CommandSpec {
+        name: "nav.export",
+        rpc: Some("nav.export"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 写 `.navmesh` 落盘：字节数随格数线性涨，且是真磁盘副作用。
+        reversible: true,
+        cost: Cost::Heavy,
+        since: "M2-D04",
+    },
+    CommandSpec {
+        name: "nav.hash",
+        rpc: Some("nav.hash"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 只算三级指纹：逐格走一遍拿字节，不建路径、不写盘。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M2-D04",
+    },
+    CommandSpec {
+        name: "nav.import",
+        rpc: Some("nav.import"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 读 `.navmesh` 并换槽位：解析 + 校验尺寸，字节数随格数线性。
+        reversible: true,
+        cost: Cost::Heavy,
+        since: "M2-D04",
+    },
+    CommandSpec {
+        name: "nav.nearest",
+        rpc: Some("nav.nearest"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 半径内逐圈由近到远扫格，命中即停；最坏退化成全网格扫。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M2-D04",
+    },
+    CommandSpec {
         name: "nav.path",
         rpc: Some("nav.path"),
         domain: Domain::Meta,
@@ -368,6 +412,17 @@ pub(super) static ALL: &[CommandSpec] = &[
         since: "M1-S4-D",
     },
     CommandSpec {
+        name: "nav.probe",
+        rpc: Some("nav.probe"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 单点查格：一次定位 + 一次邻域取样，与网格规模无关。
+        reversible: true,
+        cost: Cost::Cheap,
+        since: "M2-D04",
+    },
+    CommandSpec {
         name: "nav.reachability",
         rpc: Some("nav.reachability"),
         domain: Domain::Meta,
@@ -377,6 +432,28 @@ pub(super) static ALL: &[CommandSpec] = &[
         // 先判连通块（常数级），断连时再找断点（一次邻域扫）。
         cost: Cost::Linear,
         since: "M1-S4-D",
+    },
+    CommandSpec {
+        name: "nav.smooth",
+        rpc: Some("nav.smooth"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 对折线做一次迭代剪枝，量级随点数线性。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M2-D04",
+    },
+    CommandSpec {
+        name: "nav.stats",
+        rpc: Some("nav.stats"),
+        domain: Domain::Meta,
+        params: &[],
+        returns: "Value",
+        // 一次遍历出直方图与指纹，不建路径。
+        reversible: true,
+        cost: Cost::Linear,
+        since: "M2-D04",
     },
     CommandSpec {
         name: "scene.material.list",

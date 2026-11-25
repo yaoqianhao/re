@@ -27,6 +27,8 @@ mod save_rpc_tests {
         }
     }
 
+    impl NavApi for SaveStub {}
+
     /// 什么都没实现的宿主：验证 trait 缺省实现拒绝 `scene.save`。
     struct BareStub;
 
@@ -35,6 +37,8 @@ mod save_rpc_tests {
             unimplemented!("本测试不查 info")
         }
     }
+
+    impl NavApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -139,6 +143,8 @@ mod scene_stack_rpc_tests {
         }
     }
 
+    impl NavApi for StackStub {}
+
     /// 什么都没实现的宿主：验证缺省实现一律拒绝。
     struct BareStub;
 
@@ -147,6 +153,8 @@ mod scene_stack_rpc_tests {
             unimplemented!("本测试不查 info")
         }
     }
+
+    impl NavApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -321,6 +329,8 @@ mod audio_spatial_rpc_tests {
         }
     }
 
+    impl NavApi for SpatialStub {}
+
     struct BareStub;
 
     impl EngineApi for BareStub {
@@ -328,6 +338,8 @@ mod audio_spatial_rpc_tests {
             unimplemented!("本测试不查 info")
         }
     }
+
+    impl NavApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -567,6 +579,8 @@ mod stats_capture_rpc_tests {
         }
     }
 
+    impl NavApi for FeedbackStub {}
+
     /// 什么都没实现的宿主：验证 trait 缺省实现拒绝这两个新方法。
     struct BareStub;
 
@@ -575,6 +589,8 @@ mod stats_capture_rpc_tests {
             unimplemented!("本测试不查 info")
         }
     }
+
+    impl NavApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {

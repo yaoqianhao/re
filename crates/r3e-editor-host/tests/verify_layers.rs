@@ -402,3 +402,84 @@ fn character_config_invalid_lands_on_static_layer() {
         "配置非法时几何不可信，不该连带报穿地"
     );
 }
+
+// -------------------------------------------------- 导航产物可信度（M2 · D04）
+
+/// 一张空网格：地形铺好、再压一块比它更大的碰撞体，可走格被吃到 0。
+///
+/// 不用「场景里什么都没有」来造空网格——那是「没烘」而不是「烘出来是空的」，
+/// 两者的处置完全不同（前者进 `unchecked`，后者必须报产物不可用）。
+fn empty_nav(scene: &mut Scene) -> Nav {
+    scene.terrain.push(flat("ground", [0.0, 0.0], [10.0, 10.0]));
+    spawn(
+        scene,
+        "slab",
+        [0.0, 1.0, 0.0],
+        1.0,
+        Some(phys("box", [8.0, 1.0, 8.0])),
+    );
+    scene.update_world_transforms();
+    // 半径再放大到 8 米：即便有缝隙也不该留下一格，确保夹具稳定复现空网格。
+    let cfg = r3e_nav::NavConfig {
+        agent_radius: 8.0,
+        ..Default::default()
+    };
+    Nav::bake_scene_with(scene, cfg).expect("场景应可烘焙（烘焙成功但产物为空）")
+}
+
+#[test]
+fn empty_bake_is_reported_as_unusable() {
+    let mut scene = Scene::new();
+    let nav = empty_nav(&mut scene);
+    assert_eq!(nav.report().walkable, 0, "夹具要的是一张空网格");
+
+    let report = VerifyReport::collect(&scene, &value_physics(), Some(&nav));
+    assert!(
+        has_code(&report, "nav.bake.empty"),
+        "没有一个可走格时，第一句必须是「这份产物不可用」"
+    );
+    let empty = find(&report, "nav.bake.empty").expect("应报空网格");
+    assert!(
+        empty.msg.contains("没有一个可走格"),
+        "文案要说清是可走格为 0：{}",
+        empty.msg
+    );
+    // 空网格上谈可达性是空话：后续结论必须转成「没检查」，不能当作通过。
+    assert!(
+        !has_code(&report, "nav.spawn_offmesh") && !has_code(&report, "nav.no_path"),
+        "空网格不该再逐点报可达性结论"
+    );
+    assert!(
+        report.unchecked().iter().any(|u| u.layer() == Layer::Nav),
+        "跳过可达性必须留下原因"
+    );
+}
+
+#[test]
+fn nav_from_another_backend_is_mismatch() {
+    let mut scene = Scene::new();
+    scene.terrain.push(flat("ground", [0.0, 0.0], [10.0, 10.0]));
+    spawn_at(&mut scene, "start", [2.5, 0.0, 2.5]);
+    scene.update_world_transforms();
+
+    let mut nav = Nav::bake_scene(&scene).expect("场景应可烘焙");
+    // 贴一个和校验后端不同的名字：这份网格出自另一套采样实现。
+    nav.attach_backend("rapier");
+
+    let report = VerifyReport::collect(&scene, &value_physics(), Some(&nav));
+    assert!(
+        has_code(&report, "nav.backend.mismatch"),
+        "烘焙后端与校验后端不同时必须报产物不可信"
+    );
+    let issue = find(&report, "nav.backend.mismatch").expect("应报后端不一致");
+    assert!(issue.msg.contains("rapier"), "文案要点名烘焙后端");
+    assert!(issue.msg.contains("builtin"), "文案要点名校验后端");
+
+    // 同一后端重贴一遍就不该再报——判据是名字是否相等，不是「有没有贴过名字」。
+    nav.attach_backend("builtin");
+    let same = VerifyReport::collect(&scene, &value_physics(), Some(&nav));
+    assert!(
+        !has_code(&same, "nav.backend.mismatch"),
+        "同一后端烘的网格不该被报不一致"
+    );
+}

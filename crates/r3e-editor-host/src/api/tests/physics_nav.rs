@@ -612,3 +612,73 @@ fn nav烘焙失败保留上一次网格() {
     })
     .expect("原有网格仍应可查");
 }
+
+/// `M2-D04` 新加的四条查询 + 三条文件命令：**没烘过时与老三条同一错误码**。
+///
+/// 七条逐条断言而不是抽样，是因为「看一眼数字」这类命令最容易被写成空对象兜底：
+/// `{"cells": 0}` 看起来像「烘过了但没格子」，前端就会去改本来就对的关卡。
+/// `nav.export` / `nav.import` 也在这里过一遍——它们的路径解析排在校验槽位之后，
+/// 若哪天有人把解析提前，没烘过时就会先报「路径非法」，把「先 bake」的指引挡掉。
+#[test]
+fn nav新命令在无槽位时同样报未烘焙() {
+    let (scene, physics, mut scripts) = fixture();
+    let mut api = api(&scene, &physics, &mut scripts);
+
+    let point = [0.0, 0.0, 0.0];
+    let file = NavFileTarget {
+        path: std::env::temp_dir()
+            .join("r3e-d04-not-baked.navmesh")
+            .display()
+            .to_string(),
+    };
+    let failures = [
+        (
+            "nav.stats",
+            api.nav_stats().expect_err("没烘过不该给出统计"),
+        ),
+        ("nav.hash", api.nav_hash().expect_err("没烘过不该给出指纹")),
+        (
+            "nav.probe",
+            api.nav_probe(NavPointQuery { point })
+                .expect_err("没烘过不该回答某点可走"),
+        ),
+        (
+            "nav.nearest",
+            api.nav_nearest(NavNearestQuery {
+                point,
+                radius: Some(2.0),
+                region: None,
+            })
+            .expect_err("没烘过不该吸出最近可走点"),
+        ),
+        (
+            "nav.smooth",
+            api.nav_smooth(NavSmoothQuery {
+                points: vec![[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            })
+            .expect_err("没烘过不该平滑折线"),
+        ),
+        (
+            "nav.export",
+            api.nav_export(file.clone())
+                .expect_err("没烘过没有可写产物"),
+        ),
+        (
+            "nav.import",
+            api.nav_import(file)
+                .expect_err("槽位不存在时不该先报文件错"),
+        ),
+    ];
+
+    for (name, failure) in failures {
+        assert_eq!(
+            failure.code, NAV_NOT_BAKED,
+            "{name} 的错误码不对：{failure:?}"
+        );
+        assert!(
+            failure.message.contains("nav.bake"),
+            "{name} 的消息要指出下一步：{}",
+            failure.message
+        );
+    }
+}

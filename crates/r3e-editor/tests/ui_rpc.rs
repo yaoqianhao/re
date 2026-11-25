@@ -5,7 +5,8 @@
 //! 单位串的解析（`"50%"` → 百分比）与容量上限在宿主侧（`r3e-app`）由单测覆盖。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, PhysicsInfo, Request, Response, UiPatch, INVALID_PARAMS,
+    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, Request, Response, UiPatch,
+    INVALID_PARAMS,
 };
 use serde_json::{json, Value};
 
@@ -53,6 +54,8 @@ impl EngineApi for Mock {
         Ok(json!({ "hover": "btn_start", "active": null, "events": [] }))
     }
 }
+
+impl NavApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {

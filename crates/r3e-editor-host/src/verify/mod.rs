@@ -138,6 +138,13 @@ impl VerifyReport {
         // 静态层先跑：它的近似条目是后面的底稿，精确层只需覆盖、无需重复遍历场景。
         let mut issues = validate_geometry(scene);
         let mut unchecked = Vec::new();
+        // 导航层的 `nav.backend.mismatch` 要对账「烘焙后端 vs 校验后端」，
+        // 所以后端名必须在这里取出来，和 `physics::check` 用的是同一份世界。
+        let backend_name = match &probe {
+            Some(PhysicsProbe::Bound(physics)) => Some(physics.backend_name().to_string()),
+            Some(PhysicsProbe::Unbound(physics, _)) => Some(physics.backend_name().to_string()),
+            None => None,
+        };
         match probe {
             Some(PhysicsProbe::Bound(physics)) => {
                 physics::check(scene, physics, &mut issues, &mut unchecked);
@@ -148,7 +155,14 @@ impl VerifyReport {
             None => {}
         }
         match nav {
-            NavProbe::Run(nav) => nav::check(scene, nav, targets, &mut issues, &mut unchecked),
+            NavProbe::Run(nav) => nav::check(
+                scene,
+                nav,
+                backend_name.as_deref(),
+                targets,
+                &mut issues,
+                &mut unchecked,
+            ),
             NavProbe::Skip(reason) => {
                 unchecked.push(Unchecked::new(Layer::Nav, reason));
             }

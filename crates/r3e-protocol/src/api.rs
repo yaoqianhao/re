@@ -1,7 +1,15 @@
 //! [`EngineApi`]：宿主（`r3e-app`）要实现的引擎操作集合。
 //!
-//! 68 个方法全部在**主线程**调用，实现方可以直接借用 `Scene` / `Physics` / 脚本宿主；
+//! 73 个方法（加 `NavApi` 的十条共 83）全部在**主线程**调用，实现方可以直接借用
+//! `Scene` / `Physics` / 脚本宿主；
 //! 缺省实现返回「未实现」，宿主可以只点亮当期需要的方法（`METHOD_NOT_FOUND`）。
+//!
+//! # 为什么导航那十条不在这个文件里
+//!
+//! [`NavApi`] 拆到了 [`nav`] 子模块：它们的回包契约注释最长（四种寻路结局、「没烘过」
+//! 的口径、文件路径不许隐式产生副作用），挤在这里会让本文件先被注释撞破 `lint-size`
+//! 的 800 行线。`EngineApi: NavApi` 继承之后**调用方零改动**——`api.nav_bake(..)`
+//! 仍然只在 `EngineApi` 上调用，宿主只多写一个 `impl NavApi`。
 
 use serde_json::Value;
 
@@ -11,7 +19,6 @@ use crate::character::{
 use crate::inspect::{MeshStatsQuery, SimulateQuery, SnapshotQuery, ValidateQuery};
 use crate::material::MaterialUpsert;
 use crate::msg::{EngineInfo, NodeBrief, RpcFailure};
-use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
 use crate::patch::*;
 use crate::probe::{CastQuery, OverlapQuery, RayQuery};
 use crate::query::QuerySpec;
@@ -21,11 +28,18 @@ use crate::terrain::{
 };
 use crate::verify::VerifyQuery;
 
+mod nav;
+
+pub use nav::NavApi;
+
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
 /// 全部方法都在**主线程**调用；实现方可以直接借用 `Scene` / `Physics` / 脚本宿主。
 /// 缺省实现返回「未实现」，这样宿主可以只点亮本期需要的方法。
-pub trait EngineApi {
+///
+/// 继承 [`NavApi`]：导航十条在 [`nav`] 子模块里定义，宿主在那里实现真逻辑，
+/// 其余实现方写一个空的 `impl NavApi for .. {}` 就沿用「未实现」缺省。
+pub trait EngineApi: NavApi {
     fn info(&mut self) -> EngineInfo;
 
     fn scene_list(
@@ -540,39 +554,6 @@ pub trait EngineApi {
     /// 「统计全是 0」会被读成「角色没动过」，而真相是「压根没接」。
     fn character_stats(&mut self) -> Result<Value, RpcFailure> {
         Err(RpcFailure::unsupported("character.stats"))
-    }
-
-    /// 烘焙导航网格（M1-S4-D）。产物挂在宿主侧，**不写场景**。
-    ///
-    /// 回包契约：`{ "baked": bool, "dims": [u32;2], "cellSize": f32, "cells": usize,
-    /// "walkable": usize, "walkableRatio": f32, "regions": u32,
-    /// "regionSizes": [u32...], "spawns": [{ "name": String, "region": u32 }...],
-    /// "unresolved": [String...], "floatingSpawns": [String...] }`。
-    ///
-    /// `unresolved` / `floatingSpawns` 非空必须如实带出：它们是「这份导航数据
-    /// 不可信」的直接证据，藏起来会让 AI 基于错网格报「路走不通」。
-    fn nav_bake(&mut self, _opts: NavBakeOptions) -> Result<Value, RpcFailure> {
-        Err(RpcFailure::unsupported("nav.bake"))
-    }
-
-    /// 寻路（M1-S4-D）：A* 求一条可走路径。
-    ///
-    /// 回包契约：`{ "found": bool, "outcome": String("found"|"unreachable"|
-    /// "invalidEndpoint"|"budgetExceeded"), "reason": String（人话）,
-    /// "points": [[f32;3]...], "count": usize }`。
-    ///
-    /// 四种结局都要如实区分：`unreachable`（分属不同连通块，几何上走不到）与
-    /// `budgetExceeded`（算不完，结论未知）对调用方是完全不同的两个下一步。
-    fn nav_path(&mut self, _q: NavPathQuery) -> Result<Value, RpcFailure> {
-        Err(RpcFailure::unsupported("nav.path"))
-    }
-
-    /// 可达性（M1-S4-D）：两点是否在同一连通块，断连时给断点。
-    ///
-    /// 回包契约：`{ "reachable": bool, "reason": String, "fromRegion": u32,
-    /// "toRegion": u32, "disconnectPoint": [f32;3]|null }`。
-    fn nav_reachability(&mut self, _q: NavReachQuery) -> Result<Value, RpcFailure> {
-        Err(RpcFailure::unsupported("nav.reachability"))
     }
 
     /// 列场景材质表（M1-S4-D）。

@@ -21,12 +21,13 @@
 //! | `msg.rs` | `Request` / `Response` / `RpcError` / `RpcFailure` / 元信息 DTO |
 //! | `client.rs` | 引擎 RPC 客户端（M1-S5：TCP + NDJSON 长连接、令牌注入、方法名校验） |
 //! | `patch.rs` | 14 个 `*Patch`（只给要改的字段，其余保持原值） |
-//! | `api.rs` | `trait EngineApi`（68 方法，全部在主线程调用） |
+//! | `api.rs` | `trait EngineApi`（73 方法，全部在主线程调用；`nav.*` 十条在 `api/nav.rs`） |
+//! | `api/nav.rs` | `trait NavApi`：`nav.*` 十条的协议面（M2-D04 拆出，`EngineApi` 继承） |
 //! | `dispatch/mod.rs` | 派发骨架 + 参数解码 + 元命令（`ping` / `engine.*` / `script.*` / `capture.*`） |
 //! | `dispatch/tx.rs` | `tx.*` 事务臂（M1-S1：begin / apply / preview / commit / rollback） |
 //! | `dispatch/scene.rs` | `scene.*` / `anim.*` 臂 |
 //! | `dispatch/physics.rs` | `physics.*` 查询臂（M1-S4-D：raycast / overlap / cast） |
-//! | `dispatch/nav.rs` | `nav.*` 臂（M1-S4-D：bake / path / reachability） |
+//! | `dispatch/nav.rs` | `nav.*` 臂（M1-S4-D 三条；M2-D04 补到十条） |
 //! | `dispatch/inspect.rs` | 只读检视臂 + 未知方法（M1-S1-D：snapshot / mesh.stats / validate / simulate） |
 //! | `dispatch/media.rs` | `ui.*` / `light.*` / `audio.*` 臂 |
 //! | `probe.rs` | `physics.*` 参数 DTO（形状收敛，不含引擎类型） |
@@ -54,7 +55,7 @@ pub use self::character::*;
 pub use self::client::*;
 pub use self::dispatch::{canonical_method, dispatch};
 pub use self::terrain::*;
-pub use api::EngineApi;
+pub use api::{EngineApi, NavApi};
 pub use inspect::*;
 pub use material::*;
 pub use msg::*;
@@ -68,12 +69,12 @@ pub const JSONRPC: &str = "2.0";
 /// 桥协议版本（方法表或字段语义不兼容地变更时 +1）。
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// 对外 RPC 能力方法表（68 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
+/// 对外 RPC 能力方法表（83 条，字典序），与 `r3e_core::cmd_spec` 中 `rpc = Some` 的条目一一对应。
 ///
 /// 为什么单独列出：`dispatch` 的 `match` 臂比它多 3 条——传输层心跳 `ping`（不计入能力），
 /// 以及两条历史别名 `enginestats` / `captureframe`（无点旧写法，仍接受但不再声明）。
 /// 能力清单（`docs/capabilities.json`）与 `cargo xtask gen-capabilities` 的硬断言都要
-/// 「68 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
+/// 「83 == 命令表 rpc 条目数 == 本表长度」，故必须有一条机器可读的权威列表，
 /// 而不是靠人肉数 `match` 臂。
 ///
 /// 增删方法的三步：改 `dispatch` 臂 → 改 `cmd_spec` → 改本表（`cargo xtask
@@ -131,6 +132,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// ——它只读不写、给的是派生几何统计，跟 `mesh.stats` / `scene.snapshot` 同一族，
 /// 若另开一个「地形渲染」域，域表就会为一张只读卡多开一栏。
 ///
+/// M2-D04 增 7 条（76 → 83）：导航运维面。`nav.smooth` / `nav.stats` / `nav.export` /
+/// `nav.import` / `nav.probe` / `nav.nearest` / `nav.hash` **七条全带 RPC**（`DD-4` 档 A），
+/// 全部挂 `Domain::Meta`——它们吃的是已烘好的 `Nav`，既不写场景也不新增域，与
+/// `nav.bake` 三条同族但把「体检 / 存取 / 吸附」从只在编辑器内部可用变成协议面可驱动。
+/// 同一批里 `nav.*` 的协议面搬到了 `api/nav.rs` 的子 trait，本表条目只是方法名清单，
+/// 契约注释不在这里。
+///
 /// 命名铁律：本表里的名字必须是 `dispatch::canonical_method()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
@@ -159,8 +167,15 @@ pub const RPC_METHODS: &[&str] = &[
     "light.setenabled",
     "mesh.stats",
     "nav.bake",
+    "nav.export",
+    "nav.hash",
+    "nav.import",
+    "nav.nearest",
     "nav.path",
+    "nav.probe",
     "nav.reachability",
+    "nav.smooth",
+    "nav.stats",
     "physics.bind",
     "physics.cast",
     "physics.overlap",

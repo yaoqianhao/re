@@ -265,6 +265,12 @@ pub struct Nav {
     report: NavReport,
     cfg_digest: u64,
     input_digest: u64,
+    /// 烘焙时经手的物理后端名（`M2·D04` 的 `nav.backend.mismatch` 靠它判定）。
+    ///
+    /// `None` 表示「这份网格不是任何后端烘出来的」：`nav.import` 读回的产物、
+    /// 以及直接按场烘焙的调用都属于这一类。**它不进 `product_hash`**——
+    /// D01 的判据是「换后端不改哈希」，把后端名折进指纹就等于把那条判据推翻。
+    backend: Option<String>,
 }
 
 impl Nav {
@@ -321,8 +327,11 @@ impl Nav {
         cfg: NavConfig,
         physics: &mut Physics,
     ) -> Result<Self, NavError> {
+        let name = physics.backend_name().to_string();
         let baked = bake::bake_via_backend(scene, cfg, physics)?;
-        Ok(Self::from_baked(scene, baked))
+        let mut nav = Self::from_baked(scene, baked);
+        nav.backend = Some(name);
+        Ok(nav)
     }
 
     fn from_baked(scene: &Scene, baked: bake::Baked) -> Self {
@@ -353,7 +362,21 @@ impl Nav {
             report,
             cfg_digest,
             input_digest,
+            backend: None,
         }
+    }
+
+    /// 烘焙时经手的物理后端名；`None` = 不来自任何后端（导入的产物、按场直接烘）。
+    pub fn backend(&self) -> Option<&str> {
+        self.backend.as_deref()
+    }
+
+    /// 记下这份网格是哪个后端烘的（`M2·D04`）。
+    ///
+    /// 由宿主在 `nav.bake` 成功后调用：宿主先按场景烘，再把当次物理后端名贴上来。
+    /// 贴名**不改网格、不改指纹**，只是给校验层一个对账依据。
+    pub fn attach_backend(&mut self, name: impl Into<String>) {
+        self.backend = Some(name.into());
     }
 
     /// 收敛后参数（[`NavConfig`]）的摘要。
@@ -379,6 +402,58 @@ impl Nav {
     /// 产物哈希的十六进制形式（16 位定长小写）。
     pub fn product_hex(&self) -> String {
         self.product().hash_hex()
+    }
+
+    /// 从一份产物快照重建导航数据（M2 · D04，`nav.import` 的唯一入口）。
+    ///
+    /// 语义是「用已经烘好的那一份」：格高、可走位、逐格分类、连通块**逐格照抄**，
+    /// 不重烘也不重判。两级摘要随快照带过来，于是导入后 [`Nav::product_hash`]
+    /// 与导出前逐位相同——这正是判据 5（`.navmesh` 格式自洽）要断言的事。
+    ///
+    /// 报告里只放「快照本身能算出来的」字段：`spawns` 为空表而不是按当前场景补一份，
+    /// 因为出生点是场景信息、不在产物里，编一份出来就是假数据；`unresolved` 同理。
+    /// 这两项在 import 之后要查，得回到场景侧（`nav.bake` 或场景校验）。
+    pub fn from_product(product: NavProduct) -> Result<Self, NavError> {
+        let dims = product.dims();
+        let cells = dims[0] as usize * dims[1] as usize;
+        let bad = |reason: String| NavError::ProductMismatch {
+            format: NAV_FORMAT,
+            reason,
+        };
+        if cells == 0 || dims[0] > NAV_MAX_SIDE || dims[1] > NAV_MAX_SIDE {
+            return Err(bad(format!("网格尺寸非法：{}×{}", dims[0], dims[1])));
+        }
+        // 只把格长搬进 cfg：坐标换算（`cell_of` / `cell_center`）读的是 `cfg.cell_size`，
+        // 它必须与产物里记录的格长一致，否则整张网格的「世界坐标 ↔ 格」会整体错位。
+        // 其余判据参数（坡度/步高）不参与查询，也不进 `product_hash`（那个只折网格内容
+        // 与两级摘要），所以这里不需要、也无法从产物反推它们。
+        let cfg = NavConfig::default().with_cell_size(product.cell_size());
+        let grid = NavGrid::restore(
+            cfg,
+            dims,
+            product.min(),
+            product.heights().to_vec(),
+            product.walkable_words().to_vec(),
+            product.classes().to_vec(),
+            product.regions().to_vec(),
+        );
+        let report = NavReport {
+            dims,
+            cell_size: product.cell_size(),
+            cells,
+            walkable: grid.walkable_count(),
+            regions: grid.region_count(),
+            region_sizes: grid.region_sizes().to_vec(),
+            spawns: Vec::new(),
+            unresolved: Vec::new(),
+        };
+        Ok(Self {
+            grid,
+            report,
+            cfg_digest: product.cfg_digest(),
+            input_digest: product.input_digest(),
+            backend: None,
+        })
     }
 
     pub fn grid(&self) -> &NavGrid {

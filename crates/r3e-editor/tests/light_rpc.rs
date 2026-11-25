@@ -8,8 +8,8 @@
 //! 由 `r3e-core` / `r3e-app` 的单测覆盖；本层不做、也不该做这些判断。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, LightPatch, PhysicsInfo, Request, Response, RpcFailure,
-    INVALID_PARAMS, METHOD_NOT_FOUND,
+    dispatch, EngineApi, EngineInfo, LightPatch, NavApi, PhysicsInfo, Request, Response,
+    RpcFailure, INVALID_PARAMS, METHOD_NOT_FOUND,
 };
 use serde_json::{json, Value};
 
@@ -71,6 +71,8 @@ impl EngineApi for Mock {
         Ok(json!({ "enabled": enabled.unwrap_or(true) }))
     }
 }
+
+impl NavApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {
@@ -322,6 +324,8 @@ fn unimplemented_light_methods_report_method_not_found() {
             Mock::default().info()
         }
     }
+
+    impl NavApi for Bare {}
     let mut api = Bare;
     let cases = [
         ("light.list", json!({})),

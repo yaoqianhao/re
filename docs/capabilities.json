@@ -4,11 +4,11 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 406,
-    "rpc": 76,
+    "commands": 413,
+    "rpc": 83,
     "script_only": 330,
     "domains": 18,
-    "invariants": 42
+    "invariants": 44
   },
   "domains": [
     "scene",
@@ -2276,6 +2276,46 @@
       "since": "M1-S4-D"
     },
     {
+      "name": "nav.export",
+      "domain": "meta",
+      "rpc": "nav.export",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M2-D04"
+    },
+    {
+      "name": "nav.hash",
+      "domain": "meta",
+      "rpc": "nav.hash",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-D04"
+    },
+    {
+      "name": "nav.import",
+      "domain": "meta",
+      "rpc": "nav.import",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "heavy",
+      "since": "M2-D04"
+    },
+    {
+      "name": "nav.nearest",
+      "domain": "meta",
+      "rpc": "nav.nearest",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-D04"
+    },
+    {
       "name": "nav.path",
       "domain": "meta",
       "rpc": "nav.path",
@@ -2286,6 +2326,16 @@
       "since": "M1-S4-D"
     },
     {
+      "name": "nav.probe",
+      "domain": "meta",
+      "rpc": "nav.probe",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M2-D04"
+    },
+    {
       "name": "nav.reachability",
       "domain": "meta",
       "rpc": "nav.reachability",
@@ -2294,6 +2344,26 @@
       "reversible": true,
       "cost": "linear",
       "since": "M1-S4-D"
+    },
+    {
+      "name": "nav.smooth",
+      "domain": "meta",
+      "rpc": "nav.smooth",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-D04"
+    },
+    {
+      "name": "nav.stats",
+      "domain": "meta",
+      "rpc": "nav.stats",
+      "params": [],
+      "returns": "Value",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-D04"
     },
     {
       "name": "occlusion_bias",
@@ -5109,6 +5179,16 @@
     {
       "code": "morph.weight.non_finite",
       "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "nav.backend.mismatch",
+      "layer": "nav",
+      "severity": "error"
+    },
+    {
+      "code": "nav.bake.empty",
+      "layer": "nav",
       "severity": "error"
     },
     {

@@ -34,11 +34,12 @@ use r3e_editor::{
     AnimLayerPatch, AudioSpatialPatch, CastQuery, CharacterBindQuery, CharacterNameQuery,
     CharacterStepQuery, CharacterTeleportQuery, EngineApi, EngineInfo, EnvironmentMapPatch,
     EnvironmentPatch, LightPatch, ListenerPatch, MaterialPatch, MaterialUpsert, MeshStatsQuery,
-    NavBakeOptions, NavPathQuery, NavReachQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch,
-    QuerySpec, RayQuery, RpcFailure, ShadowPatch, SimulateQuery, SnapshotQuery, SsaoPatch,
-    TerrainBlocksQuery, TerrainCreateQuery, TerrainGenQuery, TerrainMeshQuery, TerrainNameQuery,
-    TerrainResampleQuery, TerrainSampleQuery, TransformPatch, UiPatch, ValidateQuery, VerifyQuery,
-    PROTOCOL_VERSION, SERVER_BUSY,
+    NavApi, NavBakeOptions, NavFileTarget, NavNearestQuery, NavPathQuery, NavPointQuery,
+    NavReachQuery, NavSmoothQuery, NodeBrief, OverlapQuery, PhysicsInfo, PostFxPatch, QuerySpec,
+    RayQuery, RpcFailure, ShadowPatch, SimulateQuery, SnapshotQuery, SsaoPatch, TerrainBlocksQuery,
+    TerrainCreateQuery, TerrainGenQuery, TerrainMeshQuery, TerrainNameQuery, TerrainResampleQuery,
+    TerrainSampleQuery, TransformPatch, UiPatch, ValidateQuery, VerifyQuery, PROTOCOL_VERSION,
+    SERVER_BUSY,
 };
 use r3e_nav::Nav;
 use r3e_physics::Physics;
@@ -308,15 +309,6 @@ impl EngineApi for LocalEngineApi<'_> {
     fn physics_bind(&mut self) -> Result<Value, RpcFailure> {
         physics::physics_bind(self)
     }
-    fn nav_bake(&mut self, options: NavBakeOptions) -> Result<Value, RpcFailure> {
-        nav::nav_bake(self, options)
-    }
-    fn nav_path(&mut self, query: NavPathQuery) -> Result<Value, RpcFailure> {
-        nav::nav_path(self, query)
-    }
-    fn nav_reachability(&mut self, query: NavReachQuery) -> Result<Value, RpcFailure> {
-        nav::nav_reachability(self, query)
-    }
     fn material_list(&mut self) -> Result<Value, RpcFailure> {
         material::material_list(self)
     }
@@ -405,6 +397,46 @@ impl EngineApi for LocalEngineApi<'_> {
 
     fn terrain_mesh(&mut self, query: TerrainMeshQuery) -> Result<Value, RpcFailure> {
         terrain::terrain_mesh(self, query)
+    }
+}
+
+/// 导航十条（M1-S4-D 三条 + M2-D04 七条）。
+///
+/// 单独成块是为了和协议层对齐：`nav.*` 的契约注释与缺省实现在
+/// `r3e_protocol::api::nav` 里是子 trait（`EngineApi: NavApi`），本文件照同样的分层
+/// 摆放，不把十条塞回引擎 API 的实现块去把它撑长。方法体只有一句委托——
+/// 「协议翻译 + 状态哈希纪律」在本文件对应的 `api::nav` 子模块里，
+/// 「算一段 / 读写字节」在 `r3e-runtime::nav_ops` 里。
+impl NavApi for LocalEngineApi<'_> {
+    fn nav_bake(&mut self, options: NavBakeOptions) -> Result<Value, RpcFailure> {
+        nav::nav_bake(self, options)
+    }
+    fn nav_path(&mut self, query: NavPathQuery) -> Result<Value, RpcFailure> {
+        nav::nav_path(self, query)
+    }
+    fn nav_reachability(&mut self, query: NavReachQuery) -> Result<Value, RpcFailure> {
+        nav::nav_reachability(self, query)
+    }
+    fn nav_smooth(&mut self, query: NavSmoothQuery) -> Result<Value, RpcFailure> {
+        nav::nav_smooth(self, query)
+    }
+    fn nav_probe(&mut self, query: NavPointQuery) -> Result<Value, RpcFailure> {
+        nav::nav_probe(self, query)
+    }
+    fn nav_nearest(&mut self, query: NavNearestQuery) -> Result<Value, RpcFailure> {
+        nav::nav_nearest(self, query)
+    }
+    fn nav_stats(&mut self) -> Result<Value, RpcFailure> {
+        nav::nav_stats(self)
+    }
+    fn nav_hash(&mut self) -> Result<Value, RpcFailure> {
+        nav::nav_hash(self)
+    }
+    fn nav_export(&mut self, target: NavFileTarget) -> Result<Value, RpcFailure> {
+        nav::nav_export(self, target)
+    }
+    fn nav_import(&mut self, target: NavFileTarget) -> Result<Value, RpcFailure> {
+        nav::nav_import(self, target)
     }
 }
 

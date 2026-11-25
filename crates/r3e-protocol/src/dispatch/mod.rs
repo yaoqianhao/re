@@ -23,7 +23,10 @@ use serde_json::{json, Value};
 use crate::api::EngineApi;
 use crate::material::MaterialUpsert;
 use crate::msg::{Request, Response, RpcFailure};
-use crate::nav::{NavBakeOptions, NavPathQuery, NavReachQuery};
+use crate::nav::{
+    NavBakeOptions, NavFileTarget, NavNearestQuery, NavPathQuery, NavPointQuery, NavReachQuery,
+    NavSmoothQuery,
+};
 use crate::patch::*;
 use crate::probe::{CastQuery, CastShapeSpec, OverlapQuery, RayQuery};
 use crate::{INTERNAL_ERROR, METHOD_NOT_FOUND, PROTOCOL_VERSION};

@@ -75,6 +75,60 @@ impl NavGrid {
         }
     }
 
+    /// crate 内部恢复：从一份产物快照重建网格（M2 · D04，`nav.import` 的底座）。
+    ///
+    /// 与 [`NavGrid::new`] 的差别只有一处：可走位图 / 逐格分类 / 连通块**不重算**，
+    /// 直接吃快照里的位。`import` 的语义是「用已经烘好的那一份」——若在这里
+    /// 调 `flood_regions` + `classify`，读回来的网格会被「当前 cfg 的判据」重判一遍，
+    /// 于是「存盘再读回」会静默换一张网格，落盘文件也就不再是产物的真值。
+    ///
+    /// 长度自洽由 [`NavProduct::from_bytes`] 与本函数的 `debug_assert` 各守一道：
+    /// 解析层拒绝半懂不懂的字节，这里保证内存布局与 `dims` 对得上。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore(
+        cfg: NavConfig,
+        dims: [u32; 2],
+        min: [f32; 2],
+        heights: Vec<f32>,
+        walkable: Vec<u64>,
+        class: Vec<u8>,
+        region: Vec<u32>,
+    ) -> Self {
+        let cells = dims[0] as usize * dims[1] as usize;
+        debug_assert_eq!(heights.len(), cells, "高度样本数必须等于格数");
+        debug_assert_eq!(class.len(), cells, "分类数必须等于格数");
+        debug_assert_eq!(region.len(), cells, "连通块数必须等于格数");
+        debug_assert_eq!(
+            walkable.len(),
+            cells.div_ceil(64),
+            "位图字数必须是格数 / 64 上取整"
+        );
+        // 块内格数由连通块标注现算：它是标注的派生物，不单独存一份，
+        // 免得出现「标注改了、块大小没跟着改」的第二处真值。
+        let mut region_cells: Vec<u32> = Vec::new();
+        for &id in &region {
+            if id == 0 {
+                continue;
+            }
+            let idx = id as usize - 1;
+            if region_cells.len() <= idx {
+                region_cells.resize(idx + 1, 0);
+            }
+            region_cells[idx] += 1;
+        }
+        Self {
+            cfg,
+            dims,
+            min,
+            heights,
+            walkable,
+            region,
+            region_cells,
+            class,
+            unresolved: Vec::new(),
+        }
+    }
+
     pub fn config(&self) -> &NavConfig {
         &self.cfg
     }

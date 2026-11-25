@@ -479,6 +479,19 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 - **依赖前置**：D03。**`D18` 布局裁决已销项（2026-11-25，A 档）**：`.navmesh` 文面与实现已一致（`R3NV` 4 B + `u16` 版本 + 定长二进制头 + `heights`/`class`/`region` + `u64` 位打包 `walkable`，尾部粗粒度长度校验 + 四类硬拒绝），**D04 可直接按 `NAV_FORMAT = 1` 落 `nav.export` / `nav.import`，不需要任何新裁决**；纪律：改字段顺序或语义必须递增 `NAV_FORMAT`。
 - **风险与回退**：`nav.export/import` 涉及文件 IO，是**新增对外副作用面**——写盘路径必须来自调用方显式参数，禁止默认落到工程目录；若 io 权限模型在 headless 与编辑器不一致，则 `nav.export` 降级为「返回字节、由宿主落盘」，保持 nav 侧零 IO（回退档写进卡备注）。
 
+> **状态：已完成**（2026-11-25，本地提交未 push）。实测 `tests` 2402 → **2410**（`r3e-nav` 101 → **103**、`r3e-runtime` 70 → **73**、`r3e-editor-host` 146 → **149**，**+8**＝预算 8，全部新增、零删减），`verify` 11 步全绿；门禁 `commands` **413** / `rpc` **83** / `script_only` 330 / `domains` 18 / `invariants` **44**（三源 A/B/C 皆 44），`size_debt` **20 未动**、`dep_debt` **0**。
+>
+> **落地要点（判据 1–6 全绿）**：
+>
+> 1. **`api.rs` 顶穿后当场切分，未加白名单（`D-R4` 口径）**：`nav.*` 十条默认实现把 `r3e-protocol/src/api.rs` 顶到 894 行，超 `size_debt` 的 800 行阈值。处置是把 nav 段抽成**子 trait**——新建 `crates/r3e-protocol/src/api/nav.rs`（`pub trait NavApi`，十条 `nav.*` 默认实现＋文档，155 行），`api.rs` 只留 `mod nav; pub use nav::NavApi;` 并把 `EngineApi` 改成 `pub trait EngineApi: NavApi`，行数 **894 → 780**；`lib.rs` 补 `pub use`。**白名单一项未加**，`lint-size` 扫描 447 个 `.rs` 仍是 20 项债务、全部未上涨。
+> 2. **宿主侧拆两块，契约测试跟着改**：`r3e-editor-host/src/api/mod.rs`（445 行）把十条 `nav_*` 委托从 `impl EngineApi` 移到 `impl NavApi for LocalEngineApi`；`tests/cmd_spec_contract.rs` 改为**同时扫两个 impl 块**再合并方法表，否则「宿主方法都能在表里找到 rpc」会假红。宿主方法数 **76 → 83**，`cmd_spec/mod.rs` 的 `rpc == rpc_only + N` 由 `+36` 改 **`+43`**（83 RPC / 47 只 RPC）。协议层 11 个测试桩同步补 `impl NavApi for X {}` 空实现。
+> 3. **`nav.path` 失败 `reason` 透出（§5.1 遗留 1 销项）**：回包把 `outcome` 细分为 `found` / `unreachable` / `invalidEndpoint` / `budgetExceeded`，并附 `reason`（`PathOutcome::describe()` 的人话，`InvalidEndpoint` 三种子类文案已在 D02 冻结）；`found: false` 时 `points` 为空表、`count` 为 0——「走不到」与「算不完」不再合并成同一个 `false`。
+> 4. **`export` / `import` 的路径纪律**：`path` 必须由调用方显式给出，空串与纯空白判参数错，父目录不存在同样判参数错（**不自动建目录树**、不猜工程目录），失败后不留半个文件；`import` 只读不烘（`Nav::from_product`），往返后 `product_hash` 一字不差。`args.rs` 一行未改，CLI 走 `rpc nav.export --path ...`。
+> 5. **两条不变量 `nav.bake.empty` / `nav.backend.mismatch`**：三源（登记表 / 反例测试 / 能力清单）集合相等。反例分别钉「烘焙结果一格不可走 ⇒ `Error` 且文案说清可走格为 0」与「网格记录的后端名 ≠ 当前物理后端 ⇒ `Error` 且两侧后端各点名」；`nav.bake` 落槽位时 `attach_backend` 只贴名，**不改网格、不改产物哈希**（D01 判据 4 不受影响）。
+> 6. **`docs/capabilities.json` 重生成**：`EXPECTED_COMMANDS` 406 → **413**，生成器实测 `commands=413 / rpc=83 / script_only=330 / domains=18 / invariants=44`，`--check` 通过。
+>
+> **遗留（不影响本卡验收）**：`nav.*` 里 `probe` / `nearest` / `hash` 的边界参数校验仍只在 `r3e-nav` 侧覆盖，宿主回包层只钉了「无槽位统一 `NAV_NOT_BAKED`」，逐条参数错映射留待 D05 判据卡一并补。
+
 ## 8. D05 判据测试（D5 默认 + 可配置）
 
 - **目标**：把「≤ 1.6× 直线」做成脚本化判据，并让组数 / seed / 阈值可覆盖。
@@ -621,6 +634,8 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 | `size_debt` | 20 | **20** | 新增文件一律 ≤800；若某文件顶穿，须当场切分（同 C04 `port_impl` 826 → 768 的处理方式） |
 | crate 成员 | 18 | **18** | 不新建 crate（`R8` 红线） |
 
+> **D04 实测（2026-11-25）**：`commands` **413** / `rpc` **83** / `script_only` **330** / `domains` **18** / `invariants` **44** 与本表「D 末」列逐项一致；`size_debt` **20**（未新增）、`dep_debt` **0**、crate 成员 **18** 均未动。
+
 ### 11.3 `DD` 拍板后需回写的文档（2026-11-24 拍板提交中已一次性完成）
 
 | 文档 | 改动 | 状态 |
@@ -647,7 +662,7 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 | 3 | ~~**D01** 分类 + 摘要 + 双后端入口 + 删 `patch_height`~~ ✅ 已完成（2026-11-25 单提交，未 push；遗留收口同轮补齐） | `tests 2338 → 2370` 已达成（`r3e-nav` 37 → 69，**+32**＝预算 26 + 接缝夹具收口 6）；`size_debt 20` / `dep_debt 0`；双后端 `product_hash` 位相等已留证（4 条）；落地口径五条、容差披露、三处口径订正；**两项遗留（`D18` 文面、12 块接缝夹具）均已销项闭合**，仅余 D04 文件层读写 1 条顺延 |
 | 4 | ~~**D02** 分类代价 + 失败码细分 + tie-break~~ ✅ 已完成（2026-11-25 单提交，未 push） | `2370 → 2386` 已达成（`r3e-nav` 69 → 85，**+16**＝预算 16，零删减）；`nav.path` 兼容性不破（`InvalidEndpoint` 追加 `reason` 字段，枚举与既有文面未改）；判据 5 实测 142629 展开（上限 40 万）；**算法本体一行未重写**；`size_debt 20` / `dep_debt 0`；落地口径四条、三处实现坑、一处算术订正、三项遗留见 §5.1 |
 | 5 | ~~**D03** 平滑 + `NavAgent`~~ ✅ 已完成（2026-11-25 单提交，未 push） | `2386 → 2402` 已达成（`r3e-nav` 85 → 101，**+16**＝预算 16，零删减）；不切角断言绿（全程离障 ≥ `agent_radius − 1e-3`）、贴地 1 mm（判据 1 cm 收紧）、步数 75 / 上界 113；**视线剪枝 + 拐角内缩，未做漏斗**（`DD-1=A`）；`size_debt 20` / `dep_debt 0` / 金标 `385482eb033d2964` 未漂移；落地口径五条、口径披露三处、两处实现坑见 §6.1 |
-| 6 | **D04** 7 命令 + 2 不变量 + 清单重生成 | `2402 → 2410`；`commands 413 / rpc 83 / invariants 44`；`gen-capabilities --check` 通过 |
+| 6 | ~~**D04** 7 命令 + 2 不变量 + 清单重生成~~ ✅ 已完成（2026-11-25 单提交，未 push） | `2402 → 2410` 已达成（`r3e-nav` 101 → 103、`r3e-runtime` 70 → 73、`r3e-editor-host` 146 → 149，**+8**＝预算 8，零删减）；`commands 413 / rpc 83 / script_only 330 / domains 18 / invariants 44` 全部实测通过，`gen-capabilities --check` 绿；**`api.rs` 894 → 780 当场切分（子 trait `NavApi`），白名单一项未加**；`nav.path` 失败 `reason` 已透出；`size_debt 20` / `dep_debt 0` / 金标未漂；落地要点六条见 §7 状态块 |
 | 7 | **D05** 1.6× 判据 + 可配置 | `2410 → 2420`；非法配置被拒 |
 | 8 | **D06** headless 跟随回归 | `2420 → 2426`；双后端 `state_hash` 同 |
 | 9 | D 阶段收口 | `cargo xtask verify` 11 步全绿；`size_debt 20` / `dep_debt 0`；回放金标未漂；下一张卡改 `E01` |
@@ -689,8 +704,8 @@ Scene ──┬─ terrain patches ──► core::TerrainPatch::sample_height �
 
 ## 15. 速览
 
-- **6 卡**：D01 烘焙（分类 + 摘要 + 双后端）✅ 已完成 → D02 A\*（不重写，补代价/失败码/确定性）✅ 已完成 → **下一张：D03 平滑 + 代理** → D04 7 命令 + 2 不变量 → D05 1.6× 判据 → D06 headless 回归。
-- **门禁**：tests **2338 → 2420**（+82；D01 实收 +32 后口径抬到 2426，D02 已落 2386）、commands **406 → 413**、rpc **76 → 83**（`DD-4` 档 A）、invariants **42 → 44**、domains **18 不变**、`size_debt` **20 不变**、`dep_debt` **0**。
+- **6 卡**：D01 烘焙（分类 + 摘要 + 双后端）✅ 已完成 → D02 A\*（不重写，补代价/失败码/确定性）✅ 已完成 → D03 平滑 + 代理 ✅ 已完成 → D04 命令与能力登记 ✅ 已完成 → **下一张：D05 1.6× 判据 + 可配置** → D06 headless 回归。
+- **门禁**：tests **2338 → 2420**（+82；D01 实收 +32 后口径抬到 2426——实测落点 D02 2386 / D03 2402 / **D04 2410**）、commands **406 → 413**、rpc **76 → 83**（`DD-4` 档 A）、invariants **42 → 44**、domains **18 不变**、`size_debt` **20 不变**、`dep_debt` **0**。
 - **最大风险**：`DD-1` 选错形态（返工 5–8 人日）与 `DD-2` 口径被读成「两份实现」（`R7` 复现）。
 - **最大收获**：`D4=A` 的「编辑期预烘焙 + 运行期只加载」在 D 阶段才第一次有真实载体（`.navmesh` + 两级摘要 + 产物哈希），`H03` 的 NPC 追击直接吃这套产物。
 - **开工前必读**：本稿 §10 拍板结论（六项全 A）、§3.3（双后端口径）、`M2_DECISIONS.md` D4 / D5 与 D17–D19，以及 `CD-3` 里那条「`bake.rs::patch_height` 本轮不动」的到期约定。

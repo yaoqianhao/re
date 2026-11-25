@@ -11,6 +11,7 @@ pub mod app;
 mod asset_scene;
 pub mod capture;
 pub mod cli;
+pub mod nav_ops;
 mod physics_bind;
 mod physics_sync;
 pub mod port;

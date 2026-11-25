@@ -63,6 +63,8 @@ impl EngineApi for TxStub {
     }
 }
 
+impl NavApi for TxStub {}
+
 /// 什么都没实现的宿主：验证 trait 缺省实现拒答 `tx.*`。
 struct BareStub;
 
@@ -71,6 +73,8 @@ impl EngineApi for BareStub {
         unimplemented!("本测试不查 info")
     }
 }
+
+impl NavApi for BareStub {}
 
 fn request(method: &str, params: Value) -> Request {
     Request {

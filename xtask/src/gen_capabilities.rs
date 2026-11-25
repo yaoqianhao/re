@@ -40,7 +40,10 @@ use r3e_protocol::{PROTOCOL_VERSION, RPC_METHODS};
 /// M2-B01：392 → 398（`character.*` 六条纯 RPC + 六条脚本绑定，RPC 62 → 68）。
 /// M2-C06：398 → 406（`terrain.*` 八条，七条脚本可见 + `terrain.mesh` 挂 `Meta`，
 /// RPC 68 → 76，域数 17 → 18）。
-const EXPECTED_COMMANDS: usize = 406;
+/// M2-D04：406 → 413（`nav.smooth` / `nav.stats` / `nav.export` / `nav.import` /
+/// `nav.probe` / `nav.nearest` / `nav.hash` 七条**全部带 rpc**，`DD-4` 档 A；
+/// RPC 76 → 83，`script_only` 330 不变，域数 18 不变。
+const EXPECTED_COMMANDS: usize = 413;
 
 /// 能力域声明序（与 [`Domain`] 枚举序一致，也是清单 `domains` 数组的顺序）。
 const DOMAIN_ORDER: &[&str] = &[

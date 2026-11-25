@@ -224,6 +224,17 @@ pub const ISSUE_CODES: &[IssueCode] = &[
         layer: "nav",
         severity: Severity::Warn,
     },
+    // M2 · D04：产物可信度的两条（`DD-5` 档 A），比可达性先报。
+    IssueCode {
+        code: "nav.bake.empty",
+        layer: "nav",
+        severity: Severity::Error,
+    },
+    IssueCode {
+        code: "nav.backend.mismatch",
+        layer: "nav",
+        severity: Severity::Error,
+    },
     // --------------------------------------------------- character.rs（静态确定结论）
     IssueCode {
         code: "character.config.invalid",

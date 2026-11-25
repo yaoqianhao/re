@@ -7,7 +7,8 @@
 //! 任何类型，遮罩串与模式名在这里也只是字符串。
 
 use r3e_editor::{
-    dispatch, AnimLayerPatch, EngineApi, EngineInfo, PhysicsInfo, Request, Response, INVALID_PARAMS,
+    dispatch, AnimLayerPatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, Request, Response,
+    INVALID_PARAMS,
 };
 use serde_json::{json, Value};
 
@@ -58,6 +59,8 @@ impl EngineApi for Mock {
         Ok(json!({ "layer": { "instance": patch.instance, "layer": patch.layer } }))
     }
 }
+
+impl NavApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {
