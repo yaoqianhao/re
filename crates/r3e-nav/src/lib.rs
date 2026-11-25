@@ -48,6 +48,7 @@ mod bake;
 mod grid;
 mod path;
 mod product;
+mod scale;
 mod smooth;
 
 use glam::Vec3;
@@ -61,6 +62,10 @@ pub use path::{
     SLOPE_COST_REF_DEG, STEP_COST_PENALTY,
 };
 pub use product::{CellClass, NavProduct, NAV_FORMAT};
+pub use scale::{
+    measure, PathScale, ScaleCase, ScaleError, ScaleReport, ScaleSample, DEFAULT_SCALE_CASES,
+    DEFAULT_SCALE_LIMIT, DEFAULT_SCALE_SEED, SCALE_MIN_STRAIGHT_CELLS,
+};
 pub use smooth::{polyline_length, smooth_path, SmoothedPath, CORNER_INSET_MARGIN};
 
 /// 场景 → 高度场（真值链第一段）。想先看地形被采成什么样，从这里取。
