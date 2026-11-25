@@ -53,7 +53,10 @@ use r3e_core::{Scene, SpawnDecl};
 use r3e_physics::{HeightField, Physics};
 
 pub use grid::{NavGrid, NAV_MAX_CELLS, NAV_MAX_SIDE};
-pub use path::{Endpoint, PathOutcome, NAV_PATH_MAX_EXPANSIONS};
+pub use path::{
+    Endpoint, InvalidReason, PathOutcome, PathStats, NAV_PATH_MAX_EXPANSIONS, SLOPE_COST_GAIN,
+    SLOPE_COST_REF_DEG, STEP_COST_PENALTY,
+};
 pub use product::{CellClass, NavProduct, NAV_FORMAT};
 
 /// 场景 → 高度场（真值链第一段）。想先看地形被采成什么样，从这里取。
@@ -404,6 +407,14 @@ impl Nav {
 
     /// 求路径。端点在不可走处时先做一格吸附，仍不行则报 `InvalidEndpoint`。
     pub fn path(&self, from: Vec3, to: Vec3) -> PathOutcome {
+        path::find_path(&self.grid, from, to).0
+    }
+
+    /// 求路径并带回观测值（`M2·D02`）：展开节点数与分类代价加权的路径长度。
+    ///
+    /// 与 [`Nav::path`] 是**同一次**搜索，不是重算：需要同时判「到没到」和
+    /// 「算得多贵」时用它，避免跑两遍。失败时 `stats.cost` 为 `0.0`（不是零长度路径）。
+    pub fn path_with_stats(&self, from: Vec3, to: Vec3) -> (PathOutcome, PathStats) {
         path::find_path(&self.grid, from, to)
     }
 

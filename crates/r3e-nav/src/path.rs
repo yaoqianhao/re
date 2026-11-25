@@ -10,6 +10,20 @@
 //! * [`PathOutcome::BudgetExceeded`] —— 图太大没算完，**结论未知**，不是「走不到」。
 //!
 //! 把后两者混进「走不到」是最容易骗到自己的地方：那不是关卡问题，是工具没算完。
+//!
+//! ## M2·D02 的三处增量（算法本体不动）
+//!
+//! 1. **分类代价**：边的代价不再是纯几何距离，而是接 [`CellClass`] 加权——斜坡按
+//!    「这条边自身的高差角 / 45°」上浮，台阶加固定惩罚。于是「绕平路 3 m」与
+//!    「爬 15° 斜 2 m」之间，A\* 会自己选前者，不需要关卡作者手工打点。
+//! 2. **失败码细分**：`InvalidEndpoint` 拆出 [`InvalidReason`] 三子类。原来的单一
+//!    失败码把「调用方传了 NaN」「问的地方不在导航范围」「地方在范围内但站不住」
+//!    混成一件事，前端只能笼统说「端点非法」。
+//! 3. **可观测**：[`PathStats`] 交出本次的展开数与路径代价，`BudgetExceeded`
+//!    的结论也有了可核对的量；`(f, 格索引)` 双键定序保持不变（确定性是既有契约）。
+//!
+//! 代价加权**不破坏可采纳性**：所有分类系数都 ≥ 1，边权恒 ≥ 几何长度，octile
+//! 启发式仍是下界，A\* 的最优性与一致性照旧。
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -17,9 +31,19 @@ use std::collections::BinaryHeap;
 use glam::Vec3;
 
 use crate::grid::{NavGrid, NEIGHBORS8};
+use crate::product::CellClass;
 
 /// 单次 A* 的节点扩展上限。超出即返回 `BudgetExceeded`，不静默给半截结论。
 pub const NAV_PATH_MAX_EXPANSIONS: usize = 400_000;
+
+/// 斜坡代价的参考角（度）：`slope / 45°` 归一化到 `[0, 1]`（`M2_D_PLAN` §3.2 口径）。
+pub const SLOPE_COST_REF_DEG: f32 = 45.0;
+
+/// 斜坡代价的上浮系数：`cost × (1 + (slope/45°) · 0.5)`，即 45° 满坡贵一倍半。
+pub const SLOPE_COST_GAIN: f32 = 0.5;
+
+/// 跨一格台阶的固定惩罚（米）：让「有平路可绕」时不去无谓跨坎，但跨坎仍然划算。
+pub const STEP_COST_PENALTY: f32 = 0.15;
 
 /// 端点在哪一侧。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +61,56 @@ impl Endpoint {
     }
 }
 
+/// `InvalidEndpoint` 的可诊断子类（`M2·D02`）。
+///
+/// 三者对使用者的下一步动作完全不同，所以必须分开：
+///
+/// * [`InvalidReason::NonFinite`] —— 调用方 bug（传了 `NaN` / `Inf`），重试无用；
+/// * [`InvalidReason::OutOfBounds`] —— 问的地方压根不在导航范围里（换夹具或扩 `bounds`）；
+/// * [`InvalidReason::OffMesh`] —— 地方在范围内但站不住（摆件悬空 / 埋进几何）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidReason {
+    /// 坐标含 `NaN` / `Inf`：连大小都不可比。
+    NonFinite,
+    /// 落在网格包围盒外：没有格子可吸附。
+    OutOfBounds,
+    /// 在网格内但不在任何可走格上（吸附半径内也没有可走点）。
+    OffMesh,
+}
+
+impl InvalidReason {
+    /// 稳定标识（协议面 / 日志用）。**不要改字符串**——改了等于改协议。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NonFinite => "nonFinite",
+            Self::OutOfBounds => "outOfBounds",
+            Self::OffMesh => "offMesh",
+        }
+    }
+
+    /// 人话后半句，供 [`PathOutcome::describe`] 拼接（文案是契约）。
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::NonFinite => "坐标含 NaN/Inf",
+            Self::OutOfBounds => "落在网格范围外",
+            Self::OffMesh => "不在任何可走格上（吸附半径内无可走点）",
+        }
+    }
+}
+
+/// 一次寻路的观测值（`M2·D02`）：给 `nav.*` 回包与判据测试用的量。
+///
+/// `expanded` 只数**真正扩展过**的节点（堆里的陈旧副本不算），所以它能直接和
+/// [`NAV_PATH_MAX_EXPANSIONS`] 比；`cost` 是分类代价加权的路径长度，失败时记 `0.0`
+/// ——**不要**把失败时的 `0.0` 读成「路径长度为 0」。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PathStats {
+    /// 扩展过的节点数。
+    pub expanded: usize,
+    /// 分类代价加权的路径长度（米）；失败时为 `0.0`。
+    pub cost: f32,
+}
+
 /// 寻路结果。
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathOutcome {
@@ -44,8 +118,11 @@ pub enum PathOutcome {
     Found(Vec<Vec3>),
     /// 起终点分属不同连通块：几何上一定走不到。
     Unreachable { from_region: u32, to_region: u32 },
-    /// 端点吸附不到任何可走格。
-    InvalidEndpoint { which: Endpoint },
+    /// 端点站不住：`which` 说是哪一侧，`reason` 说为什么。
+    InvalidEndpoint {
+        which: Endpoint,
+        reason: InvalidReason,
+    },
     /// 扩展次数用尽，结论未知。
     BudgetExceeded { expanded: usize },
 }
@@ -55,7 +132,18 @@ impl PathOutcome {
         matches!(self, Self::Found(_))
     }
 
+    /// 失败原因子类；不是 `InvalidEndpoint` 时为 `None`。
+    pub fn invalid_reason(&self) -> Option<InvalidReason> {
+        match self {
+            Self::InvalidEndpoint { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
+
     /// 人话描述，供日志与场景校验报告直接引用。
+    ///
+    /// 「不可达：…」`InvalidEndpoint` 三种子类的文案在此**冻结**（`M2_D_PLAN` §3.5）：
+    /// 前缀恒为 `不可达：<from|to> 端点`，后半句由 [`InvalidReason::describe`] 给。
     pub fn describe(&self) -> String {
         match self {
             Self::Found(p) => format!("找到路径（{} 个路点）", p.len()),
@@ -63,8 +151,8 @@ impl PathOutcome {
                 from_region,
                 to_region,
             } => format!("不可达：起点在连通块 {from_region}，终点在 {to_region}"),
-            Self::InvalidEndpoint { which } => {
-                format!("不可达：{} 端点不在任何可走格上", which.as_str())
+            Self::InvalidEndpoint { which, reason } => {
+                format!("不可达：{} 端点{}", which.as_str(), reason.describe())
             }
             Self::BudgetExceeded { expanded } => {
                 format!("未算完：扩展 {expanded} 个节点后达到上限，结论未知")
@@ -73,68 +161,99 @@ impl PathOutcome {
     }
 }
 
-/// 从 `from` 走到 `to`。
+/// 从 `from` 走到 `to`，连同本次的观测值一起返回。
 ///
 /// 端点先做一次「最多一格」的吸附——实际使用中起点常见是角色当前站的位置，
-/// 略高于地面或压在两格交界上，硬判会莫名其妙地报 InvalidEndpoint。
-pub(crate) fn find_path(grid: &NavGrid, from: Vec3, to: Vec3) -> PathOutcome {
+/// 略高于地面或压在两格交界上，硬判会莫名其妙地报 InvalidEndpoint。吸附也失败时，
+/// 由 [`endpoint_reason`] 判明是「坐标坏」「范围外」还是「站不住」。
+pub(crate) fn find_path(grid: &NavGrid, from: Vec3, to: Vec3) -> (PathOutcome, PathStats) {
     let snap = grid.config().cell_size;
-    let start = match grid
-        .cell_of(from)
-        .filter(|&c| grid.is_walkable_cell(c[0], c[1]))
-    {
-        Some(c) => c,
-        None => match grid.nearest_walkable(from, snap, None) {
-            Some(p) => grid.cell_of(p).expect("nearest_walkable 必落在网格内"),
-            None => {
-                return PathOutcome::InvalidEndpoint {
-                    which: Endpoint::From,
-                }
-            }
-        },
+    let start = match snap_endpoint(grid, from, snap) {
+        Ok(c) => c,
+        Err(reason) => {
+            return failed(PathOutcome::InvalidEndpoint {
+                which: Endpoint::From,
+                reason,
+            })
+        }
     };
-    let goal = match grid
-        .cell_of(to)
-        .filter(|&c| grid.is_walkable_cell(c[0], c[1]))
-    {
-        Some(c) => c,
-        None => match grid.nearest_walkable(to, snap, None) {
-            Some(p) => grid.cell_of(p).expect("nearest_walkable 必落在网格内"),
-            None => {
-                return PathOutcome::InvalidEndpoint {
-                    which: Endpoint::To,
-                }
-            }
-        },
+    let goal = match snap_endpoint(grid, to, snap) {
+        Ok(c) => c,
+        Err(reason) => {
+            return failed(PathOutcome::InvalidEndpoint {
+                which: Endpoint::To,
+                reason,
+            })
+        }
     };
     astar(grid, start, goal, from, to)
 }
 
+/// 端点 → 可走格：先原位判，再一格内吸附。
+fn snap_endpoint(grid: &NavGrid, p: Vec3, snap: f32) -> Result<[u32; 2], InvalidReason> {
+    if let Some(c) = grid
+        .cell_of(p)
+        .filter(|&c| grid.is_walkable_cell(c[0], c[1]))
+    {
+        return Ok(c);
+    }
+    match grid.nearest_walkable(p, snap, None) {
+        Some(q) => Ok(grid.cell_of(q).expect("nearest_walkable 必落在网格内")),
+        None => Err(endpoint_reason(grid, p)),
+    }
+}
+
+/// 吸附失败后判子类。**顺序有意义**：坏坐标先于范围判定，否则 `NaN` 会被
+/// 说成「范围外」，把调用方 bug 伪装成夹具问题。
+fn endpoint_reason(grid: &NavGrid, p: Vec3) -> InvalidReason {
+    if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+        return InvalidReason::NonFinite;
+    }
+    match grid.cell_of(p) {
+        Some(_) => InvalidReason::OffMesh,
+        None => InvalidReason::OutOfBounds,
+    }
+}
+
+/// 失败时的一对返回值：`PathStats` 归零（不要读成「长度为 0 的路径」）。
+fn failed(outcome: PathOutcome) -> (PathOutcome, PathStats) {
+    (outcome, PathStats::default())
+}
+
 /// 格坐标之间的 A*；`from_world` / `to_world` 只用于把首尾点原样带回。
+///
+/// 边权来自 [`step_cost`]（分类代价），启发式仍是几何 octile —— 因为所有分类
+/// 系数都 ≥ 1，边权恒 ≥ 几何长度，启发式因此仍然是**可采纳且一致**的下界。
+/// 开放表按 `(f, 格索引)` 双键定序，f 相等时的 pop 顺序与格枚举顺序一致，
+/// 同一份数据重跑逐点相同（`M2·D02` 的确定性判据就钉在这里）。
 pub(crate) fn astar(
     grid: &NavGrid,
     start: [u32; 2],
     goal: [u32; 2],
     from_world: Vec3,
     to_world: Vec3,
-) -> PathOutcome {
+) -> (PathOutcome, PathStats) {
     let from_region = grid.region_at(start[0], start[1]);
     let to_region = grid.region_at(goal[0], goal[1]);
     if from_region == 0 {
-        return PathOutcome::InvalidEndpoint {
+        // 走到这里说明调用方给的格不可走（`find_path` 已滤过一遍）：
+        // 物理上「在范围内但站不住」，所以是 `OffMesh` 而不是范围外。
+        return failed(PathOutcome::InvalidEndpoint {
             which: Endpoint::From,
-        };
+            reason: InvalidReason::OffMesh,
+        });
     }
     if to_region == 0 {
-        return PathOutcome::InvalidEndpoint {
+        return failed(PathOutcome::InvalidEndpoint {
             which: Endpoint::To,
-        };
+            reason: InvalidReason::OffMesh,
+        });
     }
     if from_region != to_region {
-        return PathOutcome::Unreachable {
+        return failed(PathOutcome::Unreachable {
             from_region,
             to_region,
-        };
+        });
     }
 
     let dims = grid.dims();
@@ -142,7 +261,11 @@ pub(crate) fn astar(
     let si = grid.index(start[0], start[1]);
     let gi = grid.index(goal[0], goal[1]);
     if si == gi {
-        return PathOutcome::Found(vec![from_world, to_world]);
+        // 同格：0 次扩展、0 代价，路径就是「原地到原地」的两个端点。
+        return (
+            PathOutcome::Found(vec![from_world, to_world]),
+            PathStats::default(),
+        );
     }
 
     let mut g = vec![f32::INFINITY; total];
@@ -168,7 +291,13 @@ pub(crate) fn astar(
         }
         expanded += 1;
         if expanded > NAV_PATH_MAX_EXPANSIONS {
-            return PathOutcome::BudgetExceeded { expanded };
+            return (
+                PathOutcome::BudgetExceeded { expanded },
+                PathStats {
+                    expanded,
+                    cost: 0.0,
+                },
+            );
         }
         let ci = (cur % dims[0] as usize) as i32;
         let cj = (cur / dims[0] as usize) as i32;
@@ -190,11 +319,8 @@ pub(crate) fn astar(
             if !grid.can_step([ci as u32, cj as u32], next) {
                 continue;
             }
-            let step = if di != 0 && dj != 0 {
-                grid.config().cell_size * std::f32::consts::SQRT_2
-            } else {
-                grid.config().cell_size
-            };
+            // 分类代价：不再是无脑「几何长度」，斜坡/台阶在这里变贵。
+            let step = step_cost(grid, [ci as u32, cj as u32], next, di != 0 && dj != 0);
             let ng = g[cur] + step;
             let nidx = grid.index(next[0], next[1]);
             if ng + 1e-4 < g[nidx] {
@@ -209,10 +335,18 @@ pub(crate) fn astar(
     }
 
     if !found {
-        return PathOutcome::Unreachable {
-            from_region,
-            to_region,
-        };
+        // 同一连通块内却搜不到：正常几何下不该发生（连通块标注与 A* 同源），
+        // 真出现了就按「不可达」如实上报，同时把展开数交出去便于定位。
+        return (
+            PathOutcome::Unreachable {
+                from_region,
+                to_region,
+            },
+            PathStats {
+                expanded,
+                cost: 0.0,
+            },
+        );
     }
 
     // 反走 came 还原格序列（si → gi）。
@@ -228,10 +362,16 @@ pub(crate) fn astar(
         }
         let prev = came[cur];
         if prev == u32::MAX {
-            return PathOutcome::Unreachable {
-                from_region,
-                to_region,
-            };
+            return (
+                PathOutcome::Unreachable {
+                    from_region,
+                    to_region,
+                },
+                PathStats {
+                    expanded,
+                    cost: 0.0,
+                },
+            );
         }
         cur = prev as usize;
     }
@@ -248,7 +388,37 @@ pub(crate) fn astar(
         points.push(grid.cell_center(c[0], c[1]));
     }
     points.push(to_world);
-    PathOutcome::Found(points)
+    (
+        PathOutcome::Found(points),
+        PathStats {
+            expanded,
+            cost: g[gi],
+        },
+    )
+}
+
+/// 单步代价：几何长度 × 分类系数（`M2·D02`，口径见 `M2_D_PLAN` §3.2）。
+///
+/// * `Flat` / `Blocked` —— 原样（`Blocked` 已被 [`NavGrid::can_step`] 挡住，这里只求穷尽分支）；
+/// * `Slope` —— `1 + (这条边自身的高差角 / 45°) × 0.5`。**用边自身的高差**而不是整格
+///   最坏边，否则「平地里嵌一格坡」会把整片平路都算贵，A\* 反而去穿坡；
+/// * `Step` —— 加 [`STEP_COST_PENALTY`] 固定惩罚（米），避免「有平路却偏要跨坎」。
+fn step_cost(grid: &NavGrid, from: [u32; 2], to: [u32; 2], diagonal: bool) -> f32 {
+    let cell = grid.config().cell_size;
+    let base = if diagonal {
+        cell * std::f32::consts::SQRT_2
+    } else {
+        cell
+    };
+    match grid.class_of(to[0], to[1]) {
+        Some(CellClass::Slope) => {
+            let rise = (grid.ground(to[0], to[1]) - grid.ground(from[0], from[1])).abs();
+            let deg = (rise / base).atan().to_degrees();
+            base * (1.0 + (deg / SLOPE_COST_REF_DEG).clamp(0.0, 1.0) * SLOPE_COST_GAIN)
+        }
+        Some(CellClass::Step) => base + STEP_COST_PENALTY,
+        _ => base,
+    }
 }
 
 /// 视线拉直：能一步看通的中间格全丢掉，只留拐点。
