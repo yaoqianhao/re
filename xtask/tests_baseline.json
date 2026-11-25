@@ -7,7 +7,7 @@
     "r3e-script": 147,
     "r3e-editor": 72,
     "r3e-asset": 69,
-    "r3e-nav": 85,
+    "r3e-nav": 101,
     "r3e-terrain": 59,
     "r3e-character": 82,
     "r3e-editor-host": 146,
@@ -20,5 +20,5 @@
     "r3e-replay": 11,
     "r3e-cli": 75
   },
-  "total": 2386
+  "total": 2402
 }

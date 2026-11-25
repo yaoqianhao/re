@@ -456,7 +456,7 @@ fn pull_string(grid: &NavGrid, cells: Vec<[u32; 2]>) -> Vec<[u32; 2]> {
 }
 
 /// 世界空间线段是否整段可走：按半格步长采样，逐点判可走、逐段判可迈。
-fn segment_ok(grid: &NavGrid, a: Vec3, b: Vec3) -> bool {
+pub(crate) fn segment_ok(grid: &NavGrid, a: Vec3, b: Vec3) -> bool {
     let cell = grid.config().cell_size;
     let dist = a.distance(b);
     let steps = (dist / (cell * 0.5)).ceil().max(1.0) as usize;

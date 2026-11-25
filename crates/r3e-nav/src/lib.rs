@@ -43,21 +43,25 @@
 
 #![forbid(unsafe_code)]
 
+mod agent;
 mod bake;
 mod grid;
 mod path;
 mod product;
+mod smooth;
 
 use glam::Vec3;
 use r3e_core::{Scene, SpawnDecl};
 use r3e_physics::{HeightField, Physics};
 
+pub use agent::{AgentStep, NavAgent};
 pub use grid::{NavGrid, NAV_MAX_CELLS, NAV_MAX_SIDE};
 pub use path::{
     Endpoint, InvalidReason, PathOutcome, PathStats, NAV_PATH_MAX_EXPANSIONS, SLOPE_COST_GAIN,
     SLOPE_COST_REF_DEG, STEP_COST_PENALTY,
 };
 pub use product::{CellClass, NavProduct, NAV_FORMAT};
+pub use smooth::{polyline_length, smooth_path, SmoothedPath, CORNER_INSET_MARGIN};
 
 /// 场景 → 高度场（真值链第一段）。想先看地形被采成什么样，从这里取。
 pub use bake::field_of;
