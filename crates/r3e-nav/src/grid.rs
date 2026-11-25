@@ -17,6 +17,7 @@
 
 use glam::Vec3;
 
+use crate::product::{CellClass, NavProduct};
 use crate::NavConfig;
 
 /// 单轴格数上限：防止误传一个巨大的世界范围把内存吃光。
@@ -24,6 +25,13 @@ pub const NAV_MAX_SIDE: u32 = 2048;
 
 /// 总格数上限（400 万 ≈ 1 km² / 0.5 m）。
 pub const NAV_MAX_CELLS: u64 = 4_000_000;
+
+/// 判「格间高差可以忽略」的容差（米）：不到 1 mm 的两格在地形意义上就是平的。
+///
+/// 只用于 [`NavGrid::classify`] 区分 `flat` 与 `slope`，**不参与**可走判定——
+/// 可走与迈步用的是 [`step_verdict`] 的 `1e-5` 容差，两处容差混用会让
+/// 「分类说平、A* 说这是坡」重新分裂。
+const FLAT_EPS: f32 = 1e-3;
 
 /// 一份烘焙好的导航网格。
 ///
@@ -43,6 +51,8 @@ pub struct NavGrid {
     region: Vec<u32>,
     /// 每个连通块的格数，`region_cells[id - 1]`。
     region_cells: Vec<u32>,
+    /// 逐格分类（[`CellClass::code`]，M2 · D01）。烘焙末尾由 [`Self::classify`] 写入。
+    class: Vec<u8>,
     /// 烘焙时无法从几何判定的网格资产名（记进报告，不猜）。
     unresolved: Vec<String>,
 }
@@ -60,6 +70,7 @@ impl NavGrid {
             walkable: vec![0u64; cells.div_ceil(64)],
             region: vec![0u32; cells],
             region_cells: Vec::new(),
+            class: vec![CellClass::Blocked.code(); cells],
             unresolved: Vec::new(),
         }
     }
@@ -171,6 +182,105 @@ impl NavGrid {
     /// 可走格数量。
     pub fn walkable_count(&self) -> usize {
         self.walkable.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    // ---------- 逐格分类与产物（M2 · D01） ----------
+
+    /// 逐格分类：不可走的格记 `blocked`，可走的格按「最陡的相邻边」分成
+    /// `flat` / `slope` / `step`。
+    ///
+    /// 关键约束：坡度/台阶的判定**必须**走 [`step_verdict`]——与 [`Self::can_step`]
+    /// 同一个函数。各写一遍迟早会分叉，分叉的表现是「地图标着能走、A* 说迈不过去」，
+    /// 而这种 bug 只在特定斜坡角度上复现，最难查。
+    ///
+    /// 与位图的口径（**必须守住**，D01 的 `class_blocked_iff_not_walkable` 锁着）：
+    /// `blocked` 恰好等于「这一格站不住」，即 `class == Blocked ⟺ !is_walkable_cell`。
+    /// 于是「边太陡迈不过去」**不改变**这一格的分类——它站得住，只是那条边不通，
+    /// 这件事由 `can_step` / 连通块表达。若把陡边也记成 `blocked`，
+    /// 「站得住」就有两种互斥的说法，报告里的分类直方图也会从关卡体检指标退化成噪声。
+    ///
+    /// 只看 +X / +Z 两条正邻边：每条无向边只被数一次，且四邻已足够表达
+    /// 「这一格周围有没有坎/坡」（对角边受同一份高度约束，不会单独更坏）。
+    pub(crate) fn classify(&mut self) {
+        let dims = self.dims;
+        for j in 0..dims[1] {
+            for i in 0..dims[0] {
+                let idx = self.index(i, j);
+                if !self.is_walkable_cell(i, j) {
+                    self.class[idx] = CellClass::Blocked.code();
+                    continue;
+                }
+                let mut c = CellClass::Flat;
+                let consider = |next: [u32; 2], c: &mut CellClass| {
+                    let to = next[1] as usize * dims[0] as usize + next[0] as usize;
+                    let dh = (self.heights[idx] - self.heights[to]).abs();
+                    let grade = match step_verdict(&self.cfg, &self.heights, idx, to, false) {
+                        // 陡到迈不过去：不是「这一格站不住」，不进分类（见上文口径）。
+                        StepVerdict::TooSteep => return,
+                        // 靠坡度判据过：高差接近 0 的才是真平，否则记连续斜面。
+                        StepVerdict::SlopeOk => {
+                            if dh <= FLAT_EPS {
+                                CellClass::Flat
+                            } else {
+                                CellClass::Slope
+                            }
+                        }
+                        // 靠步高判据过：离散坎。
+                        StepVerdict::StepOk => CellClass::Step,
+                    };
+                    *c = c.worse(grade);
+                };
+                if i + 1 < dims[0] {
+                    consider([i + 1, j], &mut c);
+                }
+                if j + 1 < dims[1] {
+                    consider([i, j + 1], &mut c);
+                }
+                self.class[idx] = c.code();
+            }
+        }
+    }
+
+    /// 格分类。越界返回 `None`（不返回一个「看着像 blocked」的假值）。
+    pub fn class_of(&self, i: u32, j: u32) -> Option<CellClass> {
+        if i >= self.dims[0] || j >= self.dims[1] {
+            return None;
+        }
+        CellClass::from_code(self.class[self.index(i, j)])
+    }
+
+    /// 世界点所在格的分类。
+    pub fn class_at(&self, p: Vec3) -> Option<CellClass> {
+        self.cell_of(p).and_then(|[i, j]| self.class_of(i, j))
+    }
+
+    /// 每类格子的数量，下标 = [`CellClass::code`]。
+    pub fn class_histogram(&self) -> [usize; 4] {
+        let mut out = [0usize; 4];
+        for &c in &self.class {
+            out[c as usize] += 1;
+        }
+        out
+    }
+
+    /// 网格原点 `[min_x, min_z]`。
+    pub fn min(&self) -> [f32; 2] {
+        self.min
+    }
+
+    /// 把整张网格摊平成一份可哈希产物（M2 · D01）。两级摘要由烘焙层传进来。
+    pub(crate) fn product(&self, cfg_digest: u64, input_digest: u64) -> NavProduct {
+        NavProduct::new(
+            self.dims,
+            self.min,
+            self.cfg.cell_size,
+            self.heights.clone(),
+            self.walkable.clone(),
+            self.class.clone(),
+            self.region.clone(),
+            cfg_digest,
+            input_digest,
+        )
     }
 
     // ---------- 连通块 ----------
@@ -357,6 +467,22 @@ pub(crate) const NEIGHBORS8: [(i32, i32); 8] = [
     (-1, -1),
 ];
 
+/// 一步高差判定的三种结论（M2 · D01）。
+///
+/// 为什么要把「过了」拆成两种：`slope_ok` 与 `step_ok` 是**或**关系，
+/// 位图只记「过/不过」，但关卡体检需要知道这一格是「连续斜面」还是「离散台阶」——
+/// 前者能跑，后者要跳。分类信息就靠这个枚举带出来，
+/// 而判定本身仍只有 [`step_ok`] 一处实现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StepVerdict {
+    /// 落差在坡度上限内（连续斜面）。
+    SlopeOk,
+    /// 落差超过坡度上限，但在步高之内（台阶/路沿）。
+    StepOk,
+    /// 两条判据都不过。
+    TooSteep,
+}
+
 /// 迈步是否合法：高差 ≤ `step_height`，且不超过坡度上限（对角要按 1.414 倍格距算）。
 pub(crate) fn step_ok(
     cfg: &NavConfig,
@@ -365,9 +491,25 @@ pub(crate) fn step_ok(
     b: usize,
     diagonal: bool,
 ) -> bool {
+    step_verdict(cfg, heights, a, b, diagonal) != StepVerdict::TooSteep
+}
+
+/// [`step_ok`] 的判定体，额外告诉调用方「靠哪条判据过的」。
+///
+/// 两条判据取**或**，不是且：
+/// * 连续斜面靠坡度判（45° 斜面每格升 0.5 m，早就超了 0.4 m 的步高，
+///   若再要求「也必须小于 step_height」，任何像样的斜坡都会被判成悬崖）；
+/// * 离散台阶靠步高判（陡但只有 0.3 m 的坎，抬脚就能上）。
+pub(crate) fn step_verdict(
+    cfg: &NavConfig,
+    heights: &[f32],
+    a: usize,
+    b: usize,
+    diagonal: bool,
+) -> StepVerdict {
     let dh = (heights[a] - heights[b]).abs();
     if !dh.is_finite() {
-        return false;
+        return StepVerdict::TooSteep;
     }
     let dist = if diagonal {
         cfg.cell_size * std::f32::consts::SQRT_2
@@ -375,13 +517,13 @@ pub(crate) fn step_ok(
         cfg.cell_size
     };
     let slope_limit = dist * cfg.max_slope_deg.to_radians().tan();
-    // 两条判据取**或**，不是且：
-    // * 连续斜面靠坡度判（45° 斜面每格升 0.5 m，早就超了 0.4 m 的步高，
-    //   若再要求「也必须小于 step_height」，任何像样的斜坡都会被判成悬崖）；
-    // * 离散台阶靠步高判（陡但只有 0.3 m 的坎，抬脚就能上）。
-    let slope_ok = dh <= slope_limit + 1e-5;
-    let step_ok = dh <= cfg.step_height + 1e-5;
-    slope_ok || step_ok
+    if dh <= slope_limit + 1e-5 {
+        StepVerdict::SlopeOk
+    } else if dh <= cfg.step_height + 1e-5 {
+        StepVerdict::StepOk
+    } else {
+        StepVerdict::TooSteep
+    }
 }
 
 /// 两格之间的超覆盖（supercover）直线：走到的每一格都返回一次，含首尾。

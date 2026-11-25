@@ -46,12 +46,18 @@
 mod bake;
 mod grid;
 mod path;
+mod product;
 
 use glam::Vec3;
 use r3e_core::{Scene, SpawnDecl};
+use r3e_physics::{HeightField, Physics};
 
 pub use grid::{NavGrid, NAV_MAX_CELLS, NAV_MAX_SIDE};
 pub use path::{Endpoint, PathOutcome, NAV_PATH_MAX_EXPANSIONS};
+pub use product::{CellClass, NavProduct, NAV_FORMAT};
+
+/// 场景 → 高度场（真值链第一段）。想先看地形被采成什么样，从这里取。
+pub use bake::field_of;
 
 /// 烘焙参数。所有长度单位都是世界单位（米）。
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +150,12 @@ pub enum NavError {
     InvalidBounds { reason: String },
     /// 规模超限（格数或单轴格数），提示调用方放大 `cell_size` 或缩小范围。
     TooLarge { cells: u64, limit: u64 },
+    /// 高度场构造失败：范围非法、样本数与分辨率不符、或高度含非有限值。
+    FieldInvalid { reason: String },
+    /// 后端没有按「装上去的那份」还回来——换后端会改变烘焙输入，D01 的防线。
+    BackendMismatch { backend: String, reason: String },
+    /// 产物格式不兼容（魔数/版本/长度/编码），拒绝半懂不懂地读。
+    ProductMismatch { format: u16, reason: String },
 }
 
 impl std::fmt::Display for NavError {
@@ -154,6 +166,13 @@ impl std::fmt::Display for NavError {
                 f,
                 "导航烘焙规模超限：{cells} 格 > 上限 {limit}，请放大 cell_size 或缩小范围"
             ),
+            Self::FieldInvalid { reason } => write!(f, "导航高度场非法：{reason}"),
+            Self::BackendMismatch { backend, reason } => {
+                write!(f, "物理后端 {backend} 的高度场不一致：{reason}")
+            }
+            Self::ProductMismatch { format, reason } => {
+                write!(f, "导航产物格式 {format} 无法读取：{reason}")
+            }
         }
     }
 }
@@ -230,10 +249,15 @@ impl NavReport {
 }
 
 /// 烘焙好的导航数据 + 它的体检报告。
+///
+/// 除了网格本身，还带着**两级输入摘要**（[`Self::cfg_digest`] / [`Self::input_digest`]）：
+/// 产物哈希对不上时，先看是哪一级变了，就知道该怀疑参数还是场景内容。
 #[derive(Debug, Clone)]
 pub struct Nav {
     grid: NavGrid,
     report: NavReport,
+    cfg_digest: u64,
+    input_digest: u64,
 }
 
 impl Nav {
@@ -259,9 +283,47 @@ impl Nav {
         Self::bake_with(scene, cfg.sanitized())
     }
 
-    /// 用指定参数烘焙。
+    /// 用指定参数烘焙（内部先经 [`field_of`] 造场，再到 [`Self::bake_with_field`]）。
     pub fn bake_with(scene: &Scene, cfg: NavConfig) -> Result<Self, NavError> {
-        let grid = bake::bake(scene, cfg)?;
+        let baked = bake::bake(scene, cfg)?;
+        Ok(Self::from_baked(scene, baked))
+    }
+
+    /// 用一份**已经构造好的高度场**烘焙（M2 · D01 的唯一烘焙入口）。
+    ///
+    /// 「两后端各烘一次、产物逐位相同」靠的就是这个函数：后端只负责把场装上/取回，
+    /// 真正的烘焙只有这里一条路径。网格的范围与格长取自场本身，
+    /// `cfg` 只提供角色半径/步高/坡度等**判定参数**，不再管范围——
+    /// 否则「装进去的场」和「烘出来的网格」可以描述两个不同的世界。
+    pub fn bake_with_field(
+        scene: &Scene,
+        field: &HeightField,
+        cfg: NavConfig,
+    ) -> Result<Self, NavError> {
+        let baked = bake::bake_with_field(scene, field, cfg)?;
+        Ok(Self::from_baked(scene, baked))
+    }
+
+    /// 经物理后端烘焙：场景 → 高度场 → `set_heightfield` 装进 `physics` →
+    /// 取回（必须是装上去的那份）→ 烘焙。
+    ///
+    /// 后端没保留场时返回 [`NavError::BackendMismatch`] 而不是退回本地场：
+    /// 静默退回等于把「后端不一致」永久藏起来。
+    pub fn bake_with_backend(
+        scene: &Scene,
+        cfg: NavConfig,
+        physics: &mut Physics,
+    ) -> Result<Self, NavError> {
+        let baked = bake::bake_via_backend(scene, cfg, physics)?;
+        Ok(Self::from_baked(scene, baked))
+    }
+
+    fn from_baked(scene: &Scene, baked: bake::Baked) -> Self {
+        let bake::Baked {
+            grid,
+            cfg_digest,
+            input_digest,
+        } = baked;
         let report = NavReport {
             dims: grid.dims(),
             cell_size: grid.config().cell_size,
@@ -279,7 +341,37 @@ impl Nav {
                 .collect(),
             unresolved: grid.unresolved().to_vec(),
         };
-        Ok(Self { grid, report })
+        Self {
+            grid,
+            report,
+            cfg_digest,
+            input_digest,
+        }
+    }
+
+    /// 收敛后参数（[`NavConfig`]）的摘要。
+    pub fn cfg_digest(&self) -> u64 {
+        self.cfg_digest
+    }
+
+    /// 烘焙输入（地形样本 + 障碍盒 + 未解析资产）的摘要。
+    pub fn input_digest(&self) -> u64 {
+        self.input_digest
+    }
+
+    /// 把整张网格摊平成一份可序列化、可逐位比较的产物（M2 · D01）。
+    pub fn product(&self) -> NavProduct {
+        self.grid.product(self.cfg_digest, self.input_digest)
+    }
+
+    /// 产物哈希：同一份输入烘两次必须逐位相同；换后端不改哈希（构造保证）。
+    pub fn product_hash(&self) -> u64 {
+        self.product().product_hash()
+    }
+
+    /// 产物哈希的十六进制形式（16 位定长小写）。
+    pub fn product_hex(&self) -> String {
+        self.product().hash_hex()
     }
 
     pub fn grid(&self) -> &NavGrid {

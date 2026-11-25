@@ -1,12 +1,35 @@
 //! 烘焙：把场景几何压成一张「每个 XZ 格站不站得住」的位图。
 //!
-//! 三个来源，按优先级：
+//! ## 真值链（M2 · D01 起锁死）
 //!
-//! 1. **地形**（[`TerrainPatch`]）——提供每格的地面高度，双线性采样；
+//! ```text
+//! core::TerrainPatch::sample_height   ← 地形真值（唯一一份插值实现，在 r3e-core）
+//!        │  field_of()：逐格中心采样一次，装进规则网格
+//!        ▼
+//! physics::HeightField                ← 后端可装载/可查询的地形通道（C04）
+//!        │  bake_with_field()：**只读这份场**，按格索引直接取高度
+//!        ▼
+//! NavGrid.heights                     ← 导航网格的每格地面高度
+//! ```
+//!
+//! 这条链的每一段都是「派生」，没有第二套真相：
+//!
+//! * 本模块**不再自带双线性插值**（D01 删掉了旧的私有 `patch_height`）——
+//!   两份插值迟早分叉，表现是「物理说脚下 1.0 m，导航说 1.02 m」，
+//!   角色贴地时被反复弹起，而查错要跨两个 crate 对齐浮点次序；
+//! * 两个物理后端（builtin / rapier）只做 `set_heightfield` 装、`heightfield()` 取，
+//!   装取之间不动一个比特，所以「换后端」在烘焙里**不可观测**——
+//!   [`NavProduct::product_hash`](crate::NavProduct::product_hash) 逐位相等是**构造**保证的，
+//!   不是靠两段代码算出同样结果赌来的。
+//!
+//! ## 三个来源，按优先级
+//!
+//! 1. **地形**（[`TerrainPatch`](r3e_core::TerrainPatch)）——提供每格的地面高度；
 //! 2. **节点几何**（内置网格 + 显式 `physics.half_extents`）——提供阻挡体；
 //! 3. **无几何的资产网格**（glTF 等外部网格）——形状只能按 `scale * 0.5` 或
 //!    显式 `half_extents` 估，**估不准的绝不假装准**：这类资产名会进
-//!    [`NavReport::unresolved`]，让调用方知道「这份可达性结论里有多少是靠猜的」。
+//!    [`NavReport::unresolved`](crate::NavReport::unresolved)，
+//!    让调用方知道「这份可达性结论里有多少是靠猜的」。
 //!
 //! 阻挡判定用「格柱 × 障碍 AABB」：格柱是 `[格中心 ± cell/2] × [地面, 地面+agent_height]`，
 //! 障碍 AABB 先按角色半径 inflate——这样一次判定同时吃掉了「身体宽度」与
@@ -17,25 +40,94 @@
 
 use glam::Vec3;
 use r3e_core::{Aabb, BuiltinMesh, MeshRef, Node, Scene};
+use r3e_physics::{HeightField, Physics};
 
 use crate::grid::{NavGrid, NAV_MAX_CELLS, NAV_MAX_SIDE};
+use crate::product::{cfg_digest, input_digest};
 use crate::{NavConfig, NavError};
 
 /// 判定「贴地」的容差：障碍顶比地面高出不到 2 cm 就当它不挡路。
 const FLOOR_EPS: f32 = 0.02;
 
-/// 烘焙入口。
-pub(crate) fn bake(scene: &Scene, cfg: NavConfig) -> Result<NavGrid, NavError> {
-    let cfg = cfg.sanitized();
+/// 一次烘焙的内部产物：网格 + 两级输入摘要。
+///
+/// 摘要与网格同生同灭：分开算就有一半机会忘算，
+/// 而没有摘要的产物无法回答「两个哈希为什么不一样」。
+pub(crate) struct Baked {
+    pub grid: NavGrid,
+    pub cfg_digest: u64,
+    pub input_digest: u64,
+}
+
+/// 场景 → 高度场（真值链的第一段，**唯一**的地形采样点）。
+///
+/// 做法：把 [`HeightField`] 的采样点**对齐到导航格中心**，
+/// 于是在烘焙时「第 `(i, j)` 格的高度 = `field.heights()[j * cols + i]`」是一条恒等式，
+/// 不需要第二次插值——这不是省事，而是「只留一条真值链」的具体落法。
+///
+/// 场比网格多一行一列（[`HeightField::new`] 要求两个方向至少 2 个采样点），
+/// 多出来的那一圈落在烘焙范围外，不影响任何格。
+pub fn field_of(scene: &Scene, cfg: &NavConfig) -> Result<HeightField, NavError> {
+    let cfg = cfg.clone().sanitized();
     let mut unresolved: Vec<String> = Vec::new();
     let obstacles = collect_obstacles(scene, &cfg, &mut unresolved);
-
     let bounds = match cfg.bounds {
         Some(b) => b,
         None => auto_bounds(scene, &obstacles, &cfg),
     };
     let (min, dims) = plan(bounds, cfg.cell_size)?;
-    let cells = dims[0] as usize * dims[1] as usize;
+    let cells = dims[0] as u64 * dims[1] as u64;
+    if cells > NAV_MAX_CELLS {
+        return Err(NavError::TooLarge {
+            cells,
+            limit: NAV_MAX_CELLS,
+        });
+    }
+
+    // 场至少 2×2；不足的方向补到 2，多出的采样点落在范围外（不会被任何格读到）。
+    let cols = dims[0].max(2) as usize;
+    let rows = dims[1].max(2) as usize;
+    let cell = cfg.cell_size;
+    let x0 = min[0] + cell * 0.5;
+    let z0 = min[1] + cell * 0.5;
+    let mut heights = Vec::with_capacity(cols * rows);
+    for j in 0..rows {
+        for i in 0..cols {
+            let x = x0 + i as f32 * cell;
+            let z = z0 + j as f32 * cell;
+            // 无地形覆盖处按 y = 0 的默认地面填（M1 里绝大多数场景就是一块平地，
+            // 让它们免填 terrain 段）；「这一格到底有没有地面」另由
+            // `covered_by_terrain` 判，两者不能混：高度 0 不等于有地面。
+            heights.push(sample_terrain_opt(scene, x, z).unwrap_or(0.0));
+        }
+    }
+    HeightField::new(x0, z0, cell, cols, rows, heights).ok_or_else(|| NavError::FieldInvalid {
+        reason: format!("{cols}×{rows} 格、格长 {cell} m 的高度场构造失败（含非有限值或尺寸非法）"),
+    })
+}
+
+/// 唯一烘焙入口：吃一份高度场 + 场景（只为障碍与出生点），产出网格。
+///
+/// 两个后端走的是同一条路径（[`bake_via_backend`]），差别只在外层
+/// 「把场装进哪个后端」。因此「换后端产物是否一致」这个问题在这里**没有分支可走**。
+///
+/// 网格的范围与格长一律取自高度场：场是怎么装的，网格就怎么烘。
+/// 让 `cfg.bounds` 在这里还能覆盖场，等于允许「装进去的场」和「烘出来的网格」
+/// 描述两个不同的世界——那正是 D01 要根除的漂移源。
+pub(crate) fn bake_with_field(
+    scene: &Scene,
+    field: &HeightField,
+    cfg: NavConfig,
+) -> Result<Baked, NavError> {
+    let mut cfg = cfg.sanitized();
+    let cell = field.cell();
+    cfg.cell_size = cell;
+    let cols = field.cols();
+    let rows = field.rows();
+    let dims = [cols as u32, rows as u32];
+    // 场的 0 号采样点就在第 (0, 0) 格的中心。
+    let min = [field.origin().x - cell * 0.5, field.origin().z - cell * 0.5];
+    let cells = cols * rows;
     if cells as u64 > NAV_MAX_CELLS {
         return Err(NavError::TooLarge {
             cells: cells as u64,
@@ -43,37 +135,37 @@ pub(crate) fn bake(scene: &Scene, cfg: NavConfig) -> Result<NavGrid, NavError> {
         });
     }
 
-    // 高度场：逐格采样地形；无地形覆盖的格按 y = 0 的默认地面处理
-    // （M1 里绝大多数场景就是一块平地，让它们免填 terrain 段）。
-    //
-    // 初始可走性由「这一格有没有地面」决定：场景填了 `terrain` 时，地形范围之外
-    // 一律不可走——否则烘焙范围外扩出来的一圈空白会把被墙隔开的两半从外面又连起来，
-    // 让「墙到底有没有隔断」这种最基本的问题都判错。没填 `terrain` 的场景视为
-    // 一整块默认平地（否则一个只有物件的场景会变成「处处不可走」）。
+    let mut unresolved: Vec<String> = Vec::new();
+    let obstacles = collect_obstacles(scene, &cfg, &mut unresolved);
+
+    // 高度直接取场里的数（不重算），可走性由「这一格有没有地形覆盖」定：
+    // 场景填了 `terrain` 时，地形范围之外一律不可走——否则烘焙范围外扩出来的一圈
+    // 空白会把被墙隔开的两半从外面又连起来，让「墙到底有没有隔断」都判错。
     let has_terrain = !scene.terrain.is_empty();
-    let mut heights = vec![0.0f32; cells];
+    let mut heights = Vec::with_capacity(cells);
     let mut grounded = vec![true; cells];
-    for j in 0..dims[1] {
-        for i in 0..dims[0] {
-            let (x, z) = cell_center_xz(min, cfg.cell_size, i, j);
-            let idx = j as usize * dims[0] as usize + i as usize;
-            let sampled = sample_ground_opt(scene, x, z);
-            heights[idx] = sampled.unwrap_or(0.0);
-            grounded[idx] = !has_terrain || sampled.is_some();
+    for j in 0..rows {
+        for i in 0..cols {
+            let idx = j * cols + i;
+            heights.push(field.heights()[idx]);
+            grounded[idx] =
+                !has_terrain || covered_by_terrain(scene, field.world_x(i), field.world_z(j));
         }
     }
 
     let mut grid = NavGrid::new(cfg.clone(), dims, min, heights);
     for j in 0..dims[1] {
         for i in 0..dims[0] {
-            grid.set_walkable(i, j, grounded[j as usize * dims[0] as usize + i as usize]);
+            grid.set_walkable(i, j, grounded[j as usize * cols + i as usize]);
         }
     }
     for ob in &obstacles {
         stamp_obstacle(&mut grid, ob);
     }
     grid.flood_regions();
-    for name in unresolved {
+    // 分类必须排在「障碍投影 + 连通块」之后：它读的是最终可走位图。
+    grid.classify();
+    for name in unresolved.clone() {
         grid.note_unresolved(name);
     }
     log::debug!(
@@ -83,7 +175,41 @@ pub(crate) fn bake(scene: &Scene, cfg: NavConfig) -> Result<NavGrid, NavError> {
         grid.walkable_count(),
         grid.region_count()
     );
-    Ok(grid)
+    Ok(Baked {
+        grid,
+        cfg_digest: cfg_digest(&cfg),
+        input_digest: input_digest(scene, &obstacles, &unresolved),
+    })
+}
+
+/// 便捷路径：场景 → 场 → 网格（不经过任何后端）。
+pub(crate) fn bake(scene: &Scene, cfg: NavConfig) -> Result<Baked, NavError> {
+    let cfg = cfg.sanitized();
+    let field = field_of(scene, &cfg)?;
+    bake_with_field(scene, &field, cfg)
+}
+
+/// 后端路径：场景 → 场 → **装进后端再取回** → 网格。
+///
+/// 取回来的场必须存在：`set_heightfield` 只是「装」，装完立刻取不到
+/// 说明后端没实现这条通道（或把数据丢在了别处）。这时**报错而不是退回本地场**——
+/// 静默退回落本地场，就等于让「后端不一致」这件事永远不被发现。
+pub(crate) fn bake_via_backend(
+    scene: &Scene,
+    cfg: NavConfig,
+    physics: &mut Physics,
+) -> Result<Baked, NavError> {
+    let cfg = cfg.sanitized();
+    let field = field_of(scene, &cfg)?;
+    physics.set_heightfield(Some(field));
+    let loaded = physics
+        .heightfield()
+        .cloned()
+        .ok_or_else(|| NavError::BackendMismatch {
+            backend: physics.backend_name().to_string(),
+            reason: "后端没有保留 set_heightfield 装上的高度场".to_string(),
+        })?;
+    bake_with_field(scene, &loaded, cfg)
 }
 
 /// 由世界范围算出 `(min, dims)`，范围非法或超过单轴上限直接报错。
@@ -260,53 +386,34 @@ fn stamp_obstacle(grid: &mut NavGrid, ob: &Aabb) {
     }
 }
 
+/// 这一格有没有地形覆盖（与「高度是几」是两件事：默认平地高度 0 不代表有地形）。
+///
+/// 判定与 `TerrainPatch::sample_height` 的覆盖条件逐条对齐（尺寸为正 + `u/v ∈ [0,1]`），
+/// 只是不需要算高度，所以不走插值。
+pub(crate) fn covered_by_terrain(scene: &Scene, x: f32, z: f32) -> bool {
+    scene.terrain.iter().any(|p| {
+        let (w, d) = (p.size[0], p.size[1]);
+        if !(w > 0.0 && d > 0.0) || !x.is_finite() || !z.is_finite() {
+            return false;
+        }
+        let u = (x - p.origin[0]) / w;
+        let v = (z - p.origin[1]) / d;
+        (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)
+    })
+}
+
 /// 地面高度采样：所有覆盖该点的地形块取「最高的那一层」。
 ///
 /// 多块重叠时取最高而不是平均，是为了让「上层平台」压住「下层地面」——
 /// 角色站在哪一层由它自己的 Y 决定，烘焙时只认最高的可站面。
-fn sample_ground_opt(scene: &Scene, x: f32, z: f32) -> Option<f32> {
+///
+/// 插值本身**不在这里**：调用 `TerrainPatch::sample_height`（`r3e-core` 的唯一实现）。
+fn sample_terrain_opt(scene: &Scene, x: f32, z: f32) -> Option<f32> {
     let mut h: Option<f32> = None;
     for patch in &scene.terrain {
-        if let Some(y) = patch_height(patch, x, z) {
+        if let Some(y) = patch.sample_height(x, z) {
             h = Some(h.map_or(y, |cur: f32| cur.max(y)));
         }
     }
     h
-}
-
-/// 单个地形块上的双线性高度采样；点不在块内返回 `None`。
-fn patch_height(patch: &r3e_core::TerrainPatch, x: f32, z: f32) -> Option<f32> {
-    let (w, d) = (patch.size[0], patch.size[1]);
-    if w <= 0.0 || d <= 0.0 {
-        return None;
-    }
-    let u = (x - patch.origin[0]) / w;
-    let v = (z - patch.origin[1]) / d;
-    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
-        return None;
-    }
-    let [rx, ry] = patch.resolution;
-    if patch.heights.is_empty() || rx < 2 || ry < 2 {
-        // 平坦地形：`heights` 空数组就是「全 0」的合法表示。
-        return Some(0.0);
-    }
-    if patch.heights.len() != (rx * ry) as usize {
-        // 样本数与分辨率不符 → 数据已坏，按平坦处理而不是拿越界值硬算。
-        return Some(0.0);
-    }
-    let fx = u * (rx - 1) as f32;
-    let fz = v * (ry - 1) as f32;
-    let x0 = fx.floor() as u32;
-    let z0 = fz.floor() as u32;
-    let x1 = (x0 + 1).min(rx - 1);
-    let z1 = (z0 + 1).min(ry - 1);
-    let tx = fx - x0 as f32;
-    let tz = fz - z0 as f32;
-    let h00 = patch.height_at(x0, z0);
-    let h10 = patch.height_at(x1, z0);
-    let h01 = patch.height_at(x0, z1);
-    let h11 = patch.height_at(x1, z1);
-    let a = h00 + (h10 - h00) * tx;
-    let b = h01 + (h11 - h01) * tx;
-    Some(a + (b - a) * tz)
 }
