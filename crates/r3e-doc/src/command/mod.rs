@@ -28,6 +28,7 @@ mod scene;
 mod terrain;
 mod ui;
 
+use r3e_core::prefab::{ObjectOverride, PrefabTemplate};
 use r3e_core::{
     Camera, CharacterSpec, EnvironmentSettings, LocalLight, NodeId, ObjectDesc, PostFxSettings,
     Scene, SceneMaterialDecl, ScreenText, SurfaceMaterial, TerrainPatch, Transform, UiElement,
@@ -218,6 +219,31 @@ pub enum CommandKind {
         /// 新值。
         new: Option<CharacterSpec>,
     },
+    /// 登记 / 替换一个 Prefab 模板（M2-E03）。
+    ///
+    /// 只动**模板表**，不碰场景里的节点与实例：实例化是 `SpawnNode` 的活儿。
+    /// `old = None` 表示此前没有这个 ID（撤销即摘条目），`old = Some` 表示本次是
+    /// 同 ID 替换（撤销把旧模板写回）；两者都只靠前像，不依赖快照。
+    DefinePrefab {
+        /// 新模板（`id` 决定落到表里哪一格）。
+        next: PrefabTemplate,
+        /// 前像；`None` = 本次是新增。
+        old: Option<PrefabTemplate>,
+    },
+    /// 改某个 Prefab 实例相对模板的**整份**覆盖（M2-E03）。
+    ///
+    /// 粒度是整份覆盖而不是单字段：`ObjectOverride` 本身就是可序列化的值，
+    /// 单字段操作（set / clear）在工具层拼好整份再下发即可；撤销时把前像整份写回，
+    /// 天然可逆（判据⑫）。只改实例记录，不重算节点——覆盖落到节点上属运行态，
+    /// 由 E04 的宿主管线负责。
+    SetNodePrefabOverride {
+        /// 实例名（= 节点名）。
+        name: String,
+        /// 前像（整份覆盖）。
+        old: ObjectOverride,
+        /// 新值（整份覆盖）。
+        new: ObjectOverride,
+    },
 }
 
 impl CommandKind {
@@ -244,6 +270,8 @@ impl CommandKind {
             Self::RemoveMaterial { .. } => "删材质",
             Self::SetNodeMaterialRef { .. } => "改材质引用",
             Self::SetNodeCharacter { .. } => "改角色配置",
+            Self::DefinePrefab { .. } => "登记模板",
+            Self::SetNodePrefabOverride { .. } => "改实例覆盖",
         }
     }
 
@@ -272,6 +300,8 @@ impl CommandKind {
                 material::write_node_material_ref(s, name, new)
             }
             Self::SetNodeCharacter { name, new, .. } => scene::write_character(s, name, new),
+            Self::DefinePrefab { next, .. } => define_prefab(s, next),
+            Self::SetNodePrefabOverride { name, new, .. } => write_prefab_overrides(s, name, new),
         }
     }
 
@@ -315,6 +345,15 @@ impl CommandKind {
                 material::write_node_material_ref(s, name, old)
             }
             Self::SetNodeCharacter { name, old, .. } => scene::write_character(s, name, old),
+            Self::DefinePrefab { next, old } => match old {
+                Some(old) => define_prefab(s, old),
+                // 此前没登记过：撤销就是摘掉条目（`next.id` 与 `old` 的 id 由构造方保证同格）。
+                None => {
+                    s.prefabs.remove(&next.id);
+                    Ok(())
+                }
+            },
+            Self::SetNodePrefabOverride { name, old, .. } => write_prefab_overrides(s, name, old),
         }
     }
 
@@ -334,9 +373,41 @@ impl CommandKind {
             Self::UpsertMaterial { next, .. } => Some(&next.name),
             Self::RemoveMaterial { old } => Some(&old.name),
             Self::SetNodeMaterialRef { name, .. } => Some(name),
+            Self::SetNodePrefabOverride { name, .. } => Some(name),
             _ => None,
         }
     }
+}
+
+/// 写模板表（`DefinePrefab` 的 apply / undo 共用）。
+///
+/// 表满、ID 形状非法、`proto.name` 为空一律翻成 [`DocError::Rejected`]：
+/// 这些是「目标位置不合法」，与 `NotFound`（找不到目标）分成两类，
+/// 上层据变体决定提示还是重试。
+fn define_prefab(s: &mut Scene, template: &PrefabTemplate) -> Result<(), DocError> {
+    s.define_prefab(template.clone())
+        .map(|_outcome| ())
+        .map_err(|err| DocError::Rejected(err.to_string()))
+}
+
+/// 把实例的整份覆盖写回（`SetNodePrefabOverride` 的 apply / undo 共用）。
+///
+/// 只改**实例记录**（`Scene::instances`，场景文件里的真源），不重算节点：
+/// 覆盖改动落到节点上是运行态，由 E04 的宿主管线负责。若这里顺手重算节点，
+/// 同一个覆盖就会同时存在「实例记录」与「节点字段」两份可写副本，
+/// 保存 / 回放的确定性立刻变成两套真相。
+fn write_prefab_overrides(
+    s: &mut Scene,
+    name: &str,
+    overrides: &ObjectOverride,
+) -> Result<(), DocError> {
+    let record = s
+        .instances
+        .iter_mut()
+        .find(|instance| instance.name == name)
+        .ok_or_else(|| DocError::NotFound(name.to_string()))?;
+    record.overrides = overrides.clone();
+    Ok(())
 }
 
 impl Command for CommandKind {

@@ -480,6 +480,47 @@ pub struct ObjectOverride {
 
 ---
 
+### 6.5 实施记录（2026-11-26 落地）
+
+**落盘文件与行数**（`cargo fmt --all` 后实测；`git diff --numstat` 计 `+150 / −18`）：
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-core/src/prefab/diff.rs` | 46 → **107**（净 +61；git 计 +79 / −18） | 三算子全落地：`diff`（只记与原型不同的字段，同值收敛为「继承」，目标侧键缺失落 `null` 保留 `Clear` 语义）、`apply`（`None` 继承 / `Set` 替换 / `Clear` 清空，名字换实例名）、`revert`（逐字段按 `field_state` 摘除，结果必然是空覆盖）；私有 `json_fields` / `as_override` 两个序列化桥，失配即 panic 不返回空覆盖 |
+| `crates/r3e-doc/src/command/mod.rs` | 426 → **497**（+71） | `CommandKind` 加 `DefinePrefab { next, old }` / `SetNodePrefabOverride { name, old, new }` 两变体（20 → **22** 变体）、`label()` 补两行「登记模板」/「改实例覆盖」、`apply` 与 `undo` 各两臂、`node()` 让 `SetNodePrefabOverride` 归属节点；新增 `define_prefab` / `write_prefab_overrides` 两个共用写点（apply 与 undo 走同一函数，可逆性由前像保证） |
+| `crates/r3e-core/tests/prefab_diff.rs` | 新建 **378** | 10 条判据（只落差异 2 + 三态语义 3 + 可逆性 2 + 体积组合 3） |
+| `crates/r3e-doc/tests/prefab_command.rs` | 新建 **214** | 2 条判据：`DefinePrefab` 的 undo 前像（`old=None` 摘条目 / `old=Some` 写回旧模板）、`SetNodePrefabOverride` 的 undo 前像（整份覆盖写回） |
+| `xtask/tests_baseline.json` | — | `_comment` 追加 E03 段；`r3e-core` 679 → **689**、`r3e-doc` 169 → **171**、`total` 2459 → **2471** |
+
+**判据 ↔ 用例**（12 条一条不落）：
+
+| 计划 §6.2 判据 | 用例 |
+|---|---|
+| ① 只落差异：改 1 字段 → 其余字段全为「继承」 | `diff_records_only_the_changed_field` |
+| ② 覆盖值 == 模板值 → 收敛为未覆盖、`overrides` 不落盘 | `diff_converges_equal_value_to_inherit` |
+| ③ 覆盖值 ≠ 模板值 → 落 `Set`；且 `set → clear → set` 幂等 | `set_clear_set_is_idempotent` |
+| ④ `Clear` 让 `apply` 结果为 `None`（清空而非继承） | `clear_makes_apply_none` |
+| ⑤ `None` 让 `apply` 取模板原值、名字取实例名 | `inherit_keeps_proto_values` |
+| ⑥ `set → revert` 后序列化字节 `A == B` | `set_then_revert_restores_bytes` |
+| ⑦ `scene_hash` 初末相等 | `scene_bytes_restored_after_revert`（字节相等 ⇒ 哈希相等，口径见下方差异 ①） |
+| ⑧ `DefinePrefab` undo 前像（`old=None` / `old=Some`） | doc `define_prefab_undo_restores_template_table` |
+| ⑨ 结构判据：与模板同值字段数 == 0、覆盖字段数 ≤ 1 | `structural_no_equal_field_in_overrides` |
+| ⑩ 体积判据：覆盖段 / 全字段模板 JSON < 5% | `volume_ratio_below_five_percent`（实测模板 **505 B**、覆盖 `{"visible":false}` **17 B**、比值 **3.37%**） |
+| ⑪ 防退化：退化成整份快照则比值 ≥ 100% | `degenerate_full_snapshot_exceeds_template`（12 个可覆盖字段全填，反向证明 ⑩ 的阈值有判别力） |
+| ⑫ `SetNodePrefabOverride` undo 前像 | doc `set_node_prefab_override_undo_restores_state` |
+
+**门禁实测**：`cargo xtask verify` **11 步全绿**（fmt / clippy `-D warnings` / test / replay 600 帧哈希一致 / lint-size / check-tests / doc-gate / dep-check / gen-capabilities / invariants / scene-verify 7 夹具）；tests 2459 → **2471**（`r3e-core` 679 → **689**、`r3e-doc` 169 → **171**，**+12** 与 §11.1 预算一致、零删减）；commands **413** / rpc **83** / script_only **330** / domains **18** / invariants **44** 全部持平（E04 才动）；`size_debt` **20** 一项未加（本卡最大文件 378 行）、`dep_debt` **0**、回放金标 `385482eb033d2964` 未漂移。
+
+**与计划的三处口径差异**（不破判据，均在此留痕）：
+
+1. **判据⑦ 落到「场景落盘字节初末相等」而非 `state_hash`**：`state_hash.rs` 的遍历表尚未纳入 `instances` 段（`P3` 把实例段入 hash 排在 E05），此刻「覆盖变动不动 hash」是 E02–E04 期间的已知盲区。E03 若先补 hash 会越过本卡文件族边界，故本卡把 ⑦ 执行为更强的字节级：`scene_bytes` 初末逐字节相等（`set_node_prefab_override` 用例里同时断言「覆盖确实进了 `instances` 段」与「revert 后字节回到原样」）。hash 口径由 E05 的 `state_hash` 实例段 + doc 侧补测收口。
+2. **判据① 落地为「其余 11 个可覆盖字段全为继承」**：`ObjectDesc` 共 13 字段，`name` 不可覆盖（实例名由实例自己给），可覆盖字段为 12；覆盖 1 个后剩 11 个，故断言 11 而非 §6.2 文中的 12——条数与语义不变，只是计数基准按字段实数校正。
+3. **差异比较口径用「序列化 JSON 值」而非 `PartialEq`**：`ObjectDesc` 的 `physics` / `material` 两个复合字段未实现 `PartialEq`，给别人的类型补实现既越权也不必要；本层关心的本就是落盘外形，而「两段 JSON 值相等 ⇔ 写进场景文件后逐字节相同」正好是判据 ⑥⑫ 要比的东西。代价是 `-0.0` 与 `0.0` 判为不同（落盘确实不同，属有意），`NaN` / `±inf` 在 JSON 里是 `null`、外形与 `Clear` 重合——故非有限浮点一律在写入路径由 `sanitize` 拦住，不许活到 diff 层。
+
+**收口期就地修的两处**：① 首版 `set_node_prefab_override` 用例断言「覆盖变动后 `state_hash` 必须变」，实测红——正是差异 ① 的盲区，按 ⑦ 的字节口径改写为「覆盖进 `instances` 段 + revert 后字节回原位」；② `clippy -D warnings` 报 `field_reassign_with_default`，测试夹具改结构体字面量初始化。
+
+---
+
 ## 7. E04 · 命令、能力与不变量（2.5 人日，tests +10）
 
 > **本卡是 E 阶段唯一跨 crate 卡**（core + protocol + runtime + editor-host + script + doc），风险最高，建议单独留 0.5 天缓冲。
@@ -700,7 +741,7 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 
 > 落点自检：`49 + 5 + 2 + 2 = 58` ✓；`695 + 174 + 325 + 147 + 72 + 69 + 119 + 59 + 82 + 151 + 47 + 77 + 29 + 268 + 73 + 11 + 11 + 75 = 2484` ✓（其余 crate 不变）。每卡收口时须在 `xtask/tests_baseline.json` 同步对应 crate 数与 `total`，并在 `_comment` 追加本卡增量说明（D 阶段既有惯例）。
 >
-> **实测复核（E01 / E02 已落地）**：`r3e-core` 646 → 665（E01 实测，比名义 646+18=664 多 1，见 §4.5）→ **679**（E02，+14，与预算一致）；`total` 2426 → 2445 → **2459**。故本表"全局 2484"在实测口径下应为 **2485**，E03 起算见 §12；`+58` 的**增量**预算不变（多出的 1 条是基线对齐，不是新增判据）。
+> **实测复核（E01 / E02 / E03 已落地）**：`r3e-core` 646 → 665（E01 实测，比名义 646+18=664 多 1，见 §4.5）→ **679**（E02，+14）→ **689**（E03，+10）；`r3e-doc` 169 → **171**（E03，+2）；`total` 2426 → 2445 → 2459 → **2471**。E01–E03 三卡增量 `18 + 14 + 12 = 44` 与预算逐卡一致，故本表"全局 2484"在实测口径下应为 **2485**，剩余 E04/E05 的起算见 §12；`+58` 的**增量**预算不变（多出的 1 条是基线对齐，不是新增判据）。
 
 ### 11.2 其他门禁
 
@@ -736,11 +777,11 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 |---|---|---|---|---|
 | 1 | **E01** | 2426 / 413 / 83 / 44 | `prefab/` 五文件 + `prefab_schema` + `assets/prefab.schema.json` + `assets/prefab/prop/crate.json` | 2445（实测 `r3e-core` 665）；三态外形逐字节冻结；schema 防漂移绿 |
 | 2 | **E02** | 2445 / 413 / 83 / 44 | `SceneFile`/`Scene` 实例表 + `scene/prefab.rs` + 重生成 `scene.schema.json` | **2459**（实测 `r3e-core` 679，+14）；`Arc::ptr_eq` 判据绿；`doc-gate` / `scene-verify` 绿 |
-| 3 | **E03** | 2459 / 413 / 83 / 44 | `diff.rs` 三算子 + `CommandKind` 22 变体 | 2471；字节级可逆 + `scene_hash` 初末相等 |
+| 3 | **E03** | 2459 / 413 / 83 / 44 | `diff.rs` 三算子 + `CommandKind` 22 变体 | **2471**（实测 `r3e-core` 689、`r3e-doc` 171，+12）；字节级可逆（`scene_hash` 初末相等按字节口径执行，见 §6.5 差异①） |
 | 4 | **E04** | 2471 / 413 / 83 / 44 | 6 命令 + 2 rpc + `prefab.override_leak` + 重生成 `capabilities.json` | 2481 / **419** / **85** / **45**；三源一致绿 |
 | 5 | **E05** | 2481 / 419 / 85 / 45 | `state_hash` 实例段 + `ARCHITECTURE` Prefab 章节 + 端到端判据 | **2485**；`cargo xtask verify` 11 步全绿 |
 
-> **合计口径（E02 落地后修订）**：E01 实测 2445（较计划名义 2444 多 1，因 D06 收口时 `r3e-core` 基线滞后 1 条，见 §4.5），故 E02 起的起算基数与产出值整体 **+1**：本表已按实测重写为 2459 / 2471 / 2481 / **2485**。§11.1 的 `+58 → 2484` 是按计划名义增量的预算值，实测收口为 **2485**（增量为 +59，多出的 1 条不新增判据，只是基线对齐），偏差在此登记，E03 起算一律以本表为准。
+> **合计口径（E02 落地后修订）**：E01 实测 2445（较计划名义 2444 多 1，因 D06 收口时 `r3e-core` 基线滞后 1 条，见 §4.5），故 E02 起的起算基数与产出值整体 **+1**：本表已按实测重写为 2459 / 2471 / 2481 / **2485**。§11.1 的 `+58 → 2484` 是按计划名义增量的预算值，实测收口为 **2485**（增量为 +59，多出的 1 条不新增判据，只是基线对齐），偏差在此登记，E03 起算一律以本表为准。**E03 落地复核（2026-11-26）**：2471 与预算逐位一致、零余量；E04 起算按本表 **2471 / 413 / 83 / 44**（`r3e-core` **689**、`r3e-doc` **171**），产出目标 2481 / **419** / **85** / **45** 不变。
 
 **每卡通用规程（`M2_PLAN §5`）**：① 开工 `git status --short` 为空；② 一卡只改本卡文件族；③ 判据先行（先写红）；④ `cargo xtask verify` 11 步全绿；⑤ 一卡一提交 `feat(m2-E0X): …`，**不 push**；⑥ 文档与基线同卡回写；⑦ 失败就地修，禁止带红进下一卡。
 
@@ -800,13 +841,13 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 | 拍板 | ✅ `P1`～`P6` 六项全部采纳草案推荐值（`P5` 采草案建议 B：`prefab.spawn` + `prefab.info` 带 rpc，`prefab.define` 无 rpc） |
 | E01 数据模型 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E01)`；实施记录见 §4.5） |
 | E02 实例化与 Scene 集成 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E02): prefab 实例化与 Scene 实例表`；实施记录见 §5.5） |
-| E03 覆盖 diff 与可逆 | ⏳ 未开工 |
+| E03 覆盖 diff 与可逆 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E03): 覆盖只存差异与可逆性`；实施记录见 §6.5） |
 | E04 命令 / rpc / 不变量 | ⏳ 未开工 |
 | E05 判据测试与文档 | ⏳ 未开工 |
-| 完成度 | **2 / 5 卡**；tests 2426 → **2459**（实际 +33，名义预算 +32，55%） |
-| 下一卡起算基线 | tests **2459**（`r3e-core` **679**）、commands **413**、rpc **83**、script_only **330**、domains **18**、invariants **44**、`size_debt` **20**、`dep_debt` **0** |
-| 下一卡开工必读 | 本文件 §5.5（E02 落地口径）+ §6（E03 全文）+ §3.1 / §3.2（类型与序列化外形）+ §11.1 实测复核脚注（起算基数 **2459**，非 2458）+ `M2_DECISIONS.md` D6/D7/D20 + `M2_PLAN.md` §5 单卡规程 |
-| 关键路径 | 约 **9.5 人日**（E01 2.5 / E02 2.0 / E03 1.5 / E04 2.5 / E05 1.0），严格串行无并行空间（`R4`）；已用 4.5 |
+| 完成度 | **3 / 5 卡**；tests 2426 → **2471**（实际 +45，名义预算 +44，60%） |
+| 下一卡起算基线 | tests **2471**（`r3e-core` **689**、`r3e-doc` **171**）、commands **413**、rpc **83**、script_only **330**、domains **18**、invariants **44**、`size_debt` **20**、`dep_debt` **0** |
+| 下一卡开工必读 | 本文件 §6.5（E03 落地口径，尤其差异①：`state_hash` 尚未覆盖 `instances`）+ §7（E04 全文）+ §11.2（`commands 419` / `rpc 85` / `script_only 334` / `invariants 45` 的 `R1` 偏差登记）+ §11.1 实测复核脚注（起算基数 **2471**，非 2470）+ `M2_DECISIONS.md` D6/D7/D20 + `M2_PLAN.md` §4 规则 4 / §5 单卡规程 |
+| 关键路径 | 约 **9.5 人日**（E01 2.5 / E02 2.0 / E03 1.5 / E04 2.5 / E05 1.0），严格串行无并行空间（`R4`）；已用 6.0 |
 
 ---
 
