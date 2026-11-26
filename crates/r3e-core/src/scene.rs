@@ -14,6 +14,7 @@ use crate::anim_blend::{
 use crate::blend_space::BlendSpace;
 use crate::light::{self, LocalLight};
 use crate::morph::{MorphInstance, NO_EXCLUSIVE_GROUP};
+use crate::prefab::{PrefabInstance, PrefabTable, PrefabTemplate};
 use crate::text::ScreenText;
 use crate::ui::UiElement;
 
@@ -189,6 +190,12 @@ pub struct SceneFile {
     pub environment_map: Option<EnvironmentMapSettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDesc>,
+    /// Prefab 实例表（M2-E02）。每项 = 实例名 + 模板 ID + 父名 + **相对模板的差异**；
+    /// 顺序即实例化顺序。模板本体不进场景文件（模板是素材，落 `assets/prefab/<id>.json`），
+    /// 所以这里只存「引用 + 差异」，否则每个实例都会背一整份原型快照。
+    /// 空表示场景没有 prefab 实例，旧场景读进来即此形态（向后兼容）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<PrefabInstance>,
     /// 地形数据壳（M1-S3-C）：一块地表 = 名字 + 世界矩形 + 高度样本 + 地表材质参数。
     /// 空表示场景没有地形。M1 只承载数据、不出几何（M2 才求值三角网）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -239,6 +246,20 @@ pub struct Scene {
     pub physics: PhysicsSceneDesc,
     /// 场景文件声明的外部资产（含未导入成功前的原始声明），供应用层导入与热重载比对。
     pub assets: Vec<AssetDecl>,
+    /// Prefab 实例表（M2-E02）。每项 = 实例名 + 模板 ID + 父名 + 差异，
+    /// 顺序即实例化顺序。它既是**落盘源数据**（`scene.json` 的 `instances` 段），
+    /// 也是「哪些节点是实例化来的」的唯一判据——`to_scene_file` 不会把这些实例节点
+    /// 重复写进 `objects`，否则同一个物件会有两份真源。
+    pub instances: Vec<PrefabInstance>,
+    /// 实例名 → 模板句柄（M2-E02，**不进序列化**）。
+    ///
+    /// 100 个同模板实例共享同一个 `Arc`，模板对象物理上只有一份；
+    /// `strong_count == 实例数 + 表里那份`。模板被重新 `define` 后，
+    /// 老实例仍握旧句柄（不追溯刷新），这也正是「模板改了但实例没变」的可见口径。
+    pub prefab_handles: HashMap<String, std::sync::Arc<PrefabTemplate>>,
+    /// 会话内模板表（M2-E02）：模板是素材，从 `assets/prefab/<id>.json` 载入，
+    /// **不进场景文件**（改模板文件不改 `scene_hash`，见计划 `P3` / `R5`）。
+    pub prefabs: PrefabTable,
     /// 场景内的动画实例（P3 起）。每个资产实例（或脚本手动挂载的播放器）一条。
     pub animations: Vec<AnimInstance>,
     /// 可切换的片段目录（P3 起）：键为 `"<资产名>/<片段名>"`，值与其他实例共享同一份
@@ -328,6 +349,9 @@ impl Scene {
             background: Vec4::new(0.05, 0.06, 0.08, 1.0),
             physics: PhysicsSceneDesc::default(),
             assets: Vec::new(),
+            instances: Vec::new(),
+            prefab_handles: HashMap::new(),
+            prefabs: PrefabTable::new(),
             animations: Vec::new(),
             anim_clips: HashMap::new(),
             skins: Vec::new(),
@@ -435,6 +459,10 @@ impl Scene {
         self.order.retain(|n| *n != id);
         self.touch_layout();
 
+        // M2-E02：节点没了，它的实例记录与模板句柄一起剪掉——否则 `instances` 里会留一条
+        // 指向已消失节点的条目，`to_scene_file` 还会把它写回磁盘
+        self.forget_instance(&node.name);
+
         // 从父节点摘除
         if let Some(pid) = node.parent {
             if let Some(parent) = self.nodes.get_mut(&pid) {
@@ -472,6 +500,10 @@ impl Scene {
         self.skins.clear();
         // 形变绑定同理
         self.morphs.clear();
+        // M2-E02：实例节点全没了，实例记录与句柄也一并丢弃（模板表 `prefabs` 保留：
+        // 模板是素材，和「场景里有没有节点」无关）
+        self.instances.clear();
+        self.prefab_handles.clear();
     }
 
     // ---------- 查询 ----------
@@ -587,6 +619,7 @@ mod hierarchy;
 mod io;
 mod morph;
 mod occlusion;
+mod prefab;
 mod skin;
 
 #[cfg(test)]

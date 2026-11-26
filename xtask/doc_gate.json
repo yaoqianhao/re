@@ -10,7 +10,8 @@
     "doc",
     "document",
     "self.scene",
-    "self.doc"
+    "self.doc",
+    "instances"
   ],
   "rule2_exceptions": [
     {

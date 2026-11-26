@@ -396,6 +396,56 @@ pub struct ObjectOverride {
 - 提交：`feat(m2-E02): prefab 实例化与 Scene 实例表`
 - 回滚：`git reset --hard HEAD~1`；**注意** schema 与 `doc_gate.json` 的改动必须与代码在**同一提交内**，否则回滚后 `doc-gate` / `scene-verify` 会残留红。
 
+### 5.5 实施记录（2026-11-26 落地）
+
+**落盘文件与行数**（`cargo fmt --all` 后实测）：
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `crates/r3e-core/src/scene.rs` | 601 → **634**（+33） | `SceneFile.instances`（紧随 `objects`）、`Scene.instances` / `Scene.prefab_handles` / `Scene.prefabs`、`Scene::new` 三处初始化、`despawn` 与 `clear_nodes` 的实例记录清理、`mod prefab;` 声明 |
+| `crates/r3e-core/src/scene/io.rs` | 286 → **298**（+12） | `from_file` 调 `normalize_instances`（只落记录不展开）、`to_scene_file` 导出 `instances` 且实例节点不写 `objects`（两处对称） |
+| `crates/r3e-core/src/scene/prefab.rs` | 新建 **247** | 实例化入口（API 见下表） |
+| `crates/r3e-core/tests/prefab_scene.rs` | 新建 **524** | 14 条判据（组序：内存共享 / 命名与父级 / 序列化往返 / 模板解析 / 装配复用） |
+| `assets/scene.schema.json` | 1660 → **1908**（+248） | 重生成：新增 `instances` 数组与 `$defs` 内 `PrefabInstance` / `FieldOverride*` / `ObjectOverride` 定义 |
+| `xtask/doc_gate.json` | 77 → **78** | `rule6_scene_keys` 加 `instances`（接缝⑨，缺则 `doc-gate` 直接红） |
+| `xtask/tests_baseline.json` | — | `_comment` 追加 E02 段；`r3e-core` 665 → **679**、`total` 2445 → **2459**（`crates` 求和与 `total` 自洽） |
+
+**`scene/prefab.rs` 公开面**（全部复用 `Scene::spawn`，无第二套节点插入逻辑）：
+
+| 函数 | 作用 |
+|---|---|
+| `define_prefab` | 往 `prefabs` 表登记模板（同 ID 替换，`Arc` 共享） |
+| `prefab_handle` / `instance` / `instance_template` | 模板句柄与实例记录查询 |
+| `is_instance_node` / `forget_instance` | 「该节点是否实例化而来」判定 / 摘除记录（`despawn` 调用） |
+| `resolve_overrides` | 三态覆盖 → `ObjectDesc`（`Set` 替换 / `Clear` 清空 / `None` 继承） |
+| `spawn_instance` / `spawn_instances` / `instantiate_declared` | 单条 / 批量 / 按 `instances` 表全量实例化，三者最终都落到 `Scene::spawn` |
+| `normalize_instances`（`pub(crate)`） | 场景文件归一：去空白、同名保留首条、模板 ID 形状非法即 `Err` |
+
+**判据 ↔ 用例**（14 条一条不落；用例名序即测试文件内顺序）：
+
+| 组 | 计划 §5.2 判据 | 用例 |
+|---|---|---|
+| 内存共享 3 | ① 100 实例 `Arc::ptr_eq` 全等 + ② `strong_count == 101` | `hundred_instances_share_one_template_arc`（①②合并：同一次实例化里同时断言 `ptr_eq` 与 `strong_count == 实例数 + 表内那份`） |
+| | ③ 不同模板指针不等（防判据恒真的反例） | `different_templates_do_not_share_arc` |
+| 命名与父级 3 | ④ 实例名与既有手写节点重名 → 明确错误 | `instance_name_colliding_with_plain_node_is_rejected` |
+| | ④′ 实例表内自身重名（计划未单列，本卡补硬） | `duplicate_instance_name_is_rejected` |
+| | ⑤ `parent` 按名解析 + `touch_layout`；⑥ 父级不存在报错 | `parent_is_resolved_by_name`（含⑥负例段） / `instantiate_touches_layout`（⑤按两半拆成两条） |
+| 序列化往返 4 | ⑦ `to_scene_file` → `from_file` 往返一致 | `instances_roundtrip_through_scene_file` |
+| | ⑧ 实例节点不重复写进 `objects` | `instance_nodes_are_not_duplicated_into_objects` |
+| | ⑨ 旧场景（无 `instances` 段）可读 + 空表不落盘 | `scene_without_instances_still_loads` |
+| | ⑩ `assets/scene.schema.json` 含 `instances` | `scene_schema_declares_instances` |
+| 模板解析 2 | ⑪ 未注册模板 → 报错（`Conflict` 口径，不 panic） | `unknown_template_is_rejected` |
+| | ⑫ 覆盖三态生效 + 模板本体不落盘 | `overrides_apply_and_template_body_is_not_serialized` |
+| 装配复用 2 | ⑬ 节点字段与 `apply(proto, overrides, name)` 机械展开一致 | 各实例化用例内逐字段必比对（`overrides_apply_*` / `parent_is_resolved_by_name` 均以 `apply(proto, overrides, name)` 的返回值为基准） |
+| | ⑭ 只走 `Scene::spawn`（不另开路径） | `batch_instantiation_equals_individual_calls`（批量 ≡ 逐条）+ `instance_records_follow_node_lifecycle`（删节点自动摘记录、补建幂等） |
+
+**门禁实测**：`cargo xtask verify` **11 步全绿**（fmt / clippy / test / lint-size / check-tests / doc-gate / dep-check / gen-capabilities / invariants / replay / scene-verify）；tests 2445 → **2459**（`r3e-core` 665 → **679**，**+14** 与预算一致、零删减）；commands **413** / rpc **83** / script_only **330** / domains **18** / invariants **44** 全部持平；`size_debt` **20** 一项未加（本卡最大文件 247 行）、`dep_debt` **0**、回放金标 `385482eb033d2964` 未漂移。
+
+**与计划的两处口径差异**（不破判据，均在此留痕）：
+
+1. **`scene_schema.rs` 零改动**：§3.3 接缝⑤把它列为 E02 触点，但它实为 `schemars::schema_for!(SceneFile)` 的纯派生（不手写字段清单），加字段后只需重生成 `assets/scene.schema.json` 即自动带上 `instances`。故本卡改的是**生成物而非生成器**，schema 防漂移测试与 `doc-gate` 同步绿；`scene_schema.rs` 的 86 行是 E01 之前既有的，不属本卡增量。
+2. **① ②合并、⑤ ⑥拆并**：①② 在同一次 100 实例实例化里一起断言（`ptr_eq` 恒真风险由 ③ 反例兜住）；⑤ 的「父级按名解析」与「`touch_layout` 生效」拆两条，⑥ 并入 `parent_is_resolved_by_name` 的负例段——条数仍 14，覆盖不减。
+
 ---
 
 ## 6. E03 · 覆盖只存差异与可逆性（1.5 人日，tests +12）
@@ -649,6 +699,8 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 | 合计 | **+58** | 按 crate：core **646 → 695（+49）**、doc **169 → 174（+5）**、protocol **75 → 77（+2）**、editor-host **149 → 151（+2）**；全局 **2426 → 2484** |
 
 > 落点自检：`49 + 5 + 2 + 2 = 58` ✓；`695 + 174 + 325 + 147 + 72 + 69 + 119 + 59 + 82 + 151 + 47 + 77 + 29 + 268 + 73 + 11 + 11 + 75 = 2484` ✓（其余 crate 不变）。每卡收口时须在 `xtask/tests_baseline.json` 同步对应 crate 数与 `total`，并在 `_comment` 追加本卡增量说明（D 阶段既有惯例）。
+>
+> **实测复核（E01 / E02 已落地）**：`r3e-core` 646 → 665（E01 实测，比名义 646+18=664 多 1，见 §4.5）→ **679**（E02，+14，与预算一致）；`total` 2426 → 2445 → **2459**。故本表"全局 2484"在实测口径下应为 **2485**，E03 起算见 §12；`+58` 的**增量**预算不变（多出的 1 条是基线对齐，不是新增判据）。
 
 ### 11.2 其他门禁
 
@@ -683,10 +735,12 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 | 步 | 卡 | 起算基线（tests / commands / rpc / invariants） | 产出 | 验证点 |
 |---|---|---|---|---|
 | 1 | **E01** | 2426 / 413 / 83 / 44 | `prefab/` 五文件 + `prefab_schema` + `assets/prefab.schema.json` + `assets/prefab/prop/crate.json` | 2445（实测 `r3e-core` 665）；三态外形逐字节冻结；schema 防漂移绿 |
-| 2 | **E02** | 2445 / 413 / 83 / 44 | `SceneFile`/`Scene` 实例表 + `scene/prefab.rs` + 重生成 `scene.schema.json` | 2458；`Arc::ptr_eq` 判据绿；`doc-gate` / `scene-verify` 绿 |
-| 3 | **E03** | 2458 / 413 / 83 / 44 | `diff.rs` 三算子 + `CommandKind` 22 变体 | 2470；字节级可逆 + `scene_hash` 初末相等 |
-| 4 | **E04** | 2470 / 413 / 83 / 44 | 6 命令 + 2 rpc + `prefab.override_leak` + 重生成 `capabilities.json` | 2480 / **419** / **85** / **45**；三源一致绿 |
-| 5 | **E05** | 2480 / 419 / 85 / 45 | `state_hash` 实例段 + `ARCHITECTURE` Prefab 章节 + 端到端判据 | **2484**；`cargo xtask verify` 11 步全绿 |
+| 2 | **E02** | 2445 / 413 / 83 / 44 | `SceneFile`/`Scene` 实例表 + `scene/prefab.rs` + 重生成 `scene.schema.json` | **2459**（实测 `r3e-core` 679，+14）；`Arc::ptr_eq` 判据绿；`doc-gate` / `scene-verify` 绿 |
+| 3 | **E03** | 2459 / 413 / 83 / 44 | `diff.rs` 三算子 + `CommandKind` 22 变体 | 2471；字节级可逆 + `scene_hash` 初末相等 |
+| 4 | **E04** | 2471 / 413 / 83 / 44 | 6 命令 + 2 rpc + `prefab.override_leak` + 重生成 `capabilities.json` | 2481 / **419** / **85** / **45**；三源一致绿 |
+| 5 | **E05** | 2481 / 419 / 85 / 45 | `state_hash` 实例段 + `ARCHITECTURE` Prefab 章节 + 端到端判据 | **2485**；`cargo xtask verify` 11 步全绿 |
+
+> **合计口径（E02 落地后修订）**：E01 实测 2445（较计划名义 2444 多 1，因 D06 收口时 `r3e-core` 基线滞后 1 条，见 §4.5），故 E02 起的起算基数与产出值整体 **+1**：本表已按实测重写为 2459 / 2471 / 2481 / **2485**。§11.1 的 `+58 → 2484` 是按计划名义增量的预算值，实测收口为 **2485**（增量为 +59，多出的 1 条不新增判据，只是基线对齐），偏差在此登记，E03 起算一律以本表为准。
 
 **每卡通用规程（`M2_PLAN §5`）**：① 开工 `git status --short` 为空；② 一卡只改本卡文件族；③ 判据先行（先写红）；④ `cargo xtask verify` 11 步全绿；⑤ 一卡一提交 `feat(m2-E0X): …`，**不 push**；⑥ 文档与基线同卡回写；⑦ 失败就地修，禁止带红进下一卡。
 
@@ -745,14 +799,14 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 | 文档 | ✅ 已落盘（2026-11-26，v1） |
 | 拍板 | ✅ `P1`～`P6` 六项全部采纳草案推荐值（`P5` 采草案建议 B：`prefab.spawn` + `prefab.info` 带 rpc，`prefab.define` 无 rpc） |
 | E01 数据模型 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E01)`；实施记录见 §4.5） |
-| E02 实例化与 Scene 集成 | ⏳ 未开工 |
+| E02 实例化与 Scene 集成 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E02): prefab 实例化与 Scene 实例表`；实施记录见 §5.5） |
 | E03 覆盖 diff 与可逆 | ⏳ 未开工 |
 | E04 命令 / rpc / 不变量 | ⏳ 未开工 |
 | E05 判据测试与文档 | ⏳ 未开工 |
-| 完成度 | **1 / 5 卡**；tests 2426 / 2484（+18，41%） |
-| 下一卡起算基线 | tests **2445**、commands **413**、rpc **83**、script_only **330**、domains **18**、invariants **44**、`size_debt` **20**、`dep_debt` **0** |
-| 下一卡开工必读 | 本文件 §4.5（E01 落地口径）+ §5（E02 全文）+ §3.1 / §3.2（类型与序列化外形）+ §9.5（schema 防漂移写法）+ `M2_DECISIONS.md` D6/D7/D20 + `M2_PLAN.md` §5 单卡规程 |
-| 关键路径 | 约 **9.5 人日**（E01 2.5 / E02 2.0 / E03 1.5 / E04 2.5 / E05 1.0），严格串行无并行空间（`R4`） |
+| 完成度 | **2 / 5 卡**；tests 2426 → **2459**（实际 +33，名义预算 +32，55%） |
+| 下一卡起算基线 | tests **2459**（`r3e-core` **679**）、commands **413**、rpc **83**、script_only **330**、domains **18**、invariants **44**、`size_debt` **20**、`dep_debt` **0** |
+| 下一卡开工必读 | 本文件 §5.5（E02 落地口径）+ §6（E03 全文）+ §3.1 / §3.2（类型与序列化外形）+ §11.1 实测复核脚注（起算基数 **2459**，非 2458）+ `M2_DECISIONS.md` D6/D7/D20 + `M2_PLAN.md` §5 单卡规程 |
+| 关键路径 | 约 **9.5 人日**（E01 2.5 / E02 2.0 / E03 1.5 / E04 2.5 / E05 1.0），严格串行无并行空间（`R4`）；已用 4.5 |
 
 ---
 

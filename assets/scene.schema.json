@@ -368,6 +368,78 @@
       },
       "type": "object"
     },
+    "FieldOverride_Array_of_string": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "FieldOverride_Array_size_3_of_float": {
+      "items": {
+        "format": "float",
+        "type": "number"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "FieldOverride_Array_size_4_of_float": {
+      "items": {
+        "format": "float",
+        "type": "number"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "FieldOverride_PhysicsDesc": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PhysicsDesc"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "FieldOverride_SurfaceMaterial": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SurfaceMaterial"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "FieldOverride_boolean": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "FieldOverride_float": {
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "FieldOverride_string": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "LightDesc": {
       "properties": {
         "ambient": {
@@ -662,6 +734,145 @@
       ],
       "type": "object"
     },
+    "ObjectOverride": {
+      "additionalProperties": false,
+      "description": "实例相对模板的字段级差异（本卡只冻结外形，语义在 E03）。\n\n只包含**可覆盖**的 12 个字段：[`ObjectDesc`] 的 13 个字段里去掉 `name`。\n未知字段（含 `name`）一律反序列化失败——覆盖里写 `name` 是调用方的错，\n静默忽略会让人以为改了实例名。",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_Array_size_4_of_float"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `color` 字段的覆盖态。"
+        },
+        "interact_radius": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_float"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `interact_radius` 字段的覆盖态。"
+        },
+        "material": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_SurfaceMaterial"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `material` 字段的覆盖态。"
+        },
+        "materialRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `materialRef` 字段的覆盖态。"
+        },
+        "mesh": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `mesh` 字段的覆盖态。"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `parent` 字段的覆盖态。"
+        },
+        "physics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_PhysicsDesc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `physics` 字段的覆盖态。"
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_Array_size_3_of_float"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `position` 字段的覆盖态。"
+        },
+        "rotation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_Array_size_3_of_float"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `rotation` 字段的覆盖态。"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_Array_size_3_of_float"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `scale` 字段的覆盖态。"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_Array_of_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `tags` 字段的覆盖态。"
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldOverride_boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模板 `visible` 字段的覆盖态。"
+        }
+      },
+      "type": "object"
+    },
     "OcclusionSettings": {
       "description": "场景 `occlusion` 段（扩展二十二）。\n\n缺省 [`OcclusionSettings::default`]（`enabled = false`）与场景里完全不写这一段等价：\n渲染层不建金字塔、不发深度读回，剔除结果与「只做视锥剔除」逐像素一致。",
       "properties": {
@@ -844,6 +1055,36 @@
           "description": "色调映射曲线。"
         }
       },
+      "type": "object"
+    },
+    "PrefabInstance": {
+      "additionalProperties": false,
+      "description": "场景里对模板的一次引用。\n\n只有「引用 + 差异」：模板本体不进场景文件（E02 判据⑫），实例靠 `template`\n这个名字回表取原型。`overrides` 为空时整段不落盘（判据③）。",
+      "properties": {
+        "name": {
+          "description": "实例（节点）名：进场景后就是节点名，重名规则由 `Scene::spawn` 定（E02）。",
+          "type": "string"
+        },
+        "overrides": {
+          "$ref": "#/$defs/ObjectOverride",
+          "description": "相对模板的差异；空则整键省略。"
+        },
+        "parent": {
+          "description": "父节点名；省略表示挂场景根。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "template": {
+          "description": "模板 ID（形状见 [`crate::prefab::validate_prefab_id`]）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "template"
+      ],
       "type": "object"
     },
     "SceneMaterialDecl": {
@@ -1557,6 +1798,13 @@
         }
       ],
       "description": "HDR 立方体反射探针（扩展二十三）。缺省表示没有环境图，镜面 / 漫反射环境项\n仍由 `environment` 的解析天空 + SH 系数给出，画面与旧场景逐像素一致。"
+    },
+    "instances": {
+      "description": "Prefab 实例表（M2-E02）。每项 = 实例名 + 模板 ID + 父名 + **相对模板的差异**；\n顺序即实例化顺序。模板本体不进场景文件（模板是素材，落 `assets/prefab/<id>.json`），\n所以这里只存「引用 + 差异」，否则每个实例都会背一整份原型快照。\n空表示场景没有 prefab 实例，旧场景读进来即此形态（向后兼容）。",
+      "items": {
+        "$ref": "#/$defs/PrefabInstance"
+      },
+      "type": "array"
     },
     "light": {
       "anyOf": [

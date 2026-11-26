@@ -113,6 +113,11 @@ impl Scene {
         for obj in file.objects {
             scene.spawn(obj)?;
         }
+        // Prefab 实例表（M2-E02）：先归一（去空白 / 同名保留首条 / 模板 ID 形状非法即报错），
+        // **只落记录、不展开节点**——载入时模板表还是空的（模板属素材，由应用层
+        // `prefab_define` 灌入），展开交给 `Scene::instantiate_declared`。
+        // 这样「文件里有实例、模板还没到」是一个合法状态，而不是加载失败。
+        scene.instances = super::prefab::normalize_instances(file.instances)?;
         // 地形：丢空名、同名后者覆盖前者、超上限截断（收敛在 core，加载与命令共用一套）
         scene.terrain = terrain::normalize_all(file.terrain);
         scene.spawns = spawn::normalize_all(file.spawns);
@@ -133,6 +138,9 @@ impl Scene {
     /// - 物理后端的刚体句柄 `body`（句柄只对本次运行的 `Physics` 有效）；
     /// - `next_id` / `children` / `time` / `frame` 这类引擎内部记账；
     /// - 动画实例、蒙皮实例、GPU 侧资源与实例索引——它们由应用层按资产声明在加载后重建。
+    ///
+    /// **例外**：prefab 实例表（`instances`）是源数据，必须写；但实例化出来的节点不写进
+    /// `objects`（它们是 `instances` 的求值结果，写了就有两份真源）。
     ///
     /// 于是 `load -> save -> load` 得到的场景与第一次加载语义等价。
     pub fn to_scene_file(&self) -> SceneFile {
@@ -164,8 +172,12 @@ impl Scene {
                 .order
                 .iter()
                 .filter_map(|id| self.nodes.get(id))
+                // 实例节点的真源是 `instances` 段，不能再写进 `objects`：
+                // 同一个物件两份数据，改一处不改另一处就漂移（判据⑦往返一致的前提）
+                .filter(|node| !self.is_instance_node(&node.name))
                 .map(|node| self.node_desc(node))
                 .collect(),
+            instances: self.instances.clone(),
             terrain: self.terrain.clone(),
             spawns: self.spawns.clone(),
             materials: self.materials.clone(),
