@@ -24,6 +24,8 @@ pub mod node;
 pub mod occlusion;
 pub mod pick;
 pub mod postfx;
+pub mod prefab;
+pub mod prefab_schema;
 pub mod procedural;
 pub mod query;
 pub mod scene;
@@ -123,6 +125,13 @@ pub use postfx::{
     ACES_C, ACES_D, ACES_E, DEFAULT_BLOOM_INTENSITY, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_THRESHOLD,
     DEFAULT_EXPOSURE_EV, FXAA_EDGE_THRESHOLD_MIN, FXAA_EDGE_THRESHOLD_RELATIVE, LUMA_WEIGHTS,
     MAX_BLOOM_INTENSITY, MAX_BLOOM_KNEE, MAX_BLOOM_THRESHOLD, MAX_EXPOSURE_EV, MIN_EXPOSURE_EV,
+};
+pub use prefab::{
+    apply as prefab_apply, diff as prefab_diff, is_valid_prefab_id, prefab_rel_path,
+    revert as prefab_revert, validate_prefab_id, DefineOutcome, FieldOverride, ObjectOverride,
+    OverrideState, PrefabIdError, PrefabInstance, PrefabTable, PrefabTableError, PrefabTemplate,
+    PrefabValidateError, PREFAB_ID_MAX_LEN, PREFAB_ID_MAX_SEGMENTS, PREFAB_ID_MIN_SEGMENTS,
+    PREFAB_MAX, PREFAB_MAX_TAGS, PREFAB_SCHEMA_VERSION,
 };
 pub use procedural::ProceduralProvider;
 pub use query::{Component, NodeDetail, NodeKind, NodeView, Query, QueryStats, DEFAULT_LIMIT};

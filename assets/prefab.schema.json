@@ -1,0 +1,245 @@
+{
+  "$defs": {
+    "ObjectDesc": {
+      "description": "单个物件在场景文件 / 脚本 `spawn` 中的描述。",
+      "properties": {
+        "color": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "interact_radius": {
+          "description": "可交互半径（世界单位）；省略表示该物件不可交互。\n\n非有限值与 `<= 0` 一律按「不声明」处理（经 [`crate::normalize_interact_radius`]）。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "material": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SurfaceMaterial"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "PBR 表面材质（metallic / roughness / emissive）；省略表示不覆盖网格资产材质。"
+        },
+        "materialRef": {
+          "description": "场景材质表引用（M1-S4-A）：指向 `materials[].name`，与内联 `material` 互斥。\n\n省略表示不引用（用网格资产材质或内联材质）。经\n[`crate::scene_material::normalize_material_ref`] 收敛：去空白、空串即不声明。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mesh": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "physics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhysicsDesc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "物理描述：只做数据承载，真正生效取决于启用的 `PhysicsBackend`。"
+        },
+        "position": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rotation": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scale": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "语义标签（如 `door` / `pickup` / `enemy`）；省略或空数组表示无标签。\n\n写入前经 [`crate::normalize_tags`] 收敛：去首尾空白、丢空串、去重（保序）、\n单标签截到 [`crate::NODE_TAG_MAX_LEN`] 个字符、总量截到 [`crate::MAX_NODE_TAGS`] 条。",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "visible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "PhysicsDesc": {
+      "description": "物理刚体描述（预留）。当前 `NullBackend` 会忽略，`rapier` 后端会消费。",
+      "properties": {
+        "body": {
+          "description": "\"dynamic\" | \"static\" | \"kinematic\"",
+          "type": "string"
+        },
+        "ccd": {
+          "description": "连续碰撞检测（CCD）：高速物体不穿过薄墙。\n\n省略表示「跟场景级 `physics.ccd`」（再缺省为开）；显式写 `false` 可让\n单个物件退出 CCD（例如大量慢速道具，省掉 sweep 开销）。\n后端不申报 `ccd` 能力时该字段无效。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "collider": {
+          "description": "\"box\" | \"sphere\" | \"cylinder\"，缺省由 mesh 推导",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "friction": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "half_extents": {
+          "description": "碰撞体半尺寸，缺省由 scale 推导",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mass": {
+          "format": "float",
+          "type": "number"
+        },
+        "restitution": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SurfaceMaterial": {
+      "description": "物件级 PBR 材质参数。\n\n只描述「表面如何反射光」，不含颜色：base color 由物件颜色（乘材质染色因子）\n提供，因此一个材质可以被多个不同颜色的物件复用。",
+      "properties": {
+        "emissive": {
+          "description": "自发光（线性 RGB）：直接加到出射亮度上，不参与任何光照计算。",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "metallic": {
+          "default": 0.0,
+          "description": "金属度 0..1：0 = 绝缘体（塑料 / 石头），1 = 纯金属（漫反射归零）。",
+          "format": "float",
+          "type": "number"
+        },
+        "roughness": {
+          "description": "粗糙度 0..1：0 = 镜面，1 = 完全漫反射。",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://r3e.dev/schema/prefab.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "r3e 引擎 Prefab 模板文件的完整契约，由 crates/r3e-core/src/prefab 的 serde 结构派生。`id` 与 `proto` 必填，`schema` 省略即视为当前版本，`tags` 省略即无标签；模板文件本身拒绝未知字段（拼错键名会报错）。`proto` 内层沿用场景 ObjectDesc 的宽松口径（未知字段静默忽略、缺省即取引擎默认值）。",
+  "properties": {
+    "id": {
+      "description": "模板 ID：`域.名` 点分小写，形状校验见 [`validate_prefab_id`]。",
+      "type": "string"
+    },
+    "proto": {
+      "$ref": "#/$defs/ObjectDesc",
+      "description": "原型：实例化时把这份 [`ObjectDesc`] 当底稿，再叠覆盖。"
+    },
+    "schema": {
+      "default": 1,
+      "description": "格式版本；省略即视为当前版本（[`PREFAB_SCHEMA_VERSION`]）。",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tags": {
+      "description": "检索用标签（`prop` / `enemy` / `breakable` …）；空数组不落盘。\n\n经 [`normalize_tags`] 收敛：去空白、丢空串、去重保序、逐条截断、\n总量截到 [`PREFAB_MAX_TAGS`]。",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "proto"
+  ],
+  "title": "r3e Prefab 模板（assets/prefab/**.json）",
+  "type": "object"
+}

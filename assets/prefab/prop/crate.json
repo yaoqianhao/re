@@ -1,0 +1,30 @@
+{
+  "id": "prop.crate",
+  "schema": 1,
+  "tags": ["prop", "container", "breakable"],
+  "proto": {
+    "name": "crate",
+    "mesh": "props/crate.glb",
+    "position": [0.0, 0.4, 0.0],
+    "rotation": [0.0, 0.0, 0.0],
+    "scale": [1.0, 1.0, 1.0],
+    "color": [0.72, 0.55, 0.34, 1.0],
+    "visible": true,
+    "physics": {
+      "body": "dynamic",
+      "mass": 12.0,
+      "restitution": 0.15,
+      "friction": 0.6,
+      "collider": "box",
+      "half_extents": [0.4, 0.4, 0.4],
+      "ccd": false
+    },
+    "material": {
+      "metallic": 0.0,
+      "roughness": 0.62,
+      "emissive": [0.0, 0.0, 0.0]
+    },
+    "tags": ["prop", "crate", "breakable"],
+    "interact_radius": 1.2
+  }
+}

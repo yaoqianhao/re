@@ -370,3 +370,25 @@ A02 的 D1–D13 拍板后，老板追加指令「物理端口代码放 `crates/
 - 不建 `Domain::Nav`（`domains` 预算 0，全局 19 留给 `H01` 的 `game`），10 条 `nav.*` 继续挂 `Meta` 并加分组注释。
 - 不改 `args.rs`（余量 17 行），新增命令只走 `rpc --method`；`capabilities.json` 由 `gen-capabilities` 重生成，禁手改。
 - 七处硬数字（`EXPECTED_COMMANDS` 406→413、`RPC_METHODS` 76→83、`EngineApi` 76→83、`cmd_spec/mod.rs` 的 `rpc == rpc_only + N` 由 `+36` 改 `+43`、三处 `cmd_spec_contract.rs`、`invariants` 42→44 的三源登记）全部集中在 **D04** 一卡，漏一处 `cargo test` 即红。
+
+---
+
+### D20 E 阶段快捷键位拍板：`P1`~`P6`（2026-11-26，六项全采草案推荐值）
+
+**背景**：`M2_E_PLAN.md` §14 列出六处需老板拍板的键位，草案每项均给了推荐值。2026-11-26 拍板结论：**`P1`~`P6` 全部采纳草案推荐值**，无一项改判；方案稿按拍板结果一次性重算并生效（早期曾按「上级指定」把 `P5` 记作档 A，当日已按老板指示全文订正为草案 B，全文无残留）。
+
+| 键 | 议题 | 拍板结论 | 连锁影响 |
+|---|---|---|---|
+| `P1` | 覆盖三态表达 | **值 / `null` / 键缺失** 三形态（`FieldOverride<T>`） | 序列化外形冻结，判据⑤⑥⑦⑧⑨ 逐字节钉死；空覆盖必须省键（③） |
+| `P2` | `ObjectOverride` 字段清单维护方式 | **宏单点生成**（`object_override!`，12 字段） | 漏改即红：判据⑭ 断言与 schema 内嵌 `ObjectDesc` 键集（去 `name`）集合相等 |
+| `P3` | 模板与实例的数据共享 | **`Arc<PrefabTemplate>`** 共享，实例只存覆盖 | E02 判据「100 实例内存不随实例线性膨胀」的直接依据；模板文件改动不改 `scene_hash`（已知副作用，E05 断言化） |
+| `P4` | Prefab ID 形态 | **小写点分段**（`a-z0-9_`，至少两段，如 `prop.crate`） | `validate_prefab_id` 三判据（⑩⑪⑫）；`prefab_rel_path` 由 ID 直接拼路径 |
+| `P5` | 命令面 rpc 归属 | **草案 B**：`prefab.spawn` + `prefab.info` 带 rpc，`prefab.define` **不带** | 6 条命令 / `rpc +2`（全局 83 → **85**）；`script_only` `330 → 334`，按 `R1` 在 E04 同卡给 `M2_PLAN §4` 规则 4 加「无死条目」脚注 |
+| `P6` | 不变量选题 | **`prefab.override_leak`**（覆盖字段写回模板，Error） | `invariants 44 → 45`，E04 三源登记 |
+
+**落地约束**：
+
+- 三态与宏清单属**冻结外形**，E02–E05 不得改字段名或加第四态；确需扩展须递增 `PREFAB_SCHEMA_VERSION` 并同步重生成 `assets/prefab.schema.json`。
+- `P5=B` 的 `script_only +4` 是「4 条命令有真实脚本注册点」的必然结果，**不得**用挂伪 rpc 抹平，也不得削减命令数（详见 `M2_E_PLAN.md` §11.2 偏差登记 `R1`）。
+- `P3` 决定了 `Scene.instances` 只存 `(prefab_id, overrides)`，E02 落实例表时禁止把模板字段复制进实例。
+- E01 落地实测见 `M2_E_PLAN.md` §4.5（含三处口径差异：⑬⑭ 按 12 项落、`diff`/`revert` 归 E03、`sanitized` 含标签截断去重）。
