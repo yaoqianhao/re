@@ -112,6 +112,14 @@ impl ScriptHost {
 
         let mut engine = Engine::new();
         engine.on_print(|s| println!("[script] {s}"));
+        // Rhai 只内建 `print`（走上面这条 `on_print`），没有 `println`：脚本里写
+        // `println("x")` 会报 `Function not found`，而写惯 Rust 的人第一反应就是 println。
+        // 这里补一个同语义别名——前缀同样由 `on_print` 那套 `[script]` 口径给出、行尾交给
+        // `println!` 自己带，所以 `println("x")` 与 `print("x")` 在控制台里是同一行。
+        //
+        // 登记在宿主构造里而不是 `api/*.rs`：它补的是语言层内置函数，不是引擎命令，因此
+        // 不进 `cmd_spec` 命令表（`print` 自己也不在表里），不污染能力清单与契约测试口径。
+        engine.register_fn("println", |value: Dynamic| println!("[script] {value}"));
         api::bind_all(&mut engine, &ctx);
 
         Self {

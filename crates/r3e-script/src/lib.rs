@@ -7,6 +7,7 @@
 
 pub mod api;
 mod host_wiring;
+mod prefab_boot;
 mod util;
 
 /// 能力面契约（M2-A03b）：从 `r3e-core` 再导出，`r3e_script::host::PhysicsHost` 老路径照旧可用。
@@ -133,8 +134,7 @@ impl ScriptHost {
                 self.last_error = Some(msg);
             }
         }
-        self.last_error = None;
-        Ok(())
+        self.finish_script_run()
     }
 
     /// 载入脚本文件并记录 mtime。
@@ -265,7 +265,7 @@ impl ScriptHost {
                 }
             }
         }
-        Ok(())
+        self.finish_rebuild()
     }
 
     /// 检查脚本文件是否变化；返回 true 表示已重载（场景已被重放）。
