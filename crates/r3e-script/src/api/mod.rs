@@ -302,6 +302,7 @@ mod light;
 mod physics;
 mod pick;
 mod postfx;
+mod prefab;
 mod query;
 mod scene_flow;
 mod shadow;
@@ -324,6 +325,7 @@ pub fn bind_all(engine: &mut Engine, ctx: &ScriptContext) {
     input::register(engine, ctx);
     physics::register(engine, ctx);
     character::register(engine, ctx);
+    prefab::register(engine, ctx);
     terrain::register(engine, ctx);
     text::register(engine, ctx);
     ui::register(engine, ctx);

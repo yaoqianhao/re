@@ -32,6 +32,7 @@ mod scene_verify_rpc_tests {
     }
 
     impl NavApi for VerifyStub {}
+    impl PrefabApi for VerifyStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -106,6 +107,7 @@ mod scene_verify_rpc_tests {
         }
 
         impl NavApi for BareStub {}
+        impl PrefabApi for BareStub {}
         let mut api = BareStub;
         let res = dispatch(&mut api, &request("scene.verify", json!({})));
         let err = res.error.expect("缺省实现应报未实现");

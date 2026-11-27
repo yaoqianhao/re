@@ -5,8 +5,8 @@
 //! 在 `r3e-core` 的 `EnvironmentSettings::sanitized` 里，由 `env_probe` 用例覆盖。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, EnvironmentPatch, NavApi, PhysicsInfo, Request, Response,
-    INVALID_PARAMS,
+    dispatch, EngineApi, EngineInfo, EnvironmentPatch, NavApi, PhysicsInfo, PrefabApi, Request,
+    Response, INVALID_PARAMS,
 };
 use serde_json::{json, Value};
 
@@ -49,6 +49,7 @@ impl EngineApi for Mock {
 }
 
 impl NavApi for Mock {}
+impl PrefabApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {

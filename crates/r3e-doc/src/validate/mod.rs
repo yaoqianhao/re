@@ -19,6 +19,7 @@ mod geom;
 mod invariants;
 mod material;
 mod overlap;
+mod prefab;
 mod refs;
 mod support;
 mod terrain;
@@ -67,6 +68,8 @@ pub enum Category {
     Character,
     /// 地形（样本不可归一 / 地表空洞）
     Terrain,
+    /// Prefab（覆盖字段写回模板 / 指向不存在的模板，M2-E04）
+    Prefab,
 }
 
 impl Category {
@@ -81,6 +84,7 @@ impl Category {
             Self::Reachability => "reachability",
             Self::Character => "character",
             Self::Terrain => "terrain",
+            Self::Prefab => "prefab",
         }
     }
 
@@ -98,6 +102,7 @@ impl Category {
             "nav" => Self::Reachability,
             "character" => Self::Character,
             "terrain" => Self::Terrain,
+            "prefab" => Self::Prefab,
             _ => Self::Bounds,
         }
     }
@@ -231,6 +236,9 @@ pub fn validate(scene: &Scene) -> Vec<Issue> {
     // 算得出，物理层没有更准的第二份口径去复核。三个入口（加载期 / 验证期 / 带目录）
     // 必须一致，所以三处都调。
     terrain::check(scene, &mut out);
+    // Prefab 族（M2-E04）：模板存在性与「覆盖是否抄回模板值」同样是**确定结论**，
+    // 与地形族同理三入口一致，所以加载期 / 验证期 / 带目录三处都调。
+    prefab::check(scene, &mut out);
     sort_issues(&mut out);
     out
 }
@@ -260,6 +268,9 @@ pub fn validate_geometry(scene: &Scene) -> Vec<Issue> {
     // 算得出，物理层没有更准的第二份口径去复核。三个入口（加载期 / 验证期 / 带目录）
     // 必须一致，所以三处都调。
     terrain::check(scene, &mut out);
+    // Prefab 族（M2-E04）：模板存在性与「覆盖是否抄回模板值」同样是**确定结论**，
+    // 与地形族同理三入口一致，所以加载期 / 验证期 / 带目录三处都调。
+    prefab::check(scene, &mut out);
     sort_issues(&mut out);
     dedup_superseded(out)
 }
@@ -374,6 +385,9 @@ pub fn validate_in_dir(scene: &Scene, dir: &std::path::Path) -> Vec<Issue> {
     // 算得出，物理层没有更准的第二份口径去复核。三个入口（加载期 / 验证期 / 带目录）
     // 必须一致，所以三处都调。
     terrain::check(scene, &mut out);
+    // Prefab 族（M2-E04）：模板存在性与「覆盖是否抄回模板值」同样是**确定结论**，
+    // 与地形族同理三入口一致，所以加载期 / 验证期 / 带目录三处都调。
+    prefab::check(scene, &mut out);
     sort_issues(&mut out);
     out
 }

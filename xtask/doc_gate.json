@@ -73,6 +73,36 @@
       "needle": "pub(crate) fn spawn_asset_anim(",
       "count": 1,
       "note": "动画实例登记：写动画实例与片段（P4 保留的受控出口，P5 从 app.rs 抽出成独立模块）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/prefab_ops.rs",
+      "needle": "pub fn define(scene: &mut Scene, id: &str, path: &str) -> Result<DefineResult, PrefabOpError> {",
+      "count": 1,
+      "note": "M2-E04 prefab 落库写点：runtime 把 RPC/宿主请求落到 Scene 的唯一出口（受规则 4/7 监管），editor-host 跨 crate 调用须公开：登记模板 + 表满/ID 判定"
+    },
+    {
+      "path": "crates/r3e-runtime/src/prefab_ops.rs",
+      "needle": "pub fn spawn(",
+      "count": 1,
+      "note": "M2-E04 prefab 落库写点：runtime 把 RPC/宿主请求落到 Scene 的唯一出口（受规则 4/7 监管），editor-host 跨 crate 调用须公开：单实例化（父级解析在此）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/prefab_ops.rs",
+      "needle": "pub fn spawn_many(",
+      "count": 1,
+      "note": "M2-E04 prefab 落库写点：runtime 把 RPC/宿主请求落到 Scene 的唯一出口（受规则 4/7 监管），editor-host 跨 crate 调用须公开：批量实例化（含失败回滚）"
+    },
+    {
+      "path": "crates/r3e-runtime/src/prefab_ops.rs",
+      "needle": "pub fn set_override(",
+      "count": 1,
+      "note": "M2-E04 prefab 落库写点：runtime 把 RPC/宿主请求落到 Scene 的唯一出口（受规则 4/7 监管），editor-host 跨 crate 调用须公开：写覆盖字段并重算节点"
+    },
+    {
+      "path": "crates/r3e-runtime/src/prefab_ops.rs",
+      "needle": "pub fn clear_override(scene: &mut Scene, name: &str, field: &str) -> Result<bool, PrefabOpError> {",
+      "count": 1,
+      "note": "M2-E04 prefab 落库写点：runtime 把 RPC/宿主请求落到 Scene 的唯一出口（受规则 4/7 监管），editor-host 跨 crate 调用须公开：退覆盖字段并重算节点"
     }
   ]
 }

@@ -257,6 +257,15 @@ pub const ISSUE_CODES: &[IssueCode] = &[
         layer: "terrain",
         severity: Severity::Warn,
     },
+    // ------------------------------------------------- prefab.rs（静态确定结论，M2-E04）
+    // 「覆盖字段不得写回模板」这条架构约束的可自动判定落点：实例覆盖里出现与模板
+    // 同值的字段、实例指向不存在的模板、覆盖表退化成冗余快照，三者报同一 code
+    // （`M2_E_PLAN` §3.7）。
+    IssueCode {
+        code: "prefab.override_leak",
+        layer: "prefab",
+        severity: Severity::Error,
+    },
 ];
 
 /// 按 `code` 查表。查不到返回 `None`（代表上报了一个没登记的字面量，属于缺陷）。
@@ -305,6 +314,7 @@ mod tests {
                         | "nav"
                         | "character"
                         | "terrain"
+                        | "prefab"
                 ),
                 "未知校验层 {}（新增校验模块须同步本表）",
                 ic.layer

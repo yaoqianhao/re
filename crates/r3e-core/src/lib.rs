@@ -138,6 +138,10 @@ pub use query::{Component, NodeDetail, NodeKind, NodeView, Query, QueryStats, DE
 pub use scene::{
     AnimDecl, AssetDecl, ObjectDesc, PhysicsDesc, PhysicsSceneDesc, Scene, SceneFile, ShadowDesc,
 };
+// 「模板未注册」报错前缀：上层（runtime / script / editor-host）要按它分流
+// Conflict 与 Invalid，不能自己去 contains 中文字面量。定义在 `scene::prefab`，
+// 那里是 `Scene` 的实例化实现，前缀由它签出（E02 判据⑪），这里只是转出来。
+pub use scene::prefab::ERR_UNKNOWN_TEMPLATE;
 pub use scene_material::{
     normalize_material_ref, resolve_texture_path, SceneMaterialDecl, SCENE_MATERIAL_MAX,
     SCENE_MATERIAL_NAME_MAX_LEN, TEXTURE_PATH_MAX_LEN, TEXTURE_SLOTS, UV_SCALE_MAX, UV_SCALE_MIN,

@@ -7,8 +7,8 @@
 //! 判定——传输层不认识 `r3e_core` 的任何类型，所以这里不测名字。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, PostFxPatch, Request, Response,
-    INVALID_PARAMS,
+    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, PostFxPatch, PrefabApi, Request,
+    Response, INVALID_PARAMS,
 };
 use serde_json::{json, Value};
 
@@ -48,6 +48,7 @@ impl EngineApi for Mock {
 }
 
 impl NavApi for Mock {}
+impl PrefabApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {

@@ -27,6 +27,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("physics", include_str!("../src/api/physics.rs")),
     ("pick", include_str!("../src/api/pick.rs")),
     ("postfx", include_str!("../src/api/postfx.rs")),
+    ("prefab", include_str!("../src/api/prefab.rs")),
     ("query", include_str!("../src/api/query.rs")),
     ("scene_flow", include_str!("../src/api/scene_flow.rs")),
     ("shadow", include_str!("../src/api/shadow.rs")),
@@ -96,19 +97,20 @@ fn 表里的每条脚本命令都真的注册了() {
 fn 统计与测绘口径一致() {
     let counts = source_registrations();
     let total: usize = counts.values().sum();
-    // 测绘结论：18 个域文件共 377 次注册、366 个唯一名字（11 处重载）。
+    // 测绘结论：19 个域文件共 383 次注册、372 个唯一名字（11 处重载）。
     // M2-B01 起 `character` 域并入（+6 唯一名 / +6 次注册），M2-C06 起 `terrain` 域并入
-    // （+7 唯一名 / +7 次注册，`terrain.mesh` 只在 RPC 侧、不进脚本）。数字变了说明
+    // （+7 唯一名 / +7 次注册，`terrain.mesh` 只在 RPC 侧、不进脚本），M2-E04 起
+    // `prefab` 域并入（+6 唯一名 / +6 次注册，六条全进脚本、两条带 rpc）。数字变了说明
     // 有人加了命令却没更新 `docs/m0/M0S2_API_SPLIT.md` 的口径表。
     assert_eq!(
         counts.len(),
-        366,
-        "唯一命令数应为 366（M0 测绘口径 + M2-B01 六条 + M2-C06 七条）"
+        372,
+        "唯一命令数应为 372（M0 测绘口径 + M2-B01 六条 + M2-C06 七条 + M2-E04 六条）"
     );
-    assert_eq!(total, 377, "注册次数应为 377（含 11 处重载）");
+    assert_eq!(total, 383, "注册次数应为 383（含 11 处重载）");
     assert_eq!(
         cmd_spec::script_names().count(),
-        366,
+        372,
         "命令表脚本条目数应与注册唯一名一致"
     );
 }

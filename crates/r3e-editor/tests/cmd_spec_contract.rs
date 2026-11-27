@@ -29,6 +29,8 @@ const NAV_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/nav.rs");
 const CHARACTER_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/character.rs");
 /// 地形八条（M2-C06）：`character` 之后、`nav` 之前那一段。
 const TERRAIN_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/terrain.rs");
+/// `prefab.*` 两条（M2-E04）：`nav` 之后、`inspect` 之前那一段。
+const PREFAB_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/prefab.rs");
 /// 检视四条（M1-S1-D）：`scene.snapshot` / `mesh.stats` / `scene.validate` /
 /// `physics.simulate`，兜底链的最后一环。
 const INSPECT_SRC: &str = include_str!("../../r3e-protocol/src/dispatch/inspect.rs");
@@ -78,6 +80,7 @@ fn dispatch_keys() -> Vec<&'static str> {
     out.extend(scan_branches(INSPECT_SRC, "fn dispatch_inspect("));
     out.extend(scan_branches(CHARACTER_SRC, "fn dispatch_character("));
     out.extend(scan_branches(TERRAIN_SRC, "fn dispatch_terrain("));
+    out.extend(scan_branches(PREFAB_SRC, "fn dispatch_prefab("));
     out
 }
 
@@ -104,7 +107,7 @@ fn dispatch的每个点分方法都在命令表里() {
     assert!(
         keys.len() >= 76,
         "只扫到 {} 个分支，扫描逻辑可能失效（期望 76 个即：39 基础 + 5 事务 + 3 查询 + 1 意图 \
-         + 8 物理导航材质 + 1 体检 + 1 装配 + 4 检视 + 6 角色 + 8 地形）",
+         + 8 物理导航材质 + 1 体检 + 1 装配 + 4 检视 + 6 角色 + 8 地形 + 2 prefab）",
         keys.len()
     );
 

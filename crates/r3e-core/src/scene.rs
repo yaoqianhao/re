@@ -619,7 +619,9 @@ mod hierarchy;
 mod io;
 mod morph;
 mod occlusion;
-mod prefab;
+// prefab 子模块对外公开一条常量（`ERR_UNKNOWN_TEMPLATE`）：runtime / script /
+// editor-host 都要按它分流 Conflict 与 Invalid，转出去比各自 contains 中文更稳。
+pub mod prefab;
 mod skin;
 
 #[cfg(test)]

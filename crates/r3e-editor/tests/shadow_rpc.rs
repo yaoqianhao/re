@@ -7,7 +7,7 @@
 //! 「合并后回写」属于宿主语义，由 `r3e-app` 的单测覆盖。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, Request, Response, RpcFailure,
+    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, PrefabApi, Request, Response, RpcFailure,
     ShadowPatch, INVALID_PARAMS, METHOD_NOT_FOUND,
 };
 use serde_json::{json, Value};
@@ -48,6 +48,7 @@ impl EngineApi for Mock {
 }
 
 impl NavApi for Mock {}
+impl PrefabApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {
@@ -183,6 +184,7 @@ fn unimplemented_reports_method_not_found() {
     }
 
     impl NavApi for Bare {}
+    impl PrefabApi for Bare {}
     let mut api = Bare;
     let req = Request {
         jsonrpc: r3e_editor::JSONRPC.to_string(),

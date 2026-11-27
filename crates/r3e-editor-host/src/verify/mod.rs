@@ -238,6 +238,10 @@ fn layer_of(category: Category) -> Layer {
         // 地形判据（M2-C06）同样只吃 core 数据：样本数与分辨率、块覆盖都是场景内真值，
         // 物理层拿地形场复核的是「碰撞形状对不对」，不是「块划分自相矛盾」，两码事。
         Category::Terrain => Layer::Static,
+        // prefab 判据（M2-E04）：模板是否存在、覆盖字段是不是抄回模板原值，两者都只吃
+        // `Scene` 里的模板表与实例表，不碰物理 / 导航后端。归静态层，`verify` 才不必
+        // 为了「有没有白覆盖」去启动后端。
+        Category::Prefab => Layer::Static,
         Category::Support | Category::Overlap => Layer::Physics,
         Category::Reachability => Layer::Nav,
     }

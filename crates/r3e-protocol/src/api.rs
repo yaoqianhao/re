@@ -29,8 +29,10 @@ use crate::terrain::{
 use crate::verify::VerifyQuery;
 
 mod nav;
+mod prefab;
 
 pub use nav::NavApi;
+pub use prefab::{PrefabApi, PrefabInfoRequest, PrefabSpawnRequest};
 
 /// 宿主（`r3e-app`）要实现的引擎操作集合。
 ///
@@ -39,7 +41,10 @@ pub use nav::NavApi;
 ///
 /// 继承 [`NavApi`]：导航十条在 [`nav`] 子模块里定义，宿主在那里实现真逻辑，
 /// 其余实现方写一个空的 `impl NavApi for .. {}` 就沿用「未实现」缺省。
-pub trait EngineApi: NavApi {
+///
+/// 继承 [`PrefabApi`]：prefab 两条（`prefab.spawn` / `prefab.info`）在 [`prefab`]
+/// 子模块里定义，口径同上——只实现不动的那部分，其余走缺省。
+pub trait EngineApi: NavApi + PrefabApi {
     fn info(&mut self) -> EngineInfo;
 
     fn scene_list(

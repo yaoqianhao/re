@@ -9,8 +9,8 @@
 //! * 未实现的宿主明确报 `-32601`，而不是假装成功——前端靠这个区分「后端不支持」。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, EnvironmentMapPatch, NavApi, PhysicsInfo, Request, Response,
-    INVALID_PARAMS, METHOD_NOT_FOUND,
+    dispatch, EngineApi, EngineInfo, EnvironmentMapPatch, NavApi, PhysicsInfo, PrefabApi, Request,
+    Response, INVALID_PARAMS, METHOD_NOT_FOUND,
 };
 use serde_json::{json, Value};
 
@@ -59,6 +59,7 @@ impl EngineApi for Mock {
 }
 
 impl NavApi for Mock {}
+impl PrefabApi for Mock {}
 
 /// 只实现 `info` 的宿主：其余方法走 trait 默认实现（unsupported）。
 #[derive(Default)]
@@ -71,6 +72,7 @@ impl EngineApi for Bare {
 }
 
 impl NavApi for Bare {}
+impl PrefabApi for Bare {}
 
 fn call<A: EngineApi>(api: &mut A, method: &str, params: Value) -> Response {
     let req = Request {

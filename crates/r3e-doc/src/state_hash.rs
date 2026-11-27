@@ -23,6 +23,7 @@
 //!   ui + ui_enabled + ui_above_text
 //!   occlusion → environment_map(有无 + 内容)
 //!   physics → assets → morphs
+//!   instances（**仅非空时**：段标签 + 条数 + 每条：名字 / 模板 ID / 父级 / 覆盖三态）
 //! 节点（按 Scene::order，插入序，稳定）
 //!   每节点：id → name → transform(9×f32) → visible → color → material(有无 + 内容)
 //!           → material_ref(有无 + 名字) → parent(有无) → children(按序) → mesh(存在性 + 内容)
@@ -40,6 +41,7 @@
 //! | `terrain`（M1-S3-C：名字 / 矩形 / 分辨率 / 材质 / 高度样本） | `paint_terrain` 直接改，AI 写入必须能被差分哈希看见 |
 //! | `materials`（M1-S4-A：名字 / 三标量 / 5 贴图槽 / uv 缩放） | `UpsertMaterial` / `RemoveMaterial` 直接改，引用解析随之变化 |
 //! | `spawns`（M1-S4-B：名字 / 位置 / yaw） | 出生点是导航验证的起点；移动出生点会改变「可达 / 不可达」的结论，必须可被差分哈希看见 |
+//! | `instances`（M2-E05 / `P3`：名字 / 模板 ID / 父级 / 覆盖三态） | 「实例跟着模板走」是设置，不是派生：改一条覆盖就是改文档真值，必须被差分哈希看见（判据④前半） |
 //!
 //! | 不覆盖 | 理由 |
 //! |---|---|
@@ -48,12 +50,15 @@
 //! | `animations` 播放进度 / `skins` 关节求解结果 | 每帧求值产物，进哈希等于给渲染层开门 |
 //! | 物理求解缓存 | 同上 |
 //! | `name_index` / `layout_version` | 派生索引与渲染缓存版本，不是文档内容 |
+//! | `prefabs`（`PrefabTable`）/ `prefab_handles`（模板本体与 `Arc` 句柄） | 模板是**被引用物**而非实例真值：实例的覆盖已入哈希，模板正文改一次不该让所有引用它的场景集体变色（`P3` 取舍，判据④后半） |
 //! | `MorphInstance::slots`（`ShapeSlots`） | 字段私有，其上层 `weights` / `target_count` / `exclusive` 已覆盖语义 |
 //!
 //! 已知边界（M0-S4 §7 R7）：只保证「同机同二进制两次运行一致」，跨平台位级确定性推 M2。
 
 use std::fmt;
 
+use r3e_core::prefab::{FieldOverride, ObjectOverride, PrefabInstance};
+use r3e_core::PhysicsDesc;
 use r3e_core::{
     AnimDecl, AssetDecl, BloomSettings, Camera, CascadeSettings, EnvironmentMapSettings,
     EnvironmentSettings, Light, LocalLight, LocalLightKind, MeshRef, MorphInstance, Node,
@@ -67,6 +72,11 @@ use crate::Document;
 /// FNV-1a 64 的起始偏移。跨层复用（runtime 的 headless 指纹从同一初值起算）。
 pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// 实例段标签（`"inst"` 的 ASCII）。只在实例表非空时混入，用于把「实例段」与
+/// 相邻字段隔开——否则「实例名恰好等于某个后续混入值」这类碰撞在 64 位 FNV 上
+/// 虽不至于，但没有域标签的可读性代价是零收益。
+const INSTANCE_SEGMENT_TAG: u64 = 0x696e_7374;
 
 /// 场景内容指纹（FNV-1a 64）。
 ///
@@ -550,6 +560,71 @@ fn mix_morph(h: &mut u64, m: &MorphInstance) {
     }
 }
 
+// ---------- Prefab 实例段（M2-E05） ----------
+
+/// 混入一个覆盖槽：`None`（继承）与 `Clear`（显式清空）必须分得开。
+///
+/// 判别位取 0 / 1 / 2，与 `OverrideState` 的三态一一对应（`as_str` 不是哈希口径，
+/// 哈希走数字判别位，避免日后改文案就换哈希）。
+fn mix_override<T>(
+    h: &mut u64,
+    slot: &Option<FieldOverride<T>>,
+    mix_value: impl FnOnce(&mut u64, &T),
+) {
+    match slot {
+        None => mix_u64(h, 0),
+        Some(FieldOverride::Set(value)) => {
+            mix_u64(h, 1);
+            mix_value(h, value);
+        }
+        Some(FieldOverride::Clear) => mix_u64(h, 2),
+    }
+}
+
+fn mix_physics_desc(h: &mut u64, p: &PhysicsDesc) {
+    mix_str(h, &p.body);
+    mix_f32(h, p.mass);
+    mix_opt_f32(h, p.restitution);
+    mix_opt_f32(h, p.friction);
+    mix_opt_str(h, p.collider.as_deref());
+    mix_opt_v3(h, p.half_extents);
+    mix_opt_bool(h, p.ccd);
+}
+
+/// 覆盖表：按 [`ObjectOverride::FIELD_NAMES`] 的宏展开序逐字段混。
+///
+/// 顺序即契约：字段序变了等于换哈希（与节点段同一立场）。`Set` 与 `Clear` 都算
+/// 「有覆盖」，但混出来的位不同——否则「清空模板材质」和「把材质改成同值」会撞车。
+fn mix_overrides(h: &mut u64, o: &ObjectOverride) {
+    mix_override(h, &o.mesh, |h, v| mix_str(h, v));
+    mix_override(h, &o.position, |h, v| mix_f32s(h, v));
+    mix_override(h, &o.rotation, |h, v| mix_f32s(h, v));
+    mix_override(h, &o.scale, |h, v| mix_f32s(h, v));
+    mix_override(h, &o.color, |h, v| mix_f32s(h, v));
+    mix_override(h, &o.parent, |h, v| mix_str(h, v));
+    mix_override(h, &o.visible, |h, v| mix_bool(h, *v));
+    mix_override(h, &o.physics, mix_physics_desc);
+    mix_override(h, &o.material, mix_material);
+    mix_override(h, &o.material_ref, |h, v| mix_str(h, v));
+    mix_override(h, &o.tags, |h, v| {
+        mix_u64(h, v.len() as u64);
+        for t in v {
+            mix_str(h, t);
+        }
+    });
+    mix_override(h, &o.interact_radius, |h, v| mix_f32(h, *v));
+}
+
+/// 一条实例记录：名字 / 模板 ID / 父级 / 覆盖三态。
+///
+/// **不含模板本体**：模板是被引用物（见文件头「不覆盖」表的 `prefabs` 一行）。
+fn mix_instance(h: &mut u64, i: &PrefabInstance) {
+    mix_str(h, &i.name);
+    mix_str(h, &i.template);
+    mix_opt_str(h, i.parent.as_deref());
+    mix_overrides(h, &i.overrides);
+}
+
 // ---------- 入口 ----------
 
 /// 场景内容指纹：不含 `time` / `frame`，命令改了内容才变。
@@ -624,6 +699,16 @@ pub fn scene_hash(scene: &Scene) -> StateHash {
     mix_u64(&mut h, scene.morphs.len() as u64);
     for m in &scene.morphs {
         mix_morph(&mut h, m);
+    }
+    // 实例段（M2-E05 / P3）：只混实例记录，不混模板本体。
+    // **空表一个位都不混**：既有金标场景没有 `instances` 段，无条件混一位会让
+    // 回放金标整体漂移；「无实例」与「空 `instances` 数组」本就等价。
+    if !scene.instances.is_empty() {
+        mix_u64(&mut h, INSTANCE_SEGMENT_TAG);
+        mix_u64(&mut h, scene.instances.len() as u64);
+        for i in &scene.instances {
+            mix_instance(&mut h, i);
+        }
     }
 
     // 节点：按插入序，顺序稳定。

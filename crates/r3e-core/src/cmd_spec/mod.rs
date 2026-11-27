@@ -19,6 +19,7 @@ mod env;
 mod input;
 mod light;
 mod meta;
+mod prefab;
 mod render;
 mod scene;
 mod sim;
@@ -131,6 +132,7 @@ pub fn all() -> impl Iterator<Item = &'static CommandSpec> {
         input::ALL,
         light::ALL,
         meta::ALL,
+        prefab::ALL,
         render::ALL,
         scene::ALL,
         sim::ALL,
@@ -195,8 +197,8 @@ mod tests {
         );
         assert_eq!(
             rpc,
-            rpc_only + 36,
-            "83 个 RPC 方法里 36 个能对到脚本命令（含 M2-B01 的 character 六条、M2-C06 的 terrain 七条），其余 47 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* 十条 / material / verify / M1-S1-D 四条 / M2-C06 的 terrain.mesh）"
+            rpc_only + 38,
+            "85 个 RPC 方法里 38 个能对到脚本命令（含 M2-B01 的 character 六条、M2-C06 的 terrain 七条、M2-E04 的 prefab 两条），其余 47 个只有 RPC（Meta 域：tx.* / query.* / physics.* / nav.* 十条 / material / verify / M1-S1-D 四条 / M2-C06 的 terrain.mesh）"
         );
     }
 

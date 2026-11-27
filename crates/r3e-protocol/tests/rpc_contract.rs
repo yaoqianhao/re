@@ -28,6 +28,7 @@ mod save_rpc_tests {
     }
 
     impl NavApi for SaveStub {}
+    impl PrefabApi for SaveStub {}
 
     /// 什么都没实现的宿主：验证 trait 缺省实现拒绝 `scene.save`。
     struct BareStub;
@@ -39,6 +40,7 @@ mod save_rpc_tests {
     }
 
     impl NavApi for BareStub {}
+    impl PrefabApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -144,6 +146,7 @@ mod scene_stack_rpc_tests {
     }
 
     impl NavApi for StackStub {}
+    impl PrefabApi for StackStub {}
 
     /// 什么都没实现的宿主：验证缺省实现一律拒绝。
     struct BareStub;
@@ -155,6 +158,7 @@ mod scene_stack_rpc_tests {
     }
 
     impl NavApi for BareStub {}
+    impl PrefabApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -330,6 +334,7 @@ mod audio_spatial_rpc_tests {
     }
 
     impl NavApi for SpatialStub {}
+    impl PrefabApi for SpatialStub {}
 
     struct BareStub;
 
@@ -340,6 +345,7 @@ mod audio_spatial_rpc_tests {
     }
 
     impl NavApi for BareStub {}
+    impl PrefabApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -580,6 +586,7 @@ mod stats_capture_rpc_tests {
     }
 
     impl NavApi for FeedbackStub {}
+    impl PrefabApi for FeedbackStub {}
 
     /// 什么都没实现的宿主：验证 trait 缺省实现拒绝这两个新方法。
     struct BareStub;
@@ -591,6 +598,7 @@ mod stats_capture_rpc_tests {
     }
 
     impl NavApi for BareStub {}
+    impl PrefabApi for BareStub {}
 
     fn request(method: &str, params: Value) -> Request {
         Request {
@@ -720,6 +728,7 @@ fn collect_dispatch_arms() -> Vec<String> {
         include_str!("../src/dispatch/nav.rs"),
         include_str!("../src/dispatch/character.rs"),
         include_str!("../src/dispatch/terrain.rs"),
+        include_str!("../src/dispatch/prefab.rs"),
         include_str!("../src/dispatch/inspect.rs"),
     ];
 

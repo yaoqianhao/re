@@ -15,6 +15,7 @@ pub mod nav_ops;
 mod physics_bind;
 mod physics_sync;
 pub mod port;
+pub mod prefab_ops;
 mod scene_material_import;
 pub mod terrain_draw;
 pub mod terrain_field;

@@ -26,7 +26,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::prefab::{apply, DefineOutcome, PrefabInstance, PrefabTableError, PrefabTemplate};
-use crate::{NodeId, ObjectDesc};
+use crate::scene_material::normalize_material_ref;
+use crate::{
+    normalize_interact_radius, normalize_tags, MeshRef, Node, NodeId, ObjectDesc, Vec3, Vec4,
+};
 
 use super::Scene;
 
@@ -97,6 +100,15 @@ impl Scene {
     /// 按实例名取落盘记录。
     pub fn instance(&self, name: &str) -> Option<&PrefabInstance> {
         self.instances.iter().find(|item| item.name == name)
+    }
+
+    /// 按实例名取**可写**记录（M2-E04 的 `set_override` / `clear_override` 入口）。
+    ///
+    /// 只借出这一条记录，不暴露整个 `instances` 向量：调用方改完覆盖表要立刻
+    /// `resolve_overrides` 重算实体，能拿到「整表可写」反而容易绕过这条链路
+    /// 直接改节点，留下「表里说 A、节点是 B」的漂移。
+    pub fn instance_mut(&mut self, name: &str) -> Option<&mut PrefabInstance> {
+        self.instances.iter_mut().find(|item| item.name == name)
     }
 
     /// 按实例名取它握着的模板句柄（会话内句柄表，不是落盘数据）。
@@ -244,4 +256,63 @@ impl Scene {
         }
         Ok(ids)
     }
+
+    // ---------- 覆盖变更后重算节点（M2-E04） ----------
+
+    /// 按实例当前覆盖表重算**已存在**的节点（`parent` 除外）。
+    ///
+    /// 覆盖表是实例的真源、节点是算出来的结果：`set_override` / `clear_override` 只
+    /// 改表，改完必须走这里，否则会出现「表里说 A、节点还是 B」的漂移（这正是
+    /// `prefab.override_leak` 要抓的东西）。
+    ///
+    /// 返回 `false` 表示没算成：实例不在表里、模板未注册（该缺口由 doc 校验器报，
+    /// 不是本函数的事）、或节点不存在（声明的实例还没 `instantiate_declared`）。
+    ///
+    /// 为什么不改 `parent`：父名变更要动 `name_index` / `order` / 布局，属 `Scene::reparent`
+    /// 的活儿；在重算里顺手改会绕过那套逻辑，留下「父子链对不上」的中间态。
+    pub fn sync_instance_node(&mut self, name: &str) -> bool {
+        let desc = match self.instance(name) {
+            Some(instance) => match self.resolve_overrides(instance) {
+                Ok(desc) => desc,
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+        let Some(node) = self.find_mut(name) else {
+            return false;
+        };
+        apply_desc_to_node(node, &desc);
+        true
+    }
+}
+
+/// 把 [`ObjectDesc`] 的各字段套到节点上（覆盖重算的唯一收敛点）。
+///
+/// 收敛口径与 [`Scene::spawn`] 用的是同一批函数（`MeshRef::parse` /
+/// `normalize_material_ref` / `normalize_tags` / `normalize_interact_radius`）：
+/// 两条路径若口径不同，同一个覆盖值经 spawn 与经 `sync_instance_node` 会落成两个样子。
+fn apply_desc_to_node(node: &mut Node, desc: &ObjectDesc) {
+    node.mesh = desc
+        .mesh
+        .as_deref()
+        .and_then(MeshRef::parse)
+        .unwrap_or_default();
+    if let Some(p) = desc.position {
+        node.transform.position = Vec3::from(p);
+    }
+    if let Some(r) = desc.rotation {
+        node.transform.set_euler_deg(Vec3::from(r));
+    }
+    if let Some(s) = desc.scale {
+        node.transform.scale = Vec3::from(s);
+    }
+    if let Some(c) = desc.color {
+        node.color = Vec4::from(c);
+    }
+    node.visible = desc.visible.unwrap_or(true);
+    node.physics = desc.physics.clone();
+    node.material = desc.material.map(|m| m.sanitized());
+    node.material_ref = normalize_material_ref(desc.material_ref.clone());
+    node.tags = desc.tags.as_deref().map(normalize_tags).unwrap_or_default();
+    node.interact_radius = desc.interact_radius.and_then(normalize_interact_radius);
 }

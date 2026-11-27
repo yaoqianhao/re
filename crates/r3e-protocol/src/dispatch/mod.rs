@@ -10,7 +10,8 @@
 //!                            └─ character::dispatch_character character.*（M2-B01）
 //!                                 └─ terrain::dispatch_terrain terrain.*（M2-C06）
 //!                                      └─ nav::dispatch_nav nav.*（M1-S4-D）
-//!                                           └─ inspect::dispatch_inspect scene.snapshot / mesh.stats
+//!                                           └─ prefab::dispatch_prefab prefab.*（M2-E04）
+//!                                                └─ inspect::dispatch_inspect scene.snapshot / mesh.stats
 //!                                                / scene.validate / physics.simulate（M1-S1-D）
 //!                                                └─ 未知方法 → METHOD_NOT_FOUND
 //! ```
@@ -36,6 +37,7 @@ mod inspect;
 mod media;
 mod nav;
 mod physics;
+mod prefab;
 mod query;
 mod scene;
 mod terrain;

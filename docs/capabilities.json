@@ -4,11 +4,11 @@
   "engine": "r3e",
   "protocol_version": 1,
   "counts": {
-    "commands": 413,
-    "rpc": 83,
-    "script_only": 330,
+    "commands": 419,
+    "rpc": 85,
+    "script_only": 334,
     "domains": 18,
-    "invariants": 44
+    "invariants": 45
   },
   "domains": [
     "scene",
@@ -2808,6 +2808,86 @@
       "since": "M0-backfill"
     },
     {
+      "name": "prefab_clear_override",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M2-E"
+    },
+    {
+      "name": "prefab_define",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-E"
+    },
+    {
+      "name": "prefab_info",
+      "domain": "scene",
+      "rpc": "prefab.info",
+      "params": [
+        "&str"
+      ],
+      "returns": "Map",
+      "reversible": false,
+      "cost": "linear",
+      "since": "M2-E"
+    },
+    {
+      "name": "prefab_set_override",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "dynamic"
+      ],
+      "returns": "bool",
+      "reversible": true,
+      "cost": "cheap",
+      "since": "M2-E"
+    },
+    {
+      "name": "prefab_spawn",
+      "domain": "scene",
+      "rpc": "prefab.spawn",
+      "params": [
+        "&str",
+        "&str",
+        "&str"
+      ],
+      "returns": "&str",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-E"
+    },
+    {
+      "name": "prefab_spawn_many",
+      "domain": "scene",
+      "rpc": null,
+      "params": [
+        "&str",
+        "&str",
+        "i64"
+      ],
+      "returns": "i64",
+      "reversible": true,
+      "cost": "linear",
+      "since": "M2-E"
+    },
+    {
       "name": "query.describe",
       "domain": "meta",
       "rpc": "query.describe",
@@ -5249,6 +5329,11 @@
     {
       "code": "physics.gravity.non_finite",
       "layer": "bounds",
+      "severity": "error"
+    },
+    {
+      "code": "prefab.override_leak",
+      "layer": "prefab",
       "severity": "error"
     },
     {

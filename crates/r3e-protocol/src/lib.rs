@@ -55,7 +55,7 @@ pub use self::character::*;
 pub use self::client::*;
 pub use self::dispatch::{canonical_method, dispatch};
 pub use self::terrain::*;
-pub use api::{EngineApi, NavApi};
+pub use api::{EngineApi, NavApi, PrefabApi, PrefabInfoRequest, PrefabSpawnRequest};
 pub use inspect::*;
 pub use material::*;
 pub use msg::*;
@@ -139,6 +139,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// 同一批里 `nav.*` 的协议面搬到了 `api/nav.rs` 的子 trait，本表条目只是方法名清单，
 /// 契约注释不在这里。
 ///
+/// M2-E04 增 2 条（83 → 85）：prefab 实例化面。`prefab.spawn`（跨进程写入口）
+/// 与 `prefab.info`（跨进程读入口）**两条带 RPC**（`M2_E_PLAN` §3.6，`P5` = B）。
+/// `prefab_define` / `spawn_many` / `set_override` / `clear_override` 四条**故意不进本表**：
+/// 模板建库与批量操作只走脚本或宿主本地调用，代价与补口触发条件见 `M2_E_PLAN` §13 `R7`。
+///
 /// 命名铁律：本表里的名字必须是 `dispatch::canonical_method()` 归一后的形态——只含小写
 /// 字母、数字和点，**不能带下划线**（归一化会把下划线直接删掉，`tx.apply_intent`
 /// 会被请求端归一成 `tx.applyintent` 而永远匹配不上；`cmd_spec` 的
@@ -181,6 +186,8 @@ pub const RPC_METHODS: &[&str] = &[
     "physics.overlap",
     "physics.raycast",
     "physics.simulate",
+    "prefab.info",
+    "prefab.spawn",
     "query.describe",
     "query.find",
     "query.stats",
@@ -297,3 +304,12 @@ pub const TERRAIN_BLOCK_MISSING: i32 = -32041;
 /// 判据来自 `CharacterSpec::validate`，回包 `message` 直接带它的原文——不在宿主另写
 /// 一份「参数不对」的话术，否则同一个上限两个真源。
 pub const CHARACTER_SPEC_INVALID: i32 = -32031;
+/// `prefab.*` 引用了一个不存在的东西：模板 ID 没登记（`prefab.spawn` 前没
+/// `prefab_define`），或实例名不是 prefab 实例（`prefab.info` / `set_override`）。
+///
+/// 为什么不并到 `INVALID_PARAMS`：参数形状是对的，错的是引用目标的状态。
+/// 两者的修复动作完全不同——前者「先把模板登记进来」，后者「把参数改对」；
+/// 合成一个码之后调用方只能去读 message 文本猜，而 message 是给人看的。
+/// 也**不叫** `PREFAB_TEMPLATE_MISSING`：同族错误里还有「实例名不在」这半边，
+/// 码名写窄了，后来人就会把那半边硬塞回参数错去。
+pub const PREFAB_REFERENCE_MISSING: i32 = -32050;

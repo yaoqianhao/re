@@ -41,6 +41,7 @@ use r3e_editor::{
     TerrainSampleQuery, TransformPatch, UiPatch, ValidateQuery, VerifyQuery, PROTOCOL_VERSION,
     SERVER_BUSY,
 };
+use r3e_editor::{PrefabApi, PrefabInfoRequest, PrefabSpawnRequest};
 use r3e_nav::Nav;
 use r3e_physics::Physics;
 use r3e_render::Renderer;
@@ -115,6 +116,7 @@ mod material;
 mod nav;
 mod physics;
 mod postfx;
+mod prefab;
 mod query;
 mod scene;
 mod scene_flow;
@@ -126,6 +128,15 @@ mod tx;
 mod tx_violations;
 mod ui_rpc;
 mod verify;
+
+/// 本地（非 rpc）的模板建库入口（M2-E04）。
+///
+/// `prefab_define` 在 `P5` = B 的口径下**不进 `RPC_METHODS`**，只走脚本或宿主本地
+/// 调用；这里把它导到 `api` 层，装配层（`r3e-app` 载入 `assets/prefab/` 时）与集成
+/// 测试（`tests/prefab_api.rs`）才有正当入口，不必为了调一次建库去伪造 `EngineApi`。
+/// 另外四条无 rpc 的 prefab 命令（`spawn_many` / `set_override` / `clear_override`）
+/// 仍保持 `pub(super)`：它们的正当调用方是脚本侧，宿主侧留口仅供 `R7` 触发时补 rpc。
+pub use prefab::prefab_define;
 
 impl EngineApi for LocalEngineApi<'_> {
     fn engine_stats(&mut self) -> Result<Value, RpcFailure> {
@@ -437,6 +448,22 @@ impl NavApi for LocalEngineApi<'_> {
     }
     fn nav_import(&mut self, target: NavFileTarget) -> Result<Value, RpcFailure> {
         nav::nav_import(self, target)
+    }
+}
+
+/// prefab 两条（M2-E04）：`prefab.spawn` / `prefab.info`。
+///
+/// 与 [`NavApi`] 同样单独成块，理由不是「文件太长」，而是分层对齐：
+/// `prefab.*` 在协议层是 `EngineApi: PrefabApi` 子 trait，缺省实现回
+/// `METHOD_NOT_FOUND`；宿主这边一句话委托，协议翻译（错误码分流 / 回包字段）
+/// 全在 `api::prefab` 子模块。四条无 rpc 的 prefab 命令不在本块——
+/// 它们没有 RPC 入口，走的是子模块里的本地函数。
+impl PrefabApi for LocalEngineApi<'_> {
+    fn prefab_spawn(&mut self, req: PrefabSpawnRequest) -> Result<Value, RpcFailure> {
+        prefab::prefab_spawn(self, req)
+    }
+    fn prefab_info(&mut self, req: PrefabInfoRequest) -> Result<Value, RpcFailure> {
+        prefab::prefab_info(self, req)
     }
 }
 

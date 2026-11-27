@@ -145,7 +145,7 @@ pub(super) fn dispatch_nav(
                 Err(f) => Response::fail(id, f),
             }
         }
-        other => inspect::dispatch_inspect(api, id, params, other, raw),
+        other => prefab::dispatch_prefab(api, id, params, other, raw),
     }
 }
 

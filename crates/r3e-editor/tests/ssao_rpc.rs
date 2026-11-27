@@ -6,7 +6,7 @@
 //! `scene_set_ssao` 测试覆盖——传输层不认识 `r3e_core` 的任何类型，所以这里不测区间。
 
 use r3e_editor::{
-    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, Request, Response, SsaoPatch,
+    dispatch, EngineApi, EngineInfo, NavApi, PhysicsInfo, PrefabApi, Request, Response, SsaoPatch,
     INVALID_PARAMS,
 };
 use serde_json::{json, Value};
@@ -47,6 +47,7 @@ impl EngineApi for Mock {
 }
 
 impl NavApi for Mock {}
+impl PrefabApi for Mock {}
 
 fn call(api: &mut Mock, method: &str, params: Value) -> Response {
     let req = Request {

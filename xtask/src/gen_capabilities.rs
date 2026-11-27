@@ -43,7 +43,12 @@ use r3e_protocol::{PROTOCOL_VERSION, RPC_METHODS};
 /// M2-D04：406 → 413（`nav.smooth` / `nav.stats` / `nav.export` / `nav.import` /
 /// `nav.probe` / `nav.nearest` / `nav.hash` 七条**全部带 rpc**，`DD-4` 档 A；
 /// RPC 76 → 83，`script_only` 330 不变，域数 18 不变。
-const EXPECTED_COMMANDS: usize = 413;
+/// M2-E04：413 → 419（`prefab_define` / `prefab_spawn` / `prefab_spawn_many` /
+/// `prefab_set_override` / `prefab_clear_override` / `prefab_info` 六条**全归
+/// `Domain::Scene`**：RPC 83 → 85（只有 `prefab.spawn` / `prefab.info` 两条，
+/// `P5` = B），`script_only` 330 → 334（`define` / `spawn_many` / `set_override` /
+/// `clear_override` 四条**确有** `register_fn` 注册点），域数 18 不变）。
+const EXPECTED_COMMANDS: usize = 419;
 
 /// 能力域声明序（与 [`Domain`] 枚举序一致，也是清单 `domains` 数组的顺序）。
 const DOMAIN_ORDER: &[&str] = &[

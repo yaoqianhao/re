@@ -47,10 +47,11 @@ fn block_methods(marker: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// 宿主侧全部实现方法 = 引擎 API + 导航子 trait。
+/// 宿主侧全部实现方法 = 引擎 API + 导航子 trait + prefab 子 trait。
 fn host_methods() -> Vec<&'static str> {
     let mut methods = block_methods("impl EngineApi");
     methods.extend(block_methods("impl NavApi"));
+    methods.extend(block_methods("impl PrefabApi"));
     methods
 }
 
@@ -87,6 +88,8 @@ fn rpc_of(method: &str) -> Option<String> {
                 "character_",
                 // `terrain_*` 折成 `terrain.*`（M2-C06）。
                 "terrain_",
+                // `prefab_*` 折成 `prefab.*`（M2-E04）。
+                "prefab_",
             ] {
                 if let Some(tail) = method.strip_prefix(prefix) {
                     let ns = match prefix {
@@ -103,6 +106,7 @@ fn rpc_of(method: &str) -> Option<String> {
                         "nav_" => "nav",
                         "character_" => "character",
                         "terrain_" => "terrain",
+                        "prefab_" => "prefab",
                         _ => unreachable!(),
                     };
                     return Some(format!("{ns}.{}", flat(tail)));
@@ -119,15 +123,21 @@ fn 宿主实现的每个方法都能在表里找到rpc() {
     let methods = host_methods();
     assert_eq!(
         methods.len(),
-        83,
-        "宿主实现方法数应为 83（M1-S1-D 起 `scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 也在内；M2-B01 加 `character.*` 六条；M2-C06 加 `terrain.*` 八条；M2-D04 加 `nav.*` 七条），实际 {}",
+        85,
+        "宿主实现方法数应为 85（M1-S1-D 起 `scene.snapshot` / `mesh.stats` / `scene.validate` / `physics.simulate` 也在内；M2-B01 加 `character.*` 六条；M2-C06 加 `terrain.*` 八条；M2-D04 加 `nav.*` 七条；M2-E04 加 `prefab.spawn` / `prefab.info` 两条，另四条只有脚本侧入口），实际 {}",
         methods.len()
     );
 
+    let script_names: BTreeSet<&str> = cmd_spec::script_names().collect();
     let mut problems = Vec::new();
     for method in methods {
+        // 脚本侧命令名与宿主方法名同名（`prefab_define` 之类）：这类命令本就
+        // 没有对外 RPC（`M2_E_PLAN` §3.5 `P5` = B），只要能对上命令表即可。
+        let script_only = script_names.contains(method)
+            && cmd_spec::by_name(method).is_some_and(|spec| spec.rpc.is_none());
         match rpc_of(method) {
             Some(rpc) if declared.contains(rpc.as_str()) => {}
+            Some(_) if script_only => {}
             Some(rpc) => problems.push(format!("`{method}` → `{rpc}` 不在命令表里")),
             None => problems.push(format!("`{method}` 折不出点分名（宿主动词不在约定前缀内）")),
         }
