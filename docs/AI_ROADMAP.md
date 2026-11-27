@@ -25,21 +25,21 @@
 | M1-S2 | 语义查询（3 卡） | ✅ 2026-11-17（C→A→B） | `tags` / `interact_radius` 落 `Node` 与 `to_scene_file`（roundtrip 不增生字段）、`StateHash` 覆盖；`r3e-core/src/query.rs` 443 行 `WorldQuery`（八类判据 + 标签 AND/OR + 区域含边界 + 九位组件位，`describe` 与 `query` 共用 `Facts`）；`query.find/describe/stats` 三条只读 RPC：RPC 44 → **47**、命令表 374 → **377**；单测 1,504 → **1,546**；`verify` 十项全绿 |
 | M1-S3 | 意图命令（3 卡） | ✅ 2026-11-17（A→B→C） | `tx.intent`：一次意图 = N 条原子命令进同一影子事务（`staged` 涨 N / `intents` 涨 1、`undo` 一次全退）；意图白名单三条：`scene.spawn_prefab`（256 上限、重名 / 父引用预检）、`scene.place_light`（上限 = 光源表容量 16、`key` 必填、同批重 key / 场景已有 key / 空位不够三重预检）、`scene.paint_terrain`（数据壳 32 块上限、**同名重刷放行**、`sanitized` 幂等收敛、高度样本逐点入 `StateHash`）——**意图名不进协议**，加意图只改宿主常量、协议零改动（RPC 仍 **48**、命令表仍 **378**）；`impact { objects, lights, terrain, materials }` 四字段恒定回带（不进哈希、不入撤销栈）；**命名铁律**：RPC 名必须是 `canonical()` 归一形态（`tx.apply_intent` 会被归一成 `tx.applyintent` 永不命中，故叫 `tx.intent`）；单测 1,546 → **1,574**；`verify` 十项全绿。**M1-S3-C 只做数据壳**：地形网格生成与 LOD 按 D3 裁决留 M2 |
 
-### 0.2 门禁现状（`cargo xtask verify`，2026-11-20 实测，M2-A01 留证见 `docs/m2/M2_BASELINE.md`）
+### 0.2 门禁现状（`cargo xtask verify`，2026-11-27 M2-E 阶段收口实测，A01 基线与逐阶段留证见 `docs/m2/M2_BASELINE.md`）
 
-| 指标 | 现值（M0-S5 收口） | M0 目标 | 采集 |
+| 指标 | 现值（M2-E 收口） | M0 目标 | 采集 |
 |---|---|---|---|
-| 最大文件行数 | 3935（`r3e-core/src/scene.rs`） | ≤800 | `cargo xtask lint-size` |
-| `>800` 行文件数 | 23 | ≤12 | 同上（白名单 23 项，全部未上涨；协议层 20 个源文件最大 622 行） |
-| `#[test]` 总数 | 1817（M1-S1-D 后；M1-S4-G 时为 1721） | 只增不减 | `cargo xtask check-tests` 快照比对 |
+| 最大文件行数 | 2816（`r3e-runtime/src/app.rs`） | ≤800 | `cargo xtask lint-size` |
+| `>800` 行文件数 | 20 | ≤12 | 同上（白名单 20 项，全部未上涨；协议层源文件最大 `api.rs` 780 行） |
+| `#[test]` 总数 | **2489**（A01 基线 1817，B 末 2150，C 末 2338，D 末 2426，E 末 2489） | 只增不减 | `cargo xtask check-tests` 快照比对 |
 | 依赖违规数 | **0** | 0 | `cargo xtask dep-check --strict`（**已硬门**） |
-| 依赖债务条数 | 2（`script→physics` / `script→audio`，`limit=2` 只减不增；`plugin→core` / `plugin→physics` 已于 M1-S1-D 偿还，见 `docs/m1/M1_S1D_SUBSTITUTION.md`） | 记账可查 | `xtask/dep_debt.json` |
-| 能力清单漂移 | 0（`capabilities.json` 392 命令 / 62 RPC / 38 不变量，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
-| 不变量三源 | 38 = 38 = 38 | 三源一致 | `cargo xtask invariants` |
+| 依赖债务条数 | **0**（`limit=0`；`script→physics` / `script→audio` 已于 A03b 偿还，`plugin→core` / `plugin→physics` 于 M1-S1-D 偿还） | 记账可查 | `xtask/dep_debt.json` |
+| 能力清单漂移 | 0（`capabilities.json` **419 命令 / 85 RPC / `script_only` 334 / 45 不变量 / 18 域**，逐字节可复现） | 无漂移 | `cargo xtask gen-capabilities --check` |
+| 不变量三源 | 45 = 45 = 45 | 三源一致 | `cargo xtask invariants` |
 | `verify` 步数 | **11 步**（`scene-verify` 为第 11 步，此前文档误记为「九道门 / 十项」） | 全硬 | `xtask/src/main.rs` |
 | `verify` 时长（**已重标定**） | **暖态 208s**（2026-11-24 C07 收口实测，11 步全绿，exit 0）；**冷态 ≥600s**（同轮 600s 观察窗内未跑完，编译成本为主）。历史值「热态 14.6–20.4s / 冷态 255.6s」是 M0–M2A01 规模（1.4k–1.8k 测试、16 crate）的口径，**M2 规模（2,330 测试 / 19 crate / rapier）下已失效** | 门禁判据**只取退出码**，不再以秒数判绿；秒数仅作观察值 | 2026-11-24 实测 |
 | 回放确定性 | **已达成** `final=385482eb033d2964`（2026-11-20 实测；M1 期间为 `15b5652e98b3346c`，已被后续变更推进） | 600 帧两次同哈希 | `cargo xtask replay --seed 42` |
-| `doc-gate` | **435 个 `.rs` / 18 个 crate / 8 条规则**（M1-S1 加写点台账）/ 白名单 10 项 / 写点 5 crate 238 处 / 0 违规（2026-11-24 实测） | 0 违规 | `cargo xtask doc-gate` |
+| `doc-gate` | **475 个 `.rs` / 18 个 crate / 8 条规则**（M1-S1 加写点台账）/ 白名单 15 项 / 写点 5 crate **249 处** / 0 违规（2026-11-27 M2-E 收口实测） | 0 违规 | `cargo xtask doc-gate` |
 
 ### 0.3 仓库结构现状
 
@@ -365,7 +365,7 @@ cargo xtask invariants              # ✅ 38 = 38 = 38
 
 **目标**：补齐 RPG/沙盒的结构性缺口。**严格串行，不可并行**（后项依赖前项）。
 
-> 执行层文档：`docs/m2/README.md`（索引）、`docs/m2/M2_PLAN.md`（46 卡串行计划）、`docs/m2/M2_DECISIONS.md`（D1–D19 已全部拍板：D1–D13 于 2026-11-20、D14–D16 于 2026-11-22、D17–D19 于 2026-11-24）、`docs/m2/M2_BASELINE.md`（A01 实测基线）、`docs/m2/M2_PERF_PLAN.md`（性能验收口径与跨硬件测试计划）。本节只定义目标与判据，卡表与数字以上述文档为准；若本节与 `M2_PLAN.md` §2 目标值冲突，以 `M2_PLAN.md` 为准（其已按 A02 拍板结果重算，并按 D 阶段拍板 `DD-4 = A` 把 `rpc` 目标 `≥85` 抬至 **`≥90`**：tests ≥2567 / commands ≥433 / rpc ≥90 / invariants ≥48 / domains 19 / 债务 0 / 引擎 crate 19）。
+> 执行层文档：`docs/m2/README.md`（索引）、`docs/m2/M2_PLAN.md`（46 卡串行计划）、`docs/m2/M2_DECISIONS.md`（D1–D20 已全部拍板：D1–D13 于 2026-11-20、D14–D16 于 2026-11-22、D17–D19 于 2026-11-24、D20 于 2026-11-26）、`docs/m2/M2_BASELINE.md`（A01 实测基线）、`docs/m2/M2_PERF_PLAN.md`（性能验收口径与跨硬件测试计划）。本节只定义目标与判据，卡表与数字以上述文档为准；若本节与 `M2_PLAN.md` §2 目标值冲突，以 `M2_PLAN.md` 为准（其已按 A02 拍板结果重算，并按 D 阶段拍板 `DD-4 = A` 把 `rpc` 目标 `≥85` 抬至 **`≥90`**：tests ≥2567 / commands ≥433 / rpc ≥90 / invariants ≥48 / domains 19 / 债务 0 / 引擎 crate 19）。
 
 | 序 | 内容 | 前置 | 判据（可自动判定） |
 |---|---|---|---|

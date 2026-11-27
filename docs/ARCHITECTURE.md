@@ -6931,6 +6931,130 @@ Scene（地形高度图 + 节点几何 + physics.half_extents + spawns）
 
 ---
 
+## 17. Prefab 实例化层：原型复用与差异存储（M2-E，零 → 一）
+
+**一句话**：模板是**素材**（`assets/prefab/<id>.json`），实例是**引用 + 差异**（`scene.json` 的 `instances` 段）。
+同一个原型 × 100 个实例，场景文件里不会出现 100 份字段快照——改模板一次改到所有实例，而「实例被改过什么」逐字段可查、可回退。
+
+### 17.1 动机
+
+旧路径里「复用」= 复制节点：`tx.intent` 的 `spawn_prefab` 意图按**节点描述**批量建物件（单次 256 项上限），
+每个箱子都是完整 `ObjectDesc`，100 个木箱 = 100 份 mesh / physics / material 字段；改原型要逐个改，
+且「这个箱子和原型差在哪」无从判断。E 阶段把「复用」拆成两个层次：
+
+| 层次 | 载体 | 变更影响面 |
+| --- | --- | --- |
+| 原型（模板） | `assets/prefab/<id>.json`（`PrefabTemplate`） | 改文件 + `prefab_define` 重新灌表 |
+| 实例 | `scene.json` 的 `instances[]`（`PrefabInstance`） | 只有 `name` / `template` / `parent` / `overrides` 四个键 |
+
+**与旧意图的分工（`R6`）**：`scene.spawn_prefab`（`tx.intent` 内的意图名）仍是「按描述建一批物件」，
+`prefab.*` 是「按模板实例化」——两者都叫 prefab 但语义不同，命令命名靠 `prefab.` / `scene.` 前缀区分，
+`Domain` 上 6 条 `prefab.*` 全归 `Scene`（实例化改的就是场景内容）。
+
+### 17.2 数据流
+
+```
+assets/prefab/prop/crate.json            ← 模板文件（schema 版本 + proto: ObjectDesc + tags）
+        │  prefab_define(id, path)      ← 6 条命令之一（脚本 / 宿主本地，无 rpc）
+        ▼
+PrefabTable: id → Arc<PrefabTemplate>    ← 一模板一份；上限 PREFAB_MAX = 256
+        │  Scene.instances[] 只引用 template = "prop.crate"
+        │  prefab_spawn / prefab_spawn_many / prefab.spawn(rpc)
+        ▼
+apply(proto, overrides) → ObjectDesc     ← 继承不动 / Set 替换 / Clear 置空
+        ▼
+Scene 节点 + prefab_handles[name]         ← 句柄表不进序列化，只做同模板共享
+```
+
+写入路径分三层，与 C/D 阶段同构：命令表 `crates/r3e-core/src/cmd_spec/prefab.rs`（6 条）→
+运行期实现 `crates/r3e-runtime/src/prefab_ops.rs`（返回结构化结果，不返 JSON）→ 核心语义
+`crates/r3e-core/src/scene/prefab.rs`（`spawn_instance` / `instantiate_declared` / `resolve_overrides`）；
+对外两条入口：脚本 `crates/r3e-script/src/api/prefab.rs`（6 个 `register_fn`）与宿主
+`crates/r3e-editor-host/src/api/prefab.rs`（`impl PrefabApi`，两条 rpc 加四条本地方法）。
+
+节点的生命周期与实例记录**同生同灭**：删节点时 `forget_instance` 剪掉 `instances` 记录与句柄
+（否则会留一条指向不存在节点的覆盖）；清空场景时实例表整段清空、模板表保留（模板是素材，不随场景丢）。
+
+### 17.3 语义裁决
+
+1. **覆盖三态**：值为 `Set(值)`、`null` 为 `Clear`（清空、继承“改为空”）、键缺失为 `Inherit`。
+   `ObjectOverride` 只含 `ObjectDesc` 13 字段里**可覆盖的 12 个**（去掉 `name`），由宏单点生成
+   （字段名表 `FIELD_NAMES`、`count` / `field_state` / `apply_to` 全由宏展开，漏改即编译期或测试期红）；
+   `deny_unknown_fields`：覆盖里写 `name` 直接反序列化失败——静默忽略会让人误以为改了实例名。
+2. **只存差异**：`diff(proto, target)` 只记录与原型不同的字段；`Clear` 也计入 `count()`
+   （清空是动作，不记就会丢）。**「和模板同值」的覆盖等于把模板值抄回实例**，
+   模板再改实例不跟随，这是本层唯一需要自动兜住的退化，落点见第 3 条。
+3. **可逆 + 可判定**：`diff` / `apply` / `revert` 三个纯函数构成闭环（`revert(diff(proto, t))` 回到
+   `proto` 形态），不变量 `prefab.override_leak`（`layer = prefab`，`Severity::Error`）把它变成自动断言，
+   三条触发面：① 实例指向**不存在的模板 ID**；② 覆盖里出现**与模板同值**的字段（一次报一条、字段名并列，
+   不刷 12 条）；③ ②逐字段判定后自然汇总的冗余快照，不单独成判据。比较口径**复用 `diff`**——
+   `r3e-doc` 只依赖 `r3e-core`，且 `PhysicsDesc` / `SurfaceMaterial` 无 `PartialEq`，
+   「与模板同值」严格等价于「把覆盖叠上去后 `diff` 仍认为无差异」。
+4. **句柄不追溯刷新**：模板重新 `define` 后老实例仍握旧 `Arc`（`strong_count == 实例数 + 表里那份`）。
+   实例语义是「按当时那份模板实例化出来的东西」，静默改成新模板会让「画面为何变了」失去唯一解释；
+   要跟随就重新实例化，属后续卡。
+5. **模板本体既不进场景文件、也不进 `state_hash`**：与既有 `assets` 段口径一致（登记项元数据入、
+   文件字节不入）。`state_hash` 只混 `instances` 段：段标签 `0x696e7374` + 条数 + 每条
+   `name` / `template` / `parent` / 每个覆盖字段的**态与值**；**空表一位都不混**
+   （既有金标场景没有 `instances` 段，无条件混一位会让回放金标整体漂移，「无实例」与「空数组」本就等价）。
+6. **`script_only +4` 不是死条目**：6 条命令里只有 `prefab.spawn` / `prefab.info` 带 rpc
+   （`P5` = B：跨进程**写**入口 + 编辑器 UI **读**入口），其余 4 条走脚本 `register_fn` 注册点签出脚本名，
+   `script_only` 330 → 334 是真实能力面扩大；`M2_PLAN §4` 守恒规则 4 已同批补「不得出现既无脚本注册点
+   又无 rpc 的死条目」脚注（`R1`）。
+
+### 17.4 公开面
+
+| 面 | 内容 |
+| --- | --- |
+| 核心模块 `crates/r3e-core/src/prefab/` | `mod.rs` 112（ID 校验 `validate_prefab_id`：`基.名` 两段、点分小写、≤64 字符、`prefab_rel_path` 推落盘路径）/ `template.rs` 105（`PrefabTemplate` + `PREFAB_SCHEMA_VERSION = 1` + `PREFAB_MAX = 256`）/ `instance.rs` 247（`FieldOverride` / `ObjectOverride` / `PrefabInstance`）/ `diff.rs` 76（`diff` / `apply` / `revert`）/ `table.rs` 114（`PrefabTable` / `DefineOutcome` / `PrefabTableError`） |
+| 命令面（6 条，`Domain::Scene`） | `prefab_define(id, path) → bool`、`prefab_spawn(id, name, parent?) → string`（rpc `prefab.spawn`）、`prefab_spawn_many(id, prefix, count) → int`（`count ≤ 256`）、`prefab_set_override(name, field, value) → bool`、`prefab_clear_override(name, field) → bool`、`prefab_info(name) → map`（rpc `prefab.info`） |
+| RPC | 2 条：`prefab.spawn`（回包 `{ name, template, parent, nodeId, overrides }`，「刚造的实例是干净的」可验证）、`prefab.info`（`template` + 覆盖清单三态字符串）；失败口径 `Conflict`（模板未注册）/ `Invalid`（ID、名字、字段名、值形态）**不合并** |
+| 不变量 | `prefab.override_leak`（`layer = prefab`），三源一致：`ISSUE_CODES` 登记 + `prefab_issues.rs` 反例 + `capabilities.json` 重生成；连带 `Category::Prefab`（`from_code` / `as_str` / `layer` 一一对应，不允许落到 `Bounds`） |
+| 产物 | `assets/prefab.schema.json`（`PrefabTemplate` 的 JSON Schema，`bin/prefab_schema_dump.rs` 生成）+ 真实样例 `assets/prefab/prop/crate.json` |
+
+### 17.5 验收与实测基线
+
+| 测试文件 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `r3e-core/tests/prefab.rs` | 19 | E01：三态序列化逐字节冻结、schema 防漂移、ID 形态、12 字段宏一致性 |
+| `r3e-core/tests/prefab_scene.rs` | 14 | E02：`Scene` 集成、`Arc` 共享（不随实例数线性膨胀）、节点与记录同生同灭、模板不进 `scene.json` |
+| `r3e-core/tests/prefab_diff.rs` | 10 | E03：`diff` / `apply` / `revert` 可逆、`Clear` 保留、单字段并入体积 |
+| `r3e-core/tests/prefab_cmd_spec.rs` | 4 | E04：6 条命令的形状、`Domain`、rpc 归属、参数名 |
+| `r3e-protocol/tests/prefab_rpc.rs` | 3 | E04：两条 rpc 的回包与失败码，`CONFLICT` / `INVALID_PARAMS` 不合并 |
+| `r3e-doc/tests/prefab_command.rs` | 2 | E04：命令经 `Document` 写入后 `scene_hash` 变、撤销回前像 |
+| `r3e-editor-host/tests/prefab_api.rs` | 2 | E04：宿主侧 `impl PrefabApi` 的两条 rpc 方法与本地四条 |
+| `r3e-doc/tests/prefab_issues.rs` | 4 | E04 反例 1 条（不变量 B 源）+ E05 判据②③：`override_leak` 三类触发与真实样例正跑 |
+| `r3e-core/tests/prefab_instances.rs` | 3 | E05：100 实例端到端体积、退化形态反向自检、模板正文不进场景文件 |
+| `r3e-doc/tests/state_hash_prefab.rs` | 2 | E05：实例段入 hash、模板文件改动不动 hash |
+| **合计** | **63** | `xtask/tests_baseline.json` 硬门禁（E 阶段 `2426 → 2489`，`+63`） |
+
+体积判据（`tests/prefab_instances.rs`，夹具即 `assets/prefab/prop/crate.json`，全字段约 505 B）：
+`§8.2 ①` 字面口径「实例序列化总字节 < 模板字节 × 100 × 5%」被拆成两条同级断言——
+**差异载荷**严格走 5% 阈值（`name` / `template` 是每条实例必然不同的**身份**，不是差异，计入 5% 预算
+会被 100 条约 3.0 KB 的身份开销直接顶爆，与「只存差异」这个待证命题无关），
+**整段实例**（身份 + 差异）走 20% 上限；两条都落带实测数字的报错文案，反向对照（100 × 全字段快照）单独断言必然超限。
+
+门禁（`cargo xtask verify` 11 步全绿）：`tests 2489` / `commands 419` / `rpc 85` / `script_only 334` /
+`domains 18` / `invariants 45` / `size_debt 20`（一项未加）/ `dep_debt 0` / 回放金标 `385482eb033d2964` 未漂。
+
+### 17.6 已知边界
+
+1. **模板变更不追溯**：老实例握旧句柄（17.3-4），「改模板 → 所有实例同时变」只在**未被重新实例化**的前提下成立，
+   重新 `define` 后需要重新实例化才跟随；
+2. **只改模板文件不改 `scene_hash`**：模板文件字节不入 hash（`R5`），这是与 `assets` 段口径一致的必然副作用；
+   正规路径是「改文件 + `prefab_define`」（命令入 hash），人工改文件属越轨，
+   `override_leak` ①（指向不存在模板）能兜住「模板被删」一类硬错；
+3. **`prefab.define` 无 rpc**（`P5` = B 的代价）：跨进程复现前提是**先本地灌表**（模板文件随仓库分发），
+   出现「远端建模板」需求时才补 1 条 rpc，届时 `rpc 85 → 86` / `script_only 334 → 333` 同卡重算（`R7`）；
+4. **无嵌套模板**：`PrefabTemplate.proto` 是 `ObjectDesc`，模板不能由别的模板组装（不做 prefab variant / 局部重定义传播）；
+5. **覆盖粒度是整字段**：没有按路径 / 数组元素级覆盖（`position` 只能整条换，`tags` 只能整组换）；
+6. **上限**：模板表 `PREFAB_MAX = 256`、模板标签沿节点口径、`prefab_spawn_many` 单次 256 项
+   （与 `tx.intent` 的 `SPAWN_PREFAB_MAX_NODES` 对齐）；
+7. **句柄表不进序列化**：`prefab_handles` 是会话内缓存，场景载入后靠 `instantiate_declared` 重建，
+   重建走的是「按 `instances` 重放实例化」，不是「还原当时的节点」。
+
+---
+
 ## 附：模块与文件对照表
 
 | 文件 | 核心内容 |
@@ -6974,6 +7098,18 @@ Scene（地形高度图 + 节点几何 + physics.half_extents + spawns）
 | `crates/r3e-core/src/spawn.rs` | `SpawnDecl`（`name` / `position` / `yaw`）+ `normalize_all` 收敛 + `Scene::{set_spawns, upsert_spawn, spawn_decl, first_spawn}`（M1-S4-B：出生点是场景元数据，不新增 `NodeKind`） |
 | `crates/r3e-core/src/air.rs` | AIR 契约与 12 条不变量、`finalize` / `audit_entry` 统一校验 |
 | `crates/r3e-core/src/procedural.rs` | 内置程序化图元（cube / sphere / plane / cylinder）统一产出 `MeshData` |
+| `crates/r3e-core/src/prefab/mod.rs` | `PREFAB_ID_MIN` / `PREFAB_ID_MAX_LEN` / `PREFAB_MAX_SEGMENTS` 常量、`validate_prefab_id`（`基.名` 两段、点分小写、≤64 字符）、`is_valid_prefab_id`、`prefab_rel_path`（推 `assets/prefab/<id>.json`） |
+| `crates/r3e-core/src/prefab/table.rs` | `PrefabTable`：`Arc<PrefabTemplate>` 共享表（100 实例共用一份模板，不随实例数线性膨胀）、按 id 注册 / 查询 / 移除 |
+| `crates/r3e-core/src/prefab/template.rs` | `PrefabTemplate`（`id` / `schema` / `tags` / `proto` 四字段）与 `assets/prefab.schema.json` 的 JSON Schema 镜像；`proto` 复用 `ObjectDesc` 全 12 字段 |
+| `crates/r3e-core/src/prefab/diff.rs` | `ObjectOverride` 三态覆盖（`Keep` / `Set` / `Clear`，12 字段各一份）+ `diff`（模板 vs 实例求差）/ `apply` / `revert` 可逆；`Clear` 是「显式回到空」与 `Keep` 可区分 |
+| `crates/r3e-core/src/prefab/instance.rs` | `PrefabInstance`（`name` / `template` / `parent` / `overrides`）与实例解析：模板 + 差异合成最终 `ObjectDesc`；实例记录与场景节点同生同灭 |
+| `crates/r3e-core/src/cmd_spec/prefab.rs` | 6 条命令登记（全形 `Domain::Scene`）：`prefab_define` / `prefab_spawn` / `prefab_spawn_many` / `prefab_set_override` / `prefab_clear_override` / `prefab_info`；rpc 恰为 `prefab.spawn` + `prefab.info`（`P5 = B`） |
+| `crates/r3e-runtime/src/prefab_ops.rs` | 宿主实现六条命令：define（读盘 + schema 校验）/ spawn（父引用与重名预检、`SPAWN_PREFAB_MAX_NODES = 256`）/ spawn_many / set_override / clear_override / info |
+| `crates/r3e-protocol/src/api/prefab.rs` | `PrefabApi` trait：`prefab.spawn` / `prefab.info` 两条 rpc 的方法表与 DTO（回包含 `template` / `parent` / `nodeId` / `overrides`） |
+| `crates/r3e-protocol/src/dispatch/prefab.rs` | 两条 prefab rpc 的 dispatch 分支与失败码映射（`CONFLICT` 与 `INVALID_PARAMS` 不合并） |
+| `crates/r3e-editor-host/src/api/prefab.rs` | `impl PrefabApi`：两条 rpc 转发 + 四条本地命令（define / spawn_many / set_override / clear_override），错误映射为 `RpcFailure` 不 panic |
+| `crates/r3e-script/src/api/prefab.rs` | 6 条脚本注册点（`register_fn`）：`prefab_define` / `prefab_spawn` / `prefab_spawn_many` / `prefab_set_override` / `prefab_clear_override` / `prefab_info`，保证无「死条目」 |
+| `crates/r3e-doc/src/validate/prefab.rs` | 不变量 `prefab.override_leak`（`layer = prefab`）：实例覆盖与模板同值即冗余、实例指向不存在模板——两面反例 |
 | `crates/r3e-asset/src/lib.rs` | FBX 导入（ufbx）、材质/贴图元数据、动画与蒙皮数据、`AssetLibrary` |
 | `crates/r3e-asset/src/importer.rs` | `AssetImporter` + `ImporterRegistry`：按扩展名分派，未知扩展名显式报错 |
 | `crates/r3e-asset/src/gltf_import.rs` | glTF / GLB 导入（gltf 1.4.1）与 GLB 头完整性校验 |

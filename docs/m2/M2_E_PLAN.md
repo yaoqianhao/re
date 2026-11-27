@@ -564,6 +564,35 @@ pub struct ObjectOverride {
 - 提交：`feat(m2-E04): prefab 命令、rpc 与 override_leak 不变量`
 - 回滚：`git reset --hard HEAD~1`；**注意** `docs/capabilities.json` 为生成物，回滚须与 `EXPECTED_COMMANDS` 同批还原（同一提交，天然一致）。
 
+### 7.6 实施记录（2026-11-26 落地）
+
+**文件清单（新增 / 改动，行数为落地实测）**
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `crates/r3e-core/src/cmd_spec/prefab.rs` | 100 | 6 条命令登记：`prefab_define` / `prefab_spawn` / `prefab_spawn_many` / `prefab_set_override` / `prefab_clear_override` / `prefab_info`，全归 `Domain::Scene` |
+| `crates/r3e-runtime/src/prefab_ops.rs` | 366 | 六条命令的宿主实现（define / spawn / spawn_many / set_override / clear_override / info） |
+| `crates/r3e-protocol/src/api/prefab.rs` + `dispatch/prefab.rs` | 85 + 81 | `prefab.spawn` / `prefab.info` 两条 rpc 的方法表、DTO 与 dispatch 臂（`prefab.define` **不入** rpc，走本地命令路径） |
+| `crates/r3e-editor-host/src/api/prefab.rs` | 172 | 宿主层 `prefab_*` 转发与错误映射 |
+| `crates/r3e-script/src/api/prefab.rs` | 364 | 6 条脚本注册点（`register_fn`），保证无「死条目」 |
+| `crates/r3e-doc/src/validate/prefab.rs` | 106 | `prefab.override_leak` 不变量（实例覆盖与模板同值 / 指向不存在模板两面） |
+| `crates/r3e-script/tests/cmd_spec_contract.rs` | 137 | 域文件切分表补 `prefab` 域，测绘口径同步 366→**372**（唯一名）/ 377→**383**（注册次） |
+
+**判据落点（+12 条，实际 > 预算 10）**
+
+| crate | 文件 | 条数 | 内容 |
+|---|---|---|---|
+| core | `tests/prefab_cmd_spec.rs` | 4 | 命令总数 419 / 6 条全归 `Domain::Scene` / rpc 恰为 `prefab.spawn` + `prefab.info` / 6 条均有脚本注册点 |
+| protocol | `tests/prefab_rpc.rs` | 3 | `RPC_METHODS` 恰含两条新方法且点分小写 / dispatch 命中与未知方法拒答 / `prefab.spawn` 参数透传与失败码不合并 |
+| editor-host | `tests/prefab_api.rs` | 2 | `prefab_define` 本地调用成功与非法路径 → `RpcFailure` / `prefab_spawn` 未注册模板 → `Conflict` 不 panic |
+| doc | `tests/prefab_issues.rs` | 3 | `prefab.override_leak` 冗余覆盖 / 未知模板引用两面反例 + 合法场景静默 |
+
+**门禁实测**：tests 2471 → **2483**（core 689 → 693 / protocol 75 → 78 / editor-host 149 → 151 / doc 171 → 174）；`commands` **419** / `rpc` **85** / `script_only` **334** / `domains` **18** / `invariants` **45**（三源 45 = 45 = 45）；`size_debt` 20 持平、`dep_debt` 0、金标 `385482eb033d2964` 未漂。
+
+**三处隐性白名单**（§7.4 全数兑现）：① `ISSUE_CODES` 的 layer 允许集合已加 `prefab`；② 新增 `Category::Prefab` 并同步 `from_code` / `as_str`（未放任落到 `Bounds`）；③ `EXPECTED_COMMANDS` 改 419 后 `gen-capabilities` 重生成 `docs/capabilities.json`，`--check` 通过。
+
+**口径差异两处**：① 测试数 2483 vs 计划 2481，差 +2 —— 命令面（第 4 条「无死条目」）与宿主面（非法路径 → `RpcFailure`）各多一条边界断言，属加测不出口径；② `script_only` 330 → 334 是 `P5=B` 下的机械结果，按 §11.2 的 `R1` 处置（不削命令、不挂伪 rpc，改口径并回写 `M2_PLAN §4` 规则 4 脚注）。
+
 ---
 
 ## 8. E05 · 判据测试与文档收口（1.0 人日，tests +4）
@@ -588,6 +617,35 @@ pub struct ObjectOverride {
 
 - 提交：`feat(m2-E05): prefab 判据测试与文档收口`
 - 回滚：`git reset --hard HEAD~1`；**注意** `state_hash.rs` 的实例段在 E05 落地前，`state_hash` 对实例改动是**盲区**（E02–E04 期间），故 E05 不得延后到 M2 收口再补。
+
+### 8.4 实施记录（2026-11-26 落地）
+
+**代码侧（+6 条测试，实际 > 预算 4）**
+
+| crate | 文件 | 条数 | 内容 |
+|---|---|---|---|
+| core | `tests/prefab_instances.rs`（216 行） | 3 | ① 100 实例 × 1 覆盖字段的端到端体积（< 全字段模板字节 × 100 × 5%，差异载荷口径）<br>② 退化整份快照的反向自检（覆盖全部 12 字段时体积必须回到模板量级，防「阈值恒绿」）<br>③ 模板正文不进场景文件（序列化产物里搜不到模板全字段正文） |
+| doc | `tests/state_hash_prefab.rs`（145 行） | 2 | ④ 改实例覆盖 → hash 必变（四种覆盖形态两两不等 + 同文档两次取哈希相等）<br>⑤ 只改模板正文、实例不动 → hash **不变**（把 `P3` 的取舍变成可执行断言） |
+| doc | `tests/prefab_issues.rs`（193 行，E04 建 3 + 本卡 +1） | 1 | ③ 真实样例 `assets/prefab/prop/crate.json` 的 proto 镜像正跑，零 `prefab.override_leak`（防假阳性） |
+
+`state_hash.rs`（763 行，余量约 37）改动：文件头「不覆盖表」登记 `prefabs` / `prefab_handles`（模板是共享资产、实例表本身由节点段覆盖）、新增 `INSTANCE_SEGMENT_TAG` 与 `mix_override` / `mix_physics_desc` / `mix_overrides` / `mix_instance`，`scene_hash` 入口**仅在 `instances` 非空时**混入「段标签 + 条数 + 每条（名字 / 模板 ID / 父级 / 覆盖三态）」，空表不混入——保证既有场景（无 prefab 实例）的哈希逐位不变。
+
+**文档侧（本卡同批完成）**
+
+| 文件 | 改动 |
+|---|---|
+| `docs/ARCHITECTURE.md` | 新增 **§17 Prefab 实例化层**（数据结构、三态覆盖、命令与 rpc 面、不变量、`state_hash` 口径、已知边界）+ 附录对照表补 prefab 文件族 12 行 |
+| `docs/AI_ROADMAP.md` §0.2 与 §3.3 | §0.2 门禁表整表回填 M2-E 收口实测（最大文件 2816 / `>800` 20 项 / tests 2489 / 债务 0 / commands 419 / rpc 85 / script_only 334 / 45 不变量 / 18 域 / doc-gate 475 文件·写点 249 处）；§3.3 拍板清单补 D20 |
+| `docs/m2/M2_PLAN.md` | §3.5 的 E02–E05 补 ✅ 与落地数字；§4 规则 4 加 `R1` 脚注；§8 追加 E 阶段收口两条 |
+| `docs/m2/M2_E_PLAN.md` | 本节 §8.4 + §7.6 实施记录、§11.1 实测复核、§15 进度表 |
+| `docs/m2/README.md` | `M2_E_PLAN.md` 索引行状态改为「E01–E05 全部已完成」 |
+| `xtask/tests_baseline.json` | `_comment` 追加 E04 / E05 两段（顺序与实际落地一致） |
+
+**门禁实测**：tests 2483 → **2489**（core 693 → 696 / doc 174 → 177）；命令面四计数与 E04 持平（419 / 85 / 334 / 18 / 45）；`size_debt` 20 持平（`state_hash.rs` 763 < 800，未加白名单）、`dep_debt` 0；`cargo xtask verify` 11 步全绿、金标 `385482eb033d2964` 未漂。
+
+**口径校正（§8.2 判据①）**：原判据写「实例序列化总字节 < 全字段模板字节 × 100 × 5%」，落地时发现 `name` / `template` 是**实例身份**而非差异载荷——100 个实例自带 100 份名字与模板 ID，5% 阈值套整段必然假红。**校正后**：5% 阈值只套差异载荷（覆盖字段），整段实例另给 20% 上限兜底，两条断言都带实测数字（不是纯阈值），校正后仍能证伪「把整份快照写进实例」。
+
+**判据④拆两条的理由**：合并成一条只能验「hash 会变」，丢掉了「模板正文变更**不**改 hash」这个反例保护——而这正是 `P3`（模板正文不入 hash、由实例覆盖面承担）日後被「顺手改回」时唯一的告警线，故拆为两条独立断言。
 
 ---
 
@@ -742,6 +800,8 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 > 落点自检：`49 + 5 + 2 + 2 = 58` ✓；`695 + 174 + 325 + 147 + 72 + 69 + 119 + 59 + 82 + 151 + 47 + 77 + 29 + 268 + 73 + 11 + 11 + 75 = 2484` ✓（其余 crate 不变）。每卡收口时须在 `xtask/tests_baseline.json` 同步对应 crate 数与 `total`，并在 `_comment` 追加本卡增量说明（D 阶段既有惯例）。
 >
 > **实测复核（E01 / E02 / E03 已落地）**：`r3e-core` 646 → 665（E01 实测，比名义 646+18=664 多 1，见 §4.5）→ **679**（E02，+14）→ **689**（E03，+10）；`r3e-doc` 169 → **171**（E03，+2）；`total` 2426 → 2445 → 2459 → **2471**。E01–E03 三卡增量 `18 + 14 + 12 = 44` 与预算逐卡一致，故本表"全局 2484"在实测口径下应为 **2485**，剩余 E04/E05 的起算见 §12；`+58` 的**增量**预算不变（多出的 1 条是基线对齐，不是新增判据）。
+>
+> **实测复核（E04 / E05 已落地，E 阶段收口）**：`total` 2471 → **2483**（E04，+12）→ **2489**（E05，+6）。按 crate：core 689 → **693**（+4）→ **696**（+3）；protocol 75 → **78**（+3）；editor-host 149 → **151**（+2）；doc 171 → **174**（+3：E04 +2 / E05 +1）。E04+E05 实际增量 `12 + 6 = 18`，对预算 `10 + 4 = 14` 多出 **4 条**，全部落在判据细化而非新判据：E04 的 protocol +1（未知 rpc 方法拒答）、editor-host 侧把 `prefab_define` 成功/失败拆两条 → +2；E05 的判据④按「变 / 不变」拆两条 → +1，另 `prefab_instances.rs` 3 条按计划。故 E 阶段最终 **2489**（相对此表 2484 口径多 5：1 条 E01 基线对齐 + 4 条判据细化），`+58` 名义增量不变。
 
 ### 11.2 其他门禁
 
@@ -842,15 +902,16 @@ assert!(with_override.len() < a.len() + 64); // 覆盖不引入冗余快照
 | E01 数据模型 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E01)`；实施记录见 §4.5） |
 | E02 实例化与 Scene 集成 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E02): prefab 实例化与 Scene 实例表`；实施记录见 §5.5） |
 | E03 覆盖 diff 与可逆 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E03): 覆盖只存差异与可逆性`；实施记录见 §6.5） |
-| E04 命令 / rpc / 不变量 | ⏳ 未开工 |
-| E05 判据测试与文档 | ⏳ 未开工 |
-| 完成度 | **3 / 5 卡**；tests 2426 → **2471**（实际 +45，名义预算 +44，60%） |
-| 下一卡起算基线 | tests **2471**（`r3e-core` **689**、`r3e-doc` **171**）、commands **413**、rpc **83**、script_only **330**、domains **18**、invariants **44**、`size_debt` **20**、`dep_debt` **0** |
-| 下一卡开工必读 | 本文件 §6.5（E03 落地口径，尤其差异①：`state_hash` 尚未覆盖 `instances`）+ §7（E04 全文）+ §11.2（`commands 419` / `rpc 85` / `script_only 334` / `invariants 45` 的 `R1` 偏差登记）+ §11.1 实测复核脚注（起算基数 **2471**，非 2470）+ `M2_DECISIONS.md` D6/D7/D20 + `M2_PLAN.md` §4 规则 4 / §5 单卡规程 |
-| 关键路径 | 约 **9.5 人日**（E01 2.5 / E02 2.0 / E03 1.5 / E04 2.5 / E05 1.0），严格串行无并行空间（`R4`）；已用 6.0 |
+| E04 命令 / rpc / 不变量 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E04): prefab 命令、rpc 与 override_leak 不变量`；tests 2471 → 2483，`commands` 419 / `rpc` 85 / `script_only` 334 / `domains` 18 / `invariants` 45；实施记录见 §7.6） |
+| E05 判据测试与文档 | ✅ 已完成（2026-11-26 本地提交 `feat(m2-E05): prefab 判据测试与文档收口`；tests 2483 → 2489，`state_hash` 实例段补齐，ARCHITECTURE §17 / AI_ROADMAP §0.2 / M2_PLAN / README 全部回写；实施记录见 §8.4） |
+| 完成度 | **5 / 5 卡（E 阶段已收口）**；tests 2426 → **2489**（实际 +63，名义预算 +58） |
+| 当前基线 | tests **2489**（`r3e-core` **696**、`r3e-doc` **177**）、commands **419**、rpc **85**、script_only **334**、domains **18**、invariants **45**、`size_debt` **20**、`dep_debt` **0** |
+| 后续改动必读 | 本文件 §7.6 / §8.4（E04 / E05 落地口径）+ §11.2（`script_only 334` 的 `R1` 偏差登记）+ §11.1 实测复核（起算基数与最终 2489 的差额来源）+ `M2_DECISIONS.md` D6/D7/D20 + `M2_PLAN.md` §4 规则 4（含 `R1` 脚注）/ §5 单卡规程 |
+| 关键路径 | 约 **9.5 人日**（E01 2.5 / E02 2.0 / E03 1.5 / E04 2.5 / E05 1.0），严格串行无并行空间（`R4`）；**已全部用尽** |
+
+> **E 阶段收口（2026-11-26）**：五卡全部完成，`cargo xtask verify` 11 步全绿（exit 0），回放金标 `385482eb033d2964` 未漂；E 阶段累计 tests 2426 → **2489**（+63，对预算 +58 多 5，逐条见 §11.1 实测复核）、`commands` 413 → **419**、`rpc` 83 → **85**、`script_only` 330 → **334**（`R1` 口径回写，见 §11.2）、`invariants` 44 → **45**、`domains` 18 持平、`size_debt` 20 持平、`dep_debt` 0。M2 全部 13 个提交仍留在本地，未曾 push。
 
 ---
 
-*本稿由只读取证生成：未修改仓库任何代码，未执行 `git commit`。*
-*（内容由AI生成，仅供参考）*
+*§1–§14 为立项取证稿（未修改代码）；§4.5 / §5.5 / §6.5 / §7.6 / §8.4 / §11.1 / §15 为各卡落地后的实施记录，随对应提交同批更新。*
 *（内容由AI生成，仅供参考）*
