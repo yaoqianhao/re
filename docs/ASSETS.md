@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 04526fdd866a8c5c9aceee6b83ed2c05_71dd3f9ceadd11f1aa8b525400dc9a98
+    ReservedCode1: D9s25o3B2HXHuWMKqSVY/YcBvSn8k7pzgOydOLaiENghGZ/etWdNprJY33j+uBHPG/UL10ZVQNmShGYdZ0AXEX/D0PJ/dmKLnr8EZsq3lakj8xqmw1J1yZjVeU5SAypVFKIzMMw4/bLoSb+Wke5/YeR9N5MktuSjhDGymaY38q14xdmIaKADtLvISw0=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 04526fdd866a8c5c9aceee6b83ed2c05_71dd3f9ceadd11f1aa8b525400dc9a98
+    ReservedCode2: D9s25o3B2HXHuWMKqSVY/YcBvSn8k7pzgOydOLaiENghGZ/etWdNprJY33j+uBHPG/UL10ZVQNmShGYdZ0AXEX/D0PJ/dmKLnr8EZsq3lakj8xqmw1J1yZjVeU5SAypVFKIzMMw4/bLoSb+Wke5/YeR9N5MktuSjhDGymaY38q14xdmIaKADtLvISw0=
+---
+
 # r3e 资产层规划：FBX 外部资产加载
 
 > 状态：**P0–P4 已落地**（静态网格、材质贴图、场景 `assets` 段、节点动画、骨骼蒙皮）
@@ -1143,3 +1154,216 @@ MeshRef ──▶ LayeredProvider ──┬─▶ AssetLibrary（外部资产，
   一旦把范围撑出这个盒、中心跟着挪，老现场就作废一次。想让分批装配吃到红利，先把大致范围铺开再往里补点。
 
 真机取证与 API 表见 `README.md` §37；core 契约见 `docs/ARCHITECTURE.md` §4.29，探针见 §8.40。
+
+---
+
+## 28. AIR 规范现状基线与未来扩展 TODO（含粒子特效数据契约预留）
+
+> 状态：**本章是待办与现状登记，不是已落地设计**。§28.1 只陈述实测现状；§28.2–§28.6
+> 全部为**未实现**的计划项，落地前不得被当成契约引用；§28.4 的 `effects` 段是**草案**，
+> 当前代码中不存在该字段。本章不改变 §18–§27 的任何既有结论，也不涉及任何代码改动。
+
+### 28.0 边界声明（先划清，避免范围蔓延）
+
+| 事项 | 归属 | 本章的承诺 |
+| --- | --- | --- |
+| 粒子 / 特效**运行时**（模拟、着色器、渲染通道、管线） | **由用户单独开发**，不在本仓与 `D:\asset3d` 的实现范围内 | 不设计、不排期、不在 `r3e-render` 里预留运行时骨架 |
+| AIR 的**数据契约**（字段、容器、版本、不变量） | 本仓 `r3e-core` / `r3e-asset` 与 `D:\asset3d\src\air.rs` 双镜像 | 只**预留能力位**与写清扩展规则，不实现消费侧 |
+| 特效资产的**生产 / 预览 / 编辑器交互** | `D:\asset3d`（插件 + `asset3d-gui` 视口） | 见 `D:\asset3d\docs\fx-particle-preview-todo.md` |
+
+一句话：**AIR 只为特效预留「放得下」的位置与版本策略；特效怎么跑、什么时候跑，由用户自己那套系统决定。**
+
+### 28.1 现状基线（实测口径，非计划）
+
+#### 28.1.1 代码即规范，没有第二份 spec
+
+| 项 | 现状 |
+| --- | --- |
+| 唯一权威定义 | 两份 Rust 结构体：插件侧 `D:\asset3d\src\air.rs`、引擎镜像 `r3e-asset/src/air_import.rs`（**不是共享 crate**，各自维护） |
+| 独立规范文件 | **不存在**：无 `spec` / JSON Schema / IDL / `.proto` |
+| 版本机制 | `AIR_VERSION = 1`；`check_header()` 两道硬闸门：`format != "air"` → `Invalid`，`air_version != 1` → `UnsupportedVersion`（`r3e-asset/src/air_import.rs:665-680`） |
+| 兼容策略 | **没有**"忽略未知结构 / 向下兼容"的显式策略。serde 默认忽略未知字段只是语言行为，**不是契约**，也没有测试锁定 |
+| 推论 | 字段增删的唯一安全路径是「加可选字段 + 不升版本」或「升 `AIR_VERSION = 2` 并两侧同批改」，无第三条（§28.2.1） |
+
+#### 28.1.2 双容器：`.air.json` 与 `.air.bin`
+
+| 容器 | 生产者 | 消费者 | 形态 |
+| --- | --- | --- | --- |
+| AIR JSON（`.air.json`） | `encode_json()` | `parse_json_doc()` | pretty 序列化，几何为浮点文本数组 |
+| AIRB（`.air.bin`） | `encode()` | `parse_airb()` | 头部 20 字节（magic `AIRB` / version / meta_len / blob_len）+ JSON 元数据 + 平铺几何 blob |
+
+- 分派方式是**内容嗅探**而非扩展名：`looks_like_airb()` / `looks_like_air_json()` / `parse_bytes()`，
+  由测试 `parse_bytes_dispatches_by_content_not_extension` 锁定；文件改名不影响加载。
+- AIRB 的 blob 分段为定长原始数组（f32/u32/u16），**无压缩、无量化**；`material_parts` / `aabb_*` 等元数据仍留在 JSON。
+
+#### 28.1.3 顶层 `AirDoc` 14 字段
+
+| # | 字段 | 类型 | 必填 | 备注 |
+| --- | --- | --- | --- | --- |
+| 1 | `format` | `String` | 是 | 固定 `"air"`，格式自证 |
+| 2 | `air_version` | `u32` | 是 | 当前 `1`，硬闸门 |
+| 3 | `generator` | `String` | 是 | 无枚举约束 |
+| 4 | `source` | `AirSource` | 是 | 源文件溯源 |
+| 5 | `units` | `AirUnits` | 是 | 坐标系与单位随数据走 |
+| 6 | `nodes` | `Vec<AirNode>` | 可选 | `#[serde(default)]` |
+| 7 | `meshes` | `Vec<AirMesh>` | 可选 | 同上 |
+| 8 | `materials` | `Vec<AirMaterial>` | 可选 | 同上 |
+| 9 | `textures` | `Vec<AirTexture>` | 可选 | 同上 |
+| 10 | `skins` | `Vec<AirSkin>` | 可选 | 同上 |
+| 11 | `animations` | `Vec<AirAnimation>` | 可选 | 同上 |
+| 12 | `stats` | `AirStats` | 插件可选 / **引擎必填** | 引擎侧无 `default` |
+| 13 | `issues` | `Vec<String>` | 可选 | 非阻断告警 |
+| 14 | `errors` | `Vec<String>` | 可选 | **阻断级**；插件有、引擎镜像**无此字段**（§28.1.6 #1） |
+
+#### 28.1.4 轨道属性是硬白名单
+
+- `TrackProperty` 仅 `translation` / `rotation` / `scale` 三个变体；`parse()` 对非法值直接报错，
+  且「一条轨道只驱动一个属性」是硬约束。
+- 后果（现状，不是缺陷清单）：**没有材质 / 灯光 / 相机 / 着色器参数的动画通道**；
+  任何"参数化动画"（含特效参数动画）当前都无处安放。
+
+#### 28.1.5 12 条不变量的覆盖度
+
+| 档位 | 条数 | 具体条目 |
+| --- | --- | --- |
+| **完整**（有校验实现 + 有测试） | 4 | 4 法线单位、5 索引、7 蒙皮、9 分区（分区仅引擎侧查） |
+| **部分**（校验了一部分语义） | 2 | 6 UV（只查有限性，「uv0 必须存在」无实现）、10 AABB（只查有限性与 `min <= max`，不与重算值比对） |
+| **仅约定 / 只有工具** | 6 | 1 坐标、2 顶点空间、3 绕序、8 材质、11 命名、12 确定性（有 `mesh_fingerprint` 但无闸门） |
+
+校验强度分三层，**层与层之间不重叠**：
+
+1. `r3e-core` 侧：当前**只告警不拦截**（源码注明「待 S2 完成后升级为强制闸门」，该升级**未做**，见 AIR-T06）；
+2. 引擎加载器 `validate_doc()`：返回 `Result`，严重问题直接 `Err(AirLoadError::Invalid)` 拒载；
+3. 插件 `validate()`：问题分流 `issues` / `errors`，`errors` 非空则**拒绝写盘**。
+
+插件 `validate()` **不查** `material_parts` 覆盖性、材质下标、贴图下标、`skin.joints` 越界 ——
+即存在「插件自检通过、引擎拒载」的合法产出路径（见 AIR-T09）。
+
+#### 28.1.6 双仓字段漂移 10 项
+
+| # | 漂移项 | 插件（`D:\asset3d\src\air.rs`） | 引擎镜像（`r3e-asset/src/air_import.rs`） | 实际影响 |
+| --- | --- | --- | --- | --- |
+| 1 | `AirDoc.errors` | 有 | **无** | 插件认定的阻断问题，引擎静默忽略 |
+| 2 | `AirMaterial` 扩展贴图（normal / roughness / occlusion） | **无** | 有 | 插件**永远导不出**这三张，只有手写 JSON 才可能生效 |
+| 3 | `AirTrack.interpolation` | 有（`linear` 默认不写） | **无** | `step` 语义在引擎侧丢失，恒按线性采样 |
+| 4 | `AirMesh.material_parts` | 无 `default`（缺失即解析失败） | 有 `default` | 引擎能读精简 AIR，插件不行 |
+| 5 | `AirTexture.mime_type` | 无 `default` | 有 `default` | 插件对缺字段更严格 |
+| 6 | `AirDoc.stats` | 有 `default` | 无 `default` | 插件可导出无统计的 AIR，引擎会拒 |
+| 7 | `AirNode.skin` | 有定义 | 有定义但 `convert_nodes()` 不映射 | 节点级骨骼表引用加载后丢弃 |
+| 8 | 顶点空间注释口径 | 「节点局部空间」 | 「顶点已是世界空间」 | **文档级冲突**，实现按插件口径 |
+| 9 | 校验覆盖面 | 不查 parts / 材质下标 / 贴图下标 / skin 越界 | 查得更全 | 见 §28.1.5 末段 |
+| 10 | AIRB 解析严格度 | `Result<String>`，校验较少 | `AirLoadError` 枚举，10 类负例 | 引擎侧负例覆盖更全 |
+
+两侧**一致**可放心依赖的部分：`AirUnits` / `AirSource` / `AirNode`（除 `skin` 映射）/ `AirMesh` 其余字段 /
+`AirSkin` / `AirAnimation` / `AirStats` / AIRB 头布局。
+
+#### 28.1.7 消费方必须知道的三处口径冲突
+
+| # | 冲突 | 现状结论 |
+| --- | --- | --- |
+| 1 | 顶点空间：插件注释说「节点局部空间」，引擎加载器注释说「世界空间」 | 以**节点局部空间**为准，世界变换由 `parent` 链 TRS 累乘；引擎注释为滞后描述（AIR-T07 待修） |
+| 2 | `errors` 字段：插件写、引擎不读 | 引擎侧只能看到 `issues` |
+| 3 | `interpolation`：插件写、引擎不读 | 含 `step` 轨道的 AIR 在引擎侧表现为线性插值 |
+
+### 28.2 AIR 侧未来扩展 TODO
+
+#### 28.2.1 先定规则：v1 的能力位策略
+
+在任何新段落地之前，扩展必须同时满足下面四条，否则一律按 `AIR_VERSION = 2` 处理：
+
+1. **只加可选字段**：新字段必须 `Option` 或带 `#[serde(default)]`，空值不序列化（`skip_serializing_if`）；
+2. **顶层独立数组**：新能力走 `AirDoc` 顶层新数组（如 `notifies` / `curves` / `effects`），
+   **不修改** `AirMesh` / `AirAnimation` / `AirTrack` 的既有结构签名 —— 老数据逐字节可读是硬要求；
+3. **未消费即忽略**：v1 消费方读到含新段的文件，必须表现为「没有该能力」，不得报错。
+   当前 serde 默认行为满足这一点，但**没有测试锁定**，需补一条兼容用例（AIR-T05 附带）；
+4. **双镜像同批改**：插件与引擎镜像必须在同一次变更里改，禁止单侧先落（这正是 §28.1.6 十项漂移的成因）。
+
+#### 28.2.2 TODO 清单
+
+> 状态列全部为**未做**。优先级：P0 = 阻塞后续契约工作，P1 = 影响一致性，P2 = 可选优化。
+
+| 编号 | 条目 | 方案要点 | 前置依赖 | 优先级 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| AIR-T01 | 动画事件 / notify | 顶层新增独立数组（`notifies`），按「片段名 + 时间 + 名称 + 载荷」登记；不进 `AirTrack`，避免破坏「一轨一属性」 | 28.2.1 四条规则 | P1 | 未做 |
+| AIR-T02 | 插值曲线 / 切线 | 要么给 `AirTrack` 加可选切线段，要么新增 `curves` 段；当前 `CUBICSPLINE` 在导入期被**丢弃并降级 `linear`** | AIR-T05 #3（`interpolation` 漂移先收敛） | P2 | 未做 |
+| AIR-T03 | 特效数据契约预留（`effects` 段） | 只定义**静态描述**的字段与版本规则（草案见 §28.4），不定义运行时；v1 消费方忽略该段 | Q3 拍板（§28.5） | P0（本章重点） | 未做 |
+| AIR-T04 | morph targets / blend shapes | **明确留给 v2**：当前引擎转换处显式 `MorphSet::default()` 留空，容器无字段 | `AIR_VERSION = 2` | P2 | 未做（有意不做） |
+| AIR-T05 | 双仓漂移收敛 | 逐项裁决 §28.1.6 十项：`errors`（删或镜像）、三张扩展贴图（补插件或删引擎字段）、`interpolation`（补引擎或删插件）、三处 serde 宽松度对齐；附带补「未知字段忽略」兼容测试 | 无 | P0 | 未做 |
+| AIR-T06 | 不变量校验升级：告警 → 闸门 | 兑现「S2 完成后升级为强制闸门」的承诺；至少把索引 / 蒙皮 / 分区三类从告警升为可配置阻断 | AIR-T09 | P1 | 未做 |
+| AIR-T07 | 顶点空间口径统一 | 修 `r3e-asset/src/air_import.rs` 世界空间注释，并把「顶点在节点局部空间」写进消费方约束；不改数据语义 | 无 | P1 | 未做 |
+| AIR-T08 | 不变量 8（材质）与 11（节点名唯一）补实现 | 前者给 `AirIssueKind` 补材质类别并校验索引范围；后者在导入期做去重追加后缀 | 无 | P2 | 未做 |
+| AIR-T09 | 插件校验补位 | 插件 `validate()` 补 `material_parts` 覆盖性、材质 / 贴图下标、`skin.joints` 越界，消除「插件过检、引擎拒载」的产出路径 | 无 | P0 | 未做 |
+| AIR-T10 | 扩展贴图通道定性 | 二选一：插件补 normal / roughness / occlusion 导出，或从引擎镜像删掉这三个字段；**长期双口径比缺功能更危险** | AIR-T05 | P1 | 未做 |
+| AIR-T11 | AIR 定义收敛为单一源 | 把结构体收敛到 `r3e-core`，插件改为依赖（或代码生成），从根上消除双镜像 | AIR-T05 完成后 | P2 | 未做 |
+
+### 28.3 粒子特效现状（实测，决定「AIR 要不要管」）
+
+| 项 | 实测值 | 含义 |
+| --- | --- | --- |
+| 资产 | `assets\fx` 下 **86 个 `.T3D`**，577.3 MB，UE5 **Niagara 的 T3D 文本对象图**（109 070 个对象块） | 是「结构清单」，不是可回放的模拟数据 |
+| 可读部分 | 537 个 emitter、6 733 个去重常量参数名、17 个材质引用、4 类渲染器（Sprite 323 / Mesh 151 / Ribbon 65 / Light 2）、曲线 1 010 + 805 组 | 拓扑、模块栈、参数**名**、材质路径、部分曲线 |
+| 数值负载 | 59 403 条 pin 默认值中纯数值仅 **128 条（0.22%）**；曲线键 Time+Value 完整率 **31%** | 出生率、寿命、速度、尺寸等**核心数值缺失** |
+| 编码 | 73 个 UTF-16LE（带 BOM）+ 13 个 UTF-8 | 读取入口**必须先做 BOM / 空字节率嗅探**，按扩展名解码必失 |
+| 引擎侧运行时 | `particle` / `niagara` / `billboard` / `vfx` 全库**零命中**；`r3e-render` 12 682 行只有 pbr/postfx/ssao/shadow/instancing/terrain/text/ui 等；无 `.T3D` 导入器 | 粒子这块**可复用代码为 0** |
+| 预览侧 | `D:\asset3d` 视口为自有 wgpu 22 渲染器（`gfx.rs` 1 441 行，5 条管线） | 可加**第 6 条**粒子管线，插入点：3D pass 内「网格之后、叠加层之前」，alpha 混合 + 深度测试开 / 深度写入关 |
+
+结论（对 AIR 的直接含义）：**特效的障碍在数据侧不在渲染侧**，且运行时明确归用户自己的系统。
+因此 AIR 现在能且只能做一件事：**把「数据长什么样」预留好**，一旦数据源被补齐就能进 AIR，不必再改容器与版本策略。
+
+### 28.4 `effects` 段数据契约预留（草案，未实现，不入 v1）
+
+> 明确声明：**当前代码中不存在 `effects` 字段**，本节只是预留形态。落地需 Q3 拍板（§28.5）。
+
+**定位（三条硬边界）**
+
+1. AIR 只承载**静态可导入描述**：系统 / 发射器 / 参数名与默认值 / 曲线 / 材质引用 / 渲染器类型；
+2. **不承载运行时状态**：不存粒子池、不存模拟结果、不存 GPU 缓冲布局；
+3. **不承载编辑器概念**：Niagara 的模块栈（`ModuleStack`）不进资产，模块名只作为**溯源字符串**可选保留。
+
+**草案字段（顶层新增，可选，空数组不序列化）**
+
+| 层级 | 字段 | 类型 | 语义 | 备注 |
+| --- | --- | --- | --- | --- |
+| `AirDoc` | `effects` | `Vec<AirEffect>` | 特效系统列表 | 缺省 `[]`；v1 消费方忽略 |
+| `AirEffect` | `name` | `String` | 系统名（如 `NS_SwordFx_03`） | 与 §18 命名不变量同口径 |
+| | `duration` | `f32` | 系统时长（秒） | 可为 0 表示不定长 |
+| | `loop` | `bool` | 是否循环 | 默认 `false` |
+| | `emitters` | `Vec<AirEffectEmitter>` | 发射器列表 | 草案不设数量上限 |
+| | `parameters` | `Vec<AirEffectParam>` | 系统级参数 | 名称 + 类型 + 默认值 |
+| `AirEffectEmitter` | `name` / `renderer` / `material` / `params` / `curves` | — | 名称、渲染器类型（`sprite` / `mesh` / `ribbon` / `light`）、材质**索引**（指向 `materials` / `textures`）、参数、曲线 | 材质走索引而非路径，复用 §18 的引用校验 |
+| `AirEffectParam` | `name` / `kind` / `value` | `String` / 枚举 / 变体 | `number` / `bool` / `enum` / `color` / `curve` | **值可缺省**：源数据没值时必须显式缺省，禁止编造默认值 |
+| `AirEffectCurve` | `keys` | `Vec<AirEffectKey>` | 曲线关键点 | |
+| `AirEffectKey` | `t` / `v` / `interp` | `f32` / `[f32;4]` / `String` | 时间、值、插值（`linear` / `step` / `cubic`） | 可选切线留给 AIR-T02 |
+
+**明确非目标**（写清楚以免后期失控）：不求值顺序、不定义力场语义、不定义 SubUV 网格与朝向对齐、
+不定义 GPU 粒子格式与压缩、不定义模块栈与执行图、不承担 `.T3D` → AIR 的转换器（转换器属生产侧）。
+
+**兼容与版本**：`effects` 为可选顶层数组 → 不升 `AIR_VERSION`；一旦要**必填化**或改语义 → `AIR_VERSION = 2`。
+
+### 28.5 待拍板项（决定 AIR 侧动不动、动多少）
+
+| 编号 | 决策点 | 影响 | 当前建议 |
+| --- | --- | --- | --- |
+| Q1 | `assets\fx` 的 86 个 `.T3D` 是否唯一数据源？能否在 UE 侧再导出**带数值**的中间格式？ | 决定粒子预览能否做「真还原」而非近似 | 先答 Q1，再谈契约细度 |
+| Q2 | 是否接受「近似还原」（结构 + 参数名 + 曲线碎片推断默认值）？ | 决定验收标准与工期 | 建议接受，但 UI 必须明示「近似」 |
+| Q3 | 特效数据是否进 AIR（新增 `effects` 段 + 双镜像同步 + fixture）？ | 进则必须同批维护两侧契约；不进则走 asset3d 私有格式，**AIR 零改动** | 建议：**先进契约、后进数据**；`effects` 按 §28.4 预留，等 Q1 有答复再补 fixture |
+| Q4 | `D:\asset3d` 的 wgpu 22 是否锁定？ | 锁定则「复用 r3e 渲染器」路线的成本结构不变 | 建议锁定，避免跨大版本迁移 |
+| Q5 | 预览范围：单 emitter / 整系统合成 / 多系统对比 | 决定 UI 复杂度与模拟批规模（537 个 emitter 全量不现实） | 建议从单系统合成起步 |
+| Q6 | 引擎侧是否同步落地特效消费（决定是否顺带定义运行时资产格式） | 决定 AIR 是否需要承载运行时描述 | **本章判定：不需要** —— 运行时归用户自己的系统 |
+
+### 28.6 建议执行顺序（不改代码前提下的排期逻辑）
+
+1. **先拍 Q3**：这一项不定，后续契约工作全是白工；
+2. Q3 = 进 AIR 时，**必须先做 AIR-T05 / T07 / T09** —— 契约本身还在漂移时再加新段，等于把 10 项漂移翻倍；
+3. 再做 **AIR-T03**：按 §28.4 落字段 + 两侧 fixture（含「v1 消费方忽略 `effects`」的兼容用例）；
+4. 运行时与预览分别由用户特效系统与 `D:\asset3d` 推进，AIR 侧不参与实现；
+5. `notifies` / `curves`（AIR-T01 / T02）跟随 Q1 的实际数据形态决定是否需要，**不预做**。
+
+### 28.7 取证与口径
+
+- 本章事实来源：本会话两份前置产物（逐字段、逐行号取证，含 5 个源文件的字段扫描与 86 个 `.T3D` 实测）：
+  - `AIR v1 规范定义（现状基线）.md`（现状基线、14 字段、12 条不变量、双仓漂移 10 项、三处口径冲突）
+  - `fx-preview-feasibility-report.md`（`assets\fx` 清点与数值负载、r3e 粒子运行时待查、asset3d 插入点与路线对比）
+- 只读原则：本章仅登记结论，不引用未经实测的数字；所有行号来自上述两份产物的取证记录，若源码变动需重新核对。
+- 与既有章节的关系：§18 是 AIR 的**已落地**设计；§19–§27 是各扩展对资产的要求；**本章是「尚未落地的 AIR 扩展」**，三者不得混引。
+*（内容由AI生成，仅供参考）*
