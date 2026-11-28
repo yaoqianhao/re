@@ -9,3 +9,10 @@ _probe/
 
 # 调试探针与临时比对产物（脚本跑出来的中间文件）
 temp/
+
+# 大体积外部素材：只作本地素材源，不入版本库
+# assets/Animation：UE 导出的 TwinSword 动作包（62 个 FBX，约 120 MB）
+# assets/fx：UE Niagara 导出的 T3D 特效（86 个 .T3D，约 577 MB）
+# 引用关系见 docs/ASSETS.md §18（资产层）与 §28.3（特效现状）
+assets/Animation/
+assets/fx/
